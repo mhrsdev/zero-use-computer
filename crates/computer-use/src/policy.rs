@@ -135,6 +135,7 @@ fn matches_any<S: AsRef<str>>(patterns: &[S], keys: &[String]) -> bool {
 /// Processes that must never be controlled: this server and its parent (the
 /// agent that launched it).
 pub fn protected_pids() -> Vec<u32> {
+    #[allow(unused_mut)]
     let mut pids = vec![std::process::id()];
     #[cfg(unix)]
     pids.push(std::os::unix::process::parent_id());
