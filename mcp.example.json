@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "computer-use": {
+      "command": "C:\\Tools\\computer-use\\computer-use-mcp.exe",
+      "args": ["serve"]
+    }
+  }
+}

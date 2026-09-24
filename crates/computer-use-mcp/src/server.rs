@@ -121,12 +121,29 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         Ok(())
     }
 
-    fn handle_notification(&mut self, method: &str, _params: Option<Value>) {
+    fn handle_notification(&mut self, method: &str, params: Option<Value>) {
         match method {
             "notifications/initialized" | "initialized" => {}
             "notifications/cancelled" => {}
+            STATUS_METHOD | "notifications/computer_use/status" => {
+                let _ = self.set_status(params.as_ref());
+            }
             other => log::debug!("ignoring notification {other}"),
         }
+    }
+
+    /// `computer_use/status {"state": "thinking" | "working" | "done" |
+    /// "error" | "hidden"}` — lets a host agent drive the on-screen overlay.
+    fn set_status(&mut self, params: Option<&Value>) -> Result<(), String> {
+        let state = params
+            .and_then(|p| p.get("state"))
+            .and_then(Value::as_str)
+            .ok_or("`state` is required")?
+            .parse::<computer_use::overlay::Status>()?;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_status(state);
+        }
+        Ok(())
     }
 
     fn handle_request(&mut self, method: &str, params: Value, id: Value) -> Option<Response> {
@@ -135,6 +152,10 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             "ping" => Some(Response::ok(id, json!({}))),
             "tools/list" => Some(Response::ok(id, self.tools_list())),
             "tools/call" => Some(self.tools_call(params, id)),
+            STATUS_METHOD => Some(match self.set_status(Some(&params)) {
+                Ok(()) => Response::ok(id, json!({})),
+                Err(e) => Response::err(id, INVALID_PARAMS, e),
+            }),
             "shutdown" => {
                 self.shutdown = true;
                 Some(Response::ok(id, Value::Null))
@@ -378,7 +399,15 @@ impl<R: BufRead, W: Write, B: Backend> Approver for McpApprover<'_, R, W, B> {
     fn confirm_action(&mut self, summary: &str) -> bool {
         self.server.confirm(summary)
     }
+
+    fn interactive(&self) -> bool {
+        // The client can ask, or the headless policy is to allow anyway.
+        self.server.client_elicitation || self.server.headless == HeadlessApproval::Allow
+    }
 }
+
+/// Host → server: what the agent is doing, for the on-screen overlay.
+pub(crate) const STATUS_METHOD: &str = "computer_use/status";
 
 pub(crate) fn instructions() -> String {
     "Control desktop apps through their accessibility tree plus screenshots. \

@@ -66,3 +66,62 @@ jobs:
             gtk-3-examples libgtk-3-bin python3-gi gir1.2-gtk-3.0
       - name: Run live backend test
         run: bash crates/computer-use/tests/run_live_linux.sh
+
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+            exe: computer-use-mcp.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+            exe: computer-use-mcp
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x64
+            exe: computer-use-mcp
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64
+            exe: computer-use-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxcb1-dev pkg-config
+      - name: Build
+        run: cargo build --release -p computer-use-mcp --features http --target ${{ matrix.target }}
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" dist/
+          cp mcp.example.json README.md README.fa.md dist/
+          cp skill/SKILL.md dist/SKILL.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: computer-use-mcp-${{ matrix.name }}
+          path: dist/
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-mcp-${{ matrix.name }}.zip .; else zip -r ../computer-use-mcp-${{ matrix.name }}.zip .; fi
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: computer-use-mcp-${{ matrix.name }}.zip

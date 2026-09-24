@@ -11,6 +11,7 @@ use crate::config::{AttachMode, ConfigStore};
 use crate::error::{Error, Result};
 use crate::imaging::{self, CoordMap};
 use crate::keys::{self, Key, KeyCombo, NamedKey};
+use crate::overlay::{Cmd as OverlayCmd, Launcher, Overlay, Status};
 use crate::policy::{self, Verdict};
 use crate::screens::{PixelSig, Screen, ScreenMemory, View};
 use crate::tools::*;
@@ -47,6 +48,13 @@ pub trait Approver {
     fn confirm_action(&mut self, _summary: &str) -> bool {
         true
     }
+
+    /// Whether this approver can actually put the question to the user (or
+    /// has a policy that answers it). When it can't, the engine may ask on
+    /// the screen instead (`overlay.confirm_on_screen`).
+    fn interactive(&self) -> bool {
+        true
+    }
 }
 
 /// Approve nothing (used when no approver is wired up).
@@ -56,6 +64,9 @@ impl Approver for DenyApprover {
         ApprovalDecision::Deny
     }
     fn confirm_action(&mut self, _summary: &str) -> bool {
+        false
+    }
+    fn interactive(&self) -> bool {
         false
     }
 }
@@ -119,6 +130,13 @@ pub struct Engine<B: Backend> {
     pending_images: Vec<PendingImage>,
     /// Nesting of `call` (batch steps run inside a call).
     depth: u32,
+    /// The on-screen indicator (a separate helper process), if running.
+    overlay: Option<Overlay>,
+    /// How to start it; set by the host (`with_overlay`).
+    overlay_launcher: Option<Launcher>,
+    /// Start attempts, so a helper that keeps failing is left alone.
+    overlay_starts: u32,
+    overlay_retry_at: Option<Instant>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
@@ -178,6 +196,10 @@ impl<B: Backend> Engine<B> {
             epoch: 0,
             pending_images: Vec::new(),
             depth: 0,
+            overlay: None,
+            overlay_launcher: None,
+            overlay_starts: 0,
+            overlay_retry_at: None,
             config_mtime,
             overrides: None,
             clock: Box::new(Instant::now),
@@ -208,6 +230,7 @@ impl<B: Backend> Engine<B> {
                 self.backend.configure(&store.config);
                 self.store = store;
                 self.epoch += 1;
+                self.overlay_reconfigure();
             }
             Err(e) => log::warn!("keeping previous settings; {e}"),
         }
@@ -230,6 +253,145 @@ impl<B: Backend> Engine<B> {
         self.backend.configure(&store.config);
         self.store = store;
         self.epoch += 1;
+        self.overlay_reconfigure();
+    }
+
+    /// Show the on-screen indicator while the agent works, using this helper
+    /// program (normally `computer-use-mcp overlay`). Without this (or
+    /// `overlay.command`), no overlay is shown.
+    pub fn with_overlay(mut self, launcher: Launcher) -> Self {
+        self.overlay_launcher = Some(launcher);
+        self
+    }
+
+    /// Tell the overlay what the agent is doing, for hosts that know (e.g.
+    /// "thinking" while the model generates, "done" when the task ends).
+    pub fn set_status(&mut self, status: Status) {
+        if matches!(status, Status::Done | Status::Hidden) && self.overlay.is_none() {
+            return;
+        }
+        self.overlay_send(OverlayCmd::Status { state: status });
+    }
+
+    /// The running overlay helper, started on first use. Never fails: when
+    /// it can't run, the engine simply works without it.
+    fn overlay(&mut self) -> Option<&mut Overlay> {
+        let cfg = &self.store.config.overlay;
+        if !cfg.enabled {
+            self.overlay = None;
+            return None;
+        }
+        if self.overlay.as_ref().is_some_and(|o| !o.alive()) {
+            // It died: try again a little later, a few times at most.
+            self.overlay = None;
+            self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(10));
+        }
+        if self.overlay.is_none() {
+            let launcher = self.overlay_launcher.clone().or_else(|| {
+                (!cfg.command.trim().is_empty())
+                    .then(|| crate::overlay::find_helper(cfg))
+                    .flatten()
+            })?;
+            if self.overlay_starts >= 5 || self.overlay_retry_at.is_some_and(|t| (self.clock)() < t)
+            {
+                return None;
+            }
+            self.overlay_starts += 1;
+            match Overlay::spawn(&launcher, cfg) {
+                Ok(o) => self.overlay = Some(o),
+                Err(e) => {
+                    log::warn!("overlay unavailable: {e}");
+                    self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(30));
+                }
+            }
+        }
+        self.overlay.as_mut()
+    }
+
+    fn overlay_send(&mut self, cmd: OverlayCmd) {
+        if let Some(o) = self.overlay() {
+            o.send(&cmd);
+        }
+    }
+
+    fn overlay_reconfigure(&mut self) {
+        let cfg = self.store.config.overlay.clone();
+        if !cfg.enabled {
+            self.overlay = None;
+        } else if let Some(o) = &self.overlay {
+            o.send(&OverlayCmd::Config {
+                config: Box::new(cfg),
+            });
+        }
+    }
+
+    /// Point the agent cursor at an element (its centre), optionally clicking.
+    fn overlay_point_element(&mut self, app: &AppInfo, handle: ElementHandle, click: bool) {
+        let p = self
+            .state(app.pid)
+            .ok()
+            .and_then(|s| s.bounds.get(&handle))
+            .filter(|b| !b.is_empty())
+            .map(|b| b.center());
+        if let Some(p) = p {
+            self.overlay_point(p, click);
+        }
+    }
+
+    fn overlay_point(&mut self, p: Point, click: bool) {
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Pointer {
+                x: p.x,
+                y: p.y,
+                click,
+            });
+        }
+    }
+
+    /// Whether to ask the user on the screen rather than through `approver`.
+    fn ask_on_screen(&self, approver: &dyn Approver) -> bool {
+        use crate::config::ScreenConfirm;
+        match self.store.config.overlay.confirm_on_screen {
+            ScreenConfirm::Never => false,
+            ScreenConfirm::Always => true,
+            ScreenConfirm::WhenNoClient => !approver.interactive(),
+        }
+    }
+
+    /// Show that `action` waits for the user, and ask on screen when that is
+    /// the way to ask. `Some(answer)` if the screen answered.
+    fn overlay_approval(&mut self, action: &str, approver: &dyn Approver) -> Option<bool> {
+        let ask = self.ask_on_screen(approver);
+        let timeout = Duration::from_secs(self.store.config.overlay.confirm_timeout_secs.max(1));
+        let o = self.overlay()?;
+        if ask {
+            if let Some(answer) = o.ask(action, timeout) {
+                return Some(answer);
+            }
+        } else {
+            o.send(&OverlayCmd::Approval {
+                id: 0,
+                action: action.to_string(),
+                ask: false,
+            });
+        }
+        None
+    }
+
+    /// Run a screen capture with the overlay out of the picture.
+    fn capture_clean<T>(&mut self, f: impl FnOnce(&mut B) -> Result<T>) -> Result<T> {
+        let pause = Duration::from_millis(self.store.config.overlay.capture_hide_ms);
+        let hidden = self.overlay.as_mut().and_then(|o| o.hide_for_capture());
+        if hidden == Some(true) {
+            (self.sleep)(pause);
+        }
+        let r = f(&mut self.backend);
+        if hidden.is_some()
+            && let Some(o) = &self.overlay
+        {
+            o.send(&OverlayCmd::Show);
+        }
+        r
     }
 
     /// Forget every remembered screen (the next views are treated as new).
@@ -314,10 +476,28 @@ impl<B: Backend> Engine<B> {
     ) -> Result<AppInfo> {
         let app = self.resolve_app(query)?;
         match policy::evaluate(&app, &self.store, &self.session_allowed) {
-            Verdict::Allowed => Ok(app),
+            Verdict::Allowed => {
+                // Acting in a sensitive app the user opened up (a terminal,
+                // a password manager…) shows as a sensitive action.
+                if MUTATING_TOOLS.contains(&tool)
+                    && self.overlay.is_some()
+                    && let Some(category) = policy::classify(&app, &self.store)
+                {
+                    self.overlay_send(OverlayCmd::Danger {
+                        action: Some(format!("{} in {} ({})", tool, app.name, category.label())),
+                    });
+                }
+                Ok(app)
+            }
             Verdict::Blocked(reason) => Err(Error::Blocked(app.name, reason)),
             Verdict::NeedsApproval => {
-                let decision = approver.request(&ApprovalRequest { app: &app, tool });
+                let what = format!("let the agent control {}", app.name);
+                let decision = match self.overlay_approval(&what, approver) {
+                    Some(true) => ApprovalDecision::Session,
+                    Some(false) => ApprovalDecision::Deny,
+                    None => approver.request(&ApprovalRequest { app: &app, tool }),
+                };
+                self.overlay_send(OverlayCmd::ApprovalDone);
                 match decision {
                     ApprovalDecision::Deny => Err(Error::Denied(app.name)),
                     ApprovalDecision::Once => Ok(app),
@@ -356,6 +536,21 @@ impl<B: Backend> Engine<B> {
     }
 
     fn resolve_window(
+        &mut self,
+        app: &AppInfo,
+        query: Option<&str>,
+        fresh: bool,
+    ) -> Result<WindowInfo> {
+        let w = self.pick_window(app, query, fresh)?;
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Target {
+                rect: w.bounds.map(|b| [b.x, b.y, b.width, b.height]),
+            });
+        }
+        Ok(w)
+    }
+
+    fn pick_window(
         &mut self,
         app: &AppInfo,
         query: Option<&str>,
@@ -791,7 +986,14 @@ impl<B: Backend> Engine<B> {
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
         self.depth += 1;
+        if self.depth == 1 {
+            self.overlay_send(OverlayCmd::Begin);
+        }
         let out = self.dispatch(call, approver);
+        if self.depth == 1 && self.overlay.is_some() {
+            let ok = out.as_ref().is_ok_and(|o| !o.is_error);
+            self.overlay_send(OverlayCmd::End { ok });
+        }
         self.depth -= 1;
         if self.depth == 0 {
             // Only the image in the final result reaches the model.
@@ -1044,7 +1246,7 @@ impl<B: Backend> Engine<B> {
 
         let mut image = None;
         if want {
-            match self.backend.capture(&app, &window) {
+            match self.capture_clean(|b| b.capture(&app, &window)) {
                 Ok(cap) => {
                     let sig = fingerprint.then(|| PixelSig::of(&cap, grid));
                     let unchanged = dedupe
@@ -1114,10 +1316,19 @@ impl<B: Backend> Engine<B> {
         let count = args.click_count.clamp(1, 3);
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
 
+        // The agent cursor goes there first, so the user sees what is next.
+        match &anchor {
+            Anchor::Element(h) => self.overlay_point_element(&app, *h, false),
+            Anchor::Point(p) => self.overlay_point(*p, false),
+        }
         // Confirm consequential presses (Send / Delete / Pay …) when guarded.
         if let Anchor::Element(h) = &anchor {
             let label = self.describe(&app, *h);
             self.guard_action(&label, approver)?;
+        }
+        match &anchor {
+            Anchor::Element(h) => self.overlay_point_element(&app, *h, true),
+            Anchor::Point(p) => self.overlay_point(*p, true),
         }
 
         // A single left click on an element with a press action goes through
@@ -1173,7 +1384,9 @@ impl<B: Backend> Engine<B> {
             ))
         })?;
         let native = action.native.clone();
+        self.overlay_point_element(&app, handle, false);
         self.guard_action(&node.label(), approver)?;
+        self.overlay_point_element(&app, handle, true);
         self.backend.perform_action(handle, &native)?;
         self.settle();
         Ok(ToolOutput::text(format!(
@@ -1187,6 +1400,7 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "set_value", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
+        self.overlay_point_element(&app, handle, true);
         self.backend.set_value(handle, &args.value)?;
         self.settle();
         Ok(ToolOutput::text(format!(
@@ -1204,6 +1418,7 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "select_text", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
+        self.overlay_point_element(&app, handle, false);
         self.backend
             .select_text(handle, args.text.as_deref(), args.occurrence.max(1))?;
         self.settle();
@@ -1225,6 +1440,10 @@ impl<B: Backend> Engine<B> {
             1.0
         };
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "scroll")?;
+        match &anchor {
+            Anchor::Element(h) => self.overlay_point_element(&app, *h, false),
+            Anchor::Point(p) => self.overlay_point(*p, false),
+        }
 
         if let Anchor::Element(h) = &anchor
             && let Native::Done(_) = self.backend.scroll_element(*h, args.direction, pages)?
@@ -1271,6 +1490,8 @@ impl<B: Backend> Engine<B> {
             self.anchor_point(&app, &from)?,
             self.anchor_point(&app, &to)?,
         );
+        self.overlay_point(p0, true);
+        self.overlay_point(p1, false);
         let target = self.input_target(&app);
         self.backend.drag(&target, p0, p1)?;
         self.settle();
@@ -1285,6 +1506,7 @@ impl<B: Backend> Engine<B> {
         let combos = keys::parse_sequence(&args.key)?;
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
+            self.overlay_point_element(&app, h, false);
             let _ = self.backend.focus(h);
         }
         let target = self.input_target(&app);
@@ -1304,6 +1526,7 @@ impl<B: Backend> Engine<B> {
         }
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
+            self.overlay_point_element(&app, h, true);
             let _ = self.backend.focus(h);
             self.settle();
         }
@@ -1440,7 +1663,7 @@ impl<B: Backend> Engine<B> {
         });
         let (capture, marks, label) = match mode {
             ScreenshotMode::Full => (
-                self.backend.capture_screen(None)?,
+                self.capture_clean(|b| b.capture_screen(None))?,
                 None,
                 "full screen".into(),
             ),
@@ -1454,7 +1677,7 @@ impl<B: Backend> Engine<B> {
                     }
                 };
                 (
-                    self.backend.capture_screen(Some(Rect::new(x, y, w, h)))?,
+                    self.capture_clean(|b| b.capture_screen(Some(Rect::new(x, y, w, h))))?,
                     None,
                     format!("region ({x:.0}, {y:.0}) {w:.0}x{h:.0}"),
                 )
@@ -1466,7 +1689,7 @@ impl<B: Backend> Engine<B> {
                     .ok_or_else(|| Error::InvalidArgs("window mode needs `app`".into()))?;
                 let app = self.authorize(query, "screenshot", approver)?;
                 let window = self.resolve_window(&app, args.window.as_deref(), false)?;
-                let cap = self.backend.capture(&app, &window)?;
+                let cap = self.capture_clean(|b| b.capture(&app, &window))?;
                 let marks = if args.annotate {
                     self.observe(&app, &window, false)?;
                     Some(
@@ -1591,12 +1814,11 @@ impl<B: Backend> Engine<B> {
     }
 
     /// The action guard: confirm/refuse a consequential press on `label`.
+    /// While such an action waits for the user the overlay turns to the
+    /// approval colour; once it runs, to the sensitive-action colour.
     fn guard_action(&mut self, label: &str, approver: &mut dyn Approver) -> Result<()> {
         use crate::config::SensitiveMode;
         let guard = &self.store.config.guard;
-        if guard.mode == SensitiveMode::Allow {
-            return Ok(());
-        }
         let low = label.to_lowercase();
         if !guard
             .keywords
@@ -1605,20 +1827,34 @@ impl<B: Backend> Engine<B> {
         {
             return Ok(());
         }
+        let action = format!("press {label}");
         match guard.mode {
-            SensitiveMode::Allow => Ok(()),
-            SensitiveMode::Block => Err(Error::Blocked(
-                label.to_string(),
-                "this looks like a consequential action; guard.mode is \"block\". Set guard.mode = \"ask\" or \"allow\" to permit it.".into(),
-            )),
+            SensitiveMode::Allow => {}
+            SensitiveMode::Block => {
+                return Err(Error::Blocked(
+                    label.to_string(),
+                    "this looks like a consequential action; guard.mode is \"block\". Set guard.mode = \"ask\" or \"allow\" to permit it.".into(),
+                ));
+            }
             SensitiveMode::Ask => {
-                if approver.confirm_action(&format!("perform: {label}")) {
-                    Ok(())
-                } else {
-                    Err(Error::Denied(format!("the user declined the action on {label}")))
+                let approved = match self.overlay_approval(&action, approver) {
+                    Some(answer) => answer,
+                    None => approver.confirm_action(&format!("perform: {label}")),
+                };
+                self.overlay_send(OverlayCmd::ApprovalDone);
+                if !approved {
+                    return Err(Error::Denied(format!(
+                        "the user declined the action on {label}"
+                    )));
                 }
             }
         }
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Danger {
+                action: Some(action),
+            });
+        }
+        Ok(())
     }
 
     /// Re-inspect an app after a mutating action and append what changed
@@ -1698,6 +1934,18 @@ impl<B: Backend> Engine<B> {
         }
     }
 }
+
+/// Tools that change something on screen.
+const MUTATING_TOOLS: &[&str] = &[
+    "click",
+    "perform_secondary_action",
+    "set_value",
+    "select_text",
+    "scroll",
+    "drag",
+    "press_key",
+    "type_text",
+];
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
 fn mutating_app(call: &ToolCall) -> Option<String> {
@@ -2752,5 +3000,105 @@ mod tests {
         );
         let out = state_of(&mut e, serde_json::json!({}));
         assert!(out.image.is_none(), "{}", out.text);
+    }
+
+    // -- overlay hooks (a stand-in helper records what it is told) ---------
+
+    #[cfg(unix)]
+    fn recording_helper(log: &std::path::Path, answer: Option<bool>) -> Launcher {
+        let reply = match answer {
+            Some(ok) => format!(
+                r#"echo '{{"t":"ready","excluded":true,"available":true}}'; while IFS= read -r l; do echo "$l" >> '{log}'; case "$l" in *'"ask":true'*) id=$(echo "$l" | sed 's/.*"id":\([0-9]*\).*/\1/'); echo "{{\"t\":\"answer\",\"id\":$id,\"ok\":{ok}}}";; esac; done"#,
+                log = log.display()
+            ),
+            None => format!("cat > '{}'", log.display()),
+        };
+        Launcher {
+            program: "sh".into(),
+            args: vec!["-c".into(), reply],
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_log(path: &std::path::Path) -> String {
+        for _ in 0..100 {
+            if let Ok(t) = std::fs::read_to_string(path)
+                && t.contains("\"t\":\"end\"")
+            {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overlay_follows_the_work() {
+        let dir = std::env::temp_dir().join(format!("cu-ov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("follow.log");
+        let mut e = nav_engine(false).with_overlay(recording_helper(&log, None));
+        state_of(&mut e, serde_json::json!({}));
+        press_named(&mut e, 7, "Next");
+        drop(e); // closes the helper's stdin
+        let t = read_log(&log);
+        for want in [
+            r#""t":"config""#,
+            r#""t":"begin""#,
+            r#""t":"target","rect":[0.0,0.0,800.0,600.0]"#,
+            r#""t":"pointer""#,
+            r#""click":true"#,
+            r#""t":"end","ok":true"#,
+        ] {
+            assert!(t.contains(want), "missing {want} in:\n{t}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_click_waits_for_the_screen_when_no_client_can_ask() {
+        let dir = std::env::temp_dir().join(format!("cu-ov2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (answer, allowed) in [(true, true), (false, false)] {
+            let log = dir.join(format!("ask-{answer}.log"));
+            let mut backend = MockBackend::new();
+            let mut app = MockBackend::text_editor(60);
+            app.elements.push(button(9, "Send", 2, 200.0));
+            backend.add_app(app);
+            let mut cfg = Config::default();
+            cfg.approvals.mode = ApprovalMode::AllowAll;
+            let mut e = Engine::new(backend, ConfigStore::in_memory(cfg))
+                .with_time(Instant::now, |_| {})
+                .with_overlay(recording_helper(&log, Some(answer)));
+            state_of(&mut e, serde_json::json!({}));
+            let send = index_named(&e, 60, "Send");
+            // DenyApprover can't ask anyone: the screen is asked instead.
+            let out = e.call_tool(
+                "click",
+                serde_json::json!({"app": "TextEdit", "element_index": send}),
+                &mut DenyApprover,
+            );
+            assert_eq!(!out.is_error, allowed, "{}", out.text);
+            drop(e);
+            let t = read_log(&log);
+            assert!(t.contains(r#""ask":true"#), "{t}");
+            if allowed {
+                assert!(
+                    t.contains(r#""t":"danger","action":"press button \"Send\"""#),
+                    "{t}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_overlay_without_a_helper() {
+        // Engines only show an overlay when the host provides the helper.
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        assert!(e.overlay.is_none());
     }
 }

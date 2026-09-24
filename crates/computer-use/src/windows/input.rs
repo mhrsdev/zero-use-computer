@@ -1,9 +1,13 @@
 //! Synthesized input via `SendInput`, and the screenshot-pixel → screen
 //! coordinate helpers Windows needs.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
 };
 
 use crate::error::{Error, Result};
@@ -59,21 +63,42 @@ fn move_to(p: Point) -> INPUT {
     )
 }
 
+/// Put the cursor back after synthesized mouse input (`restore_pointer`).
+static RESTORE_POINTER: AtomicBool = AtomicBool::new(true);
+
+pub fn set_restore_pointer(on: bool) {
+    RESTORE_POINTER.store(on, Ordering::Relaxed);
+}
+
+/// A move back to where the user's cursor is now, if it should be restored.
+fn home() -> Option<INPUT> {
+    if !RESTORE_POINTER.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut p = POINT::default();
+    // SAFETY: reading the cursor position into a local.
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    Some(move_to(Point::new(f64::from(p.x), f64::from(p.y))))
+}
+
 pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
     let (down, up) = match button {
         MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
         MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     };
+    let back = home();
     let mut inputs = vec![move_to(at)];
     for _ in 0..count.max(1) {
         inputs.push(mouse_input(down, 0, 0, 0));
         inputs.push(mouse_input(up, 0, 0, 0));
     }
+    inputs.extend(back);
     send(&inputs)
 }
 
 pub fn drag(from: Point, to: Point) -> Result<()> {
+    let back = home();
     let mut inputs = vec![move_to(from), mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0)];
     for step in 1..=8 {
         let p = Point::new(
@@ -83,11 +108,13 @@ pub fn drag(from: Point, to: Point) -> Result<()> {
         inputs.push(move_to(p));
     }
     inputs.push(mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0));
+    inputs.extend(back);
     send(&inputs)
 }
 
 pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
     const WHEEL_DELTA: i32 = 120;
+    let back = home();
     let mut inputs = vec![move_to(at)];
     if dy != 0 {
         inputs.push(mouse_input(MOUSEEVENTF_WHEEL, 0, 0, -dy * WHEEL_DELTA));
@@ -95,6 +122,7 @@ pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
     if dx != 0 {
         inputs.push(mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, dx * WHEEL_DELTA));
     }
+    inputs.extend(back);
     send(&inputs)
 }
 

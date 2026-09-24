@@ -26,6 +26,10 @@ if [ -z "$py" ]; then
 fi
 echo "using python: $py"
 
+echo "== building the overlay helper =="
+(cd "$root" && cargo build -q -p computer-use-mcp)
+export COMPUTER_USE_OVERLAY_BIN="$root/target/debug/computer-use-mcp"
+
 echo "== building live test =="
 test_bin="$(cd "$root" && cargo test -p computer-use --test live_linux --no-run --message-format=json 2>/dev/null \
   | "$py" -c 'import sys,json

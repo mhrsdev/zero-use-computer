@@ -92,7 +92,11 @@ running (then `get_app_state`).
   these in their settings; until they do, don't try to drive them — ask the
   user to do that step or to enable it.
 - **Consequential actions may ask for a second confirmation** (Send, Delete,
-  Pay …). Still pause and confirm intent yourself before anything that sends,
-  purchases, deletes, or changes important data.
+  Pay …), in your client or on the user's screen; the action waits until the
+  user answers. Still pause and confirm intent yourself before anything that
+  sends, purchases, deletes, or changes important data.
+- The user watches you work through an on-screen indicator (your own cursor,
+  a glow and a status label); their real mouse is never moved, and it is not
+  in your screenshots, so ignore it.
 - Keep tasks narrow; when the tree is ambiguous, ask for a screenshot
   (`get_app_state` with `screenshot: true`, or the `screenshot` tool).

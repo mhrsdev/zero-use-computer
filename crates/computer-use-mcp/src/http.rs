@@ -101,10 +101,28 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str, allow: bool) -> Opt
         }
     };
     let method = msg.method.clone()?;
-    let id = msg.id.clone();
-    // Notifications carry no id and expect no response.
-    let id = id?;
     let params = msg.params.unwrap_or(Value::Null);
+    if method == crate::server::STATUS_METHOD {
+        let state = params
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::parse::<computer_use::overlay::Status>);
+        let result = match state {
+            Some(Ok(s)) => {
+                engine.set_status(s);
+                Ok(())
+            }
+            Some(Err(e)) => Err(e),
+            None => Err("`state` is required".to_string()),
+        };
+        let id = msg.id.clone()?;
+        return Some(match result {
+            Ok(()) => reply(id, json!({})),
+            Err(e) => error(id, INVALID_PARAMS, &e),
+        });
+    }
+    // Notifications carry no id and expect no response.
+    let id = msg.id.clone()?;
 
     let mut allow_ap = AllowApprover;
     let mut deny_ap = DenyApprover;

@@ -348,3 +348,56 @@ fn screen_memory_over_real_backend() {
     );
     eprintln!("screen-memory live test passed");
 }
+
+/// The overlay (run from the `computer-use-mcp` binary named by
+/// `COMPUTER_USE_OVERLAY_BIN`) shows while the engine works, but is never in
+/// the engine's own screenshots, and synthesized clicks leave the user's
+/// mouse where it was.
+#[test]
+fn overlay_is_left_out_of_screenshots_and_the_mouse_stays_put() {
+    if !live() {
+        return;
+    }
+    let Some(bin) = std::env::var_os("COMPUTER_USE_OVERLAY_BIN") else {
+        eprintln!("skipping: COMPUTER_USE_OVERLAY_BIN not set");
+        return;
+    };
+    let mut e = engine().with_overlay(computer_use::overlay::Launcher::helper(bin));
+    let app = wait_for_app(&mut e);
+
+    // The screen glow (blue while working) runs along the left screen edge,
+    // over the fixture window at x = 0; the engine's screenshot must not show it.
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": app, "window": "CU Test", "screenshot": true}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "{}", out.text);
+    std::thread::sleep(Duration::from_millis(400));
+    let img = image::load_from_memory(&out.image.expect("screenshot").data)
+        .expect("decode")
+        .to_rgb8();
+    let px = img.get_pixel(2, img.height() / 2).0;
+    let blue = px[2] > 150 && px[0] < 120;
+    let gold = px[0] > 150 && px[2] < 80;
+    assert!(!blue && !gold, "overlay captured in the screenshot: {px:?}");
+
+    // A coordinate click puts the real pointer back.
+    let (conn, screen) = x11rb::connect(None).expect("X");
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let root = x11rb::connection::Connection::setup(&conn).roots[screen].root;
+    let pointer = |c: &x11rb::rust_connection::RustConnection| {
+        let r = c.query_pointer(root).unwrap().reply().unwrap();
+        (r.root_x, r.root_y)
+    };
+    let before = pointer(&conn);
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": app, "x": 200, "y": 200}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "{}", out.text);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(pointer(&conn), before, "the user's mouse was moved");
+    eprintln!("overlay live test passed");
+}

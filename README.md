@@ -33,6 +33,9 @@ This project follows the same architecture and behaviour:
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
   `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`.
+- **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
+  screen and a status label in state colours, click-through and invisible to
+  the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
 - **Approvals & safety.** Each app is approved before it is controlled (once /
   for the session / always), and terminals, credential & OS-security prompts,
   and the agent's own host app can never be controlled.
@@ -123,6 +126,66 @@ below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
 text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
 holds ~7.5 KiB per screen; peak process memory is unchanged.
 
+## On-screen indicator (overlay)
+
+While the agent works, the user sees what it is doing — without it ever taking
+their mouse:
+
+- **The agent's own cursor.** A separate pointer (its own colour, a thin ring
+  and soft glow in the state colour) glides to where the agent acts and
+  ripples where it clicks. The real mouse is never moved, locked or restyled:
+  element actions go through accessibility APIs, and the coordinate fallbacks
+  on Windows and Linux put the pointer straight back (`restore_pointer`;
+  macOS posts events to the app without moving it).
+- **A glow around the screen** (or around the window being worked on:
+  `overlay.border_target = "window"`) and a small **label** such as
+  "Zero is using the computer".
+- **State colours**, for the glow, the label and the cursor's ring:
+
+| State | Colour | When |
+|---|---|---|
+| thinking | gold | between actions, while the model works out its next step |
+| working | blue | an action is running |
+| waiting for approval | yellow (pulsing) | an app or an action needs the user's OK |
+| sensitive | black | a guarded action runs (send, delete, pay, confirm…) or the agent acts in a sensitive app the user opened up |
+| error | red | the last action failed |
+| done | green | the task is finished — then everything disappears |
+
+- **Approvals on screen.** A sensitive action waits for the user. When the
+  agent's client can ask (MCP elicitation) it asks there; when it can't, a
+  native dialog asks on the screen — an `NSAlert` on macOS, a system message
+  box on Windows, an overlay panel on X11 (`overlay.confirm_on_screen`:
+  `never` / `when_no_client` / `always`). No answer in
+  `confirm_timeout_secs` means no.
+
+How it stays out of the way:
+
+- It runs in a **separate helper process** (`computer-use-mcp overlay`). The
+  engine never waits on it; if it fails to start or crashes, computer use
+  carries on without it.
+- If the server exits or is killed, the helper's input pipe closes and it
+  quits at once; its windows belong to its process, so the OS removes them.
+  **Nothing is ever left on screen.** It also disappears on "done", and after
+  `done_after_ms` without any action.
+- Its windows are **click-through**, never take focus, and are **left out of
+  the agent's screenshots**: `WDA_EXCLUDEFROMCAPTURE` on Windows,
+  `sharingType = none` on macOS, and on X11 (which can't exclude a window)
+  it is hidden for the instant of a capture.
+- Native on each OS: layered windows on Windows, `NSWindow`s on macOS,
+  override-redirect windows with an empty input shape on X11 (smooth glow with
+  a compositing manager; a solid band without one).
+
+A host agent that knows more (e.g. when its model is generating, or when the
+task is complete) can say so with a JSON-RPC notification:
+
+```json
+{"jsonrpc": "2.0", "method": "computer_use/status", "params": {"state": "thinking"}}
+```
+
+(`thinking`, `working`, `done`, `error`, `hidden`; the library has
+`Engine::set_status`). Every text, colour, size and timing is in `[overlay]`;
+`computer-use-mcp overlay --demo` shows each state once on your screen.
+
 ## Architecture
 
 ```
@@ -161,11 +224,18 @@ screenshot pixels to screen coordinates, and enforcing the approval policy. Each
 
 ## Use it as an MCP server
 
-Build:
+**Download** a ready-made binary: every push builds `computer-use-mcp` for
+Windows (x64), macOS (Apple silicon and Intel) and Linux (x64) — open the
+repository's **Actions** tab, pick the latest *CI* run and download
+`computer-use-mcp-<platform>` from its **Artifacts** (tagged versions `v*`
+also attach zips to a GitHub **Release**). Each download contains the binary,
+[`mcp.example.json`](mcp.example.json), the READMEs and the skill file.
+
+Or build it:
 
 ```bash
 cargo build --release -p computer-use-mcp
-# binary at target/release/computer-use-mcp
+# binary at target/release/computer-use-mcp (computer-use-mcp.exe on Windows)
 ```
 
 **Claude Code** (`.mcp.json` or your MCP config):
@@ -265,11 +335,12 @@ applying after a reload. The agent has no tool to change settings.
 | `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
 | `[tree]` | size limits, text length, indentation, shown actions/states, diffs, change reports |
 | `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
+| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings, on-screen approvals |
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window |
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | headless approval policy, log level, HTTP address and token |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `follow_new_windows`, `hot_reload`, `launch_timeout_secs` |
+| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 
 Sensitive apps are blocked by default; open them up one category or one app at
 a time. Admins can enforce policy via a managed config

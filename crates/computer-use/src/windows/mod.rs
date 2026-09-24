@@ -582,6 +582,7 @@ impl Backend for WindowsBackend {
 
     fn configure(&mut self, cfg: &crate::config::Config) {
         self.use_cache_request = cfg.windows.use_cache_request;
+        input::set_restore_pointer(cfg.restore_pointer);
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {

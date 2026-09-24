@@ -18,6 +18,9 @@ text_only = false
 # When an action opens a new window (a dialog, a menu), switch to it for the
 # change report and for get_app_state calls that don't name a window.
 follow_new_windows = true
+# Put the real mouse pointer back after a synthesized click/scroll/drag, so the
+# agent never takes the user's mouse away (Linux, Windows).
+restore_pointer = true
 # Re-read this file when it changes, without restarting the server.
 hot_reload = true
 # Seconds launch_app waits for the new app's window.
@@ -143,6 +146,47 @@ dedupe_screenshots = true   # don't re-send an unchanged screenshot of a screen
 pixel_grid = 64             # fingerprint cells across the longer side
 pixel_tolerance = 2         # per-cell brightness drift still "unchanged"
 snapshot_ttl_ms = 200       # reuse a tree/window read this recent if nothing ran since (0 = off)
+
+[overlay]
+# While the agent works: its own cursor (the real mouse is never moved or
+# changed), a border around the window it works on, and a status label. It
+# runs in a separate helper process, is click-through, is left out of the
+# agent's screenshots, and vanishes when the work ends or the server stops.
+enabled = true
+show_border = true
+show_cursor = true
+show_label = true
+click_effect = true          # a ripple where the agent clicks
+border_target = "screen"     # glow around the whole "screen" or the "window" worked on
+border_width = 3             # bright core line
+glow_size = 36               # how far the glow fades out (0 = a plain line)
+scale = 0.0                  # size multiplier; 0 = follow display scaling
+# Label per state; {action} is what is pending.
+label_working = "Zero is using the computer"
+label_thinking = "Zero is thinking…"
+label_approval = "Waiting for your approval: {action}"
+label_danger = "Sensitive action: {action}"
+label_error = "Zero hit an error"
+label_done = "Zero is done"
+label_allow = "Allow"        # buttons of the on-screen confirmation
+label_deny = "Deny"
+# Colours per state (#RRGGBB or #RRGGBBAA).
+color_thinking = "#D4A017"   # gold: the model is thinking
+color_working = "#1E88E5"    # blue: acting on the computer
+color_approval = "#FFE600"   # yellow: waiting for your approval
+color_danger = "#000000"     # black: a sensitive action (send, delete, pay…)
+color_error = "#E53935"      # red: something failed
+color_done = "#2E7D32"       # green: finished, then everything disappears
+cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the state
+done_after_ms = 20000        # no new action for this long: done, then hidden
+done_linger_ms = 1500
+error_hold_ms = 2500
+move_ms = 220                # cursor glide time
+confirm_on_screen = "when_no_client"   # never | when_no_client | always
+confirm_timeout_secs = 120   # an unanswered on-screen confirmation is denied
+capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
+font = ""                    # label font file ("" = a system font)
+command = ""                 # helper program for library embedders
 
 [audit]
 enabled = false             # append a JSONL line (metadata only) per call

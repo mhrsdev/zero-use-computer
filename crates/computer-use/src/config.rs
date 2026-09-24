@@ -349,6 +349,129 @@ impl ToolsConfig {
     }
 }
 
+/// When to ask for a confirmation on the screen itself (overlay dialog)
+/// instead of through the agent's client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenConfirm {
+    Never,
+    /// Only when the client can't ask the user (no MCP elicitation).
+    WhenNoClient,
+    Always,
+}
+
+/// What the overlay border goes around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BorderTarget {
+    /// A glow along the edges of the whole screen.
+    Screen,
+    /// A glow around the window being worked on.
+    Window,
+}
+
+/// The on-screen indicator shown while the agent uses the computer: its own
+/// cursor, a border around the window it works on, and a status label (see
+/// `overlay/`). It runs in a separate helper process.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayConfig {
+    pub enabled: bool,
+    pub show_border: bool,
+    pub show_cursor: bool,
+    pub show_label: bool,
+    /// A ripple where the agent clicks.
+    pub click_effect: bool,
+    /// Where the border glows: around the whole `screen` or the `window`
+    /// being worked on.
+    pub border_target: BorderTarget,
+    /// Thickness of the border's bright core line (px at 100% scale).
+    pub border_width: u32,
+    /// How far the border's glow fades out (px at 100% scale; 0 = no glow).
+    pub glow_size: u32,
+    /// Size multiplier; 0 = follow the display's scaling.
+    pub scale: f64,
+    /// Label texts per state; `{action}` is replaced by what is pending.
+    pub label_working: String,
+    pub label_thinking: String,
+    pub label_approval: String,
+    pub label_danger: String,
+    pub label_error: String,
+    pub label_done: String,
+    /// Buttons of the on-screen confirmation.
+    pub label_allow: String,
+    pub label_deny: String,
+    /// Colours (#RRGGBB or #RRGGBBAA) per state.
+    pub color_thinking: String,
+    pub color_working: String,
+    pub color_approval: String,
+    pub color_danger: String,
+    pub color_error: String,
+    pub color_done: String,
+    /// The agent cursor's own colour (its ring follows the state).
+    pub cursor_color: String,
+    /// No new action for this long after the last one: done (green), then hidden.
+    pub done_after_ms: u64,
+    /// How long "done" stays on screen before everything disappears.
+    pub done_linger_ms: u64,
+    /// How long an error stays red before returning to "thinking".
+    pub error_hold_ms: u64,
+    /// Duration of the cursor's glide to a new point.
+    pub move_ms: u64,
+    /// Ask for confirmations on the screen: never, when_no_client, always.
+    pub confirm_on_screen: ScreenConfirm,
+    /// Give up (deny) an on-screen confirmation after this many seconds.
+    pub confirm_timeout_secs: u64,
+    /// Where the overlay can't be excluded from screenshots (X11): wait this
+    /// long after hiding it before capturing.
+    pub capture_hide_ms: u64,
+    /// Font file for the label ("" = a system font).
+    pub font: String,
+    /// Overlay helper program for embedders ("" = the host decides; the MCP
+    /// server uses itself).
+    pub command: String,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            show_border: true,
+            show_cursor: true,
+            show_label: true,
+            click_effect: true,
+            border_target: BorderTarget::Screen,
+            border_width: 3,
+            glow_size: 36,
+            scale: 0.0,
+            label_working: "Zero is using the computer".into(),
+            label_thinking: "Zero is thinking…".into(),
+            label_approval: "Waiting for your approval: {action}".into(),
+            label_danger: "Sensitive action: {action}".into(),
+            label_error: "Zero hit an error".into(),
+            label_done: "Zero is done".into(),
+            label_allow: "Allow".into(),
+            label_deny: "Deny".into(),
+            color_thinking: "#D4A017".into(),
+            color_working: "#1E88E5".into(),
+            color_approval: "#FFE600".into(),
+            color_danger: "#000000".into(),
+            color_error: "#E53935".into(),
+            color_done: "#2E7D32".into(),
+            cursor_color: "#9C27B0".into(),
+            done_after_ms: 20_000,
+            done_linger_ms: 1_500,
+            error_hold_ms: 2_500,
+            move_ms: 220,
+            confirm_on_screen: ScreenConfirm::WhenNoClient,
+            confirm_timeout_secs: 120,
+            capture_hide_ms: 40,
+            font: String::new(),
+            command: String::new(),
+        }
+    }
+}
+
 /// Screen memory and caches (see `screens.rs`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -514,6 +637,7 @@ pub struct Config {
     pub tree: TreeConfig,
     pub timing: TimingConfig,
     pub cache: CacheConfig,
+    pub overlay: OverlayConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -526,6 +650,9 @@ pub struct Config {
     /// When an action opens a new window (a dialog, a menu), switch to it
     /// for the change report and the next get_app_state without a `window`.
     pub follow_new_windows: bool,
+    /// Put the real mouse pointer back where it was after a synthesized
+    /// click, scroll or drag (Linux, Windows; macOS never moves it).
+    pub restore_pointer: bool,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -543,6 +670,7 @@ impl Default for Config {
             tree: TreeConfig::default(),
             timing: TimingConfig::default(),
             cache: CacheConfig::default(),
+            overlay: OverlayConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -551,6 +679,7 @@ impl Default for Config {
             clipboard: true,
             text_only: false,
             follow_new_windows: true,
+            restore_pointer: true,
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
@@ -566,6 +695,22 @@ impl Config {
                 "cache.match_threshold must be between 0 and 1 (got {})",
                 c.match_threshold
             ));
+        }
+        let o = &self.overlay;
+        for (key, value) in [
+            ("overlay.color_thinking", &o.color_thinking),
+            ("overlay.color_working", &o.color_working),
+            ("overlay.color_approval", &o.color_approval),
+            ("overlay.color_danger", &o.color_danger),
+            ("overlay.color_error", &o.color_error),
+            ("overlay.color_done", &o.color_done),
+            ("overlay.cursor_color", &o.cursor_color),
+        ] {
+            if crate::overlay::draw::parse_color(value).is_none() {
+                return Err(format!(
+                    "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
+                ));
+            }
         }
         if !(4..=256).contains(&c.pixel_grid) {
             return Err(format!(

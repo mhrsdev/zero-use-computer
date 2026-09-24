@@ -34,6 +34,8 @@ pub struct X11 {
     green_mask: u32,
     blue_mask: u32,
     bgr: bool,
+    /// Put the pointer back after synthesized mouse input.
+    pub restore_pointer: bool,
 }
 
 impl X11 {
@@ -77,6 +79,7 @@ impl X11 {
             green_mask,
             blue_mask,
             bgr,
+            restore_pointer: true,
         };
         x.load_keymap()?;
         Ok(x)
@@ -146,17 +149,38 @@ impl X11 {
         Ok(())
     }
 
+    /// Where the user's pointer is, when it should be put back afterwards.
+    fn pointer(&self) -> Option<(i32, i32)> {
+        if !self.restore_pointer {
+            return None;
+        }
+        let r = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
+        Some((i32::from(r.root_x), i32::from(r.root_y)))
+    }
+
+    /// Return the pointer to where the user left it.
+    fn put_back(&self, at: Option<(i32, i32)>) -> Result<()> {
+        if let Some((x, y)) = at {
+            self.warp(x, y)?;
+            self.fake(6, 0, x as i16, y as i16)?;
+        }
+        Ok(())
+    }
+
     pub fn click(&self, x: i32, y: i32, button: u8, count: u8) -> Result<()> {
+        let home = self.pointer();
         self.warp(x, y)?;
         self.fake(6, 0, x as i16, y as i16)?; // MotionNotify absolute
         for _ in 0..count.max(1) {
             self.fake(BUTTON_PRESS, button, x as i16, y as i16)?;
             self.fake(BUTTON_RELEASE, button, x as i16, y as i16)?;
         }
+        self.put_back(home)?;
         self.flush()
     }
 
     pub fn scroll(&self, x: i32, y: i32, dx: i32, dy: i32) -> Result<()> {
+        let home = self.pointer();
         self.warp(x, y)?;
         let tick = |button: u8, n: i32| -> Result<()> {
             for _ in 0..n.abs() {
@@ -175,10 +199,12 @@ impl X11 {
         } else if dx < 0 {
             tick(6, dx)?; // left
         }
+        self.put_back(home)?;
         self.flush()
     }
 
     pub fn drag(&self, from: (i32, i32), to: (i32, i32)) -> Result<()> {
+        let home = self.pointer();
         self.warp(from.0, from.1)?;
         self.fake(6, 0, from.0 as i16, from.1 as i16)?;
         self.fake(BUTTON_PRESS, 1, from.0 as i16, from.1 as i16)?;
@@ -190,6 +216,7 @@ impl X11 {
             self.fake(6, 0, x as i16, y as i16)?;
         }
         self.fake(BUTTON_RELEASE, 1, to.0 as i16, to.1 as i16)?;
+        self.put_back(home)?;
         self.flush()
     }
 

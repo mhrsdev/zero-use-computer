@@ -130,6 +130,15 @@ enum Command {
     },
     /// Report platform, permissions and config.
     Doctor,
+    /// (internal) The on-screen overlay helper the server starts. `--demo`
+    /// shows every state once, to check how it looks on this machine.
+    #[command(hide = true)]
+    Overlay {
+        #[arg(long)]
+        parent: Option<u32>,
+        #[arg(long)]
+        demo: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -245,6 +254,19 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    // The overlay helper talks JSON on stdout: no logging, no config.
+    if let Some(Command::Overlay { parent, demo }) = &cli.command {
+        let mut args = Vec::new();
+        if let Some(p) = parent {
+            args.extend(["--parent".to_string(), p.to_string()]);
+        }
+        if *demo {
+            args.push("--demo".into());
+        }
+        let code = computer_use::overlay::helper::run(&args);
+        std::process::exit(code);
+    }
+
     // Settings commands work even when the file is invalid.
     if let Some(Command::Config { action }) = &cli.command {
         init_logging(cli.common.log.as_deref().unwrap_or("error"));
@@ -292,7 +314,7 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Command::Config { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Overlay { .. } => unreachable!("handled above"),
         Command::Doctor => doctor(&cli.common, store),
     }
 }
@@ -380,7 +402,11 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
         HeadlessPolicy::Deny => HeadlessApproval::Deny,
         HeadlessPolicy::Allow => HeadlessApproval::Allow,
     };
-    let engine = build_engine(common, store)?;
+    let mut engine = build_engine(common, store)?;
+    // The on-screen overlay runs as this same program in helper mode.
+    if let Ok(exe) = std::env::current_exe() {
+        engine = engine.with_overlay(computer_use::overlay::Launcher::helper(exe));
+    }
 
     if !server_cfg.http_addr.is_empty() {
         let token = std::env::var("COMPUTER_USE_HTTP_TOKEN")

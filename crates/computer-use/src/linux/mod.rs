@@ -320,6 +320,9 @@ impl Backend for LinuxBackend {
     fn configure(&mut self, cfg: &crate::config::Config) {
         self.batch_size = cfg.linux.batch_size.max(1);
         self.text_max = cfg.linux.text_max_chars.max(1);
+        if let Some(x) = self.x11.as_mut() {
+            x.restore_pointer = cfg.restore_pointer;
+        }
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {

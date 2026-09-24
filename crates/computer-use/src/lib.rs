@@ -22,6 +22,10 @@
 //!   what changed since is sent — no fresh tree or screenshot to re-analyse
 //!   (see [`screens`]). Unchanged screenshots are never sent twice, and recent
 //!   reads are reused until the next action (`[cache]` settings).
+//! * **On-screen indicator.** A separate helper process ([`overlay`]) shows
+//!   the agent's own cursor, a glow and a status label in state colours;
+//!   it is click-through, left out of screenshots, and gone the moment the
+//!   work ends or the process dies. The real mouse is never taken.
 //! * **Approvals.** Each app is approved before it is controlled (once,
 //!   for the session, or always), and terminals, credential/security prompts
 //!   and the agent's own host app can never be controlled.
@@ -50,6 +54,7 @@ pub mod error;
 pub mod imaging;
 pub mod keys;
 pub mod mock;
+pub mod overlay;
 pub mod policy;
 pub mod roles;
 pub mod screens;
