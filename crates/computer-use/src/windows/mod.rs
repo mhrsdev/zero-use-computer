@@ -15,12 +15,12 @@ use std::process::Command;
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::System::Variant::VariantToBoolean;
+use windows::Win32::System::Variant::{VariantToBoolean, VariantToInt32, VariantToStringAlloc};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GetAncestor, GetWindowTextLengthW, GetWindowTextW,
@@ -40,7 +40,34 @@ pub struct WindowsBackend {
     handles: HashMap<ElementHandle, (u32, IUIAutomationElement)>,
     hwnds: HashMap<ElementHandle, isize>,
     next_handle: ElementHandle,
+    /// Walk with a CacheRequest (one cross-process call per window).
+    use_cache_request: bool,
+    cache_request: Option<IUIAutomationCacheRequest>,
 }
+
+/// Properties prefetched for every element by the cache request.
+const CACHED_PROPS: [UIA_PROPERTY_ID; 20] = [
+    UIA_ControlTypePropertyId,
+    UIA_NamePropertyId,
+    UIA_AutomationIdPropertyId,
+    UIA_ClassNamePropertyId,
+    UIA_BoundingRectanglePropertyId,
+    UIA_IsEnabledPropertyId,
+    UIA_HasKeyboardFocusPropertyId,
+    UIA_IsOffscreenPropertyId,
+    UIA_IsInvokePatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId,
+    UIA_IsValuePatternAvailablePropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_IsLegacyIAccessiblePatternAvailablePropertyId,
+    UIA_ValueValuePropertyId,
+    UIA_ValueIsReadOnlyPropertyId,
+    UIA_ToggleToggleStatePropertyId,
+    UIA_ExpandCollapseExpandCollapseStatePropertyId,
+    UIA_SelectionItemIsSelectedPropertyId,
+    UIA_LegacyIAccessibleDefaultActionPropertyId,
+];
 
 impl WindowsBackend {
     pub fn new() -> Result<Self> {
@@ -60,6 +87,8 @@ impl WindowsBackend {
                 handles: HashMap::new(),
                 hwnds: HashMap::new(),
                 next_handle: 1,
+                use_cache_request: true,
+                cache_request: None,
             })
         }
     }
@@ -253,6 +282,152 @@ impl WindowsBackend {
         }
     }
 
+    /// The subtree cache request (built once, reused for every snapshot).
+    fn cache_request(&mut self) -> windows::core::Result<IUIAutomationCacheRequest> {
+        if let Some(cr) = &self.cache_request {
+            return Ok(cr.clone());
+        }
+        unsafe {
+            let cr = self.automation.CreateCacheRequest()?;
+            for prop in CACHED_PROPS {
+                cr.AddProperty(prop)?;
+            }
+            cr.SetTreeScope(TreeScope_Subtree)?;
+            cr.SetTreeFilter(&self.automation.ControlViewCondition()?)?;
+            self.cache_request = Some(cr.clone());
+            Ok(cr)
+        }
+    }
+
+    /// Build a node from cached properties only (no cross-process calls).
+    fn build_node_cached(
+        &mut self,
+        pid: u32,
+        el: &IUIAutomationElement,
+        parent: Option<usize>,
+    ) -> RawNode {
+        let control_type = unsafe { el.CachedControlType() }.map(|c| c.0).unwrap_or(0);
+        let role = roles::from_uia(control_type);
+        let name = bstr(unsafe { el.CachedName() });
+        let automation_id = bstr(unsafe { el.CachedAutomationId() });
+        let class = bstr(unsafe { el.CachedClassName() });
+        let bounds = unsafe { el.CachedBoundingRectangle() }
+            .ok()
+            .map(rect_to_bounds);
+        let enabled = unsafe { el.CachedIsEnabled() }
+            .map(|b| b.as_bool())
+            .unwrap_or(true);
+        let focused = unsafe { el.CachedHasKeyboardFocus() }
+            .map(|b| b.as_bool())
+            .unwrap_or(false);
+        let offscreen = unsafe { el.CachedIsOffscreen() }
+            .map(|b| b.as_bool())
+            .unwrap_or(false);
+
+        let has = |p: UIA_PROPERTY_ID| cached_bool(el, p).unwrap_or(false);
+        let (mut value, mut editable, mut value_settable) = (None, false, false);
+        if has(UIA_IsValuePatternAvailablePropertyId) {
+            value = cached_string(el, UIA_ValueValuePropertyId);
+            let readonly = cached_bool(el, UIA_ValueIsReadOnlyPropertyId).unwrap_or(true);
+            value_settable = !readonly;
+            editable = !readonly;
+        }
+        if matches!(role.as_str(), "text field" | "document") {
+            editable = editable || value_settable;
+        }
+        let mut checked = None;
+        if has(UIA_IsTogglePatternAvailablePropertyId) {
+            checked = Some(cached_i32(el, UIA_ToggleToggleStatePropertyId) == Some(1));
+            value = None;
+        }
+        let expanded = has(UIA_IsExpandCollapsePatternAvailablePropertyId)
+            .then(|| cached_i32(el, UIA_ExpandCollapseExpandCollapseStatePropertyId))
+            .flatten()
+            .filter(|s| *s != 3) // LeafNode
+            .map(|s| s == 1);
+        let selected = has(UIA_IsSelectionItemPatternAvailablePropertyId)
+            && cached_bool(el, UIA_SelectionItemIsSelectedPropertyId).unwrap_or(false);
+
+        let mut actions = Vec::new();
+        if has(UIA_IsInvokePatternAvailablePropertyId) {
+            actions.push(ActionDesc::new("press", "Invoke"));
+        }
+        if has(UIA_IsTogglePatternAvailablePropertyId) {
+            actions.push(ActionDesc::new("toggle", "Toggle"));
+        }
+        if has(UIA_IsExpandCollapsePatternAvailablePropertyId) {
+            actions.push(ActionDesc::new("expand", "Expand"));
+            actions.push(ActionDesc::new("collapse", "Collapse"));
+        }
+        if has(UIA_IsSelectionItemPatternAvailablePropertyId) {
+            actions.push(ActionDesc::new("select", "Select"));
+        }
+        if has(UIA_IsLegacyIAccessiblePatternAvailablePropertyId)
+            && !actions.iter().any(|a| a.name == "press")
+            && let Some(default) = cached_string(el, UIA_LegacyIAccessibleDefaultActionPropertyId)
+        {
+            actions.push(ActionDesc::new(default.to_lowercase(), "DoDefaultAction"));
+        }
+
+        let identifier = automation_id
+            .filter(|s| !s.is_empty())
+            .or(class.filter(|s| !s.is_empty()));
+        let handle = self.handle_for(pid, el.clone());
+        RawNode {
+            handle,
+            parent,
+            key: None,
+            role,
+            native_role: control_type.to_string(),
+            name: name.filter(|s| !s.is_empty()),
+            description: None,
+            value: value.filter(|s| !s.is_empty()),
+            placeholder: None,
+            identifier,
+            bounds,
+            actions,
+            states: NodeStates {
+                enabled,
+                focused,
+                selected,
+                checked,
+                expanded,
+                editable,
+                value_settable,
+                hidden: offscreen || bounds.is_some_and(|b| b.is_empty()),
+            },
+        }
+    }
+
+    fn walk_cached(
+        &mut self,
+        pid: u32,
+        el: &IUIAutomationElement,
+        parent: Option<usize>,
+        depth: usize,
+        opts: &SnapshotOptions,
+        out: &mut Vec<RawNode>,
+    ) {
+        if out.len() >= opts.max_nodes || depth > opts.max_depth {
+            return;
+        }
+        let idx = out.len();
+        let node = self.build_node_cached(pid, el, parent);
+        out.push(node);
+        let Ok(children) = (unsafe { el.GetCachedChildren() }) else {
+            return;
+        };
+        let len = unsafe { children.Length() }.unwrap_or(0);
+        for i in 0..len {
+            if out.len() >= opts.max_nodes {
+                break;
+            }
+            if let Ok(child) = unsafe { children.GetElement(i) } {
+                self.walk_cached(pid, &child, Some(idx), depth + 1, opts, out);
+            }
+        }
+    }
+
     // -- pattern getters ---------------------------------------------------
 
     fn get_pattern<T: Interface>(
@@ -388,8 +563,25 @@ impl Backend for WindowsBackend {
         let root = self.resolve(window.handle)?;
         self.handles.retain(|_, (p, _)| *p != app.pid);
         let mut out = Vec::new();
+        if self.use_cache_request {
+            // One cross-process call fetches the whole subtree's properties.
+            let cached = self
+                .cache_request()
+                .and_then(|cr| unsafe { root.BuildUpdatedCache(&cr) });
+            match cached {
+                Ok(cached_root) => {
+                    self.walk_cached(app.pid, &cached_root, None, 0, opts, &mut out);
+                    return Ok(out);
+                }
+                Err(e) => log::warn!("UIA cache request failed ({e}); walking uncached"),
+            }
+        }
         self.walk(app.pid, &root, None, 0, opts, &mut out);
         Ok(out)
+    }
+
+    fn configure(&mut self, cfg: &crate::config::Config) {
+        self.use_cache_request = cfg.windows.use_cache_request;
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
@@ -571,6 +763,33 @@ fn available(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> bool {
             .and_then(|v| VariantToBoolean(&v).ok())
             .map(|b| b.as_bool())
             .unwrap_or(false)
+    }
+}
+
+fn cached_bool(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<bool> {
+    unsafe {
+        let v = el.GetCachedPropertyValue(prop).ok()?;
+        VariantToBoolean(&v).ok().map(|b| b.as_bool())
+    }
+}
+
+fn cached_i32(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<i32> {
+    unsafe {
+        let v = el.GetCachedPropertyValue(prop).ok()?;
+        VariantToInt32(&v).ok()
+    }
+}
+
+fn cached_string(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<String> {
+    unsafe {
+        let v = el.GetCachedPropertyValue(prop).ok()?;
+        let p = VariantToStringAlloc(&v).ok()?;
+        if p.is_null() {
+            return None;
+        }
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const std::ffi::c_void));
+        s.filter(|s| !s.is_empty())
     }
 }
 

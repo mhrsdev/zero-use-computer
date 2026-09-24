@@ -55,6 +55,14 @@ unsafe extern "C" {
     ) -> AXError;
     pub fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> AXError;
     pub fn AXValueGetValue(value: AXValueRef, type_: u32, out: *mut c_void) -> u8;
+    pub fn AXValueGetType(value: AXValueRef) -> u32;
+    pub fn AXValueGetTypeID() -> usize;
+    pub fn AXUIElementCopyMultipleAttributeValues(
+        element: AXUIElementRef,
+        attributes: CFTypeRef, // CFArrayRef of CFStringRef
+        options: u32,
+        values: *mut CFTypeRef, // CFArrayRef
+    ) -> AXError;
     pub fn AXValueCreate(type_: u32, value: *const c_void) -> AXValueRef;
     pub fn AXIsProcessTrusted() -> u8;
     // Private but stable: the CGWindowID behind an AX window element.
@@ -226,6 +234,88 @@ pub fn copy_size(element: AXUIElementRef, attr: &str) -> Option<CGSize> {
         )
     };
     (ok != 0).then_some(s)
+}
+
+/// AXValueType tag used for per-attribute errors in multi-attribute results.
+pub const kAXValueAXErrorType: u32 = 5;
+
+/// Fetch several attributes in one IPC round trip. Each slot is `None` when
+/// the attribute is missing or errored. Returns `None` if the call itself
+/// fails, so callers can fall back to per-attribute reads.
+pub fn copy_attrs(element: AXUIElementRef, names: &[&str]) -> Option<Vec<Option<CFType>>> {
+    let cf_names: Vec<CFString> = names.iter().map(|n| cfstr(n)).collect();
+    let array = CFArray::from_CFTypes(&cf_names);
+    let mut out: CFTypeRef = ptr::null();
+    let err = unsafe {
+        AXUIElementCopyMultipleAttributeValues(element, array.as_CFTypeRef(), 0, &mut out)
+    };
+    if err != kAXErrorSuccess || out.is_null() {
+        return None;
+    }
+    let values = unsafe { CFType::wrap_under_create_rule(out) }.downcast::<CFArray>()?;
+    let ax_value_type = unsafe { AXValueGetTypeID() };
+    let mut result = Vec::with_capacity(names.len());
+    for raw in values.get_all_values() {
+        if raw.is_null() {
+            result.push(None);
+            continue;
+        }
+        let v = unsafe { CFType::wrap_under_get_rule(raw) };
+        let is_error =
+            v.type_of() == ax_value_type && unsafe { AXValueGetType(raw) } == kAXValueAXErrorType;
+        result.push((!is_error).then_some(v));
+    }
+    (result.len() == names.len()).then_some(result)
+}
+
+pub fn value_to_string(v: &Option<CFType>) -> Option<String> {
+    v.as_ref().and_then(cftype_to_string)
+}
+
+pub fn value_to_bool(v: &Option<CFType>) -> Option<bool> {
+    v.as_ref()?
+        .downcast::<CFBoolean>()
+        .map(|b| b == CFBoolean::true_value())
+}
+
+pub fn value_to_point(v: &Option<CFType>) -> Option<CGPoint> {
+    let v = v.as_ref()?;
+    let mut p = CGPoint { x: 0.0, y: 0.0 };
+    let ok = unsafe {
+        AXValueGetValue(
+            v.as_CFTypeRef(),
+            kAXValueCGPointType,
+            &mut p as *mut _ as *mut c_void,
+        )
+    };
+    (ok != 0).then_some(p)
+}
+
+pub fn value_to_size(v: &Option<CFType>) -> Option<CGSize> {
+    let v = v.as_ref()?;
+    let mut s = CGSize {
+        width: 0.0,
+        height: 0.0,
+    };
+    let ok = unsafe {
+        AXValueGetValue(
+            v.as_CFTypeRef(),
+            kAXValueCGSizeType,
+            &mut s as *mut _ as *mut c_void,
+        )
+    };
+    (ok != 0).then_some(s)
+}
+
+pub fn value_to_elements(v: &Option<CFType>) -> Vec<AxRef> {
+    let Some(array) = v.as_ref().and_then(|v| v.downcast::<CFArray>()) else {
+        return Vec::new();
+    };
+    array
+        .get_all_values()
+        .into_iter()
+        .filter_map(|raw| unsafe { AxRef::from_get(raw) })
+        .collect()
 }
 
 /// The CGWindowID behind an AX window element, via the private SPI.

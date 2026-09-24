@@ -19,23 +19,67 @@ use crate::keys::KeyCombo;
 use crate::roles;
 use crate::types::*;
 
-/// Attribute-timeout so a hung app can't block us for long.
-const MESSAGING_TIMEOUT: f32 = 2.0;
-
 pub struct MacBackend {
     /// pid → application AX element.
     apps: HashMap<u32, AxRef>,
     /// handle → (pid, element).
     handles: HashMap<ElementHandle, (u32, AxRef)>,
     next_handle: ElementHandle,
+    /// Read all of an element's attributes in one AX call.
+    batch_attributes: bool,
+    messaging_timeout: f32,
+}
+
+/// Attributes read per element, in this order, in one batched AX call.
+const ATTRS: [&str; 15] = [
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXDescription",
+    "AXValue",
+    "AXPlaceholderValue",
+    "AXPosition",
+    "AXSize",
+    "AXEnabled",
+    "AXFocused",
+    "AXSelected",
+    "AXExpanded",
+    "AXHidden",
+    "AXIdentifier",
+    "AXChildren",
+];
+
+/// One element's attributes.
+struct Attrs {
+    role: String,
+    subrole: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    value: Option<String>,
+    placeholder: Option<String>,
+    bounds: Option<Rect>,
+    enabled: bool,
+    focused: bool,
+    selected: bool,
+    expanded: Option<bool>,
+    hidden: bool,
+    identifier: Option<String>,
+    children: Vec<AxRef>,
+}
+
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.filter(|s| !s.is_empty())
 }
 
 impl MacBackend {
     pub fn new() -> Result<Self> {
+        let defaults = crate::config::MacosConfig::default();
         Ok(Self {
             apps: HashMap::new(),
             handles: HashMap::new(),
             next_handle: 1,
+            batch_attributes: defaults.batch_attributes,
+            messaging_timeout: defaults.messaging_timeout_secs,
         })
     }
 
@@ -46,7 +90,7 @@ impl MacBackend {
         let raw = unsafe { ffi::AXUIElementCreateApplication(pid as i32) };
         let el = unsafe { AxRef::from_create(raw) }
             .ok_or_else(|| Error::AppNotFound(format!("pid {pid}")))?;
-        unsafe { ffi::AXUIElementSetMessagingTimeout(el.as_ref(), MESSAGING_TIMEOUT) };
+        unsafe { ffi::AXUIElementSetMessagingTimeout(el.as_ref(), self.messaging_timeout) };
         self.apps.insert(pid, el.clone());
         Ok(el)
     }
@@ -75,40 +119,83 @@ impl MacBackend {
         Some(Rect::new(p.x, p.y, s.width, s.height))
     }
 
-    fn build_node(&mut self, pid: u32, el: &AxRef, parent: Option<usize>) -> RawNode {
+    /// Read an element's attributes: one batched IPC call when enabled,
+    /// falling back to per-attribute reads.
+    fn read_attrs(&self, el: &AxRef) -> Attrs {
         let r = el.as_ref();
-        let role_native = ffi::copy_string(r, "AXRole").unwrap_or_default();
-        let subrole = ffi::copy_string(r, "AXSubrole");
-        let role = roles::from_ax(&role_native, subrole.as_deref());
+        if self.batch_attributes
+            && let Some(v) = ffi::copy_attrs(r, &ATTRS)
+        {
+            let bounds = match (ffi::value_to_point(&v[6]), ffi::value_to_size(&v[7])) {
+                (Some(p), Some(s)) => Some(Rect::new(p.x, p.y, s.width, s.height)),
+                _ => None,
+            };
+            return Attrs {
+                role: ffi::value_to_string(&v[0]).unwrap_or_default(),
+                subrole: ffi::value_to_string(&v[1]),
+                title: non_empty(ffi::value_to_string(&v[2])),
+                description: non_empty(ffi::value_to_string(&v[3])),
+                value: non_empty(ffi::value_to_string(&v[4])),
+                placeholder: non_empty(ffi::value_to_string(&v[5])),
+                bounds,
+                enabled: ffi::value_to_bool(&v[8]).unwrap_or(true),
+                focused: ffi::value_to_bool(&v[9]).unwrap_or(false),
+                selected: ffi::value_to_bool(&v[10]).unwrap_or(false),
+                expanded: ffi::value_to_bool(&v[11]),
+                hidden: ffi::value_to_bool(&v[12]).unwrap_or(false),
+                identifier: non_empty(ffi::value_to_string(&v[13])),
+                children: ffi::value_to_elements(&v[14]),
+            };
+        }
+        Attrs {
+            role: ffi::copy_string(r, "AXRole").unwrap_or_default(),
+            subrole: ffi::copy_string(r, "AXSubrole"),
+            title: non_empty(ffi::copy_string(r, "AXTitle")),
+            description: non_empty(ffi::copy_string(r, "AXDescription")),
+            value: non_empty(ffi::copy_string(r, "AXValue")),
+            placeholder: non_empty(ffi::copy_string(r, "AXPlaceholderValue")),
+            bounds: self.rect_of(el),
+            enabled: ffi::copy_bool(r, "AXEnabled").unwrap_or(true),
+            focused: ffi::copy_bool(r, "AXFocused").unwrap_or(false),
+            selected: ffi::copy_bool(r, "AXSelected").unwrap_or(false),
+            expanded: ffi::copy_bool(r, "AXExpanded"),
+            hidden: ffi::copy_bool(r, "AXHidden").unwrap_or(false),
+            identifier: non_empty(ffi::copy_string(r, "AXIdentifier")),
+            children: ffi::copy_elements(r, "AXChildren"),
+        }
+    }
 
-        let name = ffi::copy_string(r, "AXTitle").filter(|s| !s.is_empty());
-        let description = ffi::copy_string(r, "AXDescription").filter(|s| !s.is_empty());
-        let raw_value = ffi::copy_string(r, "AXValue").filter(|s| !s.is_empty());
-        let placeholder = ffi::copy_string(r, "AXPlaceholderValue").filter(|s| !s.is_empty());
-
-        let bounds = self.rect_of(el);
-        let enabled = ffi::copy_bool(r, "AXEnabled").unwrap_or(true);
-        let focused = ffi::copy_bool(r, "AXFocused").unwrap_or(false);
-        let selected = ffi::copy_bool(r, "AXSelected").unwrap_or(false);
-        let expanded = ffi::copy_bool(r, "AXExpanded");
-        let hidden =
-            ffi::copy_bool(r, "AXHidden").unwrap_or(false) || bounds.is_some_and(|b| b.is_empty());
+    fn build_node(&mut self, pid: u32, el: &AxRef, a: Attrs, parent: Option<usize>) -> RawNode {
+        let r = el.as_ref();
+        let role = roles::from_ax(&a.role, a.subrole.as_deref());
+        let hidden = a.hidden || a.bounds.is_some_and(|b| b.is_empty());
 
         let checkable = matches!(
             role.as_str(),
             "checkbox" | "radio button" | "toggle button" | "switch"
         );
         let checked = checkable
-            .then(|| raw_value.as_deref() == Some("1") || raw_value.as_deref() == Some("true"));
+            .then(|| a.value.as_deref() == Some("1") || a.value.as_deref() == Some("true"));
 
-        let editable = matches!(
+        let text_role = matches!(
             role.as_str(),
-            "text field" | "text area" | "secure text field"
-        ) || ffi::is_settable(r, "AXValue") && raw_value.is_some();
-        let value_settable = ffi::is_settable(r, "AXValue");
+            "text field" | "text area" | "secure text field" | "search field" | "combo box"
+        );
+        // Settability is its own IPC call, so only ask where it matters.
+        let value_settable = (text_role
+            || matches!(
+                role.as_str(),
+                "slider" | "stepper" | "date field" | "time field"
+            ))
+            && ffi::is_settable(r, "AXValue");
+        let editable = text_role || (value_settable && a.value.is_some());
 
-        // Keep AXValue as the element value for non-checkable roles.
-        let value = if checkable { None } else { raw_value };
+        // Never surface password contents; keep AXValue for non-checkable roles.
+        let value = if checkable || role == "secure text field" {
+            None
+        } else {
+            a.value
+        };
 
         let actions = ffi::action_names(r)
             .into_iter()
@@ -121,20 +208,20 @@ impl MacBackend {
             parent,
             key: None, // structural key assigned by the tree pruner
             role,
-            native_role: role_native,
-            name,
-            description,
+            native_role: a.role,
+            name: a.title,
+            description: a.description,
             value,
-            placeholder,
-            identifier: ffi::copy_string(r, "AXIdentifier").filter(|s| !s.is_empty()),
-            bounds,
+            placeholder: a.placeholder,
+            identifier: a.identifier,
+            bounds: a.bounds,
             actions,
             states: NodeStates {
-                enabled,
-                focused,
-                selected,
+                enabled: a.enabled,
+                focused: a.focused,
+                selected: a.selected,
                 checked,
-                expanded,
+                expanded: a.expanded,
                 editable,
                 value_settable,
                 hidden,
@@ -155,9 +242,11 @@ impl MacBackend {
             return;
         }
         let idx = out.len();
-        let node = self.build_node(pid, el, parent);
+        let mut attrs = self.read_attrs(el);
+        let children = std::mem::take(&mut attrs.children);
+        let node = self.build_node(pid, el, attrs, parent);
         out.push(node);
-        for child in ffi::copy_elements(el.as_ref(), "AXChildren") {
+        for child in children {
             if out.len() >= opts.max_nodes {
                 break;
             }
@@ -169,6 +258,11 @@ impl MacBackend {
 impl Backend for MacBackend {
     fn name(&self) -> &'static str {
         "macos"
+    }
+
+    fn configure(&mut self, cfg: &crate::config::Config) {
+        self.batch_attributes = cfg.macos.batch_attributes;
+        self.messaging_timeout = cfg.macos.messaging_timeout_secs.max(0.1);
     }
 
     fn permissions(&mut self) -> Vec<PermissionStatus> {
