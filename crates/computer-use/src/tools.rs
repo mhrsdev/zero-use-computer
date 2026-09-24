@@ -1,0 +1,571 @@
+//! The tool surface: the same ten tools Codex's Computer Use plugin exposes
+//! (list_apps, get_app_state, click, perform_secondary_action, set_value,
+//! select_text, scroll, drag, press_key, type_text) plus launch_app.
+
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Value, json};
+
+use crate::error::{Error, Result};
+use crate::imaging::EncodedImage;
+use crate::types::{MouseButton, ScrollDirection};
+
+/// A tool definition in MCP shape (`name`, `description`, `inputSchema`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDefinition {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
+    pub annotations: Value,
+}
+
+/// What a tool call returns: text for the model and, for get_app_state, a screenshot.
+#[derive(Debug, Clone)]
+pub struct ToolOutput {
+    pub text: String,
+    pub image: Option<EncodedImage>,
+    pub is_error: bool,
+}
+
+impl ToolOutput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            image: None,
+            is_error: false,
+        }
+    }
+
+    pub fn error(err: &Error) -> Self {
+        Self {
+            text: err.to_string(),
+            image: None,
+            is_error: true,
+        }
+    }
+
+    /// MCP `CallToolResult.content`.
+    pub fn content(&self) -> Value {
+        let mut content = vec![json!({"type": "text", "text": self.text})];
+        if let Some(img) = &self.image {
+            content.push(json!({"type": "image", "data": img.base64(), "mimeType": img.mime}));
+        }
+        Value::Array(content)
+    }
+
+    /// Full MCP `CallToolResult`.
+    pub fn to_mcp_result(&self) -> Value {
+        json!({"content": self.content(), "isError": self.is_error})
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Arguments
+
+fn de_opt_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "expected a string or number, got {other}"
+            )));
+        }
+    })
+}
+
+fn de_opt_index<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => Some(
+            n.as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| serde::de::Error::custom("element_index must be a non-negative integer"))?,
+        ),
+        Some(Value::String(s)) => Some(
+            s.trim()
+                .parse()
+                .map_err(|_| serde::de::Error::custom("element_index must be a non-negative integer"))?,
+        ),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "element_index must be an integer, got {other}"
+            )));
+        }
+    })
+}
+
+fn de_index<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<u32, D::Error> {
+    de_opt_index(d)?.ok_or_else(|| serde::de::Error::custom("element_index is required"))
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct LaunchAppArgs {
+    pub app: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct GetAppStateArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(default, alias = "disableDiff")]
+    pub disable_diff: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ClickArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub button: MouseButton,
+    #[serde(default = "one", alias = "clicks")]
+    pub click_count: u8,
+}
+
+fn one() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct SecondaryActionArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(deserialize_with = "de_index")]
+    pub element_index: u32,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct SetValueArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(deserialize_with = "de_index")]
+    pub element_index: u32,
+    #[serde(deserialize_with = "de_value")]
+    pub value: String,
+}
+
+fn de_value<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => s,
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        other => {
+            return Err(serde::de::Error::custom(format!(
+                "value must be a string, number or boolean, got {other}"
+            )));
+        }
+    })
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct SelectTextArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(deserialize_with = "de_index")]
+    pub element_index: u32,
+    /// Text to select; omitted selects all.
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default = "one_usize")]
+    pub occurrence: usize,
+}
+
+fn one_usize() -> usize {
+    1
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ScrollArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub direction: ScrollDirection,
+    /// Pages (viewport heights/widths); fractions allowed.
+    #[serde(default = "one_f64", alias = "pages")]
+    pub amount: f64,
+}
+
+fn one_f64() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DragArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub from_element_index: Option<u32>,
+    pub from_x: Option<f64>,
+    pub from_y: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub to_element_index: Option<u32>,
+    pub to_x: Option<f64>,
+    pub to_y: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct PressKeyArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(alias = "keys")]
+    pub key: String,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct TypeTextArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    pub text: String,
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+}
+
+/// A parsed tool call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolCall {
+    ListApps,
+    LaunchApp(LaunchAppArgs),
+    GetAppState(GetAppStateArgs),
+    Click(ClickArgs),
+    PerformSecondaryAction(SecondaryActionArgs),
+    SetValue(SetValueArgs),
+    SelectText(SelectTextArgs),
+    Scroll(ScrollArgs),
+    Drag(DragArgs),
+    PressKey(PressKeyArgs),
+    TypeText(TypeTextArgs),
+}
+
+fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
+    let args = if args.is_null() { json!({}) } else { args };
+    serde_json::from_value(args).map_err(|e| Error::InvalidArgs(format!("{tool}: {e}")))
+}
+
+impl ToolCall {
+    pub fn parse(name: &str, args: Value) -> Result<Self> {
+        Ok(match name {
+            "list_apps" => ToolCall::ListApps,
+            "launch_app" => ToolCall::LaunchApp(parse_args(name, args)?),
+            "get_app_state" => ToolCall::GetAppState(parse_args(name, args)?),
+            "click" => ToolCall::Click(parse_args(name, args)?),
+            "perform_secondary_action" => ToolCall::PerformSecondaryAction(parse_args(name, args)?),
+            "set_value" => ToolCall::SetValue(parse_args(name, args)?),
+            "select_text" => ToolCall::SelectText(parse_args(name, args)?),
+            "scroll" => ToolCall::Scroll(parse_args(name, args)?),
+            "drag" => ToolCall::Drag(parse_args(name, args)?),
+            "press_key" => ToolCall::PressKey(parse_args(name, args)?),
+            "type_text" => ToolCall::TypeText(parse_args(name, args)?),
+            other => return Err(Error::UnknownTool(other.to_string())),
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            ToolCall::ListApps => "list_apps",
+            ToolCall::LaunchApp(_) => "launch_app",
+            ToolCall::GetAppState(_) => "get_app_state",
+            ToolCall::Click(_) => "click",
+            ToolCall::PerformSecondaryAction(_) => "perform_secondary_action",
+            ToolCall::SetValue(_) => "set_value",
+            ToolCall::SelectText(_) => "select_text",
+            ToolCall::Scroll(_) => "scroll",
+            ToolCall::Drag(_) => "drag",
+            ToolCall::PressKey(_) => "press_key",
+            ToolCall::TypeText(_) => "type_text",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Definitions
+
+fn app_props() -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "app".into(),
+        json!({"type": "string", "description": "App name, bundle id / executable name, or pid (from list_apps)."}),
+    );
+    m.insert(
+        "window".into(),
+        json!({"type": "string", "description": "Window id or title substring. Defaults to the focused/main window, or the window of the latest get_app_state."}),
+    );
+    m
+}
+
+fn schema(mut props: serde_json::Map<String, Value>, extra: Value, required: &[&str]) -> Value {
+    if let Value::Object(extra) = extra {
+        props.extend(extra);
+    }
+    let mut req = vec!["app"];
+    req.extend_from_slice(required);
+    json!({"type": "object", "properties": props, "required": req, "additionalProperties": false})
+}
+
+fn index_prop(desc: &str) -> Value {
+    json!({"type": "integer", "minimum": 0, "description": desc})
+}
+
+fn coord_prop(axis: &str) -> Value {
+    json!({"type": "number", "description": format!("{axis} coordinate in screenshot pixels (from the latest get_app_state image).")})
+}
+
+fn read_only(title: &str) -> Value {
+    json!({"title": title, "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false})
+}
+
+fn acting(title: &str) -> Value {
+    json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true})
+}
+
+/// Tool definitions, ready to hand to an LLM or list over MCP.
+pub fn definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "list_apps",
+            title: "List apps",
+            description: "List running desktop apps with their ids, pids and window counts. Use it to find the exact app to pass to other tools.",
+            input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            annotations: read_only("List apps"),
+        },
+        ToolDefinition {
+            name: "launch_app",
+            title: "Launch app",
+            description: "Start (or bring up) a desktop app by name, bundle id or executable, and wait until it shows a window. Then call get_app_state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"app": {"type": "string", "description": "App name, bundle id or executable."}},
+                "required": ["app"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Launch app"),
+        },
+        ToolDefinition {
+            name: "get_app_state",
+            title: "Get app state",
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot. Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree.",
+            input_schema: schema(
+                app_props(),
+                json!({"disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false}}),
+                &[],
+            ),
+            annotations: read_only("Get app state"),
+        },
+        ToolDefinition {
+            name: "click",
+            title: "Click",
+            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background) or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "element_index": index_prop("Element to click, from the latest get_app_state."),
+                    "x": coord_prop("X"),
+                    "y": coord_prop("Y"),
+                    "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
+                    "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1}
+                }),
+                &[],
+            ),
+            annotations: acting("Click"),
+        },
+        ToolDefinition {
+            name: "perform_secondary_action",
+            title: "Perform secondary action",
+            description: "Perform a named accessibility action on an element, other than a plain click: one of the actions listed for that element in get_app_state (e.g. show_menu, increment, decrement, confirm, cancel, raise, expand, collapse, toggle, pick).",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "element_index": index_prop("Target element, from the latest get_app_state."),
+                    "action": {"type": "string", "description": "Action name as listed in actions=[...] for the element."}
+                }),
+                &["element_index", "action"],
+            ),
+            annotations: acting("Perform secondary action"),
+        },
+        ToolDefinition {
+            name: "set_value",
+            title: "Set value",
+            description: "Set an element's value directly: replace a text field's contents, move a slider, or set a checkbox/switch (\"true\"/\"false\"). Prefer this over typing when the element is marked editable or settable.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "element_index": index_prop("Target element, from the latest get_app_state."),
+                    "value": {"type": "string", "description": "New value."}
+                }),
+                &["element_index", "value"],
+            ),
+            annotations: acting("Set value"),
+        },
+        ToolDefinition {
+            name: "select_text",
+            title: "Select text",
+            description: "Select text inside a text element: the given substring (its nth occurrence), or all text if `text` is omitted. Follow with type_text to replace it or press_key to act on it.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "element_index": index_prop("Text element, from the latest get_app_state."),
+                    "text": {"type": "string", "description": "Exact text to select. Omit to select everything."},
+                    "occurrence": {"type": "integer", "minimum": 1, "default": 1, "description": "Which match to select when the text appears several times."}
+                }),
+                &["element_index"],
+            ),
+            annotations: acting("Select text"),
+        },
+        ToolDefinition {
+            name: "scroll",
+            title: "Scroll",
+            description: "Scroll the content of an element (a scroll area, list, web area…) or the area under x/y screenshot coordinates. amount is in pages (viewport sizes); fractions allowed.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "element_index": index_prop("Element to scroll (or one inside the area to scroll)."),
+                    "x": coord_prop("X"),
+                    "y": coord_prop("Y"),
+                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                    "amount": {"type": "number", "exclusiveMinimum": 0, "default": 1, "description": "Pages to scroll."}
+                }),
+                &["direction"],
+            ),
+            annotations: acting("Scroll"),
+        },
+        ToolDefinition {
+            name: "drag",
+            title: "Drag",
+            description: "Drag from one element or point to another (move items, resize, reorder, select ranges). Each end is either an element index or x/y screenshot coordinates.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "from_element_index": index_prop("Drag start element."),
+                    "from_x": coord_prop("Start X"),
+                    "from_y": coord_prop("Start Y"),
+                    "to_element_index": index_prop("Drop target element."),
+                    "to_x": coord_prop("End X"),
+                    "to_y": coord_prop("End Y")
+                }),
+                &[],
+            ),
+            annotations: acting("Drag"),
+        },
+        ToolDefinition {
+            name: "press_key",
+            title: "Press key",
+            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "key": {"type": "string", "description": "Key combo(s): modifiers (cmd/ctrl/alt/option/shift/meta) joined with + and a key name."},
+                    "element_index": index_prop("Element to focus before pressing.")
+                }),
+                &["key"],
+            ),
+            annotations: acting("Press key"),
+        },
+        ToolDefinition {
+            name: "type_text",
+            title: "Type text",
+            description: "Type text into the app's focused element, as keyboard input. Optionally focus element_index first. For replacing a field's whole contents prefer set_value.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "text": {"type": "string", "description": "Text to type. Newlines press Return."},
+                    "element_index": index_prop("Element to focus before typing.")
+                }),
+                &["text"],
+            ),
+            annotations: acting("Type text"),
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eleven_tools_with_object_schemas() {
+        let defs = definitions();
+        assert_eq!(defs.len(), 11);
+        for d in &defs {
+            assert_eq!(d.input_schema["type"], "object", "{}", d.name);
+            // Every required property is declared.
+            if let Some(req) = d.input_schema["required"].as_array() {
+                for r in req {
+                    let r = r.as_str().unwrap();
+                    assert!(d.input_schema["properties"].get(r).is_some(), "{}: {r}", d.name);
+                }
+            }
+            // Every definition parses a call.
+            assert!(!matches!(
+                ToolCall::parse(d.name, json!({})),
+                Err(Error::UnknownTool(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn declared_properties_are_accepted() {
+        // Each declared property name must round-trip through the parser.
+        let full = json!({
+            "app": "X", "window": "1", "element_index": 1, "x": 1.0, "y": 2.0,
+            "button": "right", "click_count": 2, "action": "show_menu", "value": "v",
+            "text": "t", "occurrence": 1, "direction": "down", "amount": 0.5,
+            "from_element_index": 1, "from_x": 1, "from_y": 1, "to_element_index": 2,
+            "to_x": 2, "to_y": 2, "key": "Return", "disable_diff": true
+        });
+        for d in definitions() {
+            let mut args = serde_json::Map::new();
+            for (k, _) in d.input_schema["properties"].as_object().unwrap() {
+                args.insert(k.clone(), full[k].clone());
+            }
+            ToolCall::parse(d.name, Value::Object(args))
+                .unwrap_or_else(|e| panic!("{}: {e}", d.name));
+        }
+    }
+
+    #[test]
+    fn lenient_argument_types() {
+        let c = ToolCall::parse(
+            "get_app_state",
+            json!({"app": "TextEdit", "window": 42, "disableDiff": true}),
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            ToolCall::GetAppState(GetAppStateArgs {
+                app: "TextEdit".into(),
+                window: Some("42".into()),
+                disable_diff: true
+            })
+        );
+        let c = ToolCall::parse("set_value", json!({"app": "a", "element_index": "7", "value": true}))
+            .unwrap();
+        let ToolCall::SetValue(v) = c else { panic!() };
+        assert_eq!((v.element_index, v.value.as_str()), (7, "true"));
+        assert!(ToolCall::parse("click", json!({"app": "a", "element_index": -1})).is_err());
+        assert!(matches!(
+            ToolCall::parse("nope", json!({})),
+            Err(Error::UnknownTool(_))
+        ));
+    }
+}

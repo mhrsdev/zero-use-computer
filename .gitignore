@@ -1,0 +1,3 @@
+/target
+Cargo.lock merge=binary
+*.swp

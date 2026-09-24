@@ -1,0 +1,49 @@
+[package]
+name = "computer-use"
+description = "Codex-style computer use for any agent: accessibility-tree + screenshot desktop control with per-app approvals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+dirs.workspace = true
+image.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+x11rb = { version = "0.14", features = ["xtest"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62"
