@@ -154,8 +154,10 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         })
     }
 
-    fn tools_list(&self) -> Value {
-        let tools: Vec<Value> = tools::definitions()
+    fn tools_list(&mut self) -> Value {
+        let engine = self.engine.as_mut().expect("engine present");
+        engine.reload_if_changed();
+        let tools: Vec<Value> = tools::definitions_from(&engine.store().config)
             .into_iter()
             .map(|d| {
                 json!({

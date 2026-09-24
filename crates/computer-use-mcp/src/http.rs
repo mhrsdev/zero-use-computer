@@ -122,7 +122,8 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str, allow: bool) -> Opt
         ),
         "ping" => reply(id, json!({})),
         "tools/list" => {
-            let list: Vec<Value> = tools::definitions()
+            engine.reload_if_changed();
+            let list: Vec<Value> = tools::definitions_from(&engine.store().config)
                 .into_iter()
                 .map(|d| {
                     json!({

@@ -110,6 +110,10 @@ pub struct GetAppStateArgs {
     pub window: Option<String>,
     #[serde(default, alias = "disableDiff")]
     pub disable_diff: bool,
+    /// Force (true) or suppress (false) the screenshot; default follows
+    /// `screenshot.attach`.
+    #[serde(default, alias = "include_screenshot")]
+    pub screenshot: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -730,6 +734,120 @@ pub fn definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// One-line descriptions used in `compact` mode.
+fn short_description(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "list_apps" => "List running apps (name, id, pid).",
+        "launch_app" => "Start an app by name/id and wait for its window.",
+        "get_app_state" => {
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. screenshot=true forces an image."
+        }
+        "click" => {
+            "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double."
+        }
+        "perform_secondary_action" => {
+            "Run one of an element's listed actions=[...] (not a plain click)."
+        }
+        "set_value" => "Set a field's text, a slider, or a checkbox (\"true\"/\"false\") directly.",
+        "select_text" => "Select the given text (or all text) in a text element.",
+        "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
+        "drag" => "Drag from an element/point to another element/point.",
+        "press_key" => "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\".",
+        "type_text" => "Type text into the focused element (element_index focuses first).",
+        "find_element" => "Find elements by role/name/text; returns their indices.",
+        "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
+        "screenshot" => {
+            "Image of the full screen, a region (x,y,width,height), or an app window (annotate=true draws element indices)."
+        }
+        "batch" => "Run several tools in order: steps=[{tool, arguments}].",
+        "get_clipboard" => "Read the clipboard text.",
+        "set_clipboard" => "Write text to the clipboard.",
+        _ => return None,
+    })
+}
+
+/// Remove per-property prose and validation-only keywords from a JSON schema
+/// (types, enums, defaults and `required` stay).
+fn strip_descriptions(v: &mut Value) {
+    const DROP: [&str; 7] = [
+        "description",
+        "additionalProperties",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "minItems",
+        "title",
+    ];
+    match v {
+        Value::Object(map) => {
+            map.remove("additionalProperties");
+            if let Some(Value::Object(props)) = map.get_mut("properties") {
+                for prop in props.values_mut() {
+                    if let Value::Object(p) = prop {
+                        for k in DROP {
+                            p.remove(k);
+                        }
+                    }
+                    strip_descriptions(prop);
+                }
+            }
+            if let Some(items) = map.get_mut("items") {
+                strip_descriptions(items);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(strip_descriptions),
+        _ => {}
+    }
+}
+
+/// Size of what a model actually receives for these tools (name,
+/// description and input schema), in JSON characters.
+pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
+    defs.iter()
+        .map(|d| {
+            serde_json::to_string(&json!({
+                "name": d.name,
+                "description": d.description,
+                "input_schema": d.input_schema,
+            }))
+            .map(|s| s.len())
+            .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// Tool definitions for a full config: `[tools]` filtering and styling, plus
+/// tools hidden because their feature is switched off (clipboard, screenshots).
+pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
+    let screenshots = config.screenshot.enabled && !config.text_only;
+    definitions_for(&config.tools)
+        .into_iter()
+        .filter(|d| match d.name {
+            "get_clipboard" | "set_clipboard" => config.clipboard,
+            "screenshot" => screenshots,
+            _ => true,
+        })
+        .collect()
+}
+
+/// Tool definitions filtered and styled by the user's `[tools]` settings.
+pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> {
+    let compact = cfg.descriptions == crate::config::DescriptionStyle::Compact;
+    definitions()
+        .into_iter()
+        .filter(|d| cfg.is_enabled(d.name))
+        .map(|mut d| {
+            if compact {
+                if let Some(short) = short_description(d.name) {
+                    d.description = short;
+                }
+                strip_descriptions(&mut d.input_schema);
+            }
+            d
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,6 +902,37 @@ mod tests {
     }
 
     #[test]
+    fn compact_definitions_are_smaller_and_filterable() {
+        use crate::config::{DescriptionStyle, ToolsConfig};
+        let full = model_visible_len(&definitions());
+        let compact_cfg = ToolsConfig::default();
+        assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
+        let compact = definitions_for(&compact_cfg);
+        assert_eq!(compact.len(), 17);
+        let compact_len = model_visible_len(&compact);
+        assert!(
+            compact_len * 2 < full,
+            "compact {compact_len} vs full {full}"
+        );
+        // Every tool has a short description, and schemas keep their types.
+        for d in &compact {
+            assert!(short_description(d.name).is_some(), "{}", d.name);
+            assert_eq!(d.input_schema["type"], "object");
+        }
+        let cfg = ToolsConfig {
+            disabled: vec!["drag".into(), "batch".into()],
+            ..Default::default()
+        };
+        let names: Vec<_> = definitions_for(&cfg).iter().map(|d| d.name).collect();
+        assert!(!names.contains(&"drag") && !names.contains(&"batch"));
+        let cfg = ToolsConfig {
+            enabled: vec!["list_apps".into(), "get_app_state".into()],
+            ..Default::default()
+        };
+        assert_eq!(definitions_for(&cfg).len(), 2);
+    }
+
+    #[test]
     fn lenient_argument_types() {
         let c = ToolCall::parse(
             "get_app_state",
@@ -795,7 +944,8 @@ mod tests {
             ToolCall::GetAppState(GetAppStateArgs {
                 app: "TextEdit".into(),
                 window: Some("42".into()),
-                disable_diff: true
+                disable_diff: true,
+                screenshot: None,
             })
         );
         let c = ToolCall::parse(

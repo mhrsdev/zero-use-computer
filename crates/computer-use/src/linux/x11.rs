@@ -263,6 +263,40 @@ impl X11 {
     }
 
     /// Capture a screen rectangle as RGBA.
+    /// Pid of the window manager's active window (`_NET_ACTIVE_WINDOW` +
+    /// `_NET_WM_PID`), when a window manager provides them.
+    pub fn active_pid(&self) -> Option<u32> {
+        let atom = |name: &str| -> Option<u32> {
+            self.conn
+                .intern_atom(true, name.as_bytes())
+                .ok()?
+                .reply()
+                .ok()
+                .map(|r| r.atom)
+                .filter(|a| *a != 0)
+        };
+        let active = atom("_NET_ACTIVE_WINDOW")?;
+        let wm_pid = atom("_NET_WM_PID")?;
+        let win = self
+            .conn
+            .get_property(false, self.root, active, xproto::AtomEnum::WINDOW, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?
+            .value32()?
+            .next()?;
+        if win == 0 {
+            return None;
+        }
+        self.conn
+            .get_property(false, win, wm_pid, xproto::AtomEnum::CARDINAL, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?
+            .value32()?
+            .next()
+    }
+
     /// The full screen rectangle (the root window's size).
     pub fn root_rect(&self) -> Rect {
         Rect::new(0.0, 0.0, f64::from(self.root_w), f64::from(self.root_h))
@@ -285,23 +319,26 @@ impl X11 {
             .map_err(|e| Error::Platform(format!("GetImage failed: {e}")))?;
 
         let px = img.data.len() / (w as usize * h as usize).max(1);
-        let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
         let (rs, gs, bs) = (
             self.red_mask.trailing_zeros(),
             self.green_mask.trailing_zeros(),
             self.blue_mask.trailing_zeros(),
         );
-        if px >= 4 {
-            for chunk in img.data.chunks_exact(4) {
-                // Little-endian pixel word.
+        let rgba = if px >= 4 {
+            // 32bpp: convert in place in the reply buffer (no second copy).
+            let mut data = img.data;
+            data.truncate(w as usize * h as usize * 4);
+            for chunk in data.chunks_exact_mut(4) {
                 let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                rgba.push(((word & self.red_mask) >> rs) as u8);
-                rgba.push(((word & self.green_mask) >> gs) as u8);
-                rgba.push(((word & self.blue_mask) >> bs) as u8);
-                rgba.push(255);
+                chunk[0] = ((word & self.red_mask) >> rs) as u8;
+                chunk[1] = ((word & self.green_mask) >> gs) as u8;
+                chunk[2] = ((word & self.blue_mask) >> bs) as u8;
+                chunk[3] = 255;
             }
+            data
         } else {
-            // 24bpp packed (3 bytes/pixel).
+            // 24bpp packed (3 bytes/pixel) needs a wider buffer.
+            let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
             for chunk in img.data.chunks_exact(3) {
                 let (r, g, b) = if self.bgr {
                     (chunk[2], chunk[1], chunk[0])
@@ -310,7 +347,8 @@ impl X11 {
                 };
                 rgba.extend_from_slice(&[r, g, b, 255]);
             }
-        }
+            rgba
+        };
         Ok(Capture {
             width: w as u32,
             height: h as u32,

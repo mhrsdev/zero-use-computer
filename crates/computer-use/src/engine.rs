@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::backend::{Backend, Native};
-use crate::config::ConfigStore;
+use crate::config::{AttachMode, ConfigStore};
 use crate::error::{Error, Result};
 use crate::imaging::{self, CoordMap};
 use crate::keys::{self, Key, KeyCombo, NamedKey};
@@ -84,8 +84,26 @@ pub struct Engine<B: Backend> {
     store: ConfigStore,
     session_allowed: HashSet<String>,
     states: HashMap<u32, AppState>,
+    /// Recently listed apps, reused for `timing.app_cache_ms`.
+    app_cache: Option<(Instant, Vec<AppInfo>)>,
+    /// Config file modification time, for hot reload.
+    config_mtime: Option<std::time::SystemTime>,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
+}
+
+/// What a tree refresh produced.
+struct Refreshed {
+    /// Rendered tree or diff.
+    text: String,
+    /// First view of this window (or the full tree was requested).
+    fresh: bool,
+    /// The diff was too large and the full tree was rendered instead.
+    large_change: bool,
+    /// Elements added, changed or removed (0 for a fresh view).
+    changes: usize,
+    /// Interactive elements in the pruned tree.
+    interactive: usize,
 }
 
 /// A resolved click/scroll/drag anchor.
@@ -95,15 +113,49 @@ enum Anchor {
 }
 
 impl<B: Backend> Engine<B> {
-    pub fn new(backend: B, store: ConfigStore) -> Self {
+    pub fn new(mut backend: B, store: ConfigStore) -> Self {
+        backend.configure(&store.config);
+        let config_mtime = store.path.as_deref().and_then(file_mtime);
         Self {
             backend,
             store,
             session_allowed: HashSet::new(),
             states: HashMap::new(),
+            app_cache: None,
+            config_mtime,
             clock: Box::new(Instant::now),
             sleep: Box::new(std::thread::sleep),
         }
+    }
+
+    /// Re-read the config file if it changed on disk (`hot_reload`). Session
+    /// approvals and cached UI state are kept.
+    pub fn reload_if_changed(&mut self) {
+        if !self.store.config.hot_reload {
+            return;
+        }
+        let Some(path) = self.store.path.clone() else {
+            return;
+        };
+        let mtime = file_mtime(&path);
+        if mtime == self.config_mtime {
+            return;
+        }
+        self.config_mtime = mtime;
+        match ConfigStore::load(Some(&path)) {
+            Ok(store) => {
+                log::info!("reloaded settings from {}", path.display());
+                self.backend.configure(&store.config);
+                self.store = store;
+            }
+            Err(e) => log::warn!("keeping previous settings; {e}"),
+        }
+    }
+
+    /// Replace the settings (embedders that manage config themselves).
+    pub fn set_config(&mut self, store: ConfigStore) {
+        self.backend.configure(&store.config);
+        self.store = store;
     }
 
     /// Replace timing hooks (tests use instant clocks).
@@ -140,11 +192,25 @@ impl<B: Backend> Engine<B> {
 
     // -- app / window / element resolution ---------------------------------
 
+    /// List running apps (always fresh), refreshing the cache and dropping
+    /// cached UI state for apps that have quit.
     fn find_apps(&mut self) -> Result<Vec<AppInfo>> {
-        self.backend.list_apps()
+        let apps = self.backend.list_apps()?;
+        let live: HashSet<u32> = apps.iter().map(|a| a.pid).collect();
+        self.states.retain(|pid, _| live.contains(pid));
+        self.app_cache = Some(((self.clock)(), apps.clone()));
+        Ok(apps)
     }
 
+    /// Resolve an app, reusing the recent app list when it is fresh enough.
     fn resolve_app(&mut self, query: &str) -> Result<AppInfo> {
+        let ttl = Duration::from_millis(self.store.config.timing.app_cache_ms);
+        if let Some((at, apps)) = &self.app_cache
+            && (self.clock)().saturating_duration_since(*at) < ttl
+            && let Ok(app) = resolve_app_in(apps, query)
+        {
+            return Ok(app);
+        }
         let apps = self.find_apps()?;
         resolve_app_in(&apps, query)
     }
@@ -236,51 +302,56 @@ impl<B: Backend> Engine<B> {
         app: &AppInfo,
         window: &WindowInfo,
         disable_diff: bool,
-    ) -> Result<String> {
+    ) -> Result<Refreshed> {
+        let tcfg = &self.store.config.tree;
         let opts = SnapshotOptions {
-            max_nodes: self.store.config.tree.max_walk,
-            max_depth: self.store.config.tree.max_depth,
+            max_nodes: tcfg.max_walk,
+            max_depth: tcfg.max_depth,
         };
         let raw = self.backend.snapshot(app, window, &opts)?;
-        let pruned = tree::prune(&raw, window.bounds, &self.store.config.tree);
+        let tcfg = &self.store.config.tree;
+        let pruned = tree::prune(&raw, window.bounds, tcfg);
+        drop(raw);
 
-        let previous = self.states.remove(&app.pid);
-        let same_window = previous.as_ref().and_then(|s| s.window_id) == Some(window.id);
-        let mut alloc = previous
-            .as_ref()
-            .filter(|_| same_window)
-            .map(|s| s.alloc.clone())
-            .unwrap_or_default();
-        let old_nodes = previous
-            .as_ref()
-            .filter(|_| same_window)
-            .map(|s| s.nodes.clone())
-            .unwrap_or_default();
+        // Take the previous state by value: no clones of the old tree.
+        let (mut alloc, old_nodes, old_coord) = match self.states.remove(&app.pid) {
+            Some(prev) if prev.window_id == Some(window.id) => (prev.alloc, prev.nodes, prev.coord),
+            _ => (IndexAllocator::default(), Vec::new(), None),
+        };
 
         let mut nodes = pruned.nodes;
-        let want_diff = self.store.config.tree.diff && !disable_diff && !old_nodes.is_empty();
+        let want_diff = tcfg.diff && !disable_diff && !old_nodes.is_empty();
         if want_diff {
             alloc.assign_stable(&mut nodes);
         } else {
             alloc.assign_fresh(&mut nodes);
         }
 
+        let interactive = nodes
+            .iter()
+            .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
+            .count();
         let bounds: HashMap<ElementHandle, Rect> = nodes
             .iter()
             .filter_map(|n| n.bounds.map(|b| (n.handle, b)))
             .collect();
 
-        let rendered = if want_diff {
+        let (mut text, fresh, large_change, changes) = if want_diff {
             let d = tree::diff(&old_nodes, &nodes);
-            // Fall back to the full tree when the diff isn't actually smaller.
-            if d.len() * 3 >= nodes.len() {
-                tree::render_full(&nodes)
+            let changes = d.len();
+            if changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64 {
+                (tree::render_full(&nodes, tcfg.indent), false, true, changes)
             } else {
-                tree::render_diff(&d, &nodes)
+                (tree::render_diff(&d, &nodes), false, false, changes)
             }
         } else {
-            tree::render_full(&nodes)
+            (tree::render_full(&nodes, tcfg.indent), true, false, 0)
         };
+        drop(old_nodes);
+
+        if pruned.omitted > 0 {
+            text.push_str(&format!("[{} more elements not shown]\n", pruned.omitted));
+        }
 
         self.states.insert(
             app.pid,
@@ -288,20 +359,20 @@ impl<B: Backend> Engine<B> {
                 window_id: Some(window.id),
                 alloc,
                 nodes,
-                coord: None,
+                // Keep the last screenshot's mapping until a new one is taken.
+                coord: old_coord,
                 bounds,
                 stamped: true,
             },
         );
 
-        let mut out = rendered;
-        if pruned.omitted > 0 {
-            out.push_str(&format!(
-                "\n[{} more elements not shown; narrow the window or act on what is visible]\n",
-                pruned.omitted
-            ));
-        }
-        Ok(out)
+        Ok(Refreshed {
+            text,
+            fresh,
+            large_change,
+            changes,
+            interactive,
+        })
     }
 
     fn state(&self, pid: u32) -> Result<&AppState> {
@@ -401,13 +472,19 @@ impl<B: Backend> Engine<B> {
     }
 
     fn settle(&self) {
-        (self.sleep)(Duration::from_millis(40));
+        (self.sleep)(Duration::from_millis(self.store.config.timing.settle_ms));
     }
 
     // -- tool dispatch -----------------------------------------------------
 
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        if !self.store.config.tools.is_enabled(call.name()) {
+            return Err(Error::Blocked(
+                call.name().into(),
+                "this tool is disabled in settings ([tools])".into(),
+            ));
+        }
         // For mutating actions, remember which app to re-inspect afterwards.
         let report_app = if self.store.config.tree.report_changes {
             mutating_app(&call)
@@ -446,6 +523,7 @@ impl<B: Backend> Engine<B> {
         args: serde_json::Value,
         approver: &mut dyn Approver,
     ) -> ToolOutput {
+        self.reload_if_changed();
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
         let out = match ToolCall::parse(name, args).and_then(|c| self.call(c, approver)) {
             Ok(out) => out,
@@ -585,28 +663,38 @@ impl<B: Backend> Engine<B> {
     ) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "get_app_state", approver)?;
         let window = self.resolve_window(&app, args.window.as_deref())?;
-        let tree_text = self.refresh(&app, &window, args.disable_diff)?;
+        let r = self.refresh(&app, &window, args.disable_diff)?;
 
         let mut header = format!(
-            "App: {} (id: {}, pid: {})\nWindow: \"{}\" (id: {})",
+            "App: {} ({}, pid {}) · window \"{}\" (id {}",
             app.name, app.id, app.pid, window.title, window.id
         );
         if let Some(b) = window.bounds {
             header.push_str(&format!(
-                " at ({:.0}, {:.0}) size {:.0}x{:.0}",
-                b.x, b.y, b.width, b.height
+                ", {:.0}x{:.0} at {:.0},{:.0}",
+                b.width, b.height, b.x, b.y
             ));
         }
+        header.push(')');
+
+        // Decide whether this view needs pixels (screenshot.attach).
+        let shot = &self.store.config.screenshot;
+        let allowed = shot.enabled && !self.store.config.text_only;
+        let want = allowed
+            && args.screenshot.unwrap_or(match shot.attach {
+                AttachMode::Always => true,
+                AttachMode::Never => false,
+                AttachMode::Auto => {
+                    r.fresh || r.large_change || r.interactive < shot.auto_sparse_threshold
+                }
+            });
 
         let mut image = None;
-        if self.store.config.screenshot.enabled && !self.store.config.text_only {
+        if want {
             match self.backend.capture(&app, &window) {
-                Ok(cap) => match imaging::encode(&cap, &self.store.config.screenshot) {
+                Ok(cap) => match imaging::encode(cap, &self.store.config.screenshot) {
                     Ok((img, map)) => {
-                        header.push_str(&format!(
-                            "\nScreenshot: {}x{} px (x/y coordinates for click/scroll/drag are in this image's pixels).",
-                            img.width, img.height
-                        ));
+                        header.push_str(&format!("\nScreenshot: {}x{} px.", img.width, img.height));
                         if let Some(s) = self.states.get_mut(&app.pid) {
                             s.coord = Some(map);
                         }
@@ -616,11 +704,12 @@ impl<B: Backend> Engine<B> {
                 },
                 Err(e) => header.push_str(&format!("\n[screenshot unavailable: {e}]")),
             }
+        } else if allowed {
+            header.push_str("\nScreenshot: not attached (pass screenshot=true for one).");
         }
 
-        let text = format!("{header}\n\nAccessibility tree:\n{tree_text}");
         Ok(ToolOutput {
-            text,
+            text: format!("{header}\nTree:\n{}", r.text),
             image,
             is_error: false,
         })
@@ -807,7 +896,7 @@ impl<B: Backend> Engine<B> {
         let target = self.input_target(&app);
         for combo in &combos {
             self.backend.press_key(&target, combo)?;
-            (self.sleep)(Duration::from_millis(10));
+            (self.sleep)(Duration::from_millis(self.store.config.timing.key_delay_ms));
         }
         self.settle();
         let shown: Vec<String> = combos.iter().map(|c| c.to_string()).collect();
@@ -1002,7 +1091,7 @@ impl<B: Backend> Engine<B> {
         if let Some(marks) = marks {
             imaging::annotate(&mut capture, &marks);
         }
-        let (img, _map) = imaging::encode(&capture, &self.store.config.screenshot)?;
+        let (img, _map) = imaging::encode(capture, &self.store.config.screenshot)?;
         Ok(ToolOutput {
             text: format!("Screenshot of {label}: {}x{} px.", img.width, img.height),
             image: Some(img),
@@ -1129,7 +1218,8 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    /// Re-inspect an app after a mutating action and append what changed.
+    /// Re-inspect an app after a mutating action and append what changed
+    /// (capped at `tree.report_changes_max_lines`).
     fn append_changes(&mut self, app_query: &str, mut out: ToolOutput) -> ToolOutput {
         if out.is_error {
             return out;
@@ -1140,11 +1230,23 @@ impl<B: Backend> Engine<B> {
         let Ok(window) = self.resolve_window(&app, None) else {
             return out;
         };
-        if let Ok(text) = self.refresh(&app, &window, false)
-            && !text.starts_with("No changes")
-        {
-            out.text.push_str("\n\nState after the action:\n");
-            out.text.push_str(&text);
+        let Ok(r) = self.refresh(&app, &window, false) else {
+            return out;
+        };
+        if !r.fresh && r.changes == 0 {
+            return out;
+        }
+        let max = self.store.config.tree.report_changes_max_lines.max(1);
+        let lines: Vec<&str> = r.text.lines().collect();
+        out.text.push_str("\n\nState after the action:\n");
+        if lines.len() > max {
+            out.text.push_str(&lines[..max].join("\n"));
+            out.text.push_str(&format!(
+                "\n[+{} more lines; call get_app_state for the rest]",
+                lines.len() - max
+            ));
+        } else {
+            out.text.push_str(&r.text);
         }
         out
     }
@@ -1223,6 +1325,10 @@ fn describe_matcher(args: &WaitForArgs) -> String {
     } else {
         parts.join(", ")
     }
+}
+
+fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn window_list(windows: &[WindowInfo]) -> String {

@@ -110,6 +110,9 @@ impl Backend for Box<dyn Backend> {
     fn name(&self) -> &'static str {
         (**self).name()
     }
+    fn configure(&mut self, config: &Config) {
+        (**self).configure(config)
+    }
     fn permissions(&mut self) -> Vec<types::PermissionStatus> {
         (**self).permissions()
     }

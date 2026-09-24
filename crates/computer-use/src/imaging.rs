@@ -2,9 +2,10 @@
 //! (what the model sees) and screen coordinates (what input APIs take).
 
 use base64::Engine as _;
-use image::{DynamicImage, ImageFormat as ImgFormat, RgbaImage, imageops::FilterType};
+use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
+use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage, imageops::FilterType};
 
-use crate::config::{ImageFormat, ScreenshotConfig};
+use crate::config::{ImageFormat, PngCompression, ResizeFilter, ScreenshotConfig};
 use crate::error::{Error, Result};
 use crate::types::{Capture, Point, Rect};
 
@@ -72,21 +73,41 @@ pub fn fit(width: u32, height: u32, max: u32) -> (u32, u32) {
     )
 }
 
-pub fn encode(capture: &Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage, CoordMap)> {
-    let img = RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone())
+/// Downscale and encode a capture. Takes the capture by value so the full-size
+/// pixel buffer is reused (not copied) and freed as early as possible.
+pub fn encode(capture: Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage, CoordMap)> {
+    let Capture {
+        width,
+        height,
+        rgba,
+        bounds,
+    } = capture;
+    let img = RgbaImage::from_raw(width, height, rgba)
         .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
-    let (w, h) = fit(capture.width, capture.height, cfg.max_dimension.max(64));
-    let img = if (w, h) != (capture.width, capture.height) {
-        image::imageops::resize(&img, w, h, FilterType::Triangle)
+    let (w, h) = fit(width, height, cfg.max_dimension.max(64));
+    let img = if (w, h) != (width, height) {
+        match cfg.resize_filter {
+            // Integer area averaging: several times faster than a filtered
+            // resize and crisp enough for UI text when shrinking.
+            ResizeFilter::Fast => image::imageops::thumbnail(&img, w, h),
+            ResizeFilter::Smooth => image::imageops::resize(&img, w, h, FilterType::Triangle),
+            ResizeFilter::Sharp => image::imageops::resize(&img, w, h, FilterType::Lanczos3),
+        }
     } else {
         img
     };
     let rgb = DynamicImage::ImageRgba8(img).into_rgb8();
 
-    let mut data = Vec::new();
+    let mut data = Vec::with_capacity((w * h) as usize / 2);
     let mime = match cfg.format {
         ImageFormat::Png => {
-            rgb.write_to(&mut std::io::Cursor::new(&mut data), ImgFormat::Png)
+            let compression = match cfg.png_compression {
+                PngCompression::Fast => CompressionType::Fast,
+                PngCompression::Default => CompressionType::Default,
+                PngCompression::Best => CompressionType::Best,
+            };
+            PngEncoder::new_with_quality(&mut data, compression, PngFilter::Adaptive)
+                .write_image(rgb.as_raw(), w, h, ExtendedColorType::Rgb8)
                 .map_err(|e| Error::Internal(format!("png encode: {e}")))?;
             "image/png"
         }
@@ -108,7 +129,7 @@ pub fn encode(capture: &Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage
             height: h,
         },
         CoordMap {
-            bounds: capture.bounds,
+            bounds,
             width: w,
             height: h,
         },
@@ -271,7 +292,7 @@ mod tests {
             max_dimension: 100,
             ..Default::default()
         };
-        let (img, map) = encode(&cap, &cfg).unwrap();
+        let (img, map) = encode(cap.clone(), &cfg).unwrap();
         assert_eq!((img.width, img.height), (100, 50));
         assert_eq!(&img.data[1..4], b"PNG");
         assert_eq!(map.to_screen(50.0, 25.0).unwrap(), Point::new(200.0, 100.0));
@@ -280,7 +301,7 @@ mod tests {
             format: ImageFormat::Jpeg,
             ..cfg
         };
-        let (img, _) = encode(&cap, &cfg).unwrap();
+        let (img, _) = encode(cap, &cfg).unwrap();
         assert_eq!(img.mime, "image/jpeg");
         assert_eq!(&img.data[..2], &[0xFF, 0xD8]);
     }

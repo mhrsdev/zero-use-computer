@@ -263,7 +263,7 @@ impl Default for ScreenshotConfig {
         Self {
             enabled: true,
             attach: AttachMode::Auto,
-            auto_sparse_threshold: 5,
+            auto_sparse_threshold: 2,
             max_dimension: 1280,
             format: ImageFormat::Png,
             jpeg_quality: 85,

@@ -131,13 +131,14 @@ fn main() {
 
     println!("benchmark: app={app} window={window:?} iterations={iters}\n");
 
-    let defs = tools::definitions();
-    let defs_json = serde_json::to_string(&defs).unwrap();
+    let full = tools::model_visible_len(&tools::definitions());
+    let compact = tools::model_visible_len(&tools::definitions_for(&engine.store().config.tools));
     println!(
-        "tool definitions: {} tools, {} chars (~{} tok per request)\n",
-        defs.len(),
-        defs_json.len(),
-        text_tokens(defs_json.len())
+        "tool definitions (sent with every model request): full {} chars (~{} tok), configured {} chars (~{} tok)\n",
+        full,
+        text_tokens(full),
+        compact,
+        text_tokens(compact)
     );
 
     let s: Vec<Sample> = (0..iters)

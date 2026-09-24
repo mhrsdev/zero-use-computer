@@ -145,22 +145,6 @@ impl AtspiConnection {
         reply.body().deserialize().map_err(bus_err)
     }
 
-    /// The unix pid behind an accessible's bus connection.
-    pub fn pid_of(&self, r: &ObjRef) -> Option<u32> {
-        count();
-        let reply = self
-            .conn
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "GetConnectionUnixProcessID",
-                &(r.bus.as_str(),),
-            )
-            .ok()?;
-        reply.body().deserialize::<u32>().ok()
-    }
-
     pub fn children(&self, r: &ObjRef) -> Result<Vec<ObjRef>> {
         // GetChildren -> a(so). Present on modern AT-SPI.
         match self.call::<_, Vec<(String, OwnedObjectPath)>>(r, A11Y_IFACE, "GetChildren", &()) {
@@ -229,13 +213,6 @@ impl AtspiConnection {
         Ok(a)
     }
 
-    /// Screen-space extents (x, y, w, h).
-    pub fn extents(&self, r: &ObjRef) -> Option<(i32, i32, i32, i32)> {
-        // coord type 0 = screen.
-        self.call::<_, (i32, i32, i32, i32)>(r, COMPONENT_IFACE, "GetExtents", &(0u32,))
-            .ok()
-    }
-
     /// (name, description, keybinding) for each action.
     pub fn actions(&self, r: &ObjRef) -> Vec<(String, String, String)> {
         self.call::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &())
@@ -296,6 +273,206 @@ impl AtspiConnection {
 
     pub fn set_caret(&self, r: &ObjRef, offset: i32) -> Result<bool> {
         self.call::<_, bool>(r, TEXT_IFACE, "SetCaretOffset", &(offset,))
+    }
+}
+
+/// Everything a snapshot needs about one element.
+#[derive(Debug, Default, Clone)]
+pub struct NodeData {
+    pub acc: Accessible,
+    /// Screen-space (x, y, w, h), when the element has a Component.
+    pub extents: Option<(i32, i32, i32, i32)>,
+    /// Action names, in index order.
+    pub actions: Vec<String>,
+    /// Text content, for text elements.
+    pub text: Option<String>,
+    pub children: Vec<ObjRef>,
+}
+
+/// An element returned by [`AtspiConnection::walk`], in pre-order.
+pub struct Walked {
+    pub r: ObjRef,
+    pub data: NodeData,
+    pub parent: Option<usize>,
+}
+
+async fn acall<B, R>(
+    conn: &zbus::Connection,
+    r: &ObjRef,
+    iface: &str,
+    method: &str,
+    body: &B,
+) -> Result<R>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+{
+    count();
+    let path = ObjectPath::try_from(r.path.as_str()).map_err(bus_err)?;
+    let reply = conn
+        .call_method(Some(r.bus.as_str()), &path, Some(iface), method, body)
+        .await
+        .map_err(|e| Error::Platform(format!("{iface}.{method}: {e}")))?;
+    reply.body().deserialize().map_err(bus_err)
+}
+
+/// Fetch one element's properties, state, interfaces, extents, actions and
+/// children — all seven queries in flight at once.
+async fn fetch_node(conn: &zbus::Connection, r: &ObjRef) -> NodeData {
+    let (props, role, state, ifaces, ext, acts, kids) = futures_util::join!(
+        acall::<_, HashMap<String, OwnedValue>>(conn, r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,)),
+        acall::<_, String>(conn, r, A11Y_IFACE, "GetRoleName", &()),
+        acall::<_, Vec<u32>>(conn, r, A11Y_IFACE, "GetState", &()),
+        acall::<_, Vec<String>>(conn, r, A11Y_IFACE, "GetInterfaces", &()),
+        acall::<_, (i32, i32, i32, i32)>(conn, r, COMPONENT_IFACE, "GetExtents", &(0u32,)),
+        acall::<_, Vec<(String, String, String)>>(conn, r, ACTION_IFACE, "GetActions", &()),
+        acall::<_, Vec<(String, OwnedObjectPath)>>(conn, r, A11Y_IFACE, "GetChildren", &()),
+    );
+    let mut acc = Accessible::default();
+    if let Ok(props) = props {
+        acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
+        acc.description = props
+            .get("Description")
+            .and_then(owned_string)
+            .unwrap_or_default();
+        acc.child_count = props
+            .get("ChildCount")
+            .and_then(|v| i32::try_from(v.clone()).ok())
+            .unwrap_or(0);
+    }
+    acc.role_name = role.unwrap_or_default();
+    if let Ok(v) = state {
+        acc.states = States::from_pair(&v);
+    }
+    acc.interfaces = ifaces.unwrap_or_default();
+    NodeData {
+        acc,
+        extents: ext.ok(),
+        actions: acts
+            .map(|a| a.into_iter().map(|(n, _, _)| n).collect())
+            .unwrap_or_default(),
+        text: None,
+        children: kids
+            .map(|k| k.into_iter().map(to_ref).filter(|c| !c.is_null()).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// Whether an element's text content is worth reading (never passwords).
+fn wants_text(acc: &Accessible) -> bool {
+    if !acc.has_iface("Text") || acc.role_name == "password text" {
+        return false;
+    }
+    acc.states.has(state::EDITABLE)
+        || matches!(
+            acc.role_name.as_str(),
+            "entry" | "text" | "label" | "static" | "paragraph" | "heading"
+        )
+}
+
+impl AtspiConnection {
+    /// Walk the subtree under `root` breadth-first, `batch` elements at a time
+    /// with all their queries pipelined, then return it in pre-order.
+    pub fn walk(
+        &self,
+        root: &ObjRef,
+        max_nodes: usize,
+        max_depth: usize,
+        batch: usize,
+        text_max: usize,
+    ) -> Vec<Walked> {
+        use std::collections::{HashSet, VecDeque};
+
+        let conn = self.conn.inner();
+        let batch = batch.max(1);
+        let text_end = i32::try_from(text_max.max(1)).unwrap_or(i32::MAX);
+        let mut data: HashMap<ObjRef, NodeData> = HashMap::new();
+
+        async_io::block_on(async {
+            let mut queue: VecDeque<(ObjRef, usize)> = VecDeque::new();
+            let mut seen: HashSet<ObjRef> = HashSet::new();
+            queue.push_back((root.clone(), 0));
+            seen.insert(root.clone());
+            while !queue.is_empty() && data.len() < max_nodes {
+                let n = queue.len().min(batch).min(max_nodes - data.len());
+                let chunk: Vec<(ObjRef, usize)> = queue.drain(..n).collect();
+                let mut nodes =
+                    futures_util::future::join_all(chunk.iter().map(|(r, _)| fetch_node(conn, r)))
+                        .await;
+
+                // Second, smaller round: text content where it matters.
+                let need: Vec<usize> = (0..nodes.len())
+                    .filter(|&i| wants_text(&nodes[i].acc))
+                    .collect();
+                let text_args = (0i32, text_end);
+                let texts = futures_util::future::join_all(need.iter().map(|&i| {
+                    acall::<_, String>(conn, &chunk[i].0, TEXT_IFACE, "GetText", &text_args)
+                }))
+                .await;
+                for (i, t) in need.into_iter().zip(texts) {
+                    nodes[i].text = t.ok().filter(|s| !s.is_empty());
+                }
+
+                for ((r, depth), nd) in chunk.into_iter().zip(nodes) {
+                    if depth < max_depth {
+                        for c in &nd.children {
+                            if seen.insert(c.clone()) {
+                                queue.push_back((c.clone(), depth + 1));
+                            }
+                        }
+                    }
+                    data.insert(r, nd);
+                }
+            }
+        });
+
+        // Re-assemble in pre-order (document order).
+        let mut out = Vec::with_capacity(data.len());
+        let mut stack: Vec<(ObjRef, Option<usize>)> = vec![(root.clone(), None)];
+        while let Some((r, parent)) = stack.pop() {
+            let Some(nd) = data.remove(&r) else {
+                continue; // not fetched (limit reached) or already emitted
+            };
+            let idx = out.len();
+            for c in nd.children.iter().rev() {
+                stack.push((c.clone(), Some(idx)));
+            }
+            out.push(Walked {
+                r,
+                data: nd,
+                parent,
+            });
+        }
+        out
+    }
+
+    /// Fetch several elements concurrently (no text content).
+    pub fn fetch_many(&self, refs: &[ObjRef]) -> Vec<NodeData> {
+        let conn = self.conn.inner();
+        async_io::block_on(futures_util::future::join_all(
+            refs.iter().map(|r| fetch_node(conn, r)),
+        ))
+    }
+
+    /// Unix pids behind several accessibles' bus connections, concurrently.
+    pub fn pids_of(&self, refs: &[ObjRef]) -> Vec<Option<u32>> {
+        let conn = self.conn.inner();
+        async_io::block_on(futures_util::future::join_all(refs.iter().map(
+            |r| async move {
+                count();
+                let reply = conn
+                    .call_method(
+                        Some("org.freedesktop.DBus"),
+                        "/org/freedesktop/DBus",
+                        Some("org.freedesktop.DBus"),
+                        "GetConnectionUnixProcessID",
+                        &(r.bus.as_str(),),
+                    )
+                    .await
+                    .ok()?;
+                reply.body().deserialize::<u32>().ok()
+            },
+        )))
     }
 }
 

@@ -54,6 +54,7 @@ fn state_text(e: &mut Engine<LinuxBackend>, app: &str) -> String {
                 app: app.into(),
                 window: Some("CU Test".into()),
                 disable_diff: true,
+                ..Default::default()
             }),
             &mut AllowApprover,
         )
@@ -93,6 +94,7 @@ fn atspi_tree_actions_and_screenshot() {
                 app: app.clone(),
                 window: Some("CU Test".into()),
                 disable_diff: true,
+                ..Default::default()
             }),
             &mut AllowApprover,
         )

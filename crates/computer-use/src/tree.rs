@@ -102,7 +102,8 @@ pub fn truncate(s: &str, max: usize) -> String {
     format!("{head}… (+{} chars)", count - max)
 }
 
-fn render_line(n: &RawNode, max_text: usize) -> String {
+fn render_line(n: &RawNode, cfg: &TreeConfig) -> String {
+    let max_text = cfg.max_text_len;
     let mut line = n.role.clone();
     if let Some(name) = n.name.as_deref().filter(|t| !t.trim().is_empty()) {
         line.push_str(&format!(" \"{}\"", clean_text(name, max_text)));
@@ -150,7 +151,7 @@ fn render_line(n: &RawNode, max_text: usize) -> String {
     } else if s.value_settable {
         flags.push("settable");
     }
-    if !flags.is_empty() {
+    if cfg.show_states && !flags.is_empty() {
         line.push_str(&format!(" ({})", flags.join(", ")));
     }
 
@@ -162,7 +163,7 @@ fn render_line(n: &RawNode, max_text: usize) -> String {
         .filter(|a| *a != "press" && *a != "scroll_to_visible")
         .filter(|a| interactive || *a != "show_menu")
         .collect();
-    if !secondary.is_empty() {
+    if cfg.show_actions && !secondary.is_empty() {
         line.push_str(&format!(" actions=[{}]", secondary.join(", ")));
     }
     line
@@ -345,7 +346,7 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
             bounds: node.bounds,
             actions: node.actions.clone(),
             states: node.states.clone(),
-            line: render_line(node, cfg.max_text_len),
+            line: render_line(node, cfg),
         });
     }
     out
@@ -384,11 +385,11 @@ impl IndexAllocator {
     }
 }
 
-pub fn render_full(nodes: &[Node]) -> String {
+pub fn render_full(nodes: &[Node], indent: usize) -> String {
     let mut out = String::new();
     for n in nodes {
-        for _ in 0..n.depth {
-            out.push_str("  ");
+        for _ in 0..n.depth * indent {
+            out.push(' ');
         }
         out.push_str(&format!("{} {}\n", n.index, n.line));
     }
@@ -506,7 +507,7 @@ mod tests {
     fn prunes_wrappers_duplicates_and_hidden() {
         let mut p = prune(&sample(), None, &cfg());
         IndexAllocator::default().assign_fresh(&mut p.nodes);
-        let text = render_full(&p.nodes);
+        let text = render_full(&p.nodes, 2);
         assert_eq!(
             text,
             "0 window \"Doc\"\n  1 button \"Save\"\n  2 text field value=\"hello\" (editable)\n"

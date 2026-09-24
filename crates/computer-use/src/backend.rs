@@ -27,6 +27,9 @@ pub trait Backend {
     /// Short platform name ("macos", "windows", "linux", "mock").
     fn name(&self) -> &'static str;
 
+    /// Apply user settings (called on start and whenever the config reloads).
+    fn configure(&mut self, _config: &crate::config::Config) {}
+
     /// OS permissions this backend depends on (Accessibility, Screen Recording…).
     fn permissions(&mut self) -> Vec<PermissionStatus>;
 

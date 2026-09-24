@@ -35,9 +35,12 @@ pub struct LinuxBackend {
     x11: Option<X11>,
     /// pid → application accessible.
     app_refs: HashMap<u32, ObjRef>,
-    handles: HashMap<ElementHandle, ObjRef>,
-    by_ref: HashMap<ObjRef, ElementHandle>,
+    /// handle → (owning pid, element). Cleared per app on each snapshot so it
+    /// never grows beyond the elements of the latest views.
+    handles: HashMap<ElementHandle, (u32, ObjRef)>,
     next_handle: ElementHandle,
+    batch_size: usize,
+    text_max: usize,
 }
 
 impl LinuxBackend {
@@ -52,13 +55,15 @@ impl LinuxBackend {
                 None
             }
         };
+        let defaults = crate::config::LinuxConfig::default();
         Ok(Self {
             a11y,
             x11,
             app_refs: HashMap::new(),
             handles: HashMap::new(),
-            by_ref: HashMap::new(),
             next_handle: 1,
+            batch_size: defaults.batch_size,
+            text_max: defaults.text_max_chars,
         })
     }
 
@@ -68,29 +73,29 @@ impl LinuxBackend {
             .ok_or_else(|| Error::Platform("no X11 connection for input/capture".into()))
     }
 
-    fn handle_for(&mut self, r: &ObjRef) -> ElementHandle {
-        if let Some(h) = self.by_ref.get(r) {
-            return *h;
-        }
+    fn handle_for(&mut self, pid: u32, r: ObjRef) -> ElementHandle {
         let h = self.next_handle;
         self.next_handle += 1;
-        self.handles.insert(h, r.clone());
-        self.by_ref.insert(r.clone(), h);
+        self.handles.insert(h, (pid, r));
         h
     }
 
     fn resolve(&self, handle: ElementHandle) -> Result<ObjRef> {
         self.handles
             .get(&handle)
-            .cloned()
+            .map(|(_, r)| r.clone())
             .ok_or_else(|| Error::Internal(format!("stale element handle {handle}")))
     }
 
+    /// Application accessibles and their pids, looked up concurrently.
     fn refresh_apps(&mut self) -> Result<Vec<(ObjRef, u32)>> {
         let root = self.a11y.root();
+        let children = self.a11y.children(&root)?;
+        let pids = self.a11y.pids_of(&children);
+        self.app_refs.clear();
         let mut apps = Vec::new();
-        for child in self.a11y.children(&root)? {
-            if let Some(pid) = self.a11y.pid_of(&child) {
+        for (child, pid) in children.into_iter().zip(pids) {
+            if let Some(pid) = pid {
                 self.app_refs.insert(pid, child.clone());
                 apps.push((child, pid));
             }
@@ -109,63 +114,41 @@ impl LinuxBackend {
             .ok_or(Error::AppNotFound(format!("pid {pid}")))
     }
 
-    fn windows_of(&mut self, app_ref: &ObjRef) -> Result<Vec<(ObjRef, atspi::Accessible)>> {
-        let mut out = Vec::new();
-        for child in self.a11y.children(app_ref)? {
-            let acc = match self.a11y.describe(&child) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            let role = roles::from_atspi(&acc.role_name);
-            let has_extent = self
-                .a11y
-                .extents(&child)
-                .is_some_and(|(_, _, w, h)| w > 0 && h > 0);
-            if is_window_role(&role) || (has_extent && acc.states.has(state::SHOWING)) {
-                out.push((child, acc));
-            }
-        }
-        Ok(out)
+    /// Top-level windows of an app (children fetched concurrently).
+    fn windows_of(&mut self, app_ref: &ObjRef) -> Result<Vec<(ObjRef, atspi::NodeData)>> {
+        let children = self.a11y.children(app_ref)?;
+        let data = self.a11y.fetch_many(&children);
+        Ok(children
+            .into_iter()
+            .zip(data)
+            .filter(|(_, d)| {
+                let role = roles::from_atspi(&d.acc.role_name);
+                let has_extent = d.extents.is_some_and(|(_, _, w, h)| w > 0 && h > 0);
+                is_window_role(&role) || (has_extent && d.acc.states.has(state::SHOWING))
+            })
+            .collect())
     }
 
-    fn value_text(&self, r: &ObjRef, acc: &atspi::Accessible) -> Option<String> {
-        if acc.has_iface("Text") {
-            let count = acc_text_len(self, r).min(4000);
-            if count > 0 {
-                if let Ok(t) = self.a11y.get_text(r, 0, count) {
-                    if !t.is_empty() {
-                        return Some(t);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn build_node(&mut self, r: &ObjRef, parent: Option<usize>) -> RawNode {
-        let acc = self.a11y.describe(r).unwrap_or_default();
-        let handle = self.handle_for(r);
+    fn build_node(&mut self, pid: u32, w: atspi::Walked) -> RawNode {
+        let atspi::Walked { r, data, parent } = w;
+        let acc = data.acc;
         let role = roles::from_atspi(&acc.role_name);
-        let bounds = self
-            .a11y
-            .extents(r)
+        let bounds = data
+            .extents
             .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into()));
 
         let editable = acc.states.has(state::EDITABLE);
-        let text_value = if editable || matches!(role.as_str(), "text field" | "text area" | "text")
-        {
-            self.value_text(r, &acc)
-        } else {
-            None
-        };
+        let text_value = data.text;
         // A label with no Name but text content: promote the text to a name.
         let (name, value) = if acc.name.is_empty() {
-            match &text_value {
-                Some(t) if role == "text" => (Some(t.clone()), None),
-                _ => (None, text_value.clone()),
+            match text_value {
+                Some(t) if role == "text" => (Some(t), None),
+                other => (None, other),
             }
+        } else if role == "text" && text_value.as_deref() == Some(acc.name.as_str()) {
+            (Some(acc.name.clone()), None)
         } else {
-            (Some(acc.name.clone()), text_value.clone())
+            (Some(acc.name.clone()), text_value)
         };
 
         let s = &acc.states;
@@ -185,21 +168,22 @@ impl LinuxBackend {
             hidden: !(s.has(state::SHOWING) && s.has(state::VISIBLE)),
         };
 
-        let actions = self
-            .a11y
-            .actions(r)
+        let actions = data
+            .actions
             .into_iter()
-            .map(|(native, _, _)| ActionDesc::new(roles::atspi_action(&native), native))
+            .map(|native| ActionDesc::new(roles::atspi_action(&native), native))
             .collect();
 
+        let key = Some(r.path.clone());
+        let handle = self.handle_for(pid, r);
         RawNode {
             handle,
             parent,
-            key: Some(r.path.clone()),
+            key,
             role,
             native_role: acc.role_name,
             name: name.filter(|s| !s.is_empty()),
-            description: (!acc.description.is_empty()).then(|| acc.description.clone()),
+            description: (!acc.description.is_empty()).then_some(acc.description),
             value,
             placeholder: None,
             identifier: None,
@@ -208,42 +192,6 @@ impl LinuxBackend {
             states,
         }
     }
-
-    fn walk(
-        &mut self,
-        r: &ObjRef,
-        parent: Option<usize>,
-        depth: usize,
-        opts: &SnapshotOptions,
-        out: &mut Vec<RawNode>,
-    ) {
-        if out.len() >= opts.max_nodes || depth > opts.max_depth {
-            return;
-        }
-        let idx = out.len();
-        let node = self.build_node(r, parent);
-        let child_count = node_child_hint(self, r);
-        out.push(node);
-        if child_count == 0 {
-            return;
-        }
-        if let Ok(children) = self.a11y.children(r) {
-            for c in children {
-                if out.len() >= opts.max_nodes {
-                    break;
-                }
-                self.walk(&c, Some(idx), depth + 1, opts, out);
-            }
-        }
-    }
-}
-
-fn acc_text_len(b: &LinuxBackend, r: &ObjRef) -> i32 {
-    b.a11y.character_count(r)
-}
-
-fn node_child_hint(b: &mut LinuxBackend, r: &ObjRef) -> i32 {
-    b.a11y.describe(r).map(|a| a.child_count).unwrap_or(1)
 }
 
 impl Backend for LinuxBackend {
@@ -272,9 +220,14 @@ impl Backend for LinuxBackend {
 
     fn list_apps(&mut self) -> Result<Vec<AppInfo>> {
         let apps = self.refresh_apps()?;
+        let refs: Vec<ObjRef> = apps.iter().map(|(r, _)| r.clone()).collect();
+        let data = self.a11y.fetch_many(&refs);
+        // The active window's pid from the window manager (one X11 query for
+        // all apps) instead of walking every app's windows.
+        let active = self.x11.as_ref().and_then(|x| x.active_pid());
         let mut out = Vec::new();
-        for (r, pid) in apps {
-            let acc = self.a11y.describe(&r).unwrap_or_default();
+        for ((_, pid), d) in apps.into_iter().zip(data) {
+            let acc = d.acc;
             if acc.role_name != "application" && acc.name.is_empty() {
                 continue;
             }
@@ -284,18 +237,12 @@ impl Backend for LinuxBackend {
             } else {
                 comm.clone().unwrap_or_else(|| format!("pid {pid}"))
             };
-            // Frontmost: any window child is ACTIVE.
-            let frontmost = self
-                .windows_of(&r)
-                .ok()
-                .map(|ws| ws.iter().any(|(_, a)| a.states.has(state::ACTIVE)))
-                .unwrap_or(false);
             out.push(AppInfo {
                 name,
                 id: comm.unwrap_or_else(|| acc.name.clone()),
                 pid,
                 exe,
-                frontmost,
+                frontmost: active == Some(pid),
                 hidden: false,
             });
         }
@@ -323,23 +270,24 @@ impl Backend for LinuxBackend {
         let app_ref = self.app_ref(app.pid)?;
         let windows = self.windows_of(&app_ref)?;
         let mut out = Vec::new();
-        for (r, acc) in windows {
-            let handle = self.handle_for(&r);
-            let bounds = self
-                .a11y
-                .extents(&r)
+        for (r, d) in windows {
+            let bounds = d
+                .extents
                 .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into()));
+            let id = stable_id(&r.path);
+            let handle = self.handle_for(app.pid, r);
+            let active = d.acc.states.has(state::ACTIVE);
             out.push(WindowInfo {
-                id: stable_id(&r.path),
-                title: if acc.name.is_empty() {
+                id,
+                title: if d.acc.name.is_empty() {
                     app.name.clone()
                 } else {
-                    acc.name.clone()
+                    d.acc.name
                 },
                 bounds,
-                focused: acc.states.has(state::ACTIVE),
-                main: acc.states.has(state::ACTIVE),
-                minimized: !acc.states.has(state::SHOWING),
+                focused: active,
+                main: active,
+                minimized: !d.acc.states.has(state::SHOWING),
                 handle,
             });
         }
@@ -348,14 +296,30 @@ impl Backend for LinuxBackend {
 
     fn snapshot(
         &mut self,
-        _app: &AppInfo,
+        app: &AppInfo,
         window: &WindowInfo,
         opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
         let root = self.resolve(window.handle)?;
-        let mut out = Vec::new();
-        self.walk(&root, None, 0, opts, &mut out);
+        // Handles from this app's previous views are no longer needed.
+        self.handles.retain(|_, (p, _)| *p != app.pid);
+        let walked = self.a11y.walk(
+            &root,
+            opts.max_nodes,
+            opts.max_depth,
+            self.batch_size,
+            self.text_max,
+        );
+        let mut out = Vec::with_capacity(walked.len());
+        for w in walked {
+            out.push(self.build_node(app.pid, w));
+        }
         Ok(out)
+    }
+
+    fn configure(&mut self, cfg: &crate::config::Config) {
+        self.batch_size = cfg.linux.batch_size.max(1);
+        self.text_max = cfg.linux.text_max_chars.max(1);
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
