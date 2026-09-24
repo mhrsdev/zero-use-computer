@@ -418,6 +418,12 @@ pub struct OverlayConfig {
     pub error_hold_ms: u64,
     /// Duration of the cursor's glide to a new point.
     pub move_ms: u64,
+    /// How long the overlay takes to fade in when it appears.
+    pub fade_in_ms: u64,
+    /// How long it takes to fade out when the work is done (never abrupt).
+    pub fade_out_ms: u64,
+    /// How long a change of state colour takes.
+    pub transition_ms: u64,
     /// Ask for confirmations on the screen: never, when_no_client, always.
     pub confirm_on_screen: ScreenConfirm,
     /// Give up (deny) an on-screen confirmation after this many seconds.
@@ -463,6 +469,9 @@ impl Default for OverlayConfig {
             done_linger_ms: 1_500,
             error_hold_ms: 2_500,
             move_ms: 220,
+            fade_in_ms: 250,
+            fade_out_ms: 1200,
+            transition_ms: 300,
             confirm_on_screen: ScreenConfirm::WhenNoClient,
             confirm_timeout_secs: 120,
             capture_hide_ms: 40,

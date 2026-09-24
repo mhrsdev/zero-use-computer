@@ -39,6 +39,8 @@ pub struct MacSurface {
     scale: f64,
     layers: HashMap<Layer, Win>,
     hidden: bool,
+    /// Current fade level, applied to every window.
+    opacity: f32,
     answers: Vec<(u64, bool)>,
 }
 
@@ -69,6 +71,7 @@ impl MacSurface {
             scale,
             layers: HashMap::new(),
             hidden: false,
+            opacity: 1.0,
             answers: Vec::new(),
         })
     }
@@ -112,6 +115,7 @@ impl MacSurface {
                 | NSWindowCollectionBehavior::IgnoresCycle
                 | NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
+        window.setAlphaValue(f64::from(self.opacity));
         let view = NSImageView::imageViewWithImage(image, self.mtm);
         view.setImageScaling(NSImageScaling::ScaleAxesIndependently);
         window.setContentView(Some(&view));
@@ -196,6 +200,14 @@ impl Surface for MacSurface {
                 w.window.orderFrontRegardless();
             }
         }
+    }
+
+    fn set_opacity(&mut self, opacity: f32) -> bool {
+        self.opacity = opacity;
+        for w in self.layers.values() {
+            w.window.setAlphaValue(f64::from(opacity));
+        }
+        true
     }
 
     fn confirm(&mut self, id: u64, ask: &Ask) {

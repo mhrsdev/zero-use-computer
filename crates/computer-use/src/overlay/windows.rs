@@ -2,12 +2,15 @@
 //! that are topmost, never activated, click-through (`WS_EX_TRANSPARENT`,
 //! `HTTRANSPARENT`) and left out of screen captures
 //! (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`, Windows 10 2004+;
-//! older systems fall back to hiding for the moment of a capture). The
-//! helper keeps the same DPI awareness as the engine so both use the same
-//! coordinates. Windows destroys the windows if the helper process dies.
+//! older systems fall back to hiding for the moment of a capture). Fading
+//! uses the windows' constant alpha. Confirmations are our own panel (a
+//! layered window that does take clicks), so every text on it is the
+//! configured one. The helper keeps the same DPI awareness as the engine so
+//! both use the same coordinates. Windows destroys the windows if the helper
+//! process dies.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::mpsc;
 
 use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{
@@ -24,25 +27,71 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetSystemMetrics,
-    HTTRANSPARENT, HWND_TOPMOST, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
-    MSG, MessageBoxW, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA,
-    UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
+    SM_CYSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
+    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_NCHITTEST, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-use windows::core::{HSTRING, PCWSTR, w};
+use windows::core::{PCWSTR, w};
 
 use super::draw;
 use super::helper::{Ask, Layer, Surface};
+use super::text::Fonts;
 use crate::types::Rect;
 
 const CLASS: PCWSTR = w!("ComputerUseOverlay");
 
+type Button = (f32, f32, f32, f32);
+
+/// An on-screen confirmation: its window, request id and button rectangles.
+struct PanelInfo {
+    hwnd: isize,
+    id: u64,
+    allow: Button,
+    deny: Button,
+}
+
+thread_local! {
+    // The window procedure has no `self`; the (single-threaded) overlay
+    // keeps its confirmation panels and their answers here.
+    static PANELS: RefCell<Vec<PanelInfo>> = const { RefCell::new(Vec::new()) };
+    static ANSWERS: RefCell<Vec<(u64, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn is_panel(hwnd: HWND) -> bool {
+    PANELS.with(|p| p.borrow().iter().any(|x| x.hwnd == hwnd.0 as isize))
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_NCHITTEST {
+    if msg == WM_NCHITTEST && !is_panel(hwnd) {
         // Never take the mouse: let it fall through to the window below.
         return LRESULT(HTTRANSPARENT as isize);
+    }
+    if msg == WM_LBUTTONUP && is_panel(hwnd) {
+        let x = f32::from((lparam.0 & 0xffff) as u16 as i16);
+        let y = f32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16);
+        let hit = |r: Button| x >= r.0 && x <= r.0 + r.2 && y >= r.1 && y <= r.1 + r.3;
+        let answered = PANELS.with(|p| {
+            let mut p = p.borrow_mut();
+            let i = p.iter().position(|x| x.hwnd == hwnd.0 as isize)?;
+            let ok = if hit(p[i].allow) {
+                true
+            } else if hit(p[i].deny) {
+                false
+            } else {
+                return None;
+            };
+            Some((p.remove(i).id, ok))
+        });
+        if let Some(a) = answered {
+            ANSWERS.with(|v| v.borrow_mut().push(a));
+            // SAFETY: closing the panel we created, from its own thread.
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+        return LRESULT(0);
     }
     // SAFETY: forwarding a message we received to the default handler.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -58,8 +107,9 @@ pub struct WinSurface {
     layers: HashMap<Layer, Win>,
     excluded: bool,
     hidden: bool,
-    answers_tx: mpsc::Sender<(u64, bool)>,
-    answers_rx: mpsc::Receiver<(u64, bool)>,
+    /// Current fade level (the windows' constant alpha).
+    opacity: f32,
+    fonts: Fonts,
 }
 
 impl WinSurface {
@@ -77,26 +127,26 @@ impl WinSurface {
         // SAFETY: `class` is fully initialised; a repeat registration fails
         // harmlessly.
         unsafe { RegisterClassW(&class) };
-        let (answers_tx, answers_rx) = mpsc::channel();
         Ok(Self {
             instance,
             layers: HashMap::new(),
             excluded: true,
             hidden: false,
-            answers_tx,
-            answers_rx,
+            opacity: 1.0,
+            fonts: Fonts::default(),
         })
     }
 
-    fn create(&mut self) -> Option<HWND> {
+    /// A layered popup; `click_through` for everything but confirmation panels.
+    fn create_window(&mut self, click_through: bool) -> Option<HWND> {
+        let mut ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        if click_through {
+            ex |= WS_EX_TRANSPARENT;
+        }
         // SAFETY: creating a top-level popup of our registered class.
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_LAYERED
-                    | WS_EX_TRANSPARENT
-                    | WS_EX_TOPMOST
-                    | WS_EX_TOOLWINDOW
-                    | WS_EX_NOACTIVATE,
+                ex,
                 CLASS,
                 w!("computer-use overlay"),
                 WS_POPUP,
@@ -119,7 +169,16 @@ impl WinSurface {
         Some(hwnd)
     }
 
-    fn update(&self, hwnd: HWND, img: &Pixmap, x: f64, y: f64) {
+    fn blend(alpha: f32) -> BLENDFUNCTION {
+        BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        }
+    }
+
+    fn update(&self, hwnd: HWND, img: &Pixmap, x: f64, y: f64, alpha: f32) {
         let (w, h) = (img.width() as i32, img.height() as i32);
         let bgra = draw::to_bgra_premultiplied(img);
         // SAFETY: a standard layered-window update: a top-down 32-bit DIB
@@ -146,12 +205,7 @@ impl WinSurface {
                     std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits.cast::<u8>(), bgra.len());
                 }
                 let old = SelectObject(mem, bmp.into());
-                let blend = BLENDFUNCTION {
-                    BlendOp: AC_SRC_OVER as u8,
-                    BlendFlags: 0,
-                    SourceConstantAlpha: 255,
-                    AlphaFormat: AC_SRC_ALPHA as u8,
-                };
+                let blend = Self::blend(alpha);
                 let dst = POINT {
                     x: x.round() as i32,
                     y: y.round() as i32,
@@ -216,7 +270,9 @@ impl Surface for WinSurface {
         let hwnd = match self.layers.get(&layer) {
             Some(w) => w.hwnd,
             None => {
-                let Some(hwnd) = self.create() else { return };
+                let Some(hwnd) = self.create_window(true) else {
+                    return;
+                };
                 self.layers.insert(
                     layer,
                     Win {
@@ -227,7 +283,7 @@ impl Surface for WinSurface {
                 hwnd
             }
         };
-        self.update(hwnd, img, x, y);
+        self.update(hwnd, img, x, y, self.opacity);
         if let Some(w) = self.layers.get_mut(&layer) {
             w.visible = true;
         }
@@ -291,26 +347,64 @@ impl Surface for WinSurface {
         }
     }
 
-    fn confirm(&mut self, id: u64, ask: &Ask) {
-        // The system dialog runs its own message loop on a worker thread so
-        // the overlay keeps animating.
-        let tx = self.answers_tx.clone();
-        let (title, text) = (
-            HSTRING::from(ask.title.as_str()),
-            HSTRING::from(ask.message.as_str()),
-        );
-        std::thread::spawn(move || {
-            // SAFETY: a modal system message box with valid strings.
-            let r = unsafe {
-                MessageBoxW(
+    fn set_opacity(&mut self, opacity: f32) -> bool {
+        self.opacity = opacity;
+        let blend = Self::blend(opacity);
+        for w in self.layers.values().filter(|w| w.visible) {
+            // SAFETY: only the blend changes; the window keeps its image.
+            let _ = unsafe {
+                UpdateLayeredWindow(
+                    w.hwnd,
                     None,
-                    &text,
-                    &title,
-                    MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
+                    None,
+                    None,
+                    None,
+                    None,
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
                 )
             };
-            let _ = tx.send((id, r == IDYES));
+        }
+        true
+    }
+
+    fn confirm(&mut self, id: u64, ask: &Ask) {
+        // Our own panel (not a system dialog), so its texts and buttons are
+        // exactly the configured ones.
+        if self.fonts.is_empty() {
+            self.fonts = Fonts::load("");
+        }
+        let accent = draw::parse_color("#FFE600").unwrap_or(tiny_skia::Color::WHITE);
+        let (img, [allow, deny]) = draw::panel(
+            &self.fonts,
+            &ask.title,
+            &ask.message,
+            &ask.allow,
+            &ask.deny,
+            accent,
+            self.render_scale(),
+        );
+        let Some(hwnd) = self.create_window(false) else {
+            return;
+        };
+        let screen = self.screen();
+        let x = screen.x + (screen.width - f64::from(img.width())) / 2.0;
+        let y = screen.y + (screen.height - f64::from(img.height())) / 3.0;
+        self.update(hwnd, &img, x, y, 1.0);
+        PANELS.with(|p| {
+            p.borrow_mut().push(PanelInfo {
+                hwnd: hwnd.0 as isize,
+                id,
+                allow,
+                deny,
+            })
         });
+        // SAFETY: showing our own window without activating it.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        Self::raise(hwnd);
     }
 
     fn pump(&mut self) -> Vec<(u64, bool)> {
@@ -322,10 +416,16 @@ impl Surface for WinSurface {
                 DispatchMessageW(&msg);
             }
         }
-        self.answers_rx.try_iter().collect()
+        ANSWERS.with(|a| std::mem::take(&mut *a.borrow_mut()))
     }
 
     fn close(&mut self) {
+        for p in PANELS.with(|p| std::mem::take(&mut *p.borrow_mut())) {
+            // SAFETY: destroying our own panels.
+            unsafe {
+                let _ = DestroyWindow(HWND(p.hwnd as *mut _));
+            }
+        }
         for (_, w) in self.layers.drain() {
             // SAFETY: destroying our own windows.
             unsafe {

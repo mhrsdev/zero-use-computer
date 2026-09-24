@@ -339,7 +339,8 @@ impl Drop for Overlay {
         self.send(&Cmd::Quit);
         self.tx = None; // closes the helper's stdin
         if let Some(mut child) = self.child.take() {
-            let deadline = Instant::now() + Duration::from_millis(300);
+            // Give it time to fade out before it is stopped.
+            let deadline = Instant::now() + Duration::from_millis(1200);
             while Instant::now() < deadline {
                 if let Ok(Some(_)) = child.try_wait() {
                     return;

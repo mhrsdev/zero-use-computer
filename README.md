@@ -152,21 +152,25 @@ their mouse:
 | done | green | the task is finished — then everything disappears |
 
 - **Approvals on screen.** A sensitive action waits for the user. When the
-  agent's client can ask (MCP elicitation) it asks there; when it can't, a
-  native dialog asks on the screen — an `NSAlert` on macOS, a system message
-  box on Windows, an overlay panel on X11 (`overlay.confirm_on_screen`:
-  `never` / `when_no_client` / `always`). No answer in
-  `confirm_timeout_secs` means no.
+  agent's client can ask (MCP elicitation) it asks there; when it can't, it
+  asks on the screen — an `NSAlert` on macOS, the overlay's own panel on
+  Windows and X11 (`overlay.confirm_on_screen`: `never` / `when_no_client` /
+  `always`). No answer in `confirm_timeout_secs` means no.
+- **Nothing pops.** It fades in when it appears, blends from one state colour
+  to the next, and fades out slowly when the work is done (`fade_in_ms`,
+  `transition_ms`, `fade_out_ms`). All of its texts are English by default
+  and configurable (`label_*`).
 
 How it stays out of the way:
 
 - It runs in a **separate helper process** (`computer-use-mcp overlay`). The
   engine never waits on it; if it fails to start or crashes, computer use
   carries on without it.
-- If the server exits or is killed, the helper's input pipe closes and it
-  quits at once; its windows belong to its process, so the OS removes them.
-  **Nothing is ever left on screen.** It also disappears on "done", and after
-  `done_after_ms` without any action.
+- If the server exits, the helper fades out and quits; if the server is
+  killed, the helper's input pipe closes and it does the same; and if the
+  helper itself is killed, its windows belong to its process, so the OS
+  removes them. **Nothing is ever left on screen.** It also fades away on
+  "done", and after `done_after_ms` without any action.
 - Its windows are **click-through**, never take focus, and are **left out of
   the agent's screenshots**: `WDA_EXCLUDEFROMCAPTURE` on Windows,
   `sharingType = none` on macOS, and on X11 (which can't exclude a window)

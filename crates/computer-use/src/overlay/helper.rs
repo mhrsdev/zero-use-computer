@@ -60,6 +60,11 @@ pub trait Surface {
     fn hide(&mut self, layer: Layer);
     /// Hide (or restore) everything at once, e.g. around a screenshot.
     fn set_hidden(&mut self, hidden: bool);
+    /// Set the whole overlay's opacity natively; `false` if unsupported
+    /// (the painter then redraws faded images instead).
+    fn set_opacity(&mut self, _opacity: f32) -> bool {
+        false
+    }
     /// Ask the user to allow something; the answer comes back from `pump`.
     fn confirm(&mut self, id: u64, ask: &Ask);
     /// Handle native events; returns answered confirmations.
@@ -116,11 +121,69 @@ struct Glide {
 const RIPPLE: Duration = Duration::from_millis(450);
 
 /// The overlay's state, independent of any platform.
+/// A value easing from one level to another over time.
+#[derive(Debug, Clone, Copy)]
+struct Ramp {
+    from: f32,
+    to: f32,
+    start: Instant,
+    dur: Duration,
+}
+
+impl Ramp {
+    fn at(v: f32, now: Instant) -> Self {
+        Self {
+            from: v,
+            to: v,
+            start: now,
+            dur: Duration::ZERO,
+        }
+    }
+
+    fn progress(&self, now: Instant) -> f32 {
+        if self.dur.is_zero() {
+            return 1.0;
+        }
+        (now.saturating_duration_since(self.start).as_secs_f32() / self.dur.as_secs_f32())
+            .clamp(0.0, 1.0)
+    }
+
+    fn value(&self, now: Instant) -> f32 {
+        // Smoothstep: starts and ends gently.
+        let t = self.progress(now);
+        let e = t * t * (3.0 - 2.0 * t);
+        self.from + (self.to - self.from) * e
+    }
+
+    fn done(&self, now: Instant) -> bool {
+        self.progress(now) >= 1.0
+    }
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let m = |x: f32, y: f32| x + (y - x) * t;
+    Color::from_rgba(
+        m(a.red(), b.red()),
+        m(a.green(), b.green()),
+        m(a.blue(), b.blue()),
+        m(a.alpha(), b.alpha()),
+    )
+    .unwrap_or(b)
+}
+
 pub struct Machine {
     cfg: OverlayConfig,
     colors: Colors,
     pub phase: Phase,
     since: Instant,
+    /// Overall opacity (fade in / fade out).
+    fade: Ramp,
+    /// Fading out; the overlay goes away when the fade ends.
+    leaving: bool,
+    /// State colour blend: from `color_from` toward `color_to`.
+    color_from: Color,
+    color_to: Color,
+    color_ramp: Ramp,
     busy: bool,
     last_end: Option<Instant>,
     danger: Option<String>,
@@ -133,11 +196,18 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(cfg: OverlayConfig, now: Instant) -> Self {
+        let colors = Colors::from(&cfg);
+        let start = colors.working;
         Self {
-            colors: Colors::from(&cfg),
+            colors,
             cfg,
             phase: Phase::Off,
             since: now,
+            fade: Ramp::at(0.0, now),
+            leaving: false,
+            color_from: start,
+            color_to: start,
+            color_ramp: Ramp::at(1.0, now),
             busy: false,
             last_end: None,
             danger: None,
@@ -149,11 +219,66 @@ impl Machine {
         }
     }
 
-    fn set_phase(&mut self, phase: Phase, now: Instant) {
+    /// A timer moved the state on (no new activity): a fade-out continues.
+    fn advance(&mut self, phase: Phase, now: Instant) {
         if self.phase != phase {
             self.phase = phase;
             self.since = now;
         }
+        if phase == Phase::Off {
+            self.fade = Ramp::at(0.0, now);
+            self.leaving = false;
+        }
+    }
+
+    /// New activity puts the overlay in `phase` (appearing if needed).
+    fn set_phase(&mut self, phase: Phase, now: Instant) {
+        let appearing = self.phase == Phase::Off && phase != Phase::Off;
+        if self.phase != phase {
+            self.phase = phase;
+            self.since = now;
+        }
+        if appearing {
+            // Start from the new state's colour, no blend.
+            let c = self.color();
+            (self.color_from, self.color_to) = (c, c);
+            self.color_ramp = Ramp::at(1.0, now);
+        }
+        if phase == Phase::Off {
+            self.fade = Ramp::at(0.0, now);
+            self.leaving = false;
+        } else {
+            self.show(now);
+        }
+    }
+
+    /// Fade in (or back in, if it was fading out).
+    fn show(&mut self, now: Instant) {
+        if self.fade.to < 1.0 || self.leaving {
+            let from = self.fade.value(now);
+            self.fade = Ramp {
+                from,
+                to: 1.0,
+                start: now,
+                dur: Duration::from_millis(self.cfg.fade_in_ms),
+            };
+        }
+        self.leaving = false;
+    }
+
+    /// Fade out; the overlay is gone once the fade ends.
+    pub fn leave(&mut self, now: Instant, dur: Duration) {
+        if self.phase == Phase::Off || self.leaving {
+            return;
+        }
+        let from = self.fade.value(now);
+        self.fade = Ramp {
+            from,
+            to: 0.0,
+            start: now,
+            dur,
+        };
+        self.leaving = true;
     }
 
     /// The phase that applies while a call runs.
@@ -240,7 +365,11 @@ impl Machine {
                         self.last_end = Some(now);
                         Phase::Error
                     }
-                    Status::Hidden => Phase::Off,
+                    Status::Hidden => {
+                        let d = Duration::from_millis(self.cfg.fade_out_ms);
+                        self.leave(now, d);
+                        return None;
+                    }
                 };
                 self.set_phase(p, now);
             }
@@ -259,18 +388,34 @@ impl Machine {
             Phase::Error
                 if !self.busy && since >= Duration::from_millis(self.cfg.error_hold_ms) =>
             {
-                self.set_phase(Phase::Thinking, now);
+                self.advance(Phase::Thinking, now);
             }
             Phase::Thinking
                 if !self.busy && idle >= Duration::from_millis(self.cfg.done_after_ms) =>
             {
-                self.set_phase(Phase::Done, now);
+                self.advance(Phase::Done, now);
             }
             Phase::Done if since >= Duration::from_millis(self.cfg.done_linger_ms) => {
-                self.set_phase(Phase::Off, now);
-                self.glide = None;
+                let d = Duration::from_millis(self.cfg.fade_out_ms);
+                self.leave(now, d);
             }
             _ => {}
+        }
+        if self.leaving && self.fade.done(now) {
+            self.advance(Phase::Off, now);
+            self.glide = None;
+        }
+        // Blend toward the current state's colour.
+        let target = self.color();
+        if color_key(target) != color_key(self.color_to) {
+            self.color_from = self.shown_color(now);
+            self.color_to = target;
+            self.color_ramp = Ramp {
+                from: 0.0,
+                to: 1.0,
+                start: now,
+                dur: Duration::from_millis(self.cfg.transition_ms),
+            };
         }
         // The click ripple starts when the glide arrives.
         if self.click_pending && self.glide_progress(now) >= 1.0 {
@@ -307,7 +452,14 @@ impl Machine {
             && (self.glide_progress(now) < 1.0
                 || self.click_pending
                 || self.ripple_at.is_some()
-                || self.phase == Phase::Approval)
+                || self.phase == Phase::Approval
+                || !self.fade.done(now)
+                || !self.color_ramp.done(now))
+    }
+
+    /// The state colour as currently shown (mid-blend while changing).
+    fn shown_color(&self, now: Instant) -> Color {
+        mix(self.color_from, self.color_to, self.color_ramp.value(now))
     }
 
     fn color(&self) -> Color {
@@ -340,7 +492,8 @@ impl Machine {
         if self.phase == Phase::Off || !self.cfg.enabled {
             return Scene::default();
         }
-        let mut color = self.color();
+        let base = self.shown_color(now);
+        let mut color = base;
         let mut pulse = 0.0;
         if self.phase == Phase::Approval {
             // Breathe so a pending approval catches the eye.
@@ -352,11 +505,9 @@ impl Machine {
             (now.saturating_duration_since(t).as_secs_f32() / RIPPLE.as_secs_f32()).min(0.999)
         });
         Scene {
+            opacity: self.fade.value(now).clamp(0.0, 1.0),
             border: self.cfg.show_border.then_some((self.target, color)),
-            label: self
-                .cfg
-                .show_label
-                .then(|| (self.label_text(), self.color())),
+            label: self.cfg.show_label.then(|| (self.label_text(), base)),
             cursor: if self.cfg.show_cursor {
                 self.cursor_pos(now).map(|p| CursorLook {
                     pos: p,
@@ -388,6 +539,8 @@ pub struct CursorLook {
 /// What is on screen.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Scene {
+    /// Overall opacity, 0–1 (fading in or out).
+    pub opacity: f32,
     /// Target rect (None = screen) and colour.
     pub border: Option<(Option<Rect>, Color)>,
     pub label: Option<(String, Color)>,
@@ -400,13 +553,33 @@ fn color_key(c: Color) -> [u8; 4] {
 }
 
 /// Turns scenes into surface calls, redrawing only what changed.
+/// What the border was drawn with: band rects, colour, core width, opacity.
+type BorderKey = ([i64; 16], [u8; 4], u32, u8);
+/// What the label was drawn with: text, colour, opacity, and its position.
+type LabelKey = (String, [u8; 4], u8, i64, i64);
+/// What the cursor image was drawn with: ring, body, ripple, pulse, opacity.
+type CursorKey = ([u8; 4], [u8; 4], i32, i32, u8);
+
 #[derive(Default)]
 pub struct Painter {
-    border: Option<([i64; 16], [u8; 4], u32)>,
-    label: Option<(String, [u8; 4], i64, i64)>,
+    border: Option<BorderKey>,
+    label: Option<LabelKey>,
     label_size: (f64, f64),
-    cursor_img: Option<([u8; 4], [u8; 4], i32, i32)>,
+    cursor_img: Option<CursorKey>,
     cursor_pos: Option<(i64, i64)>,
+    /// Whether the surface fades natively, and the opacity last given to it.
+    native_fade: Option<bool>,
+    opacity: f32,
+}
+
+/// Scale an image's (premultiplied) pixels by `a`.
+fn faded(mut pm: Pixmap, a: f32) -> Pixmap {
+    if a < 0.999 {
+        for v in pm.data_mut() {
+            *v = (f32::from(*v) * a).round() as u8;
+        }
+    }
+    pm
 }
 
 impl Painter {
@@ -424,6 +597,26 @@ impl Painter {
         };
         let ppu = s.px_per_unit().max(0.1);
         let screen = s.screen();
+
+        // Fading: natively where the platform can, else by redrawing.
+        let o = (scene.opacity * 48.0).round() / 48.0;
+        match self.native_fade {
+            None => {
+                self.native_fade = Some(s.set_opacity(o));
+                self.opacity = o;
+            }
+            Some(true) if o != self.opacity => {
+                s.set_opacity(o);
+                self.opacity = o;
+            }
+            _ => {}
+        }
+        let alpha = if self.native_fade == Some(true) {
+            1.0
+        } else {
+            o
+        };
+        let ak = (alpha * 48.0) as u8;
 
         // Border: a glow along the screen edges fading inward, or around the
         // target window (outside it where there is room, else inside).
@@ -500,7 +693,7 @@ impl Painter {
                     key[i * 4..i * 4 + 4]
                         .copy_from_slice(&[e.0 as i64, e.1 as i64, e.2 as i64, e.3 as i64]);
                 }
-                let key = (key, color_key(color), (core * 100.0) as u32);
+                let key = (key, color_key(color), (core * 100.0) as u32, ak);
                 if self.border != Some(key) {
                     let core_px = (core * f64::from(ppu)) as f32;
                     for (layer, (x, y, w, h, strong)) in EDGES.iter().zip(edges) {
@@ -508,7 +701,7 @@ impl Painter {
                             s.hide(*layer);
                             continue;
                         }
-                        let img = draw::edge(px(w), px(h), color, strong, core_px);
+                        let img = faded(draw::edge(px(w), px(h), color, strong, core_px), alpha);
                         s.show(*layer, &img, x, y);
                     }
                     self.border = Some(key);
@@ -526,14 +719,14 @@ impl Painter {
         // Label: centred over the target, above it when there is room.
         match &scene.label {
             Some((text, color)) if !text.is_empty() => {
-                let key = (text.clone(), color_key(*color));
+                let key = (text.clone(), color_key(*color), ak);
                 let redraw = self
                     .label
                     .as_ref()
-                    .is_none_or(|(t, c, _, _)| (t, c) != (&key.0, &key.1));
+                    .is_none_or(|(t, c, a, _, _)| (t, c, *a) != (&key.0, &key.1, key.2));
                 let mut img = None;
                 if redraw {
-                    let pm = draw::label(fonts, text, scale, *color);
+                    let pm = faded(draw::label(fonts, text, scale, *color), alpha);
                     self.label_size = (
                         f64::from(pm.width()) / f64::from(ppu),
                         f64::from(pm.height()) / f64::from(ppu),
@@ -551,12 +744,12 @@ impl Painter {
                 match img {
                     Some(pm) => s.show(Layer::Label, &pm, x, y),
                     None => {
-                        if self.label.as_ref().is_some_and(|l| (l.2, l.3) != pos) {
+                        if self.label.as_ref().is_some_and(|l| (l.3, l.4) != pos) {
                             s.move_to(Layer::Label, x, y);
                         }
                     }
                 }
-                self.label = Some((key.0, key.1, pos.0, pos.1));
+                self.label = Some((key.0, key.1, key.2, pos.0, pos.1));
             }
             _ => {
                 if self.label.take().is_some() {
@@ -573,12 +766,16 @@ impl Painter {
                     color_key(c.body),
                     c.ripple.map_or(-1, |r| (r * 30.0) as i32),
                     (c.pulse * 10.0) as i32,
+                    ak,
                 );
                 let half = f64::from(CURSOR_BOX * scale) / 2.0 / f64::from(ppu);
                 let (x, y) = (c.pos.0 - half, c.pos.1 - half);
                 let pos = (x.round() as i64, y.round() as i64);
                 if self.cursor_img != Some(key) {
-                    let img = draw::cursor(scale, c.body, c.ring, c.ripple, c.pulse);
+                    let img = faded(
+                        draw::cursor(scale, c.body, c.ring, c.ripple, c.pulse),
+                        alpha,
+                    );
                     s.show(Layer::Cursor, &img, x, y);
                     self.cursor_img = Some(key);
                 } else if self.cursor_pos != Some(pos) {
@@ -666,20 +863,28 @@ pub fn run(args: &[String]) -> i32 {
     let mut painter = Painter::default();
     let mut hidden = false;
     let mut last_parent_check = Instant::now();
+    // Set once told to stop: fade out, then exit.
+    let mut quitting: Option<Instant> = None;
+    let quit_fade = |m: &Machine| Duration::from_millis(m.config().fade_out_ms.min(700));
 
-    'main: loop {
+    loop {
         let now = Instant::now();
         let wait = if machine.animating(now) {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
         };
-        let mut first = match rx.recv_timeout(wait) {
-            Ok(i) => Some(i),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        let mut first = if quitting.is_some() {
+            std::thread::sleep(Duration::from_millis(16));
+            None
+        } else {
+            match rx.recv_timeout(wait) {
+                Ok(i) => Some(i),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => Some(Input::Eof),
+            }
         };
-        loop {
+        while quitting.is_none() {
             let input = match first.take() {
                 Some(i) => i,
                 None => match rx.try_recv() {
@@ -688,7 +893,13 @@ pub fn run(args: &[String]) -> i32 {
                 },
             };
             let cmd = match input {
-                Input::Eof | Input::Cmd(Cmd::Quit) => break 'main,
+                Input::Eof | Input::Cmd(Cmd::Quit) => {
+                    // Never vanish abruptly: fade out first.
+                    quitting = Some(Instant::now());
+                    let d = quit_fade(&machine);
+                    machine.leave(Instant::now(), d);
+                    break;
+                }
                 Input::Cmd(c) => c,
             };
             match cmd {
@@ -735,14 +946,21 @@ pub fn run(args: &[String]) -> i32 {
             && last_parent_check.elapsed() >= Duration::from_millis(500)
         {
             last_parent_check = Instant::now();
-            if !super::process_alive(pid) {
-                break;
+            if !super::process_alive(pid) && quitting.is_none() {
+                quitting = Some(Instant::now());
+                let d = quit_fade(&machine);
+                machine.leave(Instant::now(), d);
             }
         }
         let now = Instant::now();
         machine.tick(now);
         let scene = machine.scene(now);
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
+        if let Some(t) = quitting
+            && (machine.phase == Phase::Off || t.elapsed() > Duration::from_secs(2))
+        {
+            break;
+        }
     }
     surface.close();
     0
@@ -831,6 +1049,9 @@ mod tests {
             done_linger_ms: 500,
             error_hold_ms: 300,
             move_ms: 100,
+            fade_in_ms: 100,
+            fade_out_ms: 400,
+            transition_ms: 100,
             ..OverlayConfig::default()
         }
     }
@@ -851,8 +1072,12 @@ mod tests {
         m.tick(at(1100));
         assert_eq!(m.phase, Phase::Done, "idle → done");
         m.tick(at(1700));
-        assert_eq!(m.phase, Phase::Off, "done → gone");
-        assert_eq!(m.scene(at(1700)), Scene::default());
+        assert_eq!(m.phase, Phase::Done, "fading out, not gone at once");
+        let fading = m.scene(at(1900)).opacity;
+        assert!(fading > 0.0 && fading < 1.0, "{fading}");
+        m.tick(at(2150));
+        assert_eq!(m.phase, Phase::Off, "done → faded → gone");
+        assert_eq!(m.scene(at(2150)), Scene::default());
 
         // Errors show red for a while, then back to thinking.
         m.apply(Cmd::Begin, at(2000));
@@ -953,6 +1178,58 @@ mod tests {
         assert!(s.cursor.is_none() && s.label.is_none() && s.border.is_some());
     }
 
+    #[test]
+    fn fades_in_and_out_instead_of_popping() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        assert!(m.scene(t0).opacity < 0.05, "starts transparent");
+        assert!((m.scene(at(150)).opacity - 1.0).abs() < 1e-3, "fully in");
+
+        // Hidden: fades out, then is gone.
+        m.apply(
+            Cmd::Status {
+                state: Status::Hidden,
+            },
+            at(200),
+        );
+        m.tick(at(300));
+        let mid = m.scene(at(400)).opacity;
+        assert!(mid > 0.2 && mid < 0.8, "{mid}");
+        assert!(m.animating(at(400)));
+        m.tick(at(700));
+        assert_eq!(m.phase, Phase::Off);
+
+        // Coming back while fading reverses the fade.
+        m.apply(Cmd::Begin, at(800));
+        m.apply(
+            Cmd::Status {
+                state: Status::Hidden,
+            },
+            at(1000),
+        );
+        m.apply(Cmd::Begin, at(1100));
+        m.tick(at(1300));
+        assert_ne!(m.phase, Phase::Off);
+        assert!((m.scene(at(1300)).opacity - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn colours_blend_between_states() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        m.tick(at(10));
+        let blue = m.scene(at(10)).border.unwrap().1;
+        m.apply(Cmd::End { ok: false }, at(20));
+        m.tick(at(20));
+        let mid = m.scene(at(70)).border.unwrap().1;
+        let red = m.scene(at(200)).border.unwrap().1;
+        assert!(mid.red() > blue.red() && mid.red() < red.red(), "{mid:?}");
+    }
+
     /// Records surface calls.
     #[derive(Default)]
     struct Fake {
@@ -1025,7 +1302,9 @@ mod tests {
         p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
         assert_eq!(s.calls.len(), n, "nothing changed, nothing redrawn");
         m.apply(Cmd::End { ok: true }, t0);
-        p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
+        let later = t0 + Duration::from_millis(500);
+        m.tick(later);
+        p.paint(&m.scene(later), m.config(), &fonts, &mut s);
         assert!(
             s.calls[n..].iter().any(|c| c.starts_with("show Top")),
             "recoloured"
@@ -1034,9 +1313,11 @@ mod tests {
             Cmd::Status {
                 state: Status::Hidden,
             },
-            t0,
+            later,
         );
-        p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
+        let gone = later + Duration::from_millis(600);
+        m.tick(gone);
+        p.paint(&m.scene(gone), m.config(), &fonts, &mut s);
         assert!(!p.showing());
     }
 
