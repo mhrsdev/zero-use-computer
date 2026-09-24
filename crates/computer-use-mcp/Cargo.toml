@@ -1,6 +1,22 @@
 [package]
 name = "computer-use-mcp"
-version = "0.1.0"
-edition = "2024"
+description = "MCP stdio server and CLI exposing Codex-style computer use to any agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "computer-use-mcp"
+path = "src/main.rs"
 
 [dependencies]
+computer-use.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
