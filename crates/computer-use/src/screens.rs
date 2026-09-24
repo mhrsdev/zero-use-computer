@@ -330,11 +330,12 @@ impl PixelSig {
         let mut counts = vec![0u32; (cols * rows) as usize];
         let stride = (cap.width * 4) as usize;
         // Tolerate a short buffer (it will fail to encode anyway).
-        let full_rows = if stride == 0 {
-            0
-        } else {
-            (cap.rgba.len() / stride).min(cap.height as usize) as u32
-        };
+        let full_rows = cap
+            .rgba
+            .len()
+            .checked_div(stride)
+            .unwrap_or(0)
+            .min(cap.height as usize) as u32;
         for y in 0..full_rows {
             let row = (y * rows / h) * cols;
             let line = &cap.rgba[y as usize * stride..(y as usize + 1) * stride];
