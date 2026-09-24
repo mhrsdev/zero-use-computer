@@ -46,7 +46,11 @@ fn flags(m: Modifiers) -> CGEventFlags {
 pub fn click(pid: u32, at: CGPoint, button: MouseButton, count: u8) -> Result<()> {
     let src = source()?;
     let (down, up, cg_btn) = match button {
-        MouseButton::Left => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, CGMouseButton::Left),
+        MouseButton::Left => (
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp,
+            CGMouseButton::Left,
+        ),
         MouseButton::Right => (
             CGEventType::RightMouseDown,
             CGEventType::RightMouseUp,
@@ -101,8 +105,12 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
 
 pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
     let src = source()?;
-    if let Ok(mv) = CGEvent::new_mouse_event(src.clone(), CGEventType::MouseMoved, at, CGMouseButton::Left)
-    {
+    if let Ok(mv) = CGEvent::new_mouse_event(
+        src.clone(),
+        CGEventType::MouseMoved,
+        at,
+        CGMouseButton::Left,
+    ) {
         post(pid, &mv);
     }
     // Negative dy scrolls content up in CG's convention (wheel1 positive = up).
@@ -115,8 +123,8 @@ pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
 pub fn type_text(pid: u32, text: &str) -> Result<()> {
     let src = source()?;
     // A keyboard event carrying the unicode string types verbatim.
-    let event = CGEvent::new_keyboard_event(src, 0, true)
-        .map_err(|_| Error::action("keyboard event"))?;
+    let event =
+        CGEvent::new_keyboard_event(src, 0, true).map_err(|_| Error::action("keyboard event"))?;
     event.set_string(text);
     post(pid, &event);
     Ok(())

@@ -90,17 +90,20 @@ impl MacBackend {
         let focused = ffi::copy_bool(r, "AXFocused").unwrap_or(false);
         let selected = ffi::copy_bool(r, "AXSelected").unwrap_or(false);
         let expanded = ffi::copy_bool(r, "AXExpanded");
-        let hidden = ffi::copy_bool(r, "AXHidden").unwrap_or(false)
-            || bounds.is_some_and(|b| b.is_empty());
+        let hidden =
+            ffi::copy_bool(r, "AXHidden").unwrap_or(false) || bounds.is_some_and(|b| b.is_empty());
 
         let checkable = matches!(
             role.as_str(),
             "checkbox" | "radio button" | "toggle button" | "switch"
         );
-        let checked = checkable.then(|| raw_value.as_deref() == Some("1") || raw_value.as_deref() == Some("true"));
+        let checked = checkable
+            .then(|| raw_value.as_deref() == Some("1") || raw_value.as_deref() == Some("true"));
 
-        let editable = matches!(role.as_str(), "text field" | "text area" | "secure text field")
-            || ffi::is_settable(r, "AXValue") && raw_value.is_some();
+        let editable = matches!(
+            role.as_str(),
+            "text field" | "text area" | "secure text field"
+        ) || ffi::is_settable(r, "AXValue") && raw_value.is_some();
         let value_settable = ffi::is_settable(r, "AXValue");
 
         // Keep AXValue as the element value for non-checkable roles.
@@ -243,11 +246,17 @@ impl Backend for MacBackend {
             let bounds = self.rect_of(&win);
             let minimized = ffi::copy_bool(win.as_ref(), "AXMinimized").unwrap_or(false);
             let cg_id = ffi::window_id(win.as_ref());
-            let id = cg_id.map(u64::from).unwrap_or_else(|| stable_id(&title, out.len()));
+            let id = cg_id
+                .map(u64::from)
+                .unwrap_or_else(|| stable_id(&title, out.len()));
             let handle = self.handle_for(app.pid, win.clone());
             out.push(WindowInfo {
                 id,
-                title: if title.is_empty() { app.name.clone() } else { title },
+                title: if title.is_empty() {
+                    app.name.clone()
+                } else {
+                    title
+                },
                 bounds,
                 focused: cg_id.is_some() && cg_id == focused_id,
                 main: cg_id.is_some() && cg_id == main_id,
@@ -301,9 +310,18 @@ impl Backend for MacBackend {
         let r = el.as_ref();
         let role_native = ffi::copy_string(r, "AXRole").unwrap_or_default();
         let role = roles::from_ax(&role_native, ffi::copy_string(r, "AXSubrole").as_deref());
-        if matches!(role.as_str(), "checkbox" | "radio button" | "toggle button" | "switch") {
-            let want = matches!(value.trim().to_lowercase().as_str(), "true" | "1" | "on" | "yes" | "checked");
-            let is = matches!(ffi::copy_string(r, "AXValue").as_deref(), Some("1") | Some("true"));
+        if matches!(
+            role.as_str(),
+            "checkbox" | "radio button" | "toggle button" | "switch"
+        ) {
+            let want = matches!(
+                value.trim().to_lowercase().as_str(),
+                "true" | "1" | "on" | "yes" | "checked"
+            );
+            let is = matches!(
+                ffi::copy_string(r, "AXValue").as_deref(),
+                Some("1") | Some("true")
+            );
             if is != want && !ffi::perform_action(r, "AXPress") {
                 return Err(Error::ActionFailed("could not toggle the control".into()));
             }
@@ -340,7 +358,9 @@ impl Backend for MacBackend {
         if ffi::set_range(r, "AXSelectedTextRange", loc, len) {
             Ok(())
         } else {
-            Err(Error::ActionFailed("could not set the text selection".into()))
+            Err(Error::ActionFailed(
+                "could not set the text selection".into(),
+            ))
         }
     }
 
@@ -375,7 +395,10 @@ impl Backend for MacBackend {
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
         cg::drag(
             target.pid,
-            CGPoint { x: from.x, y: from.y },
+            CGPoint {
+                x: from.x,
+                y: from.y,
+            },
             CGPoint { x: to.x, y: to.y },
         )
     }

@@ -150,7 +150,11 @@ impl AtspiConnection {
     pub fn children(&self, r: &ObjRef) -> Result<Vec<ObjRef>> {
         // GetChildren -> a(so). Present on modern AT-SPI.
         match self.call::<_, Vec<(String, OwnedObjectPath)>>(r, A11Y_IFACE, "GetChildren", &()) {
-            Ok(list) => Ok(list.into_iter().map(to_ref).filter(|c| !c.is_null()).collect()),
+            Ok(list) => Ok(list
+                .into_iter()
+                .map(to_ref)
+                .filter(|c| !c.is_null())
+                .collect()),
             Err(_) => self.children_by_index(r),
         }
     }
@@ -258,7 +262,8 @@ impl AtspiConnection {
     }
 
     pub fn character_count(&self, r: &ObjRef) -> i32 {
-        self.get_prop::<i32>(r, TEXT_IFACE, "CharacterCount").unwrap_or(0)
+        self.get_prop::<i32>(r, TEXT_IFACE, "CharacterCount")
+            .unwrap_or(0)
     }
 
     pub fn get_text(&self, r: &ObjRef, start: i32, end: i32) -> Result<String> {

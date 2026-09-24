@@ -53,7 +53,9 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
         if bits.is_null() {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
             let _ = DeleteDC(mem_dc);
-            return Err(Error::Platform("CreateDIBSection returned no pixels".into()));
+            return Err(Error::Platform(
+                "CreateDIBSection returned no pixels".into(),
+            ));
         }
         let old = SelectObject(mem_dc, HGDIOBJ(bitmap.0));
 

@@ -147,14 +147,23 @@ impl MockBackend {
             MockElement::new(3, "button", "Bold", Rect::new(10.0, 8.0, 60.0, 24.0))
                 .child_of(2)
                 .with_actions(&["AXPress"]),
-            MockElement::new(4, "pop up button", "Style", Rect::new(80.0, 8.0, 100.0, 24.0))
-                .child_of(2)
-                .with_actions(&["AXPress", "AXShowMenu"]),
+            MockElement::new(
+                4,
+                "pop up button",
+                "Style",
+                Rect::new(80.0, 8.0, 100.0, 24.0),
+            )
+            .child_of(2)
+            .with_actions(&["AXPress", "AXShowMenu"]),
             {
-                let mut e =
-                    MockElement::new(5, "text area", "Document", Rect::new(0.0, 40.0, 800.0, 560.0))
-                        .child_of(1)
-                        .editable();
+                let mut e = MockElement::new(
+                    5,
+                    "text area",
+                    "Document",
+                    Rect::new(0.0, 40.0, 800.0, 560.0),
+                )
+                .child_of(1)
+                .editable();
                 e.value = Some("Hello".into());
                 e
             },
@@ -293,7 +302,13 @@ impl Backend for MockBackend {
                 walk(c, Some(idx), elements, nodes, map);
             }
         }
-        walk(window.handle, None, &a.elements, &mut nodes, &mut handle_to_idx);
+        walk(
+            window.handle,
+            None,
+            &a.elements,
+            &mut nodes,
+            &mut handle_to_idx,
+        );
         Ok(nodes)
     }
 
@@ -376,8 +391,7 @@ impl Backend for MockBackend {
     }
 
     fn scroll_wheel(&mut self, target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
-        self.events
-            .push(Event::ScrollWheel(target.pid, at, dx, dy));
+        self.events.push(Event::ScrollWheel(target.pid, at, dx, dy));
         Ok(())
     }
 

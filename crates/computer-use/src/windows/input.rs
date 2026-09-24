@@ -15,7 +15,9 @@ fn send(inputs: &[INPUT]) -> Result<()> {
     if sent as usize == inputs.len() {
         Ok(())
     } else {
-        Err(Error::Platform("SendInput was blocked (UIPI or a secure desktop)".into()))
+        Err(Error::Platform(
+            "SendInput was blocked (UIPI or a secure desktop)".into(),
+        ))
     }
 }
 

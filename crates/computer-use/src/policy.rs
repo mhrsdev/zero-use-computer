@@ -227,10 +227,17 @@ mod tests {
         let none = HashSet::new();
         for a in [
             app("Terminal", "com.apple.Terminal", None),
-            app("Windows Terminal", "WindowsTerminal", Some(r"C:\x\WindowsTerminal.exe")),
+            app(
+                "Windows Terminal",
+                "WindowsTerminal",
+                Some(r"C:\x\WindowsTerminal.exe"),
+            ),
             app("xterm", "xterm", Some("/usr/bin/xterm")),
         ] {
-            assert!(matches!(evaluate(&a, &s, &none), Verdict::Blocked(_)), "{a:?}");
+            assert!(
+                matches!(evaluate(&a, &s, &none), Verdict::Blocked(_)),
+                "{a:?}"
+            );
         }
     }
 
@@ -243,7 +250,11 @@ mod tests {
             Verdict::Blocked(_)
         ));
         assert!(matches!(
-            evaluate(&app("1Password 7", "com.agilebits.onepassword7", None), &s, &none),
+            evaluate(
+                &app("1Password 7", "com.agilebits.onepassword7", None),
+                &s,
+                &none
+            ),
             Verdict::Blocked(_)
         ));
         assert_eq!(
@@ -262,7 +273,10 @@ mod tests {
         assert_eq!(evaluate(&te, &s, &session), Verdict::Allowed);
 
         let mut s = store(ApprovalMode::Allowlist);
-        assert!(matches!(evaluate(&te, &s, &HashSet::new()), Verdict::Blocked(_)));
+        assert!(matches!(
+            evaluate(&te, &s, &HashSet::new()),
+            Verdict::Blocked(_)
+        ));
         s.config.approvals.always_allow.push("textedit".into());
         assert_eq!(evaluate(&te, &s, &HashSet::new()), Verdict::Allowed);
     }
@@ -275,11 +289,17 @@ mod tests {
             allowed_apps: Some(vec!["com.apple.Safari".into()]),
             ..Default::default()
         };
-        assert!(matches!(evaluate(&te, &s, &HashSet::new()), Verdict::Blocked(_)));
+        assert!(matches!(
+            evaluate(&te, &s, &HashSet::new()),
+            Verdict::Blocked(_)
+        ));
         s.managed.allowed_apps = None;
         s.managed.denied_apps = vec!["TextEdit".into()];
         s.config.approvals.always_allow.push("TextEdit".into());
-        assert!(matches!(evaluate(&te, &s, &HashSet::new()), Verdict::Blocked(_)));
+        assert!(matches!(
+            evaluate(&te, &s, &HashSet::new()),
+            Verdict::Blocked(_)
+        ));
     }
 
     #[test]
@@ -287,6 +307,9 @@ mod tests {
         let mut a = app("me", "me", None);
         a.pid = std::process::id();
         let s = store(ApprovalMode::AllowAll);
-        assert!(matches!(evaluate(&a, &s, &HashSet::new()), Verdict::Blocked(_)));
+        assert!(matches!(
+            evaluate(&a, &s, &HashSet::new()),
+            Verdict::Blocked(_)
+        ));
     }
 }

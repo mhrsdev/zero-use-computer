@@ -150,7 +150,8 @@ impl LinuxBackend {
             .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into()));
 
         let editable = acc.states.has(state::EDITABLE);
-        let text_value = if editable || matches!(role.as_str(), "text field" | "text area" | "text") {
+        let text_value = if editable || matches!(role.as_str(), "text field" | "text area" | "text")
+        {
             self.value_text(r, &acc)
         } else {
             None
@@ -167,7 +168,10 @@ impl LinuxBackend {
 
         let s = &acc.states;
         let checkable = s.has(state::CHECKABLE)
-            || matches!(role.as_str(), "checkbox" | "radio button" | "toggle button" | "switch");
+            || matches!(
+                role.as_str(),
+                "checkbox" | "radio button" | "toggle button" | "switch"
+            );
         let states = NodeStates {
             enabled: s.has(state::ENABLED) && s.has(state::SENSITIVE),
             focused: s.has(state::FOCUSED),
@@ -353,9 +357,10 @@ impl Backend for LinuxBackend {
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
-        let rect = window.bounds.filter(|b| !b.is_empty()).ok_or_else(|| {
-            Error::Platform("window has no on-screen bounds to capture".into())
-        })?;
+        let rect = window
+            .bounds
+            .filter(|b| !b.is_empty())
+            .ok_or_else(|| Error::Platform("window has no on-screen bounds to capture".into()))?;
         self.x11()?.capture(rect)
     }
 
@@ -389,7 +394,10 @@ impl Backend for LinuxBackend {
             return Ok(());
         }
         // Checkbox/toggle: flip to the requested boolean via its action.
-        let want = matches!(value.trim().to_lowercase().as_str(), "true" | "1" | "on" | "checked" | "yes");
+        let want = matches!(
+            value.trim().to_lowercase().as_str(),
+            "true" | "1" | "on" | "checked" | "yes"
+        );
         let is = acc.states.has(state::CHECKED) || acc.states.has(state::PRESSED);
         if is != want {
             for action in ["toggle", "click", "press", "activate"] {
@@ -421,9 +429,10 @@ impl Backend for LinuxBackend {
                 let hay = self.a11y.get_text(&r, 0, count).unwrap_or_default();
                 let chars: Vec<char> = hay.chars().collect();
                 let needle_chars: Vec<char> = needle.chars().collect();
-                let start = find_nth(&chars, &needle_chars, occurrence.max(1)).ok_or_else(|| {
-                    Error::ActionFailed(format!("`{needle}` not found in the text"))
-                })?;
+                let start =
+                    find_nth(&chars, &needle_chars, occurrence.max(1)).ok_or_else(|| {
+                        Error::ActionFailed(format!("`{needle}` not found in the text"))
+                    })?;
                 (start as i32, (start + needle_chars.len()) as i32)
             }
         };

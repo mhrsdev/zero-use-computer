@@ -80,16 +80,12 @@ fn de_opt_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<
 fn de_opt_index<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
     Ok(match Option::<Value>::deserialize(d)? {
         None | Some(Value::Null) => None,
-        Some(Value::Number(n)) => Some(
-            n.as_u64()
-                .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(|| serde::de::Error::custom("element_index must be a non-negative integer"))?,
-        ),
-        Some(Value::String(s)) => Some(
-            s.trim()
-                .parse()
-                .map_err(|_| serde::de::Error::custom("element_index must be a non-negative integer"))?,
-        ),
+        Some(Value::Number(n)) => Some(n.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(
+            || serde::de::Error::custom("element_index must be a non-negative integer"),
+        )?),
+        Some(Value::String(s)) => Some(s.trim().parse().map_err(|_| {
+            serde::de::Error::custom("element_index must be a non-negative integer")
+        })?),
         Some(other) => {
             return Err(serde::de::Error::custom(format!(
                 "element_index must be an integer, got {other}"
@@ -512,7 +508,11 @@ mod tests {
             if let Some(req) = d.input_schema["required"].as_array() {
                 for r in req {
                     let r = r.as_str().unwrap();
-                    assert!(d.input_schema["properties"].get(r).is_some(), "{}: {r}", d.name);
+                    assert!(
+                        d.input_schema["properties"].get(r).is_some(),
+                        "{}: {r}",
+                        d.name
+                    );
                 }
             }
             // Every definition parses a call.
@@ -558,8 +558,11 @@ mod tests {
                 disable_diff: true
             })
         );
-        let c = ToolCall::parse("set_value", json!({"app": "a", "element_index": "7", "value": true}))
-            .unwrap();
+        let c = ToolCall::parse(
+            "set_value",
+            json!({"app": "a", "element_index": "7", "value": true}),
+        )
+        .unwrap();
         let ToolCall::SetValue(v) = c else { panic!() };
         assert_eq!((v.element_index, v.value.as_str()), (7, "true"));
         assert!(ToolCall::parse("click", json!({"app": "a", "element_index": -1})).is_err());

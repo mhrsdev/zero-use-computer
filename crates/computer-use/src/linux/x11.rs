@@ -240,8 +240,8 @@ impl X11 {
 
     /// Returns (keycode, needs_shift), remapping the spare keycode if needed.
     fn resolve_key(&mut self, key: Key) -> Result<(u8, bool)> {
-        let keysym = keysym_for(key)
-            .ok_or_else(|| Error::ActionFailed(format!("no keysym for {key:?}")))?;
+        let keysym =
+            keysym_for(key).ok_or_else(|| Error::ActionFailed(format!("no keysym for {key:?}")))?;
         if let Some((kc, sh)) = self.keymap.get(&keysym) {
             return Ok((*kc, *sh));
         }

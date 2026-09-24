@@ -187,7 +187,11 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
         let parent = node.parent.filter(|p| *p < i);
         // Roots (the window, the menu bar) are keyed by role alone so a title
         // change doesn't re-key the whole tree.
-        let step = match node.name.as_deref().filter(|s| !s.is_empty() && parent.is_some()) {
+        let step = match node
+            .name
+            .as_deref()
+            .filter(|s| !s.is_empty() && parent.is_some())
+        {
             Some(name) => format!("{}:{}", node.role, truncate(name, 40)),
             None => node.role.clone(),
         };
@@ -552,7 +556,10 @@ mod tests {
         }
         let mut b = prune(&raw, None, &cfg()).nodes;
         alloc.assign_stable(&mut b);
-        let save = b.iter().find(|n| n.name.as_deref() == Some("Save")).unwrap();
+        let save = b
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Save"))
+            .unwrap();
         assert_eq!(save.index, 1, "unchanged element keeps its index");
         let new = b.iter().find(|n| n.name.as_deref() == Some("New")).unwrap();
         assert_eq!(new.index, 3, "new element gets a fresh index");
@@ -562,8 +569,14 @@ mod tests {
         assert_eq!(d.changed.len(), 1);
         assert!(d.removed.is_empty());
         let text = render_diff(&d, &b);
-        assert!(text.contains("+ 3 button \"New\"  (in 0 window \"Doc\")"), "{text}");
-        assert!(text.contains("~ 2 text field value=\"hello world\""), "{text}");
+        assert!(
+            text.contains("+ 3 button \"New\"  (in 0 window \"Doc\")"),
+            "{text}"
+        );
+        assert!(
+            text.contains("~ 2 text field value=\"hello world\""),
+            "{text}"
+        );
     }
 
     #[test]

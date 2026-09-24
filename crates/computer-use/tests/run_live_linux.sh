@@ -9,8 +9,22 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 fixture="$here/fixtures/gtk_app.py"
-py="${PYTHON:-python3.12}"
 display="${CU_DISPLAY:-:99}"
+
+# Pick a Python that can import GTK 3.
+py=""
+for cand in "${PYTHON:-}" python3 python3.12 python3.11 python3.10; do
+  [ -n "$cand" ] || continue
+  if command -v "$cand" >/dev/null 2>&1 && \
+     "$cand" -c 'import gi; gi.require_version("Gtk","3.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+    py="$cand"; break
+  fi
+done
+if [ -z "$py" ]; then
+  echo "no Python with GTK 3 (python3-gi + gir1.2-gtk-3.0) found; skipping live test"
+  exit 0
+fi
+echo "using python: $py"
 
 echo "== building live test =="
 test_bin="$(cd "$root" && cargo test -p computer-use --test live_linux --no-run --message-format=json 2>/dev/null \

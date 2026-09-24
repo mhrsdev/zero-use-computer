@@ -69,7 +69,11 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
                 Ok(msg) => return Ok(Some(msg)),
                 Err(e) => {
                     log::warn!("dropping unparseable message: {e}");
-                    self.write_msg(&Response::err(Value::Null, PARSE_ERROR, format!("parse error: {e}")))?;
+                    self.write_msg(&Response::err(
+                        Value::Null,
+                        PARSE_ERROR,
+                        format!("parse error: {e}"),
+                    ))?;
                 }
             }
         }
@@ -273,16 +277,25 @@ fn decode_elicit(result: Option<Value>, error: Option<Value>) -> ApprovalDecisio
     let Some(result) = result else {
         return ApprovalDecision::Deny;
     };
-    let action = result.get("action").and_then(Value::as_str).unwrap_or("cancel");
+    let action = result
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("cancel");
     if action != "accept" {
         return ApprovalDecision::Deny;
     }
     let content = result.get("content").cloned().unwrap_or(json!({}));
-    let approve = content.get("approve").and_then(Value::as_bool).unwrap_or(false);
+    let approve = content
+        .get("approve")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if !approve {
         return ApprovalDecision::Deny;
     }
-    let remember = content.get("remember").and_then(Value::as_bool).unwrap_or(false);
+    let remember = content
+        .get("remember")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if remember {
         ApprovalDecision::Always
     } else {
@@ -297,8 +310,7 @@ struct McpApprover<'a, R: BufRead, W: Write, B: Backend> {
 
 impl<R: BufRead, W: Write, B: Backend> Approver for McpApprover<'_, R, W, B> {
     fn request(&mut self, req: &ApprovalRequest<'_>) -> ApprovalDecision {
-        self.server
-            .elicit(&req.app.name, &req.app.id, req.tool)
+        self.server.elicit(&req.app.name, &req.app.id, req.tool)
     }
 }
 
@@ -327,8 +339,7 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         let mut cfg = Config::default();
         cfg.approvals.mode = mode;
-        Engine::new(backend, ConfigStore::in_memory(cfg))
-            .with_time(std::time::Instant::now, |_| {})
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(std::time::Instant::now, |_| {})
     }
 
     /// Run a scripted client conversation, return the lines the server wrote.
@@ -355,7 +366,11 @@ mod tests {
     fn initialize_list_and_call() {
         let input = format!(
             "{}{}{}",
-            line("initialize", 1, json!({"protocolVersion":"2025-06-18","capabilities":{}})),
+            line(
+                "initialize",
+                1,
+                json!({"protocolVersion":"2025-06-18","capabilities":{}})
+            ),
             line("tools/list", 2, json!({})),
             line("tools/call", 3, json!({"name":"list_apps","arguments":{}})),
         );
@@ -376,12 +391,20 @@ mod tests {
         let input = format!(
             "{}{}",
             line("initialize", 1, json!({"capabilities":{}})),
-            line("tools/call", 2, json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})),
+            line(
+                "tools/call",
+                2,
+                json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})
+            ),
         );
         let out = converse(ApprovalMode::AllowAll, HeadlessApproval::Deny, &input);
         let content = out[1]["result"]["content"].as_array().unwrap();
         assert!(content.iter().any(|c| c["type"] == "text"));
-        assert!(content.iter().any(|c| c["type"] == "image" && c["mimeType"] == "image/png"));
+        assert!(
+            content
+                .iter()
+                .any(|c| c["type"] == "image" && c["mimeType"] == "image/png")
+        );
     }
 
     #[test]
@@ -415,13 +438,23 @@ mod tests {
         let input = format!(
             "{}{}{}",
             line("initialize", 1, json!({"capabilities":{"elicitation":{}}})),
-            line("tools/call", 2, json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})),
-            json!({"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}).to_string() + "\n",
+            line(
+                "tools/call",
+                2,
+                json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})
+            ),
+            json!({"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}).to_string()
+                + "\n",
         );
         let out = converse(ApprovalMode::Prompt, HeadlessApproval::Deny, &input);
         let call = out.iter().find(|m| m["id"] == 2).unwrap();
         assert_eq!(call["result"]["isError"], true);
-        assert!(call["result"]["content"][0]["text"].as_str().unwrap().contains("denied"));
+        assert!(
+            call["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("denied")
+        );
     }
 
     #[test]
@@ -429,7 +462,11 @@ mod tests {
         let input = format!(
             "{}{}",
             line("initialize", 1, json!({"capabilities":{}})),
-            line("tools/call", 2, json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})),
+            line(
+                "tools/call",
+                2,
+                json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})
+            ),
         );
         let out = converse(ApprovalMode::Prompt, HeadlessApproval::Deny, &input);
         assert_eq!(out[1]["result"]["isError"], true);

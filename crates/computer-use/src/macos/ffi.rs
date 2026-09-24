@@ -102,7 +102,8 @@ pub fn copy_string(element: AXUIElementRef, attr: &str) -> Option<String> {
 
 pub fn copy_bool(element: AXUIElementRef, attr: &str) -> Option<bool> {
     let v = copy_attr(element, attr)?;
-    v.downcast::<CFBoolean>().map(|b| b == CFBoolean::true_value())
+    v.downcast::<CFBoolean>()
+        .map(|b| b == CFBoolean::true_value())
 }
 
 /// Copy an AX child list attribute (e.g. AXChildren, AXWindows), each element
@@ -259,7 +260,11 @@ pub struct AxRef(AXUIElementRef);
 impl AxRef {
     /// Wrap a +1 reference (from a Create/Copy call).
     pub unsafe fn from_create(ptr: AXUIElementRef) -> Option<Self> {
-        if ptr.is_null() { None } else { Some(AxRef(ptr)) }
+        if ptr.is_null() {
+            None
+        } else {
+            Some(AxRef(ptr))
+        }
     }
     /// Wrap a borrowed (+0) reference, taking our own retain.
     pub unsafe fn from_get(ptr: AXUIElementRef) -> Option<Self> {

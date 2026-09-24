@@ -282,7 +282,10 @@ mod tests {
     #[test]
     fn normalizes() {
         assert_eq!(from_ax("AXButton", None), "button");
-        assert_eq!(from_ax("AXTextField", Some("AXSecureTextField")), "secure text field");
+        assert_eq!(
+            from_ax("AXTextField", Some("AXSecureTextField")),
+            "secure text field"
+        );
         assert_eq!(from_ax("AXFancyThing", None), "fancything");
         assert_eq!(ax_action("AXShowMenu"), "show_menu");
         assert_eq!(ax_action("AXZoomWindow"), "zoom_window");

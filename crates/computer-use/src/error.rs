@@ -12,7 +12,9 @@ pub enum Error {
     #[error("unknown tool `{0}`")]
     UnknownTool(String),
 
-    #[error("app `{0}` is not running. Call list_apps to see running apps, or launch_app to start it.")]
+    #[error(
+        "app `{0}` is not running. Call list_apps to see running apps, or launch_app to start it."
+    )]
     AppNotFound(String),
 
     #[error("`{query}` matches several apps: {candidates}. Use the exact name, id or pid.")]
@@ -33,7 +35,9 @@ pub enum Error {
     )]
     UnknownElement { app: String, index: u32 },
 
-    #[error("call get_app_state for {0} first; actions need a current accessibility tree and screenshot.")]
+    #[error(
+        "call get_app_state for {0} first; actions need a current accessibility tree and screenshot."
+    )]
     NoState(String),
 
     #[error("{0} is blocked: {1}")]

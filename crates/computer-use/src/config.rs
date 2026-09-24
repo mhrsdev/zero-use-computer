@@ -208,7 +208,9 @@ impl ConfigStore {
 
     /// Load the user config (missing file = defaults) and managed policy.
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let path = path.map(Path::to_path_buf).unwrap_or_else(default_config_path);
+        let path = path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(default_config_path);
         let config = match std::fs::read_to_string(&path) {
             Ok(text) => toml::from_str(&text)
                 .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?,

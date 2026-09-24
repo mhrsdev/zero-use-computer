@@ -117,13 +117,16 @@ enum Command {
 }
 
 fn build_engine(common: &Common) -> Result<Engine<Box<dyn Backend>>> {
-    let mut store = ConfigStore::load(common.config.as_deref())
-        .with_context(|| "loading configuration")?;
+    let mut store =
+        ConfigStore::load(common.config.as_deref()).with_context(|| "loading configuration")?;
     if let Some(mode) = common.approval {
         store.config.approvals.mode = mode.into();
     }
     let backend = computer_use::platform_backend().with_context(|| {
-        format!("initializing the {} computer-use backend", computer_use::PLATFORM)
+        format!(
+            "initializing the {} computer-use backend",
+            computer_use::PLATFORM
+        )
     })?;
     let mut engine = Engine::new(backend, store);
     for app in &common.allow {
@@ -148,8 +151,8 @@ fn main() -> Result<()> {
             screenshot,
         } => state(&cli.common, &app, window, screenshot),
         Command::Call { tool, args } => {
-            let args: Value = serde_json::from_str(&args)
-                .with_context(|| "parsing --args as JSON")?;
+            let args: Value =
+                serde_json::from_str(&args).with_context(|| "parsing --args as JSON")?;
             run_and_print(&cli.common, &tool, args)
         }
         Command::Tools => {
@@ -218,8 +221,8 @@ fn state(
     let out = engine.call_tool("get_app_state", Value::Object(args), &mut AllowApprover);
     println!("{}", out.text);
     if let (Some(path), Some(img)) = (screenshot, &out.image) {
-        let mut f = std::fs::File::create(&path)
-            .with_context(|| format!("creating {}", path.display()))?;
+        let mut f =
+            std::fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
         f.write_all(&img.data)?;
         eprintln!("saved screenshot to {}", path.display());
     }
@@ -237,7 +240,10 @@ fn doctor(common: &Common) -> Result<()> {
         .clone()
         .unwrap_or_else(computer_use::config::default_config_path);
     println!("config:   {}", cfg_path.display());
-    println!("managed:  {}", computer_use::config::managed_config_path().display());
+    println!(
+        "managed:  {}",
+        computer_use::config::managed_config_path().display()
+    );
 
     match build_engine(common) {
         Ok(mut engine) => {

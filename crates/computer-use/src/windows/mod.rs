@@ -16,10 +16,10 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
 };
-use windows::Win32::System::Variant::VariantToBoolean;
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
+use windows::Win32::System::Variant::VariantToBoolean;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GetAncestor, GetWindowTextLengthW, GetWindowTextW,
@@ -47,8 +47,9 @@ impl WindowsBackend {
             // Ignore RPC_E_CHANGED_MODE if COM is already initialized.
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|e| Error::Platform(format!("CoCreateInstance(CUIAutomation): {e}")))?;
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|e| {
+                    Error::Platform(format!("CoCreateInstance(CUIAutomation): {e}"))
+                })?;
             let walker = automation
                 .ControlViewWalker()
                 .map_err(|e| Error::Platform(format!("ControlViewWalker: {e}")))?;
@@ -104,15 +105,24 @@ impl WindowsBackend {
         }
     }
 
-    fn build_node(&mut self, pid: u32, el: &IUIAutomationElement, parent: Option<usize>) -> RawNode {
+    fn build_node(
+        &mut self,
+        pid: u32,
+        el: &IUIAutomationElement,
+        parent: Option<usize>,
+    ) -> RawNode {
         let control_type = unsafe { el.CurrentControlType() }.map(|c| c.0).unwrap_or(0);
         let role = roles::from_uia(control_type);
         let name = bstr(unsafe { el.CurrentName() });
         let automation_id = bstr(unsafe { el.CurrentAutomationId() });
         let class = bstr(unsafe { el.CurrentClassName() });
 
-        let bounds = unsafe { el.CurrentBoundingRectangle() }.ok().map(rect_to_bounds);
-        let enabled = unsafe { el.CurrentIsEnabled() }.map(|b| b.as_bool()).unwrap_or(true);
+        let bounds = unsafe { el.CurrentBoundingRectangle() }
+            .ok()
+            .map(rect_to_bounds);
+        let enabled = unsafe { el.CurrentIsEnabled() }
+            .map(|b| b.as_bool())
+            .unwrap_or(true);
         let focused = unsafe { el.CurrentHasKeyboardFocus() }
             .map(|b| b.as_bool())
             .unwrap_or(false);
@@ -125,7 +135,9 @@ impl WindowsBackend {
         let (mut value, mut editable, mut value_settable) = (None, false, false);
         if let Some(v) = &value_pat {
             value = bstr(unsafe { v.CurrentValue() });
-            let readonly = unsafe { v.CurrentIsReadOnly() }.map(|b| b.as_bool()).unwrap_or(true);
+            let readonly = unsafe { v.CurrentIsReadOnly() }
+                .map(|b| b.as_bool())
+                .unwrap_or(true);
             value_settable = !readonly;
             editable = !readonly;
         }
@@ -139,7 +151,9 @@ impl WindowsBackend {
             && let Some(t) = self.toggle_pattern(el)
         {
             checked = Some(
-                unsafe { t.CurrentToggleState() }.map(|s| s == ToggleState_On).unwrap_or(false),
+                unsafe { t.CurrentToggleState() }
+                    .map(|s| s == ToggleState_On)
+                    .unwrap_or(false),
             );
             value = None;
         }
@@ -182,7 +196,9 @@ impl WindowsBackend {
             actions.push(ActionDesc::new(default.to_lowercase(), "DoDefaultAction"));
         }
 
-        let identifier = automation_id.filter(|s| !s.is_empty()).or(class.filter(|s| !s.is_empty()));
+        let identifier = automation_id
+            .filter(|s| !s.is_empty())
+            .or(class.filter(|s| !s.is_empty()));
 
         let handle = self.handle_for(pid, el.clone());
         RawNode {
@@ -238,7 +254,11 @@ impl WindowsBackend {
 
     // -- pattern getters ---------------------------------------------------
 
-    fn get_pattern<T: Interface>(&self, el: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
+    fn get_pattern<T: Interface>(
+        &self,
+        el: &IUIAutomationElement,
+        id: UIA_PATTERN_ID,
+    ) -> Option<T> {
         unsafe { el.GetCurrentPattern(id).ok()?.cast::<T>().ok() }
     }
     fn value_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
@@ -249,15 +269,24 @@ impl WindowsBackend {
     fn toggle_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationTogglePattern> {
         self.get_pattern(el, UIA_TogglePatternId)
     }
-    fn expand_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationExpandCollapsePattern> {
+    fn expand_pattern(
+        &self,
+        el: &IUIAutomationElement,
+    ) -> Option<IUIAutomationExpandCollapsePattern> {
         self.get_pattern(el, UIA_ExpandCollapsePatternId)
     }
-    fn selection_item(&self, el: &IUIAutomationElement) -> Option<IUIAutomationSelectionItemPattern> {
+    fn selection_item(
+        &self,
+        el: &IUIAutomationElement,
+    ) -> Option<IUIAutomationSelectionItemPattern> {
         available(el, UIA_IsSelectionItemPatternAvailablePropertyId)
             .then(|| self.get_pattern(el, UIA_SelectionItemPatternId))
             .flatten()
     }
-    fn legacy_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationLegacyIAccessiblePattern> {
+    fn legacy_pattern(
+        &self,
+        el: &IUIAutomationElement,
+    ) -> Option<IUIAutomationLegacyIAccessiblePattern> {
         available(el, UIA_IsLegacyIAccessiblePatternAvailablePropertyId)
             .then(|| self.get_pattern(el, UIA_LegacyIAccessiblePatternId))
             .flatten()
@@ -305,7 +334,9 @@ impl Backend for WindowsBackend {
 
     fn launch_app(&mut self, query: &str) -> Result<()> {
         let mut parts = query.split_whitespace();
-        let program = parts.next().ok_or_else(|| Error::InvalidArgs("empty app".into()))?;
+        let program = parts
+            .next()
+            .ok_or_else(|| Error::InvalidArgs("empty app".into()))?;
         let args: Vec<&str> = parts.collect();
         Command::new(program)
             .args(&args)
@@ -326,7 +357,9 @@ impl Backend for WindowsBackend {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            let bounds = unsafe { element.CurrentBoundingRectangle() }.ok().map(rect_to_bounds);
+            let bounds = unsafe { element.CurrentBoundingRectangle() }
+                .ok()
+                .map(rect_to_bounds);
             let focused = unsafe { element.CurrentHasKeyboardFocus() }
                 .map(|b| b.as_bool())
                 .unwrap_or(false);
@@ -379,13 +412,17 @@ impl Backend for WindowsBackend {
                 "Expand" => self.expand_pattern(&el).map(|p| p.Expand().is_ok()),
                 "Collapse" => self.expand_pattern(&el).map(|p| p.Collapse().is_ok()),
                 "Select" => self.selection_item(&el).map(|p| p.Select().is_ok()),
-                "DoDefaultAction" => self.legacy_pattern(&el).map(|p| p.DoDefaultAction().is_ok()),
+                "DoDefaultAction" => self
+                    .legacy_pattern(&el)
+                    .map(|p| p.DoDefaultAction().is_ok()),
                 _ => None,
             }
         };
         match ok {
             Some(true) => Ok(()),
-            Some(false) => Err(Error::ActionFailed(format!("action `{native_action}` failed"))),
+            Some(false) => Err(Error::ActionFailed(format!(
+                "action `{native_action}` failed"
+            ))),
             None => Err(Error::ActionFailed(format!(
                 "element no longer supports action `{native_action}`"
             ))),
@@ -396,8 +433,13 @@ impl Backend for WindowsBackend {
         let el = self.resolve(element)?;
         // Toggle controls: flip to the requested boolean.
         if let Some(t) = self.toggle_pattern(&el) {
-            let want = matches!(value.trim().to_lowercase().as_str(), "true" | "1" | "on" | "yes" | "checked");
-            let is = unsafe { t.CurrentToggleState() }.map(|s| s == ToggleState_On).unwrap_or(false);
+            let want = matches!(
+                value.trim().to_lowercase().as_str(),
+                "true" | "1" | "on" | "yes" | "checked"
+            );
+            let is = unsafe { t.CurrentToggleState() }
+                .map(|s| s == ToggleState_On)
+                .unwrap_or(false);
             if is != want {
                 unsafe { t.Toggle() }.map_err(Error::action)?;
             }

@@ -220,7 +220,12 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Refresh an app's state cache from a live snapshot.
-    fn refresh(&mut self, app: &AppInfo, window: &WindowInfo, disable_diff: bool) -> Result<String> {
+    fn refresh(
+        &mut self,
+        app: &AppInfo,
+        window: &WindowInfo,
+        disable_diff: bool,
+    ) -> Result<String> {
         let opts = SnapshotOptions {
             max_nodes: self.store.config.tree.max_walk,
             max_depth: self.store.config.tree.max_depth,
@@ -249,8 +254,10 @@ impl<B: Backend> Engine<B> {
             alloc.assign_fresh(&mut nodes);
         }
 
-        let bounds: HashMap<ElementHandle, Rect> =
-            nodes.iter().filter_map(|n| n.bounds.map(|b| (n.handle, b))).collect();
+        let bounds: HashMap<ElementHandle, Rect> = nodes
+            .iter()
+            .filter_map(|n| n.bounds.map(|b| (n.handle, b)))
+            .collect();
 
         let rendered = if want_diff {
             let d = tree::diff(&old_nodes, &nodes);
@@ -295,9 +302,11 @@ impl<B: Backend> Engine<B> {
 
     /// Look up an element handle by index in the app's latest state.
     fn element_by_index(&self, app: &AppInfo, index: u32) -> Result<ElementHandle> {
-        let state = self.states.get(&app.pid).filter(|s| s.stamped).ok_or_else(|| {
-            Error::NoState(app.name.clone())
-        })?;
+        let state = self
+            .states
+            .get(&app.pid)
+            .filter(|s| s.stamped)
+            .ok_or_else(|| Error::NoState(app.name.clone()))?;
         state
             .nodes
             .iter()
@@ -310,7 +319,9 @@ impl<B: Backend> Engine<B> {
     }
 
     fn node_by_index(&self, app: &AppInfo, index: u32) -> Result<&Node> {
-        let state = self.state(app.pid).map_err(|_| Error::NoState(app.name.clone()))?;
+        let state = self
+            .state(app.pid)
+            .map_err(|_| Error::NoState(app.name.clone()))?;
         state
             .nodes
             .iter()
@@ -385,11 +396,7 @@ impl<B: Backend> Engine<B> {
     // -- tool dispatch -----------------------------------------------------
 
     /// Run one tool call.
-    pub fn call(
-        &mut self,
-        call: ToolCall,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
+    pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
         match call {
             ToolCall::ListApps => self.list_apps(),
             ToolCall::LaunchApp(a) => self.launch_app(a, approver),
@@ -444,12 +451,19 @@ impl<B: Backend> Engine<B> {
             } else {
                 format!(" [{}]", tags.join(", "))
             };
-            lines.push(format!("- {} (id: {}, pid: {}){}", a.name, a.id, a.pid, tags));
+            lines.push(format!(
+                "- {} (id: {}, pid: {}){}",
+                a.name, a.id, a.pid, tags
+            ));
         }
         Ok(ToolOutput::text(lines.join("\n")))
     }
 
-    fn launch_app(&mut self, args: LaunchAppArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+    fn launch_app(
+        &mut self,
+        args: LaunchAppArgs,
+        approver: &mut dyn Approver,
+    ) -> Result<ToolOutput> {
         // Enforce policy against a synthetic app record so terminals etc. can't
         // be launched-and-driven around the block.
         let probe = AppInfo {
@@ -467,16 +481,21 @@ impl<B: Backend> Engine<B> {
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
         self.backend.launch_app(&args.app)?;
 
-        let deadline =
-            (self.clock)() + Duration::from_secs_f64(self.store.config.launch_timeout_secs.max(0.5));
+        let deadline = (self.clock)()
+            + Duration::from_secs_f64(self.store.config.launch_timeout_secs.max(0.5));
         let ql = args.app.to_lowercase();
         loop {
             let apps = self.find_apps()?;
             // Prefer a newly-appeared app that matches the query.
             let found = apps
                 .iter()
-                .find(|a| !before.contains(&a.pid) && a.match_keys().iter().any(|k| k.contains(&ql)))
-                .or_else(|| apps.iter().find(|a| a.match_keys().iter().any(|k| k.contains(&ql))));
+                .find(|a| {
+                    !before.contains(&a.pid) && a.match_keys().iter().any(|k| k.contains(&ql))
+                })
+                .or_else(|| {
+                    apps.iter()
+                        .find(|a| a.match_keys().iter().any(|k| k.contains(&ql)))
+                });
             if let Some(app) = found {
                 let app = app.clone();
                 // Authorize now so the model can act right away.
@@ -553,7 +572,10 @@ impl<B: Backend> Engine<B> {
         // the accessibility API so it works in the background.
         if let (Anchor::Element(h), MouseButton::Left, 1) = (&anchor, args.button, count) {
             let node = self.node_for_handle(&app, *h);
-            if let Some(action) = node.and_then(|n| n.has_action("press")).map(|a| a.native.clone()) {
+            if let Some(action) = node
+                .and_then(|n| n.has_action("press"))
+                .map(|a| a.native.clone())
+            {
                 self.backend.perform_action(*h, &action)?;
                 self.settle();
                 return Ok(ToolOutput::text(format!(
@@ -588,9 +610,7 @@ impl<B: Backend> Engine<B> {
     ) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "perform_secondary_action", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
-        let node = self
-            .node_by_index(&app, args.element_index)?
-            .clone();
+        let node = self.node_by_index(&app, args.element_index)?.clone();
         let action = node.has_action(&args.action).ok_or_else(|| {
             let available: Vec<&str> = node.actions.iter().map(|a| a.name.as_str()).collect();
             Error::InvalidArgs(format!(
@@ -680,9 +700,24 @@ impl<B: Backend> Engine<B> {
 
     fn drag(&mut self, args: DragArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "drag", approver)?;
-        let from = self.anchor(&app, args.from_element_index, args.from_x, args.from_y, "drag source")?;
-        let to = self.anchor(&app, args.to_element_index, args.to_x, args.to_y, "drag target")?;
-        let (p0, p1) = (self.anchor_point(&app, &from)?, self.anchor_point(&app, &to)?);
+        let from = self.anchor(
+            &app,
+            args.from_element_index,
+            args.from_x,
+            args.from_y,
+            "drag source",
+        )?;
+        let to = self.anchor(
+            &app,
+            args.to_element_index,
+            args.to_x,
+            args.to_y,
+            "drag target",
+        )?;
+        let (p0, p1) = (
+            self.anchor_point(&app, &from)?,
+            self.anchor_point(&app, &to)?,
+        );
         let target = self.input_target(&app);
         self.backend.drag(&target, p0, p1)?;
         self.settle();
@@ -1067,8 +1102,13 @@ mod tests {
         backend.add_app(term);
         let mut cfg = Config::default();
         cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e = Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        let out = e.call_tool("get_app_state", serde_json::json!({"app": "iTerm2"}), &mut allow());
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "iTerm2"}),
+            &mut allow(),
+        );
         assert!(out.is_error);
         assert!(out.text.contains("terminal"));
     }
@@ -1079,7 +1119,11 @@ mod tests {
         backend.add_app(MockBackend::text_editor(7));
         let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
             .with_time(Instant::now, |_| {});
-        let out = e.call_tool("get_app_state", serde_json::json!({"app": "TextEdit"}), &mut DenyApprover);
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "TextEdit"}),
+            &mut DenyApprover,
+        );
         assert!(out.is_error);
         assert!(out.text.contains("denied"));
     }
@@ -1096,22 +1140,33 @@ mod tests {
         });
         let mut cfg = Config::default();
         cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e = Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         let out = e
             .call(
-                ToolCall::LaunchApp(LaunchAppArgs { app: "Notes".into() }),
+                ToolCall::LaunchApp(LaunchAppArgs {
+                    app: "Notes".into(),
+                }),
                 &mut allow(),
             )
             .unwrap();
         assert!(out.text.contains("Launched Notes"));
-        let out = e.call_tool("get_app_state", serde_json::json!({"app": "Notes"}), &mut allow());
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Notes"}),
+            &mut allow(),
+        );
         assert!(!out.is_error);
     }
 
     #[test]
     fn cannot_launch_a_terminal() {
         let mut e = engine();
-        let out = e.call_tool("launch_app", serde_json::json!({"app": "xterm"}), &mut allow());
+        let out = e.call_tool(
+            "launch_app",
+            serde_json::json!({"app": "xterm"}),
+            &mut allow(),
+        );
         assert!(out.is_error);
         assert!(out.text.contains("terminal"));
     }

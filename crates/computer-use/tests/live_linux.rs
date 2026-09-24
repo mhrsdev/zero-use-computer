@@ -9,11 +9,11 @@
 
 use std::time::{Duration, Instant};
 
+use computer_use::Backend;
 use computer_use::config::{ApprovalMode, Config, ConfigStore};
 use computer_use::engine::{AllowApprover, Engine};
 use computer_use::linux::LinuxBackend;
 use computer_use::tools::ToolCall;
-use computer_use::Backend;
 
 fn live() -> bool {
     std::env::var("COMPUTER_USE_LIVE").as_deref() == Ok("1")
@@ -39,7 +39,10 @@ fn wait_for_app(e: &mut Engine<LinuxBackend>) -> String {
                 }
             }
         }
-        assert!(Instant::now() < deadline, "GTK fixture never appeared over AT-SPI");
+        assert!(
+            Instant::now() < deadline,
+            "GTK fixture never appeared over AT-SPI"
+        );
         std::thread::sleep(Duration::from_millis(300));
     }
 }
@@ -156,7 +159,10 @@ fn atspi_tree_actions_and_screenshot() {
     assert!(!out.is_error, "checkbox set failed: {}", out.text);
     std::thread::sleep(Duration::from_millis(150));
     let tree = state_text(&mut e, &app);
-    assert!(tree.contains("feature: on"), "checkbox not toggled:\n{tree}");
+    assert!(
+        tree.contains("feature: on"),
+        "checkbox not toggled:\n{tree}"
+    );
 
     // 5. Keyboard shortcut path (synthetic key via XTest): focus entry, select
     //    all.
