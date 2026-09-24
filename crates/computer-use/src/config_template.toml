@@ -1,0 +1,150 @@
+# computer-use settings
+#
+# Every option is listed here with its default value. Edit any of them; a
+# running server picks up changes automatically (hot_reload). You can also
+# change settings from the command line:
+#
+#   computer-use-mcp config set screenshot.attach always
+#   computer-use-mcp config add approvals.always_allow com.apple.TextEdit
+#   computer-use-mcp config show          # effective settings
+#   computer-use-mcp config check         # validate + report unknown keys
+#
+# The agent itself has no tool to change these settings.
+
+# Expose the clipboard tools (get_clipboard / set_clipboard).
+clipboard = true
+# Never attach screenshots anywhere (tree-only; lowest token use).
+text_only = false
+# Re-read this file when it changes, without restarting the server.
+hot_reload = true
+# Seconds launch_app waits for the new app's window.
+launch_timeout_secs = 15.0
+
+[approvals]
+# prompt    = ask the first time each app is used (default)
+# allowlist = only apps in always_allow; never ask
+# allow_all = every app not blocked below
+mode = "prompt"
+# Apps allowed without asking (name, bundle id, exe name; "*" suffix = prefix).
+# A specific app listed here is allowed even if its [sensitive] category is
+# blocked — this is how you grant sensitive apps one at a time.
+always_allow = []
+# Apps that are never controlled.
+always_deny = []
+# Apps that host agents (treated as the "agent_apps" sensitive category).
+agent_apps = [
+    "com.openai.chat",
+    "com.openai.codex",
+    "ChatGPT",
+    "Codex",
+    "com.anthropic.claudefordesktop",
+    "Claude",
+]
+
+# Sensitive app categories: "block" (default), "ask" (confirm each time), or
+# "allow" (treated like any other app).
+[sensitive]
+terminals = "block"         # terminal emulators and shells
+credentials = "block"       # password managers, keychains
+security_prompts = "block"  # OS authentication / consent / login prompts
+agent_apps = "block"        # apps listed in approvals.agent_apps
+own_process = "block"       # this server and the agent that launched it
+# Your own patterns to add to a category.
+extra_terminals = []
+extra_credentials = []
+extra_security_prompts = []
+
+# Confirmation for consequential presses (a control whose label contains one
+# of the keywords). "ask" (default), "allow" (never confirm) or "block".
+[guard]
+mode = "ask"
+keywords = [
+    "send",
+    "delete",
+    "remove",
+    "discard",
+    "pay",
+    "buy",
+    "purchase",
+    "checkout",
+    "order",
+    "transfer",
+    "confirm",
+    "publish",
+    "post",
+    "submit",
+    "trash",
+    "erase",
+    "wipe",
+    "shut down",
+    "restart",
+    "log out",
+    "sign out",
+    "uninstall",
+    "format",
+]
+
+# Which tools the model sees. The tool list is sent with every model request,
+# so fewer tools and compact descriptions save tokens on every turn.
+[tools]
+disabled = []               # e.g. ["drag", "batch"]
+enabled = []                # if non-empty, ONLY these tools are exposed
+descriptions = "compact"    # "compact" (fewer tokens) or "full"
+
+[screenshot]
+enabled = true
+# When get_app_state includes an image:
+#   auto   = first view of a window, a large change, or a sparse tree (default)
+#   always = every call (Codex behaviour; most tokens)
+#   never  = never (the model can still call the screenshot tool)
+attach = "auto"
+# In auto mode, attach when the tree has fewer interactive elements than this.
+auto_sparse_threshold = 2
+# Longest image edge in pixels. Image tokens grow with width x height, so this
+# is the main image-token knob (1024 ≈ 35% fewer tokens than 1280).
+max_dimension = 1280
+format = "png"              # "png" or "jpeg"
+jpeg_quality = 85
+png_compression = "fast"    # "fast", "default" or "best" (file size only)
+resize_filter = "fast"      # "fast", "smooth" or "sharp"
+
+[tree]
+max_nodes = 1200            # elements shown per get_app_state
+max_walk = 6000             # elements read from the app before pruning
+max_depth = 64
+max_text_len = 160          # characters of text/value shown per element
+indent = 1                  # spaces per tree level
+show_actions = true         # actions=[...] on elements
+show_states = true          # (focused, disabled, checked, ...)
+diff = true                 # later get_app_state calls return a diff
+diff_full_ratio = 0.33      # show the full tree when more than this changed
+report_changes = true       # append "state after the action" to action results
+report_changes_max_lines = 25
+
+[timing]
+settle_ms = 40              # pause after each action for the UI to update
+key_delay_ms = 10           # pause between keys in a press_key sequence
+app_cache_ms = 1500         # reuse the running-app list for this long
+wait_timeout_ms = 10000     # wait_for default timeout
+wait_poll_ms = 400          # wait_for default poll interval
+
+[audit]
+enabled = false             # append a JSONL line (metadata only) per call
+# path = "/path/to/audit.log"   # default: <COMPUTER_USE_HOME>/audit.log
+
+[server]
+headless_approve = "deny"   # when approval is needed but no one can be asked
+log = "warn"                # error, warn, info, debug, trace
+http_addr = ""              # e.g. "127.0.0.1:8787" to serve over HTTP
+http_token = ""             # bearer token required on the HTTP endpoint
+
+[linux]
+batch_size = 48             # elements whose AT-SPI queries run concurrently
+text_max_chars = 2000       # longest text read from a text element
+
+[macos]
+batch_attributes = true     # read all of an element's attributes in one call
+messaging_timeout_secs = 2.0
+
+[windows]
+use_cache_request = true    # fetch a whole window's tree in one UIA call

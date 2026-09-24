@@ -17,7 +17,9 @@ a window is in the background.
 ## The loop (do this every turn)
 
 1. **`get_app_state(app)` first.** It returns the app's current tree (each line
-   is `<index> <role> "<name>" [flags] [actions]`) and a screenshot. The
+   is `<index> <role> "<name>" [flags] [actions]`), plus a screenshot when one
+   adds information (the first view of a window, a big change, or custom-drawn
+   UI). Pass `screenshot: true` when you need to see the pixels anyway. The
    element indices it prints are only valid until the **next** `get_app_state`.
 2. **Act** on an element by its `element_index`:
    - `click` — press a button, focus a field, open a menu item.
@@ -70,4 +72,5 @@ running (then `get_app_state`).
 - **Consequential actions may ask for a second confirmation** (Send, Delete,
   Pay …). Still pause and confirm intent yourself before anything that sends,
   purchases, deletes, or changes important data.
-- Keep tasks narrow and check the screenshot when the tree is ambiguous.
+- Keep tasks narrow; when the tree is ambiguous, ask for a screenshot
+  (`get_app_state` with `screenshot: true`, or the `screenshot` tool).

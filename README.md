@@ -142,7 +142,8 @@ computer-use-mcp doctor                       # platform, permissions, config
 computer-use-mcp apps                          # list running apps
 computer-use-mcp state "TextEdit" --screenshot shot.png
 computer-use-mcp call click '{"app":"TextEdit","element_index":3}'
-computer-use-mcp tools                          # print tool JSON schemas
+computer-use-mcp tools                          # tool definitions the model will see
+computer-use-mcp config show                    # settings (see "Settings" below)
 ```
 
 Flags: `--config <path>`, `--approval prompt|allowlist|allow-all`,
@@ -168,56 +169,65 @@ for a full, runnable session against the in-memory mock backend:
 cargo run -p computer-use --example mock_session
 ```
 
-## Configuration
+## Settings
 
-`~/.computer-use/config.toml` (override with `$COMPUTER_USE_HOME` or `--config`):
+Every behaviour is a setting in `~/.computer-use/config.toml` (override the
+location with `$COMPUTER_USE_HOME` or `--config`). Start from the documented
+template — it lists **every option with its default** and a comment:
 
-```toml
-[approvals]
-mode = "prompt"                 # prompt | allowlist | allow-all
-always_allow = ["com.apple.TextEdit"]
-always_deny  = []
-
-# Apps that are sensitive to automate. Each category is blocked by default;
-# relax it to "ask" or "allow", or allow one specific app by adding it to
-# approvals.always_allow (that overrides the category).
-[sensitive]
-terminals        = "block"      # block | ask | allow
-credentials      = "block"      # password managers
-security_prompts = "block"      # OS auth / consent / login prompts
-agent_apps       = "block"      # agent host apps
-own_process      = "block"      # the agent's own process
-# extra_terminals = ["myshell"] # extend a category with your own patterns
-
-# Confirm consequential on-screen actions (independent of app approval).
-[guard]
-mode = "ask"                    # ask | allow | block
-# keywords = ["send", "delete", "pay", "buy", "confirm", ...]
-
-[screenshot]
-enabled = true
-max_dimension = 1280            # longest edge sent to the model
-format = "png"                  # png | jpeg
-
-[tree]
-max_nodes = 1200
-diff = true
-report_changes = true           # append "state after the action" to results
-
-[audit]
-enabled = false                 # append a JSONL record (metadata only) per call
-# path = "~/.computer-use/audit.log"
-
-clipboard = true                # expose get_clipboard / set_clipboard
-text_only = false               # never attach screenshots (tree-only)
+```bash
+computer-use-mcp config init                 # write the documented template
+computer-use-mcp config show                 # effective settings
+computer-use-mcp config keys                 # every setting key
+computer-use-mcp config get screenshot.attach
+computer-use-mcp config set screenshot.attach always
+computer-use-mcp config set sensitive.terminals ask
+computer-use-mcp config add approvals.always_allow com.googlecode.iterm2
+computer-use-mcp config add tools.disabled drag
+computer-use-mcp config unset tree.max_nodes   # back to the default
+computer-use-mcp config check                # validate + flag misspelled keys
 ```
 
-Everything defaults to safe values; you open up access from settings, one
-category or one app at a time. Admins can enforce policy via a managed config
+Edits are validated before they are written (bad values and unknown keys are
+rejected with a clear message) and your comments are preserved. A running
+server **reloads the file automatically** (`hot_reload = true`) and tells MCP
+clients when the tool list changed — no restart needed. Command-line flags
+(`--approval`, `--text-only`, `--log`, `--http`, …) override the file and keep
+applying after a reload. The agent has no tool to change settings.
+
+| Section | What you control |
+|---|---|
+| `[approvals]` | `prompt` / `allowlist` / `allow_all`, per-app `always_allow` / `always_deny`, agent host apps |
+| `[sensitive]` | terminals, credential stores, OS security prompts, agent apps, own process: `block` / `ask` / `allow` each, plus your own patterns |
+| `[guard]` | confirm/allow/block consequential presses, and the keyword list |
+| `[tools]` | hide tools (`disabled`), allow-list them (`enabled`), `compact` or `full` descriptions |
+| `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
+| `[tree]` | size limits, text length, indentation, shown actions/states, diffs, change reports |
+| `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
+| `[audit]` | JSONL audit log on/off and path |
+| `[server]` | headless approval policy, log level, HTTP address and token |
+| `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
+| top level | `clipboard`, `text_only`, `hot_reload`, `launch_timeout_secs` |
+
+Sensitive apps are blocked by default; open them up one category or one app at
+a time. Admins can enforce policy via a managed config
 (`/etc/computer-use/managed.toml` on Linux,
 `/Library/Application Support/ComputerUse/managed.toml` on macOS,
 `%ProgramData%\ComputerUse\managed.toml` on Windows) with `denied_apps`,
 `allowed_apps`, or a forced `approval_mode` — these always win over user config.
+
+### Token-saving knobs
+
+- `tools.descriptions = "compact"` (default) — the tool list goes out with every
+  model request; compact cuts it from ~3,300 to ~1,360 tokens. Hiding tools you
+  don't need (`tools.disabled`) saves more.
+- `screenshot.attach = "auto"` (default) — images only for a first view, a large
+  change, or a tree with almost no interactive elements; `get_app_state` diffs on
+  an unchanged window cost ~60 tokens instead of ~1,300.
+- `screenshot.max_dimension` — image tokens scale with width × height
+  (1024 px ≈ 36% fewer than 1280 px). `text_only = true` removes images entirely.
+- `tree.max_text_len`, `tree.show_actions`, `tree.show_states`,
+  `tree.report_changes_max_lines` trim the text further.
 
 ### Remote transport (optional)
 
@@ -226,11 +236,43 @@ Build with the `http` feature to serve MCP over HTTP for a remote agent:
 ```bash
 cargo build --release -p computer-use-mcp --features http
 computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN" --approval allow-all
+# or put it in settings: server.http_addr / server.http_token
 ```
 
 Each POST body is one JSON-RPC message. There is no interactive approval
 channel over HTTP, so run it with a deliberate approval policy, require a bearer
 token, and bind it to localhost or a trusted network.
+
+## Performance
+
+Measured with `examples/bench.rs` on Linux (Xvfb, AT-SPI) against a small GTK
+dialog and `gtk3-widget-factory` (~500 accessible elements). Token counts are
+estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
+
+| | before | after |
+|---|---|---|
+| `get_app_state`, large app | 533 ms | **87 ms** |
+| repeat `get_app_state` (diff), large app | 507 ms, ~1,346 tokens | **67 ms, ~66 tokens** |
+| `find_element`, large app | 473 ms | **72 ms** |
+| repeat `get_app_state`, small dialog | 19 ms, ~219 tokens | **2.4 ms, ~58 tokens** |
+| tool definitions per model request | ~3,300 tokens | **~1,360 tokens** |
+| peak memory | 19.7 MiB | **16.3 MiB** |
+
+Where the gains come from: the Linux walker pipelines its AT-SPI queries (a
+batch of elements with every query in flight at once) instead of one round trip
+at a time; macOS reads each element's attributes in one batched AX call;
+Windows fetches a whole window with one UI Automation cache request; captures
+are downscaled with a fast area filter and encoded without copying the pixel
+buffer; and the engine reuses the running-app list and moves (never clones) its
+cached tree. The macOS and Windows paths are type-checked but not yet measured
+on real hardware.
+
+Run it yourself:
+
+```bash
+APPS="gtk3-widget-factory" scripts/desktop-session.sh \
+  cargo run --release -p computer-use --example bench -- gtk3-widget-factory
+```
 
 ## Platform setup
 

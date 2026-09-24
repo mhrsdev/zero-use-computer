@@ -29,6 +29,8 @@ pub struct Server<R: BufRead, W: Write, B: Backend> {
     headless: HeadlessApproval,
     next_out_id: i64,
     shutdown: bool,
+    /// Tool set last announced to the client, to detect settings changes.
+    tools_sig: Option<String>,
 }
 
 impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
@@ -41,6 +43,7 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             headless,
             next_out_id: 1,
             shutdown: false,
+            tools_sig: None,
         }
     }
 
@@ -104,6 +107,17 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         if let Some(resp) = response {
             self.write_msg(&resp)?;
         }
+        // A hot-reloaded config can change which tools exist; tell the client.
+        if let Some(prev) = self.tools_sig.clone() {
+            let now = self.tools_signature();
+            if now != prev {
+                self.tools_sig = Some(now);
+                self.write_msg(&json!({
+                    "jsonrpc": JSONRPC,
+                    "method": "notifications/tools/list_changed"
+                }))?;
+            }
+        }
         Ok(())
     }
 
@@ -148,15 +162,28 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             .to_string();
         json!({
             "protocolVersion": protocol,
-            "capabilities": {"tools": {"listChanged": false}},
+            "capabilities": {"tools": {"listChanged": true}},
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": instructions(),
         })
     }
 
+    fn tools_signature(&self) -> String {
+        let engine = self.engine.as_ref().expect("engine present");
+        tools::definitions_from(&engine.store().config)
+            .iter()
+            .map(|d| format!("{}:{}", d.name, d.description))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
     fn tools_list(&mut self) -> Value {
+        self.engine
+            .as_mut()
+            .expect("engine present")
+            .reload_if_changed();
+        self.tools_sig = Some(self.tools_signature());
         let engine = self.engine.as_mut().expect("engine present");
-        engine.reload_if_changed();
         let tools: Vec<Value> = tools::definitions_from(&engine.store().config)
             .into_iter()
             .map(|d| {
@@ -448,6 +475,91 @@ mod tests {
                 .iter()
                 .any(|c| c["type"] == "image" && c["mimeType"] == "image/png")
         );
+    }
+
+    #[test]
+    fn settings_change_is_hot_reloaded_and_announced() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("cu-hot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[approvals]\nmode = \"allow_all\"\n").unwrap();
+
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let store = ConfigStore::load(Some(&path)).unwrap();
+        let engine = Engine::new(backend, store).with_time(std::time::Instant::now, |_| {});
+
+        // A reader that rewrites the config between the two requests.
+        struct Script {
+            lines: Vec<String>,
+            path: std::path::PathBuf,
+            step: usize,
+        }
+        impl std::io::Read for Script {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                unreachable!()
+            }
+        }
+        impl std::io::BufRead for Script {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                unreachable!()
+            }
+            fn consume(&mut self, _n: usize) {}
+            fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+                if self.step == 2 {
+                    // Disable a tool and bump the mtime so the change is seen.
+                    std::fs::write(
+                        &self.path,
+                        "[approvals]\nmode = \"allow_all\"\n[tools]\ndisabled = [\"drag\"]\n",
+                    )?;
+                    let f = std::fs::File::options().write(true).open(&self.path)?;
+                    f.set_modified(SystemTime::now() + Duration::from_secs(5))?;
+                }
+                let Some(line) = self.lines.get(self.step) else {
+                    return Ok(0);
+                };
+                self.step += 1;
+                buf.push_str(line);
+                Ok(line.len())
+            }
+        }
+        let reader = Script {
+            lines: vec![
+                line("initialize", 1, json!({"capabilities":{}})),
+                line("tools/list", 2, json!({})),
+                line("tools/call", 3, json!({"name":"list_apps","arguments":{}})),
+                line("tools/list", 4, json!({})),
+            ],
+            path: path.clone(),
+            step: 0,
+        };
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut server = Server::new(engine, reader, &mut out, HeadlessApproval::Deny);
+            server.run().unwrap();
+        }
+        let msgs: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let first = msgs.iter().find(|m| m["id"] == 2).unwrap();
+        assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 17);
+        assert!(
+            msgs.iter()
+                .any(|m| m["method"] == "notifications/tools/list_changed"),
+            "{msgs:#?}"
+        );
+        let second = msgs.iter().find(|m| m["id"] == 4).unwrap();
+        let names: Vec<&str> = second["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"drag"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -550,6 +550,182 @@ pub fn managed_config_path() -> PathBuf {
     }
 }
 
+/// A fully commented config file with every option at its default value.
+pub const TEMPLATE: &str = include_str!("config_template.toml");
+
+/// Keys that are valid even though they don't appear in a serialized default
+/// config (optional values that default to unset).
+const OPTIONAL_KEYS: &[&str] = &["audit.path"];
+
+fn collect_keys(prefix: &str, table: &toml::Table, out: &mut Vec<String>) {
+    for (k, v) in table {
+        let key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        if let toml::Value::Table(t) = v {
+            collect_keys(&key, t, out);
+        } else {
+            out.push(key);
+        }
+    }
+}
+
+/// Every settable key, as dotted paths (e.g. `screenshot.attach`).
+pub fn known_keys() -> Vec<String> {
+    let table: toml::Table = toml::Table::try_from(Config::default()).unwrap_or_default();
+    let mut keys = Vec::new();
+    collect_keys("", &table, &mut keys);
+    keys.extend(OPTIONAL_KEYS.iter().map(|k| k.to_string()));
+    keys.sort();
+    keys
+}
+
+/// Keys present in `text` that computer-use doesn't recognise (typos).
+pub fn unknown_keys(text: &str) -> Vec<String> {
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let known = known_keys();
+    let mut found = Vec::new();
+    collect_keys("", &table, &mut found);
+    found.retain(|k| !known.contains(k));
+    found
+}
+
+/// Look up one setting by dotted key in the effective config.
+pub fn get_value(config: &Config, key: &str) -> Option<toml::Value> {
+    let mut v = toml::Value::try_from(config).ok()?;
+    for part in key.split('.') {
+        v = v.get(part)?.clone();
+    }
+    Some(v)
+}
+
+/// A change to one setting.
+#[derive(Debug, Clone)]
+pub enum Edit {
+    /// Set a value (parsed as TOML; bare words become strings).
+    Set(String),
+    /// Remove the key so it falls back to its default.
+    Unset,
+    /// Append an item to a list setting (no duplicates).
+    Add(String),
+    /// Remove an item from a list setting.
+    Remove(String),
+}
+
+fn parse_value(raw: &str) -> toml_edit::Value {
+    // Accept any TOML literal (numbers, booleans, arrays, quoted strings) and
+    // treat anything else as a bare string: `config set screenshot.attach auto`.
+    let doc = format!("v = {raw}");
+    if let Ok(parsed) = doc.parse::<toml_edit::DocumentMut>()
+        && let Some(v) = parsed.get("v").and_then(|i| i.as_value())
+    {
+        return v.clone();
+    }
+    toml_edit::Value::from(raw)
+}
+
+/// Apply an edit to a config file (created if missing), preserving comments.
+/// The result is validated as a whole before anything is written.
+pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
+    if !known_keys().iter().any(|k| k == key) {
+        return Err(Error::Config(format!(
+            "unknown setting `{key}` (see `computer-use-mcp config keys`)"
+        )));
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+
+    let parts: Vec<&str> = key.split('.').collect();
+    let (last, tables) = parts.split_last().expect("non-empty key");
+    let mut table = doc.as_table_mut();
+    for t in tables {
+        let entry = table
+            .entry(t)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        table = entry
+            .as_table_mut()
+            .ok_or_else(|| Error::Config(format!("`{t}` is not a table")))?;
+    }
+
+    match edit {
+        Edit::Set(raw) => {
+            table[last] = toml_edit::value(parse_value(&raw));
+        }
+        Edit::Unset => {
+            table.remove(last);
+        }
+        Edit::Add(item) => {
+            // Start from the current effective list so defaults are kept.
+            let current = current_list(&doc_to_config(&text)?, key)?;
+            let mut arr = toml_edit::Array::new();
+            for v in current.iter().chain(std::iter::once(&item)) {
+                if !arr.iter().any(|e| e.as_str() == Some(v.as_str())) {
+                    arr.push(v.as_str());
+                }
+            }
+            table[last] = toml_edit::value(arr);
+        }
+        Edit::Remove(item) => {
+            let current = current_list(&doc_to_config(&text)?, key)?;
+            let mut arr = toml_edit::Array::new();
+            for v in current.iter().filter(|v| !v.eq_ignore_ascii_case(&item)) {
+                arr.push(v.as_str());
+            }
+            table[last] = toml_edit::value(arr);
+        }
+    }
+
+    let new_text = doc.to_string();
+    // Validate the whole file before writing.
+    toml::from_str::<Config>(&new_text)
+        .map_err(|e| Error::Config(format!("`{key}`: {}", e.message())))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
+    }
+    std::fs::write(path, new_text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+}
+
+fn doc_to_config(text: &str) -> Result<Config> {
+    toml::from_str(text).map_err(|e| Error::Config(e.message().to_string()))
+}
+
+fn current_list(config: &Config, key: &str) -> Result<Vec<String>> {
+    match get_value(config, key) {
+        Some(toml::Value::Array(a)) => Ok(a
+            .into_iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()),
+        Some(_) => Err(Error::Config(format!("`{key}` is not a list"))),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Write the documented template to `path` (refusing to overwrite unless `force`).
+pub fn write_template(path: &Path, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        return Err(Error::Config(format!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        )));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
+    }
+    std::fs::write(path, TEMPLATE).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+}
+
 /// Configuration plus where it lives, so approvals can be persisted.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
@@ -574,8 +750,13 @@ impl ConfigStore {
             .map(Path::to_path_buf)
             .unwrap_or_else(default_config_path);
         let config = match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?,
+            Ok(text) => {
+                for key in unknown_keys(&text) {
+                    log::warn!("{}: unknown setting `{key}` (ignored)", path.display());
+                }
+                toml::from_str(&text)
+                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
         };
@@ -690,6 +871,102 @@ mod tests {
             vec!["com.apple.TextEdit"]
         );
         assert_eq!(reloaded.config.screenshot.max_dimension, 900);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn template_matches_defaults_and_covers_every_key() {
+        let parsed: Config = toml::from_str(TEMPLATE).expect("template parses");
+        assert_eq!(parsed, Config::default(), "template defaults drifted");
+        assert!(
+            unknown_keys(TEMPLATE).is_empty(),
+            "{:?}",
+            unknown_keys(TEMPLATE)
+        );
+        // Every known key (except optional ones) is spelled out in the template.
+        let mut in_template = Vec::new();
+        collect_keys(
+            "",
+            &TEMPLATE.parse::<toml::Table>().unwrap(),
+            &mut in_template,
+        );
+        for key in known_keys() {
+            if !OPTIONAL_KEYS.contains(&key.as_str()) {
+                assert!(in_template.contains(&key), "template is missing `{key}`");
+            }
+        }
+    }
+
+    #[test]
+    fn edit_set_add_remove_unset() {
+        let dir = std::env::temp_dir().join(format!("cu-edit-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "# keep me\n").unwrap();
+
+        edit_file(&path, "screenshot.attach", Edit::Set("always".into())).unwrap();
+        edit_file(&path, "tree.max_nodes", Edit::Set("300".into())).unwrap();
+        edit_file(&path, "sensitive.terminals", Edit::Set("ask".into())).unwrap();
+        edit_file(
+            &path,
+            "approvals.always_allow",
+            Edit::Add("com.apple.TextEdit".into()),
+        )
+        .unwrap();
+        edit_file(&path, "approvals.always_allow", Edit::Add("xterm".into())).unwrap();
+        edit_file(&path, "approvals.always_allow", Edit::Add("xterm".into())).unwrap();
+        edit_file(&path, "guard.keywords", Edit::Remove("post".into())).unwrap();
+
+        let store = ConfigStore::load(Some(&path)).unwrap();
+        let c = &store.config;
+        assert_eq!(c.screenshot.attach, AttachMode::Always);
+        assert_eq!(c.tree.max_nodes, 300);
+        assert_eq!(c.sensitive.terminals, SensitiveMode::Ask);
+        assert_eq!(
+            c.approvals.always_allow,
+            vec!["com.apple.TextEdit", "xterm"]
+        );
+        assert!(!c.guard.keywords.contains(&"post".to_string()));
+        assert!(
+            c.guard.keywords.contains(&"send".to_string()),
+            "defaults kept"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("# keep me")
+        );
+
+        // Invalid values and unknown keys are rejected without writing.
+        assert!(edit_file(&path, "screenshot.attach", Edit::Set("sometimes".into())).is_err());
+        assert!(edit_file(&path, "tree.max_nodes", Edit::Set("lots".into())).is_err());
+        assert!(edit_file(&path, "screenshot.atach", Edit::Set("auto".into())).is_err());
+        assert_eq!(
+            ConfigStore::load(Some(&path))
+                .unwrap()
+                .config
+                .screenshot
+                .attach,
+            AttachMode::Always
+        );
+
+        edit_file(&path, "screenshot.attach", Edit::Unset).unwrap();
+        assert_eq!(
+            ConfigStore::load(Some(&path))
+                .unwrap()
+                .config
+                .screenshot
+                .attach,
+            AttachMode::Auto
+        );
+        assert_eq!(
+            unknown_keys("[tree]\nmax_nodez = 1\n"),
+            vec!["tree.max_nodez"]
+        );
+        assert_eq!(
+            get_value(&Config::default(), "timing.settle_ms"),
+            Some(toml::Value::Integer(40))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

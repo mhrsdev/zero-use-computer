@@ -88,9 +88,14 @@ pub struct Engine<B: Backend> {
     app_cache: Option<(Instant, Vec<AppInfo>)>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
+    /// Host-level overrides (e.g. command-line flags) re-applied on reload.
+    overrides: Option<ConfigOverride>,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
+
+/// Host-level settings forced on top of the config file.
+type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
 
 /// What a tree refresh produced.
 struct Refreshed {
@@ -123,6 +128,7 @@ impl<B: Backend> Engine<B> {
             states: HashMap::new(),
             app_cache: None,
             config_mtime,
+            overrides: None,
             clock: Box::new(Instant::now),
             sleep: Box::new(std::thread::sleep),
         }
@@ -143,13 +149,28 @@ impl<B: Backend> Engine<B> {
         }
         self.config_mtime = mtime;
         match ConfigStore::load(Some(&path)) {
-            Ok(store) => {
+            Ok(mut store) => {
+                if let Some(f) = &self.overrides {
+                    f(&mut store.config);
+                }
                 log::info!("reloaded settings from {}", path.display());
                 self.backend.configure(&store.config);
                 self.store = store;
             }
             Err(e) => log::warn!("keeping previous settings; {e}"),
         }
+    }
+
+    /// Settings the host always forces (e.g. command-line flags). Applied now
+    /// and again after every hot reload.
+    pub fn with_overrides(
+        mut self,
+        f: impl Fn(&mut crate::config::Config) + Send + 'static,
+    ) -> Self {
+        f(&mut self.store.config);
+        self.backend.configure(&self.store.config);
+        self.overrides = Some(Box::new(f));
+        self
     }
 
     /// Replace the settings (embedders that manage config themselves).
@@ -985,8 +1006,14 @@ impl<B: Backend> Engine<B> {
         let role = args.role.clone().map(|r| r.to_lowercase());
         let name = args.name.clone().map(|n| n.to_lowercase());
         let text = args.text.clone().map(|t| t.to_lowercase());
-        let timeout = Duration::from_millis(args.timeout_ms.max(1));
-        let poll = Duration::from_millis(args.poll_ms.clamp(20, 60_000));
+        let timing = &self.store.config.timing;
+        let timeout_ms = args.timeout_ms.unwrap_or(timing.wait_timeout_ms).max(1);
+        let poll = Duration::from_millis(
+            args.poll_ms
+                .unwrap_or(timing.wait_poll_ms)
+                .clamp(20, 60_000),
+        );
+        let timeout = Duration::from_millis(timeout_ms);
         let deadline = (self.clock)() + timeout;
 
         loop {
@@ -1014,7 +1041,7 @@ impl<B: Backend> Engine<B> {
             if (self.clock)() >= deadline {
                 return Err(Error::ActionFailed(format!(
                     "timed out after {}ms waiting for an element matching {}",
-                    args.timeout_ms,
+                    timeout_ms,
                     describe_matcher(&args)
                 )));
             }

@@ -293,17 +293,12 @@ pub struct WaitForArgs {
     pub text: Option<String>,
     #[serde(default)]
     pub state: ElementState,
-    #[serde(default = "default_timeout_ms")]
-    pub timeout_ms: u64,
-    #[serde(default = "default_poll_ms")]
-    pub poll_ms: u64,
-}
-
-fn default_timeout_ms() -> u64 {
-    10_000
-}
-fn default_poll_ms() -> u64 {
-    400
+    /// Defaults to `timing.wait_timeout_ms`.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Defaults to `timing.wait_poll_ms`.
+    #[serde(default)]
+    pub poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -498,10 +493,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "get_app_state",
             title: "Get app state",
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot. Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree.",
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree.",
             input_schema: schema(
                 app_props(),
-                json!({"disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false}}),
+                json!({
+                    "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
+                    "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."}
+                }),
                 &[],
             ),
             annotations: read_only("Get app state"),
@@ -657,8 +655,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "name": {"type": "string", "description": "Case-insensitive substring of the name/label."},
                     "text": {"type": "string", "description": "Case-insensitive substring of name or value."},
                     "state": {"type": "string", "enum": ["present", "visible", "enabled", "focused", "checked"], "default": "present"},
-                    "timeout_ms": {"type": "integer", "minimum": 1, "default": 10000},
-                    "poll_ms": {"type": "integer", "minimum": 1, "default": 400}
+                    "timeout_ms": {"type": "integer", "minimum": 1, "description": "Give up after this long (default from settings)."},
+                    "poll_ms": {"type": "integer", "minimum": 1, "description": "Re-check interval (default from settings)."}
                 }),
                 &[],
             ),
@@ -888,7 +886,7 @@ mod tests {
             "to_x": 2, "to_y": 2, "key": "Return", "disable_diff": true,
             "role": "button", "editable": true, "max_results": 5, "state": "visible",
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
-            "annotate": true, "continue_on_error": false, "tool": "list_apps",
+            "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "steps": [{"tool": "list_apps"}]
         });
         for d in definitions() {
