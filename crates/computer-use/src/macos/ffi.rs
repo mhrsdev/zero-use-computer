@@ -69,9 +69,13 @@ unsafe extern "C" {
         window_id: u32,
         image_option: u32,
     ) -> *const c_void; // CGImageRef
+    pub fn CGMainDisplayID() -> u32;
+    pub fn CGDisplayBounds(display: u32) -> CGRect;
 }
 
 // CGWindowListOption / CGWindowImageOption bits we use.
+pub const kCGWindowListOptionOnScreenOnly: u32 = 1 << 0;
+pub const kCGNullWindowID: u32 = 0;
 pub const kCGWindowListOptionIncludingWindow: u32 = 1 << 3;
 pub const kCGWindowImageBoundsIgnoreFraming: u32 = 1 << 0;
 pub const kCGWindowImageBestResolution: u32 = 1 << 3;

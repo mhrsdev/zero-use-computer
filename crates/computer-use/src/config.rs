@@ -70,6 +70,129 @@ impl Default for ApprovalConfig {
     }
 }
 
+/// How a sensitive category (or on-screen action) is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SensitiveMode {
+    /// Refuse, unless the specific app is in `approvals.always_allow`. Default.
+    #[default]
+    Block,
+    /// Ask the user each time (via approval), even in allow-all mode.
+    Ask,
+    /// Treat like any other app (normal approval mode applies).
+    Allow,
+}
+
+impl std::str::FromStr for SensitiveMode {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "block" | "deny" | "off" => Ok(Self::Block),
+            "ask" | "prompt" => Ok(Self::Ask),
+            "allow" | "on" => Ok(Self::Allow),
+            other => Err(Error::Config(format!(
+                "unknown sensitive mode `{other}` (expected block, ask or allow)"
+            ))),
+        }
+    }
+}
+
+/// Per-category handling of apps that are sensitive to automate. Everything
+/// defaults to `block`, but each category can be relaxed to `ask` or `allow`,
+/// and any individual app can always be permitted by adding it to
+/// `approvals.always_allow` (that per-app allowance overrides the category).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SensitiveConfig {
+    /// Terminal emulators and shells (they can run arbitrary commands).
+    pub terminals: SensitiveMode,
+    /// Password managers and credential stores.
+    pub credentials: SensitiveMode,
+    /// OS authentication / consent / login prompts.
+    pub security_prompts: SensitiveMode,
+    /// Agent host apps (controlling the agent's own UI).
+    pub agent_apps: SensitiveMode,
+    /// The agent's own process (and its parent).
+    pub own_process: SensitiveMode,
+    /// Extra app patterns to treat as terminals (id/name, `*` suffix wildcard).
+    pub extra_terminals: Vec<String>,
+    /// Extra app patterns to treat as credential stores.
+    pub extra_credentials: Vec<String>,
+    /// Extra app patterns to treat as security prompts.
+    pub extra_security_prompts: Vec<String>,
+}
+
+impl Default for SensitiveConfig {
+    fn default() -> Self {
+        Self {
+            terminals: SensitiveMode::Block,
+            credentials: SensitiveMode::Block,
+            security_prompts: SensitiveMode::Block,
+            agent_apps: SensitiveMode::Block,
+            own_process: SensitiveMode::Block,
+            extra_terminals: Vec::new(),
+            extra_credentials: Vec::new(),
+            extra_security_prompts: Vec::new(),
+        }
+    }
+}
+
+/// Confirmation guard for consequential on-screen actions (pressing a control
+/// whose label looks like Send / Delete / Pay …). Independent of app approval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuardConfig {
+    /// `ask` (default): require approval before such an action. `allow`: never
+    /// confirm. `block`: refuse them outright.
+    pub mode: SensitiveMode,
+    /// Case-insensitive substrings of an element's label/role that trigger it.
+    pub keywords: Vec<String>,
+}
+
+impl Default for GuardConfig {
+    fn default() -> Self {
+        Self {
+            mode: SensitiveMode::Ask,
+            keywords: [
+                "send",
+                "delete",
+                "remove",
+                "discard",
+                "pay",
+                "buy",
+                "purchase",
+                "checkout",
+                "order",
+                "transfer",
+                "confirm",
+                "publish",
+                "post",
+                "submit",
+                "trash",
+                "erase",
+                "wipe",
+                "shut down",
+                "restart",
+                "log out",
+                "sign out",
+                "uninstall",
+                "format",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+}
+
+/// Optional JSONL audit log of every tool call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AuditConfig {
+    pub enabled: bool,
+    /// File to append to. Defaults to `<home>/audit.log` when enabled.
+    pub path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageFormat {
@@ -112,6 +235,8 @@ pub struct TreeConfig {
     pub max_text_len: usize,
     /// Return a diff instead of the full tree when little changed.
     pub diff: bool,
+    /// After a mutating action, re-snapshot and append what changed.
+    pub report_changes: bool,
 }
 
 impl Default for TreeConfig {
@@ -122,6 +247,7 @@ impl Default for TreeConfig {
             max_depth: 64,
             max_text_len: 200,
             diff: true,
+            report_changes: true,
         }
     }
 }
@@ -130,8 +256,15 @@ impl Default for TreeConfig {
 #[serde(default)]
 pub struct Config {
     pub approvals: ApprovalConfig,
+    pub sensitive: SensitiveConfig,
+    pub guard: GuardConfig,
     pub screenshot: ScreenshotConfig,
     pub tree: TreeConfig,
+    pub audit: AuditConfig,
+    /// Expose the clipboard tools (get_clipboard / set_clipboard).
+    pub clipboard: bool,
+    /// Never attach screenshots to any tool result (tree-only operation).
+    pub text_only: bool,
     /// Seconds launch_app waits for the app to show a window.
     pub launch_timeout_secs: f64,
 }
@@ -140,8 +273,13 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             approvals: ApprovalConfig::default(),
+            sensitive: SensitiveConfig::default(),
+            guard: GuardConfig::default(),
             screenshot: ScreenshotConfig::default(),
             tree: TreeConfig::default(),
+            audit: AuditConfig::default(),
+            clipboard: true,
+            text_only: false,
             launch_timeout_secs: 15.0,
         }
     }

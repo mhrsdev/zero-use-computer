@@ -137,6 +137,15 @@ impl Backend for Box<dyn Backend> {
     ) -> Result<types::Capture> {
         (**self).capture(app, window)
     }
+    fn capture_screen(&mut self, region: Option<types::Rect>) -> Result<types::Capture> {
+        (**self).capture_screen(region)
+    }
+    fn clipboard_get(&mut self) -> Result<String> {
+        (**self).clipboard_get()
+    }
+    fn clipboard_set(&mut self, text: &str) -> Result<()> {
+        (**self).clipboard_set(text)
+    }
     fn perform_action(&mut self, element: types::ElementHandle, native_action: &str) -> Result<()> {
         (**self).perform_action(element, native_action)
     }

@@ -439,12 +439,8 @@ impl<B: Backend> Engine<B> {
             if a.hidden {
                 tags.push("hidden".to_string());
             }
-            if let Some(reason) = policy::hard_block_reason(a, &self.store) {
-                tags.push(format!("blocked: {reason}"));
-            } else if policy::evaluate(a, &self.store, &self.session_allowed)
-                == Verdict::NeedsApproval
-            {
-                tags.push("needs approval".to_string());
+            if let Some(t) = policy::tag(a, &self.store, &self.session_allowed) {
+                tags.push(t);
             }
             let tags = if tags.is_empty() {
                 String::new()
@@ -464,8 +460,8 @@ impl<B: Backend> Engine<B> {
         args: LaunchAppArgs,
         approver: &mut dyn Approver,
     ) -> Result<ToolOutput> {
-        // Enforce policy against a synthetic app record so terminals etc. can't
-        // be launched-and-driven around the block.
+        // Enforce policy against a synthetic app record so a blocked category
+        // (e.g. terminals) can't be launched-and-driven around the block.
         let probe = AppInfo {
             name: args.app.clone(),
             id: args.app.clone(),
@@ -474,7 +470,9 @@ impl<B: Backend> Engine<B> {
             frontmost: false,
             hidden: false,
         };
-        if let Some(reason) = policy::hard_block_reason(&probe, &self.store) {
+        if let Verdict::Blocked(reason) =
+            policy::evaluate(&probe, &self.store, &self.session_allowed)
+        {
             return Err(Error::Blocked(args.app.clone(), reason));
         }
 

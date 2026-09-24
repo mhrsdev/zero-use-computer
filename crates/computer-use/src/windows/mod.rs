@@ -7,6 +7,7 @@
 //! on the active desktop.
 
 mod capture;
+mod clipboard;
 mod input;
 
 use std::collections::HashMap;
@@ -399,6 +400,18 @@ impl Backend for WindowsBackend {
             .map(|h| HWND(h as *mut _))
             .ok_or_else(|| Error::Platform("no window handle to capture".into()))?;
         capture::capture_window(hwnd)
+    }
+
+    fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        capture::capture_screen(region)
+    }
+
+    fn clipboard_get(&mut self) -> Result<String> {
+        clipboard::get()
+    }
+
+    fn clipboard_set(&mut self, text: &str) -> Result<()> {
+        clipboard::set(text)
     }
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {

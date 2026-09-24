@@ -4,6 +4,7 @@
 
 mod cg;
 mod ffi;
+mod pasteboard;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -291,7 +292,19 @@ impl Backend for MacBackend {
                 return cg::capture_window(id, rect);
             }
         }
-        cg::capture(rect)
+        cg::capture_screen(Some(rect))
+    }
+
+    fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        cg::capture_screen(region)
+    }
+
+    fn clipboard_get(&mut self) -> Result<String> {
+        pasteboard::get()
+    }
+
+    fn clipboard_set(&mut self, text: &str) -> Result<()> {
+        pasteboard::set(text)
     }
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {

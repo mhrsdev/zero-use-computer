@@ -6,6 +6,7 @@
 //! selection) is preferred; synthesized mouse/keyboard input is the fallback.
 
 mod atspi;
+mod clipboard;
 mod x11;
 
 use std::collections::HashMap;
@@ -362,6 +363,20 @@ impl Backend for LinuxBackend {
             .filter(|b| !b.is_empty())
             .ok_or_else(|| Error::Platform("window has no on-screen bounds to capture".into()))?;
         self.x11()?.capture(rect)
+    }
+
+    fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        let x11 = self.x11()?;
+        let rect = region.unwrap_or_else(|| x11.root_rect());
+        x11.capture(rect)
+    }
+
+    fn clipboard_get(&mut self) -> Result<String> {
+        clipboard::get()
+    }
+
+    fn clipboard_set(&mut self, text: &str) -> Result<()> {
+        clipboard::set(text)
     }
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {

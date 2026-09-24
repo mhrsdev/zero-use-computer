@@ -99,6 +99,8 @@ pub struct MockBackend {
     pub no_native: std::collections::HashSet<ElementHandle>,
     /// Apps that appear (by name) only after launch_app is called.
     pub launchable: HashMap<String, MockApp>,
+    /// Current clipboard contents.
+    pub clipboard: String,
     next_handle: ElementHandle,
 }
 
@@ -314,13 +316,22 @@ impl Backend for MockBackend {
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
         let b = window.bounds.unwrap_or(Rect::new(0.0, 0.0, 100.0, 100.0));
-        let (w, h) = (b.width as u32, b.height as u32);
-        Ok(Capture {
-            width: w,
-            height: h,
-            rgba: vec![200; (w * h * 4) as usize],
-            bounds: b,
-        })
+        Ok(fake_capture(b))
+    }
+
+    fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        Ok(fake_capture(
+            region.unwrap_or(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+        ))
+    }
+
+    fn clipboard_get(&mut self) -> Result<String> {
+        Ok(self.clipboard.clone())
+    }
+
+    fn clipboard_set(&mut self, text: &str) -> Result<()> {
+        self.clipboard = text.to_string();
+        Ok(())
     }
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {
@@ -412,5 +423,15 @@ impl Backend for MockBackend {
         }
         self.events.push(Event::Type(target.pid, text.into()));
         Ok(())
+    }
+}
+
+fn fake_capture(b: Rect) -> Capture {
+    let (w, h) = (b.width.max(1.0) as u32, b.height.max(1.0) as u32);
+    Capture {
+        width: w,
+        height: h,
+        rgba: vec![200; (w * h * 4) as usize],
+        bounds: b,
     }
 }

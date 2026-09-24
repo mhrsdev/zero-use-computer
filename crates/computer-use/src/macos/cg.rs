@@ -163,7 +163,12 @@ pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
     }
 }
 
-pub fn capture(rect: Rect) -> Result<Capture> {
+/// Capture the whole main display, or a screen-space rectangle of it.
+pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
+    let rect = region.unwrap_or_else(|| {
+        let b = unsafe { ffi::CGDisplayBounds(ffi::CGMainDisplayID()) };
+        Rect::new(b.origin.x, b.origin.y, b.size.width, b.size.height)
+    });
     let bounds = CGRect {
         origin: CGPoint {
             x: rect.x,
@@ -177,8 +182,8 @@ pub fn capture(rect: Rect) -> Result<Capture> {
     let ptr = unsafe {
         ffi::CGWindowListCreateImage(
             bounds,
-            ffi::kCGWindowListOptionIncludingWindow,
-            0,
+            ffi::kCGWindowListOptionOnScreenOnly,
+            ffi::kCGNullWindowID,
             ffi::kCGWindowImageBoundsIgnoreFraming | ffi::kCGWindowImageBestResolution,
         )
     };

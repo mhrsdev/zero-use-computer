@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::keys::KeyCombo;
 use crate::types::{
     AppInfo, Capture, ElementHandle, InputTarget, MouseButton, PermissionStatus, Point, RawNode,
-    ScrollDirection, SnapshotOptions, WindowInfo,
+    Rect, ScrollDirection, SnapshotOptions, WindowInfo,
 };
 
 /// Result of an attempt to handle an element-level operation natively.
@@ -53,6 +53,28 @@ pub trait Backend {
     /// Capture the window's pixels (works for background windows where the
     /// platform allows it).
     fn capture(&mut self, app: &AppInfo, window: &WindowInfo) -> Result<Capture>;
+
+    /// Capture the whole (virtual) screen, or a screen-space rectangle of it.
+    /// Not tied to any app window.
+    fn capture_screen(&mut self, _region: Option<Rect>) -> Result<Capture> {
+        Err(crate::error::Error::Unsupported(
+            "screen capture is not implemented on this platform".into(),
+        ))
+    }
+
+    /// Read the system clipboard as text.
+    fn clipboard_get(&mut self) -> Result<String> {
+        Err(crate::error::Error::Unsupported(
+            "clipboard access is not implemented on this platform".into(),
+        ))
+    }
+
+    /// Write text to the system clipboard.
+    fn clipboard_set(&mut self, _text: &str) -> Result<()> {
+        Err(crate::error::Error::Unsupported(
+            "clipboard access is not implemented on this platform".into(),
+        ))
+    }
 
     /// Invoke a named accessibility action (native name) on an element.
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()>;

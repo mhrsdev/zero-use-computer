@@ -1,28 +1,36 @@
-//! Window capture via `PrintWindow` into a DIB. `PW_RENDERFULLCONTENT`
-//! captures many background windows without bringing them to the front.
+//! Capture via GDI: `PrintWindow` for a single window (works for many
+//! background windows) and `BitBlt` from the screen DC for full-screen or a
+//! region.
 
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, GetDC, HBITMAP, HGDIOBJ, ReleaseDC, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
+    SelectObject,
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
-use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, GetWindowRect, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
+};
 
 use crate::error::{Error, Result};
 use crate::types::{Capture, Rect};
 
 const PW_RENDERFULLCONTENT: u32 = 0x0000_0002;
 
-pub fn capture_window(hwnd: HWND) -> Result<Capture> {
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) }
-        .map_err(|e| Error::Platform(format!("GetWindowRect: {e}")))?;
-    let width = (rect.right - rect.left).max(1);
-    let height = (rect.bottom - rect.top).max(1);
-
+/// Render into an off-screen 32-bit top-down DIB, then read it out as RGBA.
+/// `render` is given the memory DC and returns whether it succeeded.
+fn with_dib(
+    width: i32,
+    height: i32,
+    bounds: Rect,
+    render: impl FnOnce(HDC) -> bool,
+) -> Result<Capture> {
+    let width = width.max(1);
+    let height = height.max(1);
     unsafe {
         let screen_dc = GetDC(None);
         if screen_dc.is_invalid() {
@@ -34,7 +42,7 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
             return Err(Error::Platform("CreateCompatibleDC failed".into()));
         }
 
-        let mut info = BITMAPINFO {
+        let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: width,
@@ -59,7 +67,7 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
         }
         let old = SelectObject(mem_dc, HGDIOBJ(bitmap.0));
 
-        let ok = PrintWindow(hwnd, mem_dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
+        let ok = render(mem_dc);
 
         let mut rgba = Vec::new();
         if ok {
@@ -67,7 +75,7 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
             let src = std::slice::from_raw_parts(bits as *const u8, n * 4);
             rgba.reserve(n * 4);
             for px in src.chunks_exact(4) {
-                // DIB is BGRA; the alpha byte is unreliable, so force opaque.
+                // DIB is BGRA; force opaque alpha.
                 rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
             }
         }
@@ -77,20 +85,55 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
         let _ = DeleteDC(mem_dc);
 
         if !ok {
-            return Err(Error::Platform("PrintWindow failed".into()));
+            return Err(Error::Platform("capture failed".into()));
         }
-        // Refresh the info header (unused, but keeps the binding live).
-        let _ = &mut info;
         Ok(Capture {
             width: width as u32,
             height: height as u32,
             rgba,
-            bounds: Rect::new(
-                f64::from(rect.left),
-                f64::from(rect.top),
-                f64::from(width),
-                f64::from(height),
-            ),
+            bounds,
         })
+    }
+}
+
+pub fn capture_window(hwnd: HWND) -> Result<Capture> {
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|e| Error::Platform(format!("GetWindowRect: {e}")))?;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    let bounds = Rect::new(
+        f64::from(rect.left),
+        f64::from(rect.top),
+        f64::from(width.max(1)),
+        f64::from(height.max(1)),
+    );
+    with_dib(width, height, bounds, |dc| unsafe {
+        PrintWindow(hwnd, dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool()
+    })
+}
+
+/// Capture the whole virtual desktop, or a screen-space rectangle of it.
+pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
+    let rect = region.unwrap_or_else(|| unsafe {
+        Rect::new(
+            f64::from(GetSystemMetrics(SM_XVIRTUALSCREEN)),
+            f64::from(GetSystemMetrics(SM_YVIRTUALSCREEN)),
+            f64::from(GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+            f64::from(GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+        )
+    });
+    let (sx, sy) = (rect.x as i32, rect.y as i32);
+    let (w, h) = (rect.width as i32, rect.height as i32);
+    unsafe {
+        let screen_dc = GetDC(None);
+        if screen_dc.is_invalid() {
+            return Err(Error::Platform("GetDC failed".into()));
+        }
+        let result = with_dib(w, h, rect, |dc| {
+            BitBlt(dc, 0, 0, w, h, Some(screen_dc), sx, sy, SRCCOPY).is_ok()
+        });
+        ReleaseDC(None, screen_dc);
+        result
     }
 }

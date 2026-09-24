@@ -263,6 +263,11 @@ impl X11 {
     }
 
     /// Capture a screen rectangle as RGBA.
+    /// The full screen rectangle (the root window's size).
+    pub fn root_rect(&self) -> Rect {
+        Rect::new(0.0, 0.0, f64::from(self.root_w), f64::from(self.root_h))
+    }
+
     pub fn capture(&self, rect: Rect) -> Result<Capture> {
         let x = rect.x.max(0.0) as i16;
         let y = rect.y.max(0.0) as i16;
