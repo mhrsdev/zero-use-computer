@@ -238,6 +238,122 @@ pub struct TypeTextArgs {
     pub element_index: Option<u32>,
 }
 
+/// A state an element can be matched on, for find_element / wait_for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ElementState {
+    /// Present in the tree at all (default).
+    #[default]
+    Present,
+    Visible,
+    Enabled,
+    Focused,
+    Checked,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct FindElementArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    /// Normalized role to match (e.g. "button", "text field").
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub role: Option<String>,
+    /// Substring of the element's name/label (case-insensitive).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub name: Option<String>,
+    /// Substring of the element's name or value (case-insensitive).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub text: Option<String>,
+    /// Only match editable elements.
+    #[serde(default)]
+    pub editable: bool,
+    #[serde(default = "twenty")]
+    pub max_results: usize,
+}
+
+fn twenty() -> usize {
+    20
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct WaitForArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub role: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub state: ElementState,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_poll_ms")]
+    pub poll_ms: u64,
+}
+
+fn default_timeout_ms() -> u64 {
+    10_000
+}
+fn default_poll_ms() -> u64 {
+    400
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenshotMode {
+    /// The whole (virtual) screen.
+    Full,
+    /// A screen-space rectangle (x, y, width, height).
+    Region,
+    /// A specific app window (default when `app` is given).
+    #[default]
+    Window,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ScreenshotArgs {
+    #[serde(default)]
+    pub mode: Option<ScreenshotMode>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    /// Draw each element's index over the window image (set-of-marks).
+    #[serde(default)]
+    pub annotate: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct BatchStep {
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct BatchArgs {
+    /// Applied to any step that does not name its own `app`.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    pub steps: Vec<BatchStep>,
+    /// Continue running after a step fails (default: stop).
+    #[serde(default)]
+    pub continue_on_error: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct SetClipboardArgs {
+    pub text: String,
+}
+
 /// A parsed tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
@@ -252,6 +368,12 @@ pub enum ToolCall {
     Drag(DragArgs),
     PressKey(PressKeyArgs),
     TypeText(TypeTextArgs),
+    FindElement(FindElementArgs),
+    WaitFor(WaitForArgs),
+    Screenshot(ScreenshotArgs),
+    Batch(BatchArgs),
+    GetClipboard,
+    SetClipboard(SetClipboardArgs),
 }
 
 fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
@@ -273,6 +395,12 @@ impl ToolCall {
             "drag" => ToolCall::Drag(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
+            "find_element" => ToolCall::FindElement(parse_args(name, args)?),
+            "wait_for" => ToolCall::WaitFor(parse_args(name, args)?),
+            "screenshot" => ToolCall::Screenshot(parse_args(name, args)?),
+            "batch" => ToolCall::Batch(parse_args(name, args)?),
+            "get_clipboard" => ToolCall::GetClipboard,
+            "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
         })
     }
@@ -290,6 +418,12 @@ impl ToolCall {
             ToolCall::Drag(_) => "drag",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
+            ToolCall::FindElement(_) => "find_element",
+            ToolCall::WaitFor(_) => "wait_for",
+            ToolCall::Screenshot(_) => "screenshot",
+            ToolCall::Batch(_) => "batch",
+            ToolCall::GetClipboard => "get_clipboard",
+            ToolCall::SetClipboard(_) => "set_clipboard",
         }
     }
 }
@@ -491,6 +625,108 @@ pub fn definitions() -> Vec<ToolDefinition> {
             ),
             annotations: acting("Type text"),
         },
+        ToolDefinition {
+            name: "find_element",
+            title: "Find element",
+            description: "Search the app's current accessibility tree for elements matching a role and/or a name/text substring, and return them with their element_index. Cheaper than reading the whole tree. Refreshes state, so the returned indices are current.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "role": {"type": "string", "description": "Normalized role to match, e.g. button, text field, checkbox, link."},
+                    "name": {"type": "string", "description": "Case-insensitive substring of the element's name/label."},
+                    "text": {"type": "string", "description": "Case-insensitive substring of the element's name or value."},
+                    "editable": {"type": "boolean", "default": false, "description": "Only editable elements."},
+                    "max_results": {"type": "integer", "minimum": 1, "default": 20}
+                }),
+                &[],
+            ),
+            annotations: read_only("Find element"),
+        },
+        ToolDefinition {
+            name: "wait_for",
+            title: "Wait for element",
+            description: "Poll the app until an element matching the given role/name/text (and optional state) appears, then return it. Use after actions that take time (loading, dialogs). Fails when the timeout elapses.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "role": {"type": "string", "description": "Normalized role to match."},
+                    "name": {"type": "string", "description": "Case-insensitive substring of the name/label."},
+                    "text": {"type": "string", "description": "Case-insensitive substring of name or value."},
+                    "state": {"type": "string", "enum": ["present", "visible", "enabled", "focused", "checked"], "default": "present"},
+                    "timeout_ms": {"type": "integer", "minimum": 1, "default": 10000},
+                    "poll_ms": {"type": "integer", "minimum": 1, "default": 400}
+                }),
+                &[],
+            ),
+            annotations: read_only("Wait for element"),
+        },
+        ToolDefinition {
+            name: "screenshot",
+            title: "Screenshot",
+            description: "Capture an image: the whole screen (mode=full), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With annotate=true on a window, each element's index is drawn over it (set-of-marks).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["full", "region", "window"], "description": "What to capture. Defaults to window when app is given, else full."},
+                    "app": {"type": "string", "description": "App for mode=window."},
+                    "window": {"type": "string", "description": "Window id or title substring for mode=window."},
+                    "x": {"type": "number", "description": "Region left (screen pixels)."},
+                    "y": {"type": "number", "description": "Region top (screen pixels)."},
+                    "width": {"type": "number", "description": "Region width."},
+                    "height": {"type": "number", "description": "Region height."},
+                    "annotate": {"type": "boolean", "default": false, "description": "Draw element indices over a window capture."}
+                },
+                "additionalProperties": false
+            }),
+            annotations: read_only("Screenshot"),
+        },
+        ToolDefinition {
+            name: "batch",
+            title: "Batch actions",
+            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit). Each step is {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true. Steps missing `app` inherit the top-level app.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "app": {"type": "string", "description": "Default app for steps that omit it."},
+                    "continue_on_error": {"type": "boolean", "default": false},
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string"},
+                                "arguments": {"type": "object"}
+                            },
+                            "required": ["tool"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["steps"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Batch actions"),
+        },
+        ToolDefinition {
+            name: "get_clipboard",
+            title: "Get clipboard",
+            description: "Read the system clipboard as text.",
+            input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            annotations: read_only("Get clipboard"),
+        },
+        ToolDefinition {
+            name: "set_clipboard",
+            title: "Set clipboard",
+            description: "Write text to the system clipboard (e.g. to paste it into an app with press_key cmd+v / ctrl+v).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Set clipboard"),
+        },
     ]
 }
 
@@ -499,9 +735,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eleven_tools_with_object_schemas() {
+    fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 11);
+        assert_eq!(defs.len(), 17);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -531,7 +767,11 @@ mod tests {
             "button": "right", "click_count": 2, "action": "show_menu", "value": "v",
             "text": "t", "occurrence": 1, "direction": "down", "amount": 0.5,
             "from_element_index": 1, "from_x": 1, "from_y": 1, "to_element_index": 2,
-            "to_x": 2, "to_y": 2, "key": "Return", "disable_diff": true
+            "to_x": 2, "to_y": 2, "key": "Return", "disable_diff": true,
+            "role": "button", "editable": true, "max_results": 5, "state": "visible",
+            "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
+            "annotate": true, "continue_on_error": false, "tool": "list_apps",
+            "steps": [{"tool": "list_apps"}]
         });
         for d in definitions() {
             let mut args = serde_json::Map::new();

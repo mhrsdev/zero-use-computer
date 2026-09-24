@@ -18,6 +18,9 @@ thiserror.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 x11rb = { version = "0.14", features = ["xtest"] }

@@ -115,6 +115,124 @@ pub fn encode(capture: &Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage
     ))
 }
 
+/// 3×5 pixel patterns for the digits 0–9 (row-major, top to bottom).
+const DIGITS: [[u8; 15]; 10] = [
+    [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1], // 0
+    [0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1], // 1
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1], // 2
+    [1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 3
+    [1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1], // 4
+    [1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 5
+    [1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1], // 6
+    [1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0], // 7
+    [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1], // 8
+    [1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1], // 9
+];
+
+fn put(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
+    if x < 0 || y < 0 || x >= i64::from(w) || y >= i64::from(h) {
+        return;
+    }
+    let i = ((y as u32 * w + x as u32) * 4) as usize;
+    buf[i] = rgb[0];
+    buf[i + 1] = rgb[1];
+    buf[i + 2] = rgb[2];
+    buf[i + 3] = 255;
+}
+
+fn draw_rect_outline(cap: &mut Capture, r: Rect, rgb: [u8; 3]) {
+    let (w, h) = (cap.width, cap.height);
+    let x0 = r.x as i64;
+    let y0 = r.y as i64;
+    let x1 = (r.x + r.width) as i64;
+    let y1 = (r.y + r.height) as i64;
+    for x in x0..=x1 {
+        put(&mut cap.rgba, w, h, x, y0, rgb);
+        put(&mut cap.rgba, w, h, x, y1, rgb);
+    }
+    for y in y0..=y1 {
+        put(&mut cap.rgba, w, h, x0, y, rgb);
+        put(&mut cap.rgba, w, h, x1, y, rgb);
+    }
+}
+
+fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: [u8; 3]) {
+    let pat = &DIGITS[digit % 10];
+    for row in 0..5i64 {
+        for col in 0..3i64 {
+            if pat[(row * 3 + col) as usize] == 1 {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        put(
+                            &mut cap.rgba,
+                            cap.width,
+                            cap.height,
+                            x + col * scale + dx,
+                            y + row * scale + dy,
+                            rgb,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Draw each element's index over the capture (set-of-marks). `marks` are
+/// (index, screen-space bounds); they are mapped into the capture's pixels.
+pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
+    let box_rgb = [255, 40, 40];
+    let text_rgb = [255, 255, 0];
+    let bg_rgb = [0, 0, 0];
+    let scale = 2i64;
+    let (box_w, ox, oy) = (cap.bounds.width, cap.bounds.x, cap.bounds.y);
+    if box_w <= 0.0 {
+        return;
+    }
+    let sx = f64::from(cap.width) / cap.bounds.width;
+    let sy = f64::from(cap.height) / cap.bounds.height;
+    for (index, b) in marks {
+        // Skip the window root and anything with no real size.
+        if b.width < 4.0 || b.height < 4.0 {
+            continue;
+        }
+        let r = Rect::new(
+            (b.x - ox) * sx,
+            (b.y - oy) * sy,
+            b.width * sx,
+            b.height * sy,
+        );
+        draw_rect_outline(cap, r, box_rgb);
+        // Label background + digits at the element's top-left.
+        let digits: Vec<usize> = index
+            .to_string()
+            .chars()
+            .map(|c| c as usize - '0' as usize)
+            .collect();
+        let label_w = digits.len() as i64 * (3 * scale + 1) + 2;
+        let label_h = 5 * scale + 2;
+        let lx = r.x as i64;
+        let ly = (r.y as i64 - label_h).max(0);
+        for yy in 0..label_h {
+            for xx in 0..label_w {
+                put(
+                    &mut cap.rgba,
+                    cap.width,
+                    cap.height,
+                    lx + xx,
+                    ly + yy,
+                    bg_rgb,
+                );
+            }
+        }
+        let mut cx = lx + 1;
+        for d in digits {
+            draw_digit(cap, d, cx, ly + 1, scale, text_rgb);
+            cx += 3 * scale + 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

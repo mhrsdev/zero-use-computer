@@ -38,6 +38,14 @@ pub enum ApprovalDecision {
 /// Implementations prompt the user (MCP elicitation, a desktop dialog, etc.).
 pub trait Approver {
     fn request(&mut self, req: &ApprovalRequest<'_>) -> ApprovalDecision;
+
+    /// Confirm a consequential on-screen action (the guard). `summary`
+    /// describes what is about to happen, e.g. `press button "Send"`. The
+    /// default assumes an interactive host and allows it; headless approvers
+    /// should override this.
+    fn confirm_action(&mut self, _summary: &str) -> bool {
+        true
+    }
 }
 
 /// Approve nothing (used when no approver is wired up).
@@ -45,6 +53,9 @@ pub struct DenyApprover;
 impl Approver for DenyApprover {
     fn request(&mut self, _req: &ApprovalRequest<'_>) -> ApprovalDecision {
         ApprovalDecision::Deny
+    }
+    fn confirm_action(&mut self, _summary: &str) -> bool {
+        false
     }
 }
 
@@ -397,7 +408,13 @@ impl<B: Backend> Engine<B> {
 
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        match call {
+        // For mutating actions, remember which app to re-inspect afterwards.
+        let report_app = if self.store.config.tree.report_changes {
+            mutating_app(&call)
+        } else {
+            None
+        };
+        let out = match call {
             ToolCall::ListApps => self.list_apps(),
             ToolCall::LaunchApp(a) => self.launch_app(a, approver),
             ToolCall::GetAppState(a) => self.get_app_state(a, approver),
@@ -409,6 +426,16 @@ impl<B: Backend> Engine<B> {
             ToolCall::Drag(a) => self.drag(a, approver),
             ToolCall::PressKey(a) => self.press_key(a, approver),
             ToolCall::TypeText(a) => self.type_text(a, approver),
+            ToolCall::FindElement(a) => self.find_element(a, approver),
+            ToolCall::WaitFor(a) => self.wait_for(a, approver),
+            ToolCall::Screenshot(a) => self.screenshot(a, approver),
+            ToolCall::Batch(a) => self.batch(a, approver),
+            ToolCall::GetClipboard => self.get_clipboard(),
+            ToolCall::SetClipboard(a) => self.set_clipboard(a),
+        }?;
+        match report_app {
+            Some(app) => Ok(self.append_changes(&app, out)),
+            None => Ok(out),
         }
     }
 
@@ -534,7 +561,7 @@ impl<B: Backend> Engine<B> {
         }
 
         let mut image = None;
-        if self.store.config.screenshot.enabled {
+        if self.store.config.screenshot.enabled && !self.store.config.text_only {
             match self.backend.capture(&app, &window) {
                 Ok(cap) => match imaging::encode(&cap, &self.store.config.screenshot) {
                     Ok((img, map)) => {
@@ -565,6 +592,12 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "click", approver)?;
         let count = args.click_count.clamp(1, 3);
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
+
+        // Confirm consequential presses (Send / Delete / Pay …) when guarded.
+        if let Anchor::Element(h) = &anchor {
+            let label = self.describe(&app, *h);
+            self.guard_action(&label, approver)?;
+        }
 
         // A single left click on an element with a press action goes through
         // the accessibility API so it works in the background.
@@ -619,6 +652,7 @@ impl<B: Backend> Engine<B> {
             ))
         })?;
         let native = action.native.clone();
+        self.guard_action(&node.label(), approver)?;
         self.backend.perform_action(handle, &native)?;
         self.settle();
         Ok(ToolOutput::text(format!(
@@ -777,6 +811,306 @@ impl<B: Backend> Engine<B> {
         )))
     }
 
+    // -- new tools ---------------------------------------------------------
+
+    fn find_element(
+        &mut self,
+        args: FindElementArgs,
+        approver: &mut dyn Approver,
+    ) -> Result<ToolOutput> {
+        let app = self.authorize(&args.app, "find_element", approver)?;
+        let window = self.resolve_window(&app, args.window.as_deref())?;
+        self.refresh(&app, &window, true)?;
+        let role = args.role.map(|r| r.to_lowercase());
+        let name = args.name.map(|n| n.to_lowercase());
+        let text = args.text.map(|t| t.to_lowercase());
+        let state = self.state(app.pid)?;
+        let mut hits: Vec<&Node> = state
+            .nodes
+            .iter()
+            .filter(|n| {
+                role.as_deref().is_none_or(|r| n.role == r)
+                    && name.as_deref().is_none_or(|q| {
+                        n.name
+                            .as_deref()
+                            .is_some_and(|nm| nm.to_lowercase().contains(q))
+                    })
+                    && text.as_deref().is_none_or(|q| node_text(n).contains(q))
+                    && (!args.editable || n.states.editable)
+            })
+            .collect();
+        hits.truncate(args.max_results.max(1));
+        if hits.is_empty() {
+            return Ok(ToolOutput::text(format!(
+                "No elements in {} match. Try get_app_state to see the whole tree.",
+                app.name
+            )));
+        }
+        let mut out = format!("{} matching element(s) in {}:\n", hits.len(), app.name);
+        for n in hits {
+            out.push_str(&format!("{} {}\n", n.index, n.line));
+        }
+        Ok(ToolOutput::text(out))
+    }
+
+    fn wait_for(&mut self, args: WaitForArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        let app = self.authorize(&args.app, "wait_for", approver)?;
+        let role = args.role.clone().map(|r| r.to_lowercase());
+        let name = args.name.clone().map(|n| n.to_lowercase());
+        let text = args.text.clone().map(|t| t.to_lowercase());
+        let timeout = Duration::from_millis(args.timeout_ms.max(1));
+        let poll = Duration::from_millis(args.poll_ms.clamp(20, 60_000));
+        let deadline = (self.clock)() + timeout;
+
+        loop {
+            if let Ok(window) = self.resolve_window(&app, args.window.as_deref())
+                && self.refresh(&app, &window, true).is_ok()
+            {
+                let state = self.state(app.pid)?;
+                let found = state.nodes.iter().find(|n| {
+                    role.as_deref().is_none_or(|r| n.role == r)
+                        && name.as_deref().is_none_or(|q| {
+                            n.name
+                                .as_deref()
+                                .is_some_and(|nm| nm.to_lowercase().contains(q))
+                        })
+                        && text.as_deref().is_none_or(|q| node_text(n).contains(q))
+                        && state_matches(n, args.state)
+                });
+                if let Some(n) = found {
+                    return Ok(ToolOutput::text(format!(
+                        "Found after waiting: {} {}",
+                        n.index, n.line
+                    )));
+                }
+            }
+            if (self.clock)() >= deadline {
+                return Err(Error::ActionFailed(format!(
+                    "timed out after {}ms waiting for an element matching {}",
+                    args.timeout_ms,
+                    describe_matcher(&args)
+                )));
+            }
+            (self.sleep)(poll);
+        }
+    }
+
+    fn screenshot(
+        &mut self,
+        args: ScreenshotArgs,
+        approver: &mut dyn Approver,
+    ) -> Result<ToolOutput> {
+        if self.store.config.text_only || !self.store.config.screenshot.enabled {
+            return Err(Error::Blocked(
+                "screenshot".into(),
+                "screenshots are disabled (text_only / screenshot.enabled=false)".into(),
+            ));
+        }
+        let mode = args.mode.unwrap_or(if args.app.is_some() {
+            ScreenshotMode::Window
+        } else {
+            ScreenshotMode::Full
+        });
+        let (capture, marks, label) = match mode {
+            ScreenshotMode::Full => (
+                self.backend.capture_screen(None)?,
+                None,
+                "full screen".into(),
+            ),
+            ScreenshotMode::Region => {
+                let (x, y, w, h) = match (args.x, args.y, args.width, args.height) {
+                    (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => (x, y, w, h),
+                    _ => {
+                        return Err(Error::InvalidArgs(
+                            "region mode needs x, y, width and height".into(),
+                        ));
+                    }
+                };
+                (
+                    self.backend.capture_screen(Some(Rect::new(x, y, w, h)))?,
+                    None,
+                    format!("region ({x:.0}, {y:.0}) {w:.0}x{h:.0}"),
+                )
+            }
+            ScreenshotMode::Window => {
+                let query = args
+                    .app
+                    .as_deref()
+                    .ok_or_else(|| Error::InvalidArgs("window mode needs `app`".into()))?;
+                let app = self.authorize(query, "screenshot", approver)?;
+                let window = self.resolve_window(&app, args.window.as_deref())?;
+                let cap = self.backend.capture(&app, &window)?;
+                let marks = if args.annotate {
+                    self.refresh(&app, &window, true)?;
+                    Some(
+                        self.state(app.pid)?
+                            .nodes
+                            .iter()
+                            .filter_map(|n| n.bounds.map(|b| (n.index, b)))
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    None
+                };
+                (
+                    cap,
+                    marks,
+                    format!("{} window \"{}\"", app.name, window.title),
+                )
+            }
+        };
+
+        let mut capture = capture;
+        if let Some(marks) = marks {
+            imaging::annotate(&mut capture, &marks);
+        }
+        let (img, _map) = imaging::encode(&capture, &self.store.config.screenshot)?;
+        Ok(ToolOutput {
+            text: format!("Screenshot of {label}: {}x{} px.", img.width, img.height),
+            image: Some(img),
+            is_error: false,
+        })
+    }
+
+    fn batch(&mut self, args: BatchArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        if args.steps.is_empty() {
+            return Err(Error::InvalidArgs("batch needs at least one step".into()));
+        }
+        let mut report = String::new();
+        let mut last_image = None;
+        let mut any_error = false;
+        for (i, step) in args.steps.iter().enumerate() {
+            // Inject the default app when the step omits one.
+            let mut step_args = match &step.arguments {
+                serde_json::Value::Object(m) => m.clone(),
+                serde_json::Value::Null => serde_json::Map::new(),
+                other => {
+                    report.push_str(&format!(
+                        "{}. {} — bad arguments (expected an object, got {other})\n",
+                        i + 1,
+                        step.tool
+                    ));
+                    any_error = true;
+                    break;
+                }
+            };
+            if !step_args.contains_key("app")
+                && let Some(app) = &args.app
+            {
+                step_args.insert("app".into(), serde_json::json!(app));
+            }
+            let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
+            let result = parsed.and_then(|c| self.call(c, approver));
+            match result {
+                Ok(out) => {
+                    let first = out.text.lines().next().unwrap_or("");
+                    report.push_str(&format!("{}. {} — {first}\n", i + 1, step.tool));
+                    if out.image.is_some() {
+                        last_image = out.image;
+                    }
+                    if out.is_error {
+                        any_error = true;
+                        if !args.continue_on_error {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    report.push_str(&format!("{}. {} — ERROR: {e}\n", i + 1, step.tool));
+                    any_error = true;
+                    if !args.continue_on_error {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(ToolOutput {
+            text: format!("Ran {} step(s):\n{report}", args.steps.len()),
+            image: last_image,
+            is_error: any_error,
+        })
+    }
+
+    fn get_clipboard(&mut self) -> Result<ToolOutput> {
+        if !self.store.config.clipboard {
+            return Err(Error::Blocked(
+                "clipboard".into(),
+                "clipboard access is disabled in config".into(),
+            ));
+        }
+        let text = self.backend.clipboard_get()?;
+        Ok(ToolOutput::text(if text.is_empty() {
+            "The clipboard is empty.".into()
+        } else {
+            format!("Clipboard:\n{text}")
+        }))
+    }
+
+    fn set_clipboard(&mut self, args: SetClipboardArgs) -> Result<ToolOutput> {
+        if !self.store.config.clipboard {
+            return Err(Error::Blocked(
+                "clipboard".into(),
+                "clipboard access is disabled in config".into(),
+            ));
+        }
+        self.backend.clipboard_set(&args.text)?;
+        Ok(ToolOutput::text(format!(
+            "Copied {} character(s) to the clipboard.",
+            args.text.chars().count()
+        )))
+    }
+
+    /// The action guard: confirm/refuse a consequential press on `label`.
+    fn guard_action(&mut self, label: &str, approver: &mut dyn Approver) -> Result<()> {
+        use crate::config::SensitiveMode;
+        let guard = &self.store.config.guard;
+        if guard.mode == SensitiveMode::Allow {
+            return Ok(());
+        }
+        let low = label.to_lowercase();
+        if !guard
+            .keywords
+            .iter()
+            .any(|k| low.contains(&k.to_lowercase()))
+        {
+            return Ok(());
+        }
+        match guard.mode {
+            SensitiveMode::Allow => Ok(()),
+            SensitiveMode::Block => Err(Error::Blocked(
+                label.to_string(),
+                "this looks like a consequential action; guard.mode is \"block\". Set guard.mode = \"ask\" or \"allow\" to permit it.".into(),
+            )),
+            SensitiveMode::Ask => {
+                if approver.confirm_action(&format!("perform: {label}")) {
+                    Ok(())
+                } else {
+                    Err(Error::Denied(format!("the user declined the action on {label}")))
+                }
+            }
+        }
+    }
+
+    /// Re-inspect an app after a mutating action and append what changed.
+    fn append_changes(&mut self, app_query: &str, mut out: ToolOutput) -> ToolOutput {
+        if out.is_error {
+            return out;
+        }
+        let Ok(app) = self.resolve_app(app_query) else {
+            return out;
+        };
+        let Ok(window) = self.resolve_window(&app, None) else {
+            return out;
+        };
+        if let Ok(text) = self.refresh(&app, &window, false)
+            && !text.starts_with("No changes")
+        {
+            out.text.push_str("\n\nState after the action:\n");
+            out.text.push_str(&text);
+        }
+        out
+    }
+
     // -- describers --------------------------------------------------------
 
     fn node_for_handle(&self, app: &AppInfo, handle: ElementHandle) -> Option<&Node> {
@@ -796,6 +1130,60 @@ impl<B: Backend> Engine<B> {
             Anchor::Element(h) => self.describe(app, *h),
             Anchor::Point(_) => "the point".into(),
         }
+    }
+}
+
+/// For a mutating tool, the app to re-inspect afterwards (change reporting).
+fn mutating_app(call: &ToolCall) -> Option<String> {
+    match call {
+        ToolCall::Click(a) => Some(a.app.clone()),
+        ToolCall::PerformSecondaryAction(a) => Some(a.app.clone()),
+        ToolCall::SetValue(a) => Some(a.app.clone()),
+        ToolCall::SelectText(a) => Some(a.app.clone()),
+        ToolCall::Scroll(a) => Some(a.app.clone()),
+        ToolCall::Drag(a) => Some(a.app.clone()),
+        ToolCall::PressKey(a) => Some(a.app.clone()),
+        ToolCall::TypeText(a) => Some(a.app.clone()),
+        _ => None,
+    }
+}
+
+/// Lowercased name + value of a node, for text matching.
+fn node_text(n: &Node) -> String {
+    let mut s = n.name.clone().unwrap_or_default();
+    if let Some(v) = &n.value {
+        s.push(' ');
+        s.push_str(v);
+    }
+    s.to_lowercase()
+}
+
+fn state_matches(n: &Node, want: crate::tools::ElementState) -> bool {
+    use crate::tools::ElementState::*;
+    match want {
+        Present => true,
+        Visible => !n.states.hidden,
+        Enabled => n.states.enabled,
+        Focused => n.states.focused,
+        Checked => n.states.checked == Some(true),
+    }
+}
+
+fn describe_matcher(args: &WaitForArgs) -> String {
+    let mut parts = Vec::new();
+    if let Some(r) = &args.role {
+        parts.push(format!("role={r}"));
+    }
+    if let Some(n) = &args.name {
+        parts.push(format!("name~\"{n}\""));
+    }
+    if let Some(t) = &args.text {
+        parts.push(format!("text~\"{t}\""));
+    }
+    if parts.is_empty() {
+        "any element".into()
+    } else {
+        parts.join(", ")
     }
 }
 
@@ -1195,5 +1583,202 @@ mod tests {
         // "safari" (lowercased) is only a substring of both -> frontmost wins.
         assert_eq!(resolve_app_in(&apps, "afari").unwrap().pid, 2);
         assert!(resolve_app_in(&apps, "Firefox").is_err());
+    }
+
+    #[test]
+    fn find_element_filters() {
+        let mut e = engine();
+        let out = e
+            .call_tool(
+                "find_element",
+                serde_json::json!({"app": "TextEdit", "role": "button"}),
+                &mut allow(),
+            )
+            .text;
+        assert!(out.contains("Bold"), "{out}");
+        assert!(!out.contains("text area"), "{out}");
+
+        let out = e.call_tool(
+            "find_element",
+            serde_json::json!({"app": "TextEdit", "editable": true}),
+            &mut allow(),
+        );
+        assert!(out.text.contains("text area"), "{}", out.text);
+    }
+
+    #[test]
+    fn wait_for_finds_immediately() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "wait_for",
+            serde_json::json!({"app": "TextEdit", "name": "Bold", "timeout_ms": 500}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Found after waiting"));
+
+        let out = e.call_tool(
+            "wait_for",
+            serde_json::json!({"app": "TextEdit", "name": "Nonexistent", "timeout_ms": 60, "poll_ms": 20}),
+            &mut allow(),
+        );
+        assert!(out.is_error);
+        assert!(out.text.contains("timed out"));
+    }
+
+    #[test]
+    fn clipboard_round_trips() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "set_clipboard",
+            serde_json::json!({"text": "hello clip"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error);
+        let out = e.call_tool("get_clipboard", serde_json::json!({}), &mut allow());
+        assert!(out.text.contains("hello clip"), "{}", out.text);
+    }
+
+    #[test]
+    fn screenshot_full_and_region() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "full"}),
+            &mut allow(),
+        );
+        assert!(out.image.is_some());
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": 0, "y": 0, "width": 100, "height": 50}),
+            &mut allow(),
+        );
+        assert!(out.image.is_some());
+        // Region without full coords is an error.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": 0}),
+            &mut allow(),
+        );
+        assert!(out.is_error);
+    }
+
+    #[test]
+    fn screenshot_window_annotated() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "window", "app": "TextEdit", "annotate": true}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+    }
+
+    #[test]
+    fn batch_runs_steps_and_stops_on_error() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({
+                "app": "TextEdit",
+                "steps": [
+                    {"tool": "get_app_state", "arguments": {}},
+                    {"tool": "set_value", "arguments": {"element_index": 4, "value": "hi"}}
+                ]
+            }),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("1. get_app_state"));
+        assert!(out.text.contains("2. set_value"));
+
+        // A failing step stops the batch.
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({
+                "app": "TextEdit",
+                "steps": [
+                    {"tool": "click", "arguments": {"element_index": 999}},
+                    {"tool": "get_app_state", "arguments": {}}
+                ]
+            }),
+            &mut allow(),
+        );
+        assert!(out.is_error);
+        assert!(
+            !out.text.contains("2. get_app_state"),
+            "should stop early: {}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn guard_blocks_and_confirms_sensitive_press() {
+        // A backend with a "Send" button that has a press action.
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(50);
+        app.elements.push(
+            crate::mock::MockElement::new(9, "button", "Send", Rect::new(0.0, 0.0, 40.0, 20.0))
+                .child_of(1)
+                .with_actions(&["AXPress"]),
+        );
+        backend.add_app(app);
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "TextEdit"}),
+            &mut allow(),
+        );
+        let send = e
+            .state(50)
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Send"))
+            .unwrap()
+            .index;
+        // DenyApprover.confirm_action() returns false -> blocked.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": send}),
+            &mut DenyApprover,
+        );
+        assert!(out.is_error, "guard should block: {}", out.text);
+        // AllowApprover confirms -> allowed.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": send}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn change_report_appended_after_action() {
+        let mut e = engine();
+        e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "TextEdit"}),
+            &mut allow(),
+        );
+        let doc = e
+            .state(4242)
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.role == "text area")
+            .unwrap()
+            .index;
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "changed!"}),
+            &mut allow(),
+        );
+        assert!(out.text.contains("State after the action"), "{}", out.text);
+        assert!(out.text.contains("changed!"), "{}", out.text);
     }
 }

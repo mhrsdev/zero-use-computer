@@ -183,3 +183,69 @@ fn atspi_tree_actions_and_screenshot() {
 
     eprintln!("live test passed");
 }
+
+#[test]
+fn new_tools_over_real_backend() {
+    if !live() {
+        return;
+    }
+    let mut e = engine();
+    let app = wait_for_app(&mut e);
+
+    // find_element: locate the button by role.
+    let out = e.call_tool(
+        "find_element",
+        serde_json::json!({"app": app, "role": "button"}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "find_element: {}", out.text);
+    assert!(out.text.contains("Click Me"), "find_element:\n{}", out.text);
+
+    // wait_for: the entry is already present.
+    let out = e.call_tool(
+        "wait_for",
+        serde_json::json!({"app": app, "role": "text field", "timeout_ms": 3000}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "wait_for: {}", out.text);
+
+    // screenshot: full screen and a region (X11 GetImage path).
+    let out = e.call_tool(
+        "screenshot",
+        serde_json::json!({"mode": "full"}),
+        &mut AllowApprover,
+    );
+    assert!(out.image.is_some(), "full screenshot: {}", out.text);
+    let out = e.call_tool(
+        "screenshot",
+        serde_json::json!({"mode": "region", "x": 0, "y": 0, "width": 200, "height": 120}),
+        &mut AllowApprover,
+    );
+    assert!(out.image.is_some(), "region screenshot: {}", out.text);
+    let img = out.image.unwrap();
+    assert!(img.width > 0 && img.height > 0);
+
+    // annotated window screenshot (set-of-marks overlay).
+    let out = e.call_tool(
+        "screenshot",
+        serde_json::json!({"mode": "window", "app": app, "window": "CU Test", "annotate": true}),
+        &mut AllowApprover,
+    );
+    assert!(out.image.is_some(), "annotated screenshot: {}", out.text);
+
+    // clipboard round-trip via xclip (installed by the harness).
+    let out = e.call_tool(
+        "set_clipboard",
+        serde_json::json!({"text": "computer-use clip"}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "set_clipboard: {}", out.text);
+    let out = e.call_tool("get_clipboard", serde_json::json!({}), &mut AllowApprover);
+    assert!(
+        out.text.contains("computer-use clip"),
+        "clipboard round-trip:\n{}",
+        out.text
+    );
+
+    eprintln!("new-tools live test passed");
+}

@@ -263,6 +263,37 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         }
     }
 
+    /// Confirm a guarded on-screen action (the guard), via elicitation.
+    fn confirm(&mut self, summary: &str) -> bool {
+        if !self.client_elicitation {
+            return self.headless == HeadlessApproval::Allow;
+        }
+        let out_id = json!(format!("confirm-{}", self.next_id()));
+        let req = OutgoingRequest {
+            jsonrpc: JSONRPC,
+            id: out_id.clone(),
+            method: "elicitation/create".into(),
+            params: json!({
+                "message": format!("Confirm this action? The agent is about to {summary}."),
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "confirm": {
+                            "type": "boolean",
+                            "title": "Proceed",
+                            "description": "Allow this consequential action.",
+                        }
+                    },
+                    "required": ["confirm"]
+                }
+            }),
+        };
+        if self.write_msg(&req).is_err() {
+            return false;
+        }
+        !matches!(self.await_elicit_response(&out_id), ApprovalDecision::Deny)
+    }
+
     fn next_id(&mut self) -> i64 {
         let id = self.next_out_id;
         self.next_out_id += 1;
@@ -285,8 +316,10 @@ fn decode_elicit(result: Option<Value>, error: Option<Value>) -> ApprovalDecisio
         return ApprovalDecision::Deny;
     }
     let content = result.get("content").cloned().unwrap_or(json!({}));
+    // `approve` for app access, `confirm` for the action guard.
     let approve = content
         .get("approve")
+        .or_else(|| content.get("confirm"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !approve {
@@ -311,6 +344,10 @@ struct McpApprover<'a, R: BufRead, W: Write, B: Backend> {
 impl<R: BufRead, W: Write, B: Backend> Approver for McpApprover<'_, R, W, B> {
     fn request(&mut self, req: &ApprovalRequest<'_>) -> ApprovalDecision {
         self.server.elicit(&req.app.name, &req.app.id, req.tool)
+    }
+
+    fn confirm_action(&mut self, summary: &str) -> bool {
+        self.server.confirm(summary)
     }
 }
 
@@ -379,7 +416,7 @@ mod tests {
         // initialize
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "computer-use");
         // tools/list has 11 tools
-        assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), 11);
+        assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), 17);
         // list_apps ran
         let text = out[2]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("TextEdit"));
