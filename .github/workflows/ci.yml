@@ -26,6 +26,7 @@ jobs:
             libdbus-1-dev libxcb1-dev pkg-config
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets
+      - run: cargo clippy -p computer-use-mcp --all-targets --features http
       - run: cargo test --workspace
 
   cross-check:
@@ -61,7 +62,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libdbus-1-dev libxcb1-dev pkg-config \
-            xvfb dbus-x11 at-spi2-core libatk-bridge2.0-0 \
+            xvfb dbus-x11 at-spi2-core libatk-bridge2.0-0 xclip \
             gtk-3-examples libgtk-3-bin python3-gi gir1.2-gtk-3.0
       - name: Run live backend test
         run: bash crates/computer-use/tests/run_live_linux.sh

@@ -446,9 +446,47 @@ impl<B: Backend> Engine<B> {
         args: serde_json::Value,
         approver: &mut dyn Approver,
     ) -> ToolOutput {
-        match ToolCall::parse(name, args).and_then(|c| self.call(c, approver)) {
+        let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
+        let out = match ToolCall::parse(name, args).and_then(|c| self.call(c, approver)) {
             Ok(out) => out,
             Err(e) => ToolOutput::error(&e),
+        };
+        self.audit(name, app.as_deref(), &out);
+        out
+    }
+
+    /// Append a bounded JSONL record of the call, if auditing is enabled. Only
+    /// metadata is written — never arguments, tree text or screenshots.
+    fn audit(&self, tool: &str, app: Option<&str>, out: &ToolOutput) {
+        let audit = &self.store.config.audit;
+        if !audit.enabled {
+            return;
+        }
+        let path = audit
+            .path
+            .clone()
+            .unwrap_or_else(|| crate::config::home_dir().join("audit.log"));
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let record = serde_json::json!({
+            "ts": ts,
+            "tool": tool,
+            "app": app,
+            "ok": !out.is_error,
+            "summary": out.text.lines().next().unwrap_or("").chars().take(160).collect::<String>(),
+        });
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{record}");
         }
     }
 

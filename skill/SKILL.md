@@ -32,13 +32,28 @@ a window is in the background.
      `actions=[…]` (e.g. `show_menu`, `increment`, `expand`, `toggle`).
    - `select_text` — select a substring (or all) inside a text element.
    - `scroll` / `drag` — scroll a list/area, or drag between elements/points.
-3. **Re-check with `get_app_state`** after actions that change the UI. After the
-   first call it returns a **diff** (`+ added`, `~ changed`, `- removed`);
-   unchanged elements keep their indices. Pass `disable_diff: true` for the full
-   tree again.
+3. **Re-check.** Mutating tools already append "state after the action" showing
+   what changed, so you usually don't need a separate `get_app_state`. When you
+   do call it, after the first call it returns a **diff** (`+ added`,
+   `~ changed`, `- removed`); pass `disable_diff: true` for the full tree.
 
 Use `list_apps` to find the exact app, and `launch_app` to start one that isn't
 running (then `get_app_state`).
+
+## Helpers that save turns
+
+- `find_element(app, role/name/text)` — get just the elements you need with
+  their indices, instead of reading the whole tree.
+- `wait_for(app, role/name/text, state, timeout_ms)` — after something that
+  takes time (loading, a dialog opening), wait for the element instead of
+  polling `get_app_state` yourself.
+- `batch(steps=[{tool, arguments}, …])` — run several actions in one call
+  (e.g. focus a field, type, then press a button).
+- `screenshot(mode)` — capture the `full` screen, a `region` (x/y/width/height),
+  or a `window`; add `annotate: true` on a window to see each element's index
+  drawn on the image.
+- `get_clipboard` / `set_clipboard` — move text between apps (set it, then
+  `press_key` "cmd+v" / "ctrl+v").
 
 ## Rules
 
@@ -48,8 +63,11 @@ running (then `get_app_state`).
   call `get_app_state` again and use the new numbers.
 - **The first use of an app may ask the user for approval.** If access is
   denied, don't retry — ask the user how to proceed.
-- **You cannot control** terminals, password managers / OS security & login
-  prompts, or the agent's own app. Ask the user to do those steps.
-- **Pause before consequential actions** — sending, purchasing, deleting,
-  or anything that changes important data. Confirm intent first.
+- **Sensitive apps are blocked by default** — terminals, password managers,
+  OS security & login prompts, and the agent's own app. The user can allow
+  these in their settings; until they do, don't try to drive them — ask the
+  user to do that step or to enable it.
+- **Consequential actions may ask for a second confirmation** (Send, Delete,
+  Pay …). Still pause and confirm intent yourself before anything that sends,
+  purchases, deletes, or changes important data.
 - Keep tasks narrow and check the screenshot when the tree is ambiguous.

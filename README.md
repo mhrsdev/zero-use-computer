@@ -47,6 +47,17 @@ This project follows the same architecture and behaviour:
 | `drag` | Drag between elements or points. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`. |
 | `type_text` | Type into the focused element. |
+| `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
+| `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
+| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay. |
+| `batch` | Run several tools in one call (fill a form, then submit). |
+| `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
+
+Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
+region/full `screenshot`, clipboard) cut round-trips and token use, and the
+engine adds two safety layers Codex leaves to the model: an **action guard**
+that confirms consequential presses (Send / Delete / Pay …) and an optional
+**audit log**.
 
 The full operating contract the model should follow is in
 [`skill/SKILL.md`](skill/SKILL.md).
@@ -167,6 +178,22 @@ mode = "prompt"                 # prompt | allowlist | allow-all
 always_allow = ["com.apple.TextEdit"]
 always_deny  = []
 
+# Apps that are sensitive to automate. Each category is blocked by default;
+# relax it to "ask" or "allow", or allow one specific app by adding it to
+# approvals.always_allow (that overrides the category).
+[sensitive]
+terminals        = "block"      # block | ask | allow
+credentials      = "block"      # password managers
+security_prompts = "block"      # OS auth / consent / login prompts
+agent_apps       = "block"      # agent host apps
+own_process      = "block"      # the agent's own process
+# extra_terminals = ["myshell"] # extend a category with your own patterns
+
+# Confirm consequential on-screen actions (independent of app approval).
+[guard]
+mode = "ask"                    # ask | allow | block
+# keywords = ["send", "delete", "pay", "buy", "confirm", ...]
+
 [screenshot]
 enabled = true
 max_dimension = 1280            # longest edge sent to the model
@@ -175,12 +202,35 @@ format = "png"                  # png | jpeg
 [tree]
 max_nodes = 1200
 diff = true
+report_changes = true           # append "state after the action" to results
+
+[audit]
+enabled = false                 # append a JSONL record (metadata only) per call
+# path = "~/.computer-use/audit.log"
+
+clipboard = true                # expose get_clipboard / set_clipboard
+text_only = false               # never attach screenshots (tree-only)
 ```
 
-Admins can enforce policy via a managed config (`/etc/computer-use/managed.toml`
-on Linux, `/Library/Application Support/ComputerUse/managed.toml` on macOS,
+Everything defaults to safe values; you open up access from settings, one
+category or one app at a time. Admins can enforce policy via a managed config
+(`/etc/computer-use/managed.toml` on Linux,
+`/Library/Application Support/ComputerUse/managed.toml` on macOS,
 `%ProgramData%\ComputerUse\managed.toml` on Windows) with `denied_apps`,
-`allowed_apps`, or a forced `approval_mode`.
+`allowed_apps`, or a forced `approval_mode` — these always win over user config.
+
+### Remote transport (optional)
+
+Build with the `http` feature to serve MCP over HTTP for a remote agent:
+
+```bash
+cargo build --release -p computer-use-mcp --features http
+computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN" --approval allow-all
+```
+
+Each POST body is one JSON-RPC message. There is no interactive approval
+channel over HTTP, so run it with a deliberate approval policy, require a bearer
+token, and bind it to localhost or a trusted network.
 
 ## Platform setup
 
@@ -196,11 +246,16 @@ on Linux, `/Library/Application Support/ComputerUse/managed.toml` on macOS,
 
 ## Safety
 
-Terminals, password managers, and OS authentication/consent prompts are
-hard-blocked and can never be automated, along with the agent's own app. The
-first use of any other app is gated by approval. The model is instructed (see
-the skill) to pause before consequential actions such as sending, purchasing or
-deleting.
+Sensitive apps — terminals, password managers, OS authentication/consent
+prompts, agent host apps, and the agent's own process — are **blocked by
+default**, but this is policy, not a hard wall: each category can be set to
+`ask` or `allow`, or a single app permitted via `approvals.always_allow`, so you
+grant access deliberately from settings (admin `managed.toml` still overrides).
+The first use of any other app is gated by approval. On top of that, the
+**action guard** confirms consequential presses (Send / Delete / Pay …) at the
+engine level — not just by trusting the model — and an optional **audit log**
+records every call. The model is also instructed (see the skill) to pause before
+such actions.
 
 ## Development
 

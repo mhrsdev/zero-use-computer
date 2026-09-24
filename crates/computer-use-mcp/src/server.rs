@@ -351,15 +351,19 @@ impl<R: BufRead, W: Write, B: Backend> Approver for McpApprover<'_, R, W, B> {
     }
 }
 
-fn instructions() -> String {
+pub(crate) fn instructions() -> String {
     "Control desktop apps through their accessibility tree plus screenshots. \
      On every turn, call get_app_state(app) first: it returns the app's numbered \
      accessibility tree and a screenshot. Act on elements by their element_index \
      (click, set_value, perform_secondary_action, select_text, scroll, drag, \
      press_key, type_text); indices are only valid until the next get_app_state, \
      which afterwards returns a diff. Prefer element_index over x/y coordinates. \
-     Terminals, credential/security prompts and the agent's own app cannot be \
-     controlled. The first use of each app may prompt the user for approval."
+     Use find_element and wait_for to target elements without reading the whole \
+     tree, batch to run several actions at once, screenshot for a full/region/\
+     window image, and get_clipboard/set_clipboard for text. Terminals, \
+     credential and OS-security prompts, and the agent's own app are blocked by \
+     default (the user can allow them in settings); the first use of each app may \
+     prompt for approval, and consequential actions may ask for confirmation."
         .to_string()
 }
 

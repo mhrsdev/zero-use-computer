@@ -11,6 +11,10 @@ rust-version.workspace = true
 name = "computer-use-mcp"
 path = "src/main.rs"
 
+[features]
+# Optional remote transport: MCP over HTTP (JSON-RPC POST).
+http = ["dep:tiny_http"]
+
 [dependencies]
 computer-use.workspace = true
 anyhow.workspace = true
@@ -20,3 +24,4 @@ env_logger.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tiny_http = { version = "0.12", optional = true }

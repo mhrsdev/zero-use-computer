@@ -1,6 +1,8 @@
 //! `computer-use-mcp` — an MCP stdio server (and small CLI) that gives any
 //! MCP-capable agent the Codex-style computer-use tools.
 
+#[cfg(feature = "http")]
+mod http;
 mod jsonrpc;
 mod server;
 
@@ -47,6 +49,15 @@ struct Common {
     /// What to do when approval is needed but the client can't be asked.
     #[arg(long, global = true, value_enum, default_value_t = HeadlessArg::Deny)]
     headless_approve: HeadlessArg,
+
+    /// Serve MCP over HTTP on this address (e.g. 127.0.0.1:8787) instead of
+    /// stdio. Requires the `http` build feature. Approvals are non-interactive.
+    #[arg(long, global = true)]
+    http: Option<String>,
+
+    /// Bearer token required on the HTTP endpoint (or $COMPUTER_USE_HTTP_TOKEN).
+    #[arg(long, global = true)]
+    http_token: Option<String>,
 
     /// Log level (error, warn, info, debug, trace). Logs go to stderr.
     #[arg(long, global = true, default_value = "warn")]
@@ -176,6 +187,11 @@ fn main() -> Result<()> {
 
 fn serve(common: &Common) -> Result<()> {
     let engine = build_engine(common)?;
+
+    if let Some(addr) = &common.http {
+        return serve_http(common, engine, addr);
+    }
+
     log::info!(
         "computer-use-mcp {} serving on stdio ({} backend)",
         env!("CARGO_PKG_VERSION"),
@@ -190,6 +206,22 @@ fn serve(common: &Common) -> Result<()> {
         common.headless_approve.into(),
     );
     server.run().context("serving MCP over stdio")
+}
+
+#[cfg(feature = "http")]
+fn serve_http(common: &Common, engine: Engine<Box<dyn Backend>>, addr: &str) -> Result<()> {
+    let token = common
+        .http_token
+        .clone()
+        .or_else(|| std::env::var("COMPUTER_USE_HTTP_TOKEN").ok())
+        .filter(|t| !t.is_empty());
+    let allow = matches!(common.headless_approve, HeadlessArg::Allow);
+    http::serve(engine, addr, token, allow)
+}
+
+#[cfg(not(feature = "http"))]
+fn serve_http(_common: &Common, _engine: Engine<Box<dyn Backend>>, _addr: &str) -> Result<()> {
+    anyhow::bail!("this build has no HTTP support; rebuild with `--features http`")
 }
 
 fn run_and_print(common: &Common, tool: &str, args: Value) -> Result<()> {
