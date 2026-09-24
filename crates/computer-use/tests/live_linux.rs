@@ -251,3 +251,100 @@ fn new_tools_over_real_backend() {
 
     eprintln!("new-tools live test passed");
 }
+
+fn click_named(e: &mut Engine<LinuxBackend>, app: &str, tree: &str, name: &str) -> String {
+    let index = index_of(tree, name);
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": app, "element_index": index}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "click {name}: {}", out.text);
+    out.text
+}
+
+#[test]
+fn screen_memory_over_real_backend() {
+    if !live() {
+        return;
+    }
+    let mut e = engine();
+    let app = wait_for_app(&mut e);
+
+    let first = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": app, "window": "CU Test"}),
+        &mut AllowApprover,
+    );
+    assert!(!first.is_error, "{}", first.text);
+    let tree = first.text.clone();
+    let click_me = index_of(&tree, "Click Me");
+
+    // Another page of the same window: a new screen.
+    let out = click_named(&mut e, &app, &tree, "Next page");
+    std::thread::sleep(Duration::from_millis(150));
+    eprintln!("--- after Next page ---\n{out}");
+    assert!(out.contains("(new)"), "expected a new screen:\n{out}");
+    assert!(out.contains("Detail line"), "page 2 not shown:\n{out}");
+
+    // Back: recognised, nothing to re-read.
+    let out = click_named(&mut e, &app, &out, "Back");
+    eprintln!("--- after Back ---\n{out}");
+    assert!(out.contains("(seen before)"), "not recognised:\n{out}");
+    let t = Instant::now();
+    let again = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": app, "window": "CU Test"}),
+        &mut AllowApprover,
+    );
+    eprintln!(
+        "--- get_app_state after Back ({:?}) ---\n{}",
+        t.elapsed(),
+        again.text
+    );
+    assert!(again.image.is_none(), "screenshot re-sent:\n{}", again.text);
+    assert!(
+        !again.text.contains("Click Me"),
+        "tree re-sent:\n{}",
+        again.text
+    );
+    let found = e.call_tool(
+        "find_element",
+        serde_json::json!({"app": app, "name": "Click Me"}),
+        &mut AllowApprover,
+    );
+    assert_eq!(
+        index_of(&found.text, "Click Me"),
+        click_me,
+        "{}",
+        found.text
+    );
+
+    // A modal dialog, then back to the main window.
+    let out = click_named(&mut e, &app, &tree, "Open dialog");
+    std::thread::sleep(Duration::from_millis(300));
+    eprintln!("--- after Open dialog ---\n{out}");
+    assert!(
+        out.contains("now on screen") && out.contains("CU Dialog") && out.contains("button \"OK\""),
+        "the report didn't follow the dialog:\n{out}"
+    );
+    let out = click_named(&mut e, &app, &out, "OK");
+    std::thread::sleep(Duration::from_millis(300));
+    eprintln!("--- after OK ---\n{out}");
+    assert!(
+        out.contains("back on screen #1 (seen before), window \"CU Test\""),
+        "main window not recognised after the dialog:\n{out}"
+    );
+    let found = e.call_tool(
+        "find_element",
+        serde_json::json!({"app": app, "name": "Click Me"}),
+        &mut AllowApprover,
+    );
+    assert_eq!(
+        index_of(&found.text, "Click Me"),
+        click_me,
+        "{}",
+        found.text
+    );
+    eprintln!("screen-memory live test passed");
+}

@@ -25,6 +25,11 @@ This project follows the same architecture and behaviour:
 - **Turn-scoped indices with diffs.** Element indices are valid only until the
   next `get_app_state`; subsequent calls return a **diff** (unless
   `disable_diff` is set), keeping token use low.
+- **Screen memory (beyond Codex).** When the app returns to a screen the model
+  has already seen — it went back a page, closed a dialog, reopened a panel —
+  the engine recognises it, gives back the element indices the model saw then,
+  and sends only what changed: no new tree, no new screenshot to re-analyse.
+  See [Screen memory & caching](#screen-memory--caching).
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
   `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`.
@@ -62,6 +67,62 @@ that confirms consequential presses (Send / Delete / Pay …) and an optional
 The full operating contract the model should follow is in
 [`skill/SKILL.md`](skill/SKILL.md).
 
+## Screen memory & caching
+
+An agent spends most of its tokens and time re-reading screens. The engine
+keeps several layers of cache so it never makes the model look at the same
+thing twice:
+
+| Layer | What it saves | Setting |
+|---|---|---|
+| **Screen memory** | Every screen the model has been shown is remembered compactly (per element: hashes, its index, its rendered line). When a view matches a remembered screen, its old indices come back and only the difference from *what the model saw then* is sent. | `[cache] enabled`, `max_screens`, `max_memory_kb`, `match_threshold` |
+| **Screenshot dedupe** | A 64-cell luminance fingerprint of every screenshot sent. An identical picture of the same screen is not encoded or sent again (`screenshot=true` still forces one). | `dedupe_screenshots`, `pixel_grid`, `pixel_tolerance` |
+| **Read reuse** | A tree snapshot / window list taken moments ago is reused when no action ran since (e.g. `find_element` then `get_app_state`, or `get_app_state` right after an action's change report). Any action invalidates it. | `snapshot_ttl_ms` |
+| **App list** | The running-app list is reused briefly between calls. | `timing.app_cache_ms` |
+
+A round trip — look at a screen, press a button, confirm, come back — goes
+like this:
+
+```text
+get_app_state  → App: Mail … · screen #1 (new)        full tree + screenshot
+click "Delete" → State after the action: now on screen #2 (new), window "Confirm":
+                 6 dialog "Confirm" / 7 text "Delete 3 messages?" / 8 button "OK"
+click 8        → State after the action: back on screen #1 (seen before), window "Inbox":
+                 Changes since you last saw screen #1 (+ added, ~ changed, - removed) …
+                 - 14 list item "Meeting notes"
+get_app_state  → … · screen #1
+                 Screenshot: not attached …  Tree: No changes …
+```
+
+How it works:
+
+- **Recognition.** Each element gets an identity key (the backend's own id, or
+  a hash chain of role + label + position among siblings) and a *shape* (that
+  structural hash). A view is matched to a remembered screen by the Jaccard
+  similarity of its shapes (`match_threshold`, default 0.8), so a dialog that
+  was closed and opened again is recognised even though its accessibility
+  objects are new.
+- **Indices never change meaning.** Numbers are handed out once per app and
+  never reused. A returning screen's elements get the numbers the model saw
+  then; a stale number from a screen that has gone away fails with "unknown
+  element_index" instead of clicking something else.
+- **The model's view is the baseline.** Diffs are computed against what the
+  model was actually shown, not against the last internal read. So
+  `find_element`, `wait_for` and a truncated change report never hide a
+  change from the next `get_app_state`, and only the image that actually came
+  back from a `batch` counts as seen.
+- **Dialogs are followed.** When an action opens a new window (a dialog, a
+  menu), the change report and the next `get_app_state` switch to it
+  (`follow_new_windows`); when it closes, the window below is recognised.
+- **Screenshots stay valid.** A returning screen's old screenshot keeps working
+  for `x`/`y` clicks (shifted if the window moved; dropped, and a new one sent,
+  if the window changed size).
+
+Measured on `gtk3-widget-factory` switching between two pages (`BENCH_NAV`,
+below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
+text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
+holds ~7.5 KiB per screen; peak process memory is unchanged.
+
 ## Architecture
 
 ```
@@ -74,7 +135,7 @@ The full operating contract the model should follow is in
                      │  Engine::call_tool
         ┌────────────┴─────────────┐
         │        computer-use        │  engine: tree pruning, stable indices,
-        │      (platform-agnostic)   │  diffs, approvals policy, coordinate map
+        │      (platform-agnostic)   │  diffs, screen memory, approvals, coord map
         └───┬───────────┬───────────┬┘
             │           │           │   Backend trait
      ┌──────┴──┐  ┌─────┴────┐  ┌───┴──────┐
@@ -204,10 +265,11 @@ applying after a reload. The agent has no tool to change settings.
 | `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
 | `[tree]` | size limits, text length, indentation, shown actions/states, diffs, change reports |
 | `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
+| `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window |
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | headless approval policy, log level, HTTP address and token |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `hot_reload`, `launch_timeout_secs` |
+| top level | `clipboard`, `text_only`, `follow_new_windows`, `hot_reload`, `launch_timeout_secs` |
 
 Sensitive apps are blocked by default; open them up one category or one app at
 a time. Admins can enforce policy via a managed config
@@ -224,6 +286,9 @@ a time. Admins can enforce policy via a managed config
 - `screenshot.attach = "auto"` (default) — images only for a first view, a large
   change, or a tree with almost no interactive elements; `get_app_state` diffs on
   an unchanged window cost ~60 tokens instead of ~1,300.
+- `cache.enabled` + `cache.dedupe_screenshots` (default on) — a screen the
+  model already saw costs ~80 tokens instead of a full tree and image; an
+  unchanged screenshot is never sent twice.
 - `screenshot.max_dimension` — image tokens scale with width × height
   (1024 px ≈ 36% fewer than 1280 px). `text_only = true` removes images entirely.
 - `tree.max_text_len`, `tree.show_actions`, `tree.show_states`,
@@ -256,23 +321,29 @@ estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
 | `find_element`, large app | 473 ms | **72 ms** |
 | repeat `get_app_state`, small dialog | 19 ms, ~219 tokens | **2.4 ms, ~58 tokens** |
 | tool definitions per model request | ~3,300 tokens | **~1,360 tokens** |
-| peak memory | 19.7 MiB | **16.3 MiB** |
+| peak memory | 19.7 MiB | **16.4 MiB** |
+| back to a screen seen before, large app | ~2,516 tokens (tree + image) | **~79 tokens, no image** |
+| `get_app_state` right after an action or `find_element` | 71 ms | **< 1 ms** (read reused) |
 
 Where the gains come from: the Linux walker pipelines its AT-SPI queries (a
 batch of elements with every query in flight at once) instead of one round trip
 at a time; macOS reads each element's attributes in one batched AX call;
 Windows fetches a whole window with one UI Automation cache request; captures
 are downscaled with a fast area filter and encoded without copying the pixel
-buffer; and the engine reuses the running-app list and moves (never clones) its
-cached tree. The macOS and Windows paths are type-checked but not yet measured
+buffer (alpha is dropped in place, no second full-size buffer); the engine
+reuses the running-app list, recent reads and remembered screens, and moves
+(never clones) its cached tree. The macOS and Windows paths are type-checked but not yet measured
 on real hardware.
 
 Run it yourself:
 
 ```bash
-APPS="gtk3-widget-factory" scripts/desktop-session.sh \
+APPS="gtk3-widget-factory" BENCH_NAV="Page 2|Page 1" scripts/desktop-session.sh \
   cargo run --release -p computer-use --example bench -- gtk3-widget-factory
 ```
+
+`BENCH_NAV` names two buttons that switch between screens; the benchmark then
+compares coming back to a screen with the screen memory off and on.
 
 ## Platform setup
 

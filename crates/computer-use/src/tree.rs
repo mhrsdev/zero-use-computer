@@ -19,8 +19,12 @@ pub struct Node {
     pub depth: usize,
     /// Position of the nearest kept ancestor in the node list.
     pub parent: Option<usize>,
-    /// Identity across snapshots.
-    pub key: String,
+    /// Identity across snapshots (hash of the backend key or structural path).
+    pub key: u64,
+    /// Hash of the structural path (role + label + position among siblings),
+    /// used to recognise the same screen even when backend identities change
+    /// (e.g. a dialog that was closed and opened again).
+    pub shape: u64,
     pub handle: ElementHandle,
     pub role: String,
     pub name: Option<String>,
@@ -52,6 +56,47 @@ pub struct Pruned {
     pub nodes: Vec<Node>,
     /// Elements dropped because of `max_nodes`.
     pub omitted: usize,
+}
+
+/// Stable 64-bit FNV-1a hash (identity keys, shapes and line fingerprints).
+pub fn hash_str(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+const ROOT_SHAPE: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Fold a value into a hash (FNV-1a over its bytes).
+fn mix(mut h: u64, v: u64) -> u64 {
+    for b in v.to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Hash of one structural step: the role plus up to 40 characters of label.
+fn step_hash(role: &str, label: Option<&str>) -> u64 {
+    let mut h = ROOT_SHAPE;
+    for b in role.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    if let Some(label) = label {
+        h ^= u64::from(b':');
+        h = h.wrapping_mul(FNV_PRIME);
+        let end = label.char_indices().nth(40).map_or(label.len(), |(i, _)| i);
+        for b in &label.as_bytes()[..end] {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+    }
+    h
 }
 
 /// Actions that don't make an element worth showing on their own.
@@ -178,33 +223,31 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
         return Pruned::default();
     }
 
-    // Identity keys: backend keys where available, else a structural path of
-    // role + label + position among same-looking siblings.
-    let mut keys: Vec<String> = Vec::with_capacity(n);
-    let mut sibling_counts: HashMap<(Option<usize>, String), usize> = HashMap::new();
+    // Identity keys: backend keys where available, else the structural
+    // shape: a hash chain of role + label + position among same-looking
+    // siblings from the root down (no path strings are built).
+    let mut keys: Vec<u64> = Vec::with_capacity(n);
+    let mut shapes: Vec<u64> = Vec::with_capacity(n);
+    let mut sibling_counts: HashMap<(Option<usize>, u64), u64> = HashMap::with_capacity(n);
     let mut root_order = 0usize;
     let mut root_of: Vec<usize> = vec![0; n];
     for (i, node) in raw.iter().enumerate() {
         let parent = node.parent.filter(|p| *p < i);
         // Roots (the window, the menu bar) are keyed by role alone so a title
         // change doesn't re-key the whole tree.
-        let step = match node
+        let label = node
             .name
             .as_deref()
-            .filter(|s| !s.is_empty() && parent.is_some())
-        {
-            Some(name) => format!("{}:{}", node.role, truncate(name, 40)),
-            None => node.role.clone(),
-        };
+            .filter(|s| !s.is_empty() && parent.is_some());
+        let step = step_hash(&node.role, label);
         let nth = sibling_counts
-            .entry((parent, step.clone()))
+            .entry((parent, step))
             .and_modify(|c| *c += 1)
             .or_insert(0);
-        let structural = match parent {
-            Some(p) => format!("{}/{step}#{nth}", keys[p]),
-            None => format!("{step}#{nth}"),
-        };
-        keys.push(node.key.clone().unwrap_or(structural));
+        let base = parent.map_or(ROOT_SHAPE, |p| shapes[p]);
+        let shape = mix(mix(base, step), *nth);
+        shapes.push(shape);
+        keys.push(node.key.as_deref().map_or(shape, hash_str));
         root_of[i] = match parent {
             Some(p) => root_of[p],
             None => {
@@ -305,7 +348,7 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
     // Emit in pre-order with depth relative to kept ancestors.
     let mut out = Pruned::default();
     let mut kept_pos: Vec<Option<usize>> = vec![None; n];
-    let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut seen_keys: HashSet<u64> = HashSet::new();
     for i in 0..n {
         if !candidate[i] {
             continue;
@@ -326,10 +369,10 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
         }
         let depth = parent.map(|pp: usize| out.nodes[pp].depth + 1).unwrap_or(0);
 
-        let mut key = keys[i].clone();
-        let mut dup = 1;
-        while !seen_keys.insert(key.clone()) {
-            key = format!("{}~{dup}", keys[i]);
+        let mut key = keys[i];
+        let mut dup = 1u64;
+        while !seen_keys.insert(key) {
+            key = mix(keys[i], dup);
             dup += 1;
         }
 
@@ -339,6 +382,7 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
             depth,
             parent,
             key,
+            shape: shapes[i],
             handle: node.handle,
             role: node.role.clone(),
             name: node.name.clone().filter(|s| !s.trim().is_empty()),
@@ -353,9 +397,12 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
 }
 
 /// Hands out element indices. Kept per app so diffs can reuse indices.
+///
+/// Numbers are never reused within an app: an index always means the same
+/// element, so a stale index fails loudly instead of hitting something else.
 #[derive(Debug, Default, Clone)]
 pub struct IndexAllocator {
-    by_key: HashMap<String, u32>,
+    by_key: HashMap<u64, u32>,
     next: u32,
 }
 
@@ -367,20 +414,35 @@ impl IndexAllocator {
         self.assign_stable(nodes);
     }
 
+    /// Forget which elements hold which numbers (a different window), but
+    /// keep counting so old numbers are not handed out again.
+    pub fn clear_keys(&mut self) {
+        self.by_key.clear();
+    }
+
+    /// Give `key` a specific number (restoring a remembered screen).
+    pub fn pin(&mut self, key: u64, index: u32) {
+        self.by_key.insert(key, index);
+        self.next = self.next.max(index.saturating_add(1));
+    }
+
     /// Keep indices of elements seen before; new elements get new numbers.
     pub fn assign_stable(&mut self, nodes: &mut [Node]) {
-        let live: HashSet<&str> = nodes.iter().map(|n| n.key.as_str()).collect();
-        self.by_key.retain(|k, _| live.contains(k.as_str()));
+        let live: HashSet<u64> = nodes.iter().map(|n| n.key).collect();
+        self.by_key.retain(|k, _| live.contains(k));
+        let mut used: HashSet<u32> = HashSet::with_capacity(nodes.len());
         for node in nodes.iter_mut() {
-            node.index = match self.by_key.get(&node.key) {
-                Some(i) => *i,
-                None => {
+            let index = match self.by_key.get(&node.key) {
+                Some(i) if !used.contains(i) => *i,
+                _ => {
                     let i = self.next;
                     self.next += 1;
-                    self.by_key.insert(node.key.clone(), i);
+                    self.by_key.insert(node.key, i);
                     i
                 }
             };
+            used.insert(index);
+            node.index = index;
         }
     }
 }
@@ -417,31 +479,59 @@ impl Diff {
 }
 
 pub fn diff(old: &[Node], new: &[Node]) -> Diff {
-    let old_by_key: HashMap<&str, &Node> = old.iter().map(|n| (n.key.as_str(), n)).collect();
-    let new_keys: HashSet<&str> = new.iter().map(|n| n.key.as_str()).collect();
+    let old_by_key: HashMap<u64, &Node> = old.iter().map(|n| (n.key, n)).collect();
+    let new_keys: HashSet<u64> = new.iter().map(|n| n.key).collect();
     let mut d = Diff::default();
     for (pos, n) in new.iter().enumerate() {
-        match old_by_key.get(n.key.as_str()) {
+        match old_by_key.get(&n.key) {
             None => d.added.push(pos),
             Some(o) if o.line != n.line => d.changed.push((pos, o.line.clone())),
             Some(_) => {}
         }
     }
     for o in old {
-        if !new_keys.contains(o.key.as_str()) {
+        if !new_keys.contains(&o.key) {
             d.removed.push((o.index, o.line.clone()));
         }
     }
     d
 }
 
+/// Number of elements added, changed or removed between two snapshots,
+/// without building the diff.
+pub fn change_count(old: &[Node], new: &[Node]) -> usize {
+    let old_by_key: HashMap<u64, &str> = old.iter().map(|n| (n.key, n.line.as_str())).collect();
+    let mut matched = 0usize;
+    let mut changes = 0usize;
+    for n in new {
+        match old_by_key.get(&n.key) {
+            None => changes += 1,
+            Some(line) => {
+                matched += 1;
+                if *line != n.line {
+                    changes += 1;
+                }
+            }
+        }
+    }
+    changes + old.len().saturating_sub(matched)
+}
+
+/// Intro line of a diff against the previous get_app_state.
+pub const DIFF_INTRO: &str = "Changes since the previous get_app_state (+ added, ~ changed, - removed). Unchanged elements keep their indices.";
+
 pub fn render_diff(d: &Diff, new: &[Node]) -> String {
     if d.is_empty() {
         return "No changes to the accessibility tree since the previous get_app_state.\n".into();
     }
-    let mut out = String::from(
-        "Changes since the previous get_app_state (+ added, ~ changed, - removed). Unchanged elements keep their indices.\n",
-    );
+    render_diff_with(d, new, DIFF_INTRO)
+}
+
+/// Render a diff under a custom intro line.
+pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str) -> String {
+    let mut out = String::with_capacity(intro.len() + 64 * d.len());
+    out.push_str(intro);
+    out.push('\n');
     for &pos in &d.added {
         let n = &new[pos];
         let ctx = n

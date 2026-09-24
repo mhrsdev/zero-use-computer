@@ -493,7 +493,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "get_app_state",
             title: "Get app state",
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree.",
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and your earlier screenshot of it still applies.",
             input_schema: schema(
                 app_props(),
                 json!({
@@ -738,7 +738,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "list_apps" => "List running apps (name, id, pid).",
         "launch_app" => "Start an app by name/id and wait for its window.",
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. screenshot=true forces an image."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image."
         }
         "click" => {
             "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double."

@@ -3,7 +3,7 @@
 
 use base64::Engine as _;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
-use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage, imageops::FilterType};
+use image::{ExtendedColorType, ImageEncoder, RgbaImage, imageops::FilterType};
 
 use crate::config::{ImageFormat, PngCompression, ResizeFilter, ScreenshotConfig};
 use crate::error::{Error, Result};
@@ -96,7 +96,18 @@ pub fn encode(capture: Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage,
     } else {
         img
     };
-    let rgb = DynamicImage::ImageRgba8(img).into_rgb8();
+    // Drop alpha in place (no second full-size buffer).
+    let mut raw = img.into_raw();
+    let pixels = (w * h) as usize;
+    for i in 0..pixels {
+        let (s, d) = (i * 4, i * 3);
+        raw[d] = raw[s];
+        raw[d + 1] = raw[s + 1];
+        raw[d + 2] = raw[s + 2];
+    }
+    raw.truncate(pixels * 3);
+    let rgb = image::RgbImage::from_raw(w, h, raw)
+        .ok_or_else(|| Error::Internal("rgb buffer size mismatch".into()))?;
 
     let mut data = Vec::with_capacity((w * h) as usize / 2);
     let mime = match cfg.format {

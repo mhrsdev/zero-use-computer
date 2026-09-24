@@ -15,6 +15,9 @@
 clipboard = true
 # Never attach screenshots anywhere (tree-only; lowest token use).
 text_only = false
+# When an action opens a new window (a dialog, a menu), switch to it for the
+# change report and for get_app_state calls that don't name a window.
+follow_new_windows = true
 # Re-read this file when it changes, without restarting the server.
 hot_reload = true
 # Seconds launch_app waits for the new app's window.
@@ -127,6 +130,19 @@ key_delay_ms = 10           # pause between keys in a press_key sequence
 app_cache_ms = 1500         # reuse the running-app list for this long
 wait_timeout_ms = 10000     # wait_for default timeout
 wait_poll_ms = 400          # wait_for default poll interval
+
+[cache]
+# Screen memory: when the app shows a screen the model has already seen (it
+# went back a page, closed a dialog, reopened a panel), restore that screen's
+# element indices and send only what differs — no new tree, no new screenshot.
+enabled = true
+max_screens = 32            # screens remembered, all apps together (LRU)
+max_memory_kb = 8192        # memory budget for remembered screens
+match_threshold = 0.8       # share of common elements to count as the same screen
+dedupe_screenshots = true   # don't re-send an unchanged screenshot of a screen
+pixel_grid = 64             # fingerprint cells across the longer side
+pixel_tolerance = 2         # per-cell brightness drift still "unchanged"
+snapshot_ttl_ms = 200       # reuse a tree/window read this recent if nothing ran since (0 = off)
 
 [audit]
 enabled = false             # append a JSONL line (metadata only) per call

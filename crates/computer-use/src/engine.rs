@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::imaging::{self, CoordMap};
 use crate::keys::{self, Key, KeyCombo, NamedKey};
 use crate::policy::{self, Verdict};
+use crate::screens::{PixelSig, Screen, ScreenMemory, View};
 use crate::tools::*;
 use crate::tree::{self, IndexAllocator, Node};
 use crate::types::*;
@@ -70,13 +71,36 @@ impl Approver for AllowApprover {
 /// Cached state for one app between tool calls.
 #[derive(Default)]
 struct AppState {
+    /// Window of the latest snapshot.
     window_id: Option<u64>,
     alloc: IndexAllocator,
+    /// Latest snapshot, numbered.
     nodes: Vec<Node>,
-    coord: Option<CoordMap>,
+    /// Elements left out of `nodes` by `tree.max_nodes`.
+    omitted: usize,
     /// Handle → screen bounds, for coordinate fallbacks.
     bounds: HashMap<ElementHandle, Rect>,
+    /// Screen the latest snapshot shows (0 = none yet).
+    screen: u32,
+    /// The screen the model currently knows, as it was last shown to it.
+    known: Option<Screen>,
+    /// Coordinate map of the screenshot the model is working from.
+    coord: Option<CoordMap>,
+    /// When the snapshot was taken, and the action epoch at that time.
+    snap_at: Option<Instant>,
+    snap_epoch: u64,
+    /// Window ids at the last lookup (to notice a newly opened dialog).
+    seen_windows: Vec<u64>,
     stamped: bool,
+}
+
+/// A screenshot handed out but not yet known to have reached the model
+/// (a batch keeps only its last image).
+struct PendingImage {
+    pid: u32,
+    screen: u32,
+    coord: CoordMap,
+    pixels: Option<PixelSig>,
 }
 
 pub struct Engine<B: Backend> {
@@ -84,8 +108,17 @@ pub struct Engine<B: Backend> {
     store: ConfigStore,
     session_allowed: HashSet<String>,
     states: HashMap<u32, AppState>,
+    /// Screens the model has seen and moved away from.
+    memory: ScreenMemory,
     /// Recently listed apps, reused for `timing.app_cache_ms`.
     app_cache: Option<(Instant, Vec<AppInfo>)>,
+    /// Recently listed windows per app: (when, epoch, windows).
+    window_cache: HashMap<u32, (Instant, u64, Vec<WindowInfo>)>,
+    /// Bumped by every action; snapshots from an older epoch are stale.
+    epoch: u64,
+    pending_images: Vec<PendingImage>,
+    /// Nesting of `call` (batch steps run inside a call).
+    depth: u32,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
@@ -97,15 +130,28 @@ pub struct Engine<B: Backend> {
 /// Host-level settings forced on top of the config file.
 type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
 
-/// What a tree refresh produced.
+/// How the current view relates to what the model has seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    /// A screen the model hasn't seen.
+    New,
+    /// The screen the model is on.
+    Same,
+    /// A screen the model saw earlier and left.
+    Revisit,
+}
+
+/// What a tree render produced.
 struct Refreshed {
-    /// Rendered tree or diff.
+    seen: Seen,
+    screen: u32,
+    /// Rendered tree, diff, or "identical" note.
     text: String,
-    /// First view of this window (or the full tree was requested).
-    fresh: bool,
+    /// The full tree was rendered.
+    full: bool,
     /// The diff was too large and the full tree was rendered instead.
     large_change: bool,
-    /// Elements added, changed or removed (0 for a fresh view).
+    /// Elements added, changed or removed (0 for a new screen).
     changes: usize,
     /// Interactive elements in the pruned tree.
     interactive: usize,
@@ -126,7 +172,12 @@ impl<B: Backend> Engine<B> {
             store,
             session_allowed: HashSet::new(),
             states: HashMap::new(),
+            memory: ScreenMemory::default(),
             app_cache: None,
+            window_cache: HashMap::new(),
+            epoch: 0,
+            pending_images: Vec::new(),
+            depth: 0,
             config_mtime,
             overrides: None,
             clock: Box::new(Instant::now),
@@ -156,6 +207,7 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.backend.configure(&store.config);
                 self.store = store;
+                self.epoch += 1;
             }
             Err(e) => log::warn!("keeping previous settings; {e}"),
         }
@@ -177,6 +229,21 @@ impl<B: Backend> Engine<B> {
     pub fn set_config(&mut self, store: ConfigStore) {
         self.backend.configure(&store.config);
         self.store = store;
+        self.epoch += 1;
+    }
+
+    /// Forget every remembered screen (the next views are treated as new).
+    pub fn clear_screen_memory(&mut self) {
+        self.memory.clear();
+        for st in self.states.values_mut() {
+            st.known = None;
+            st.screen = 0;
+        }
+    }
+
+    /// Screens currently remembered and their approximate memory use.
+    pub fn screen_memory_stats(&self) -> (usize, usize) {
+        (self.memory.len(), self.memory.bytes())
     }
 
     /// Replace timing hooks (tests use instant clocks).
@@ -219,6 +286,8 @@ impl<B: Backend> Engine<B> {
         let apps = self.backend.list_apps()?;
         let live: HashSet<u32> = apps.iter().map(|a| a.pid).collect();
         self.states.retain(|pid, _| live.contains(pid));
+        self.window_cache.retain(|pid, _| live.contains(pid));
+        self.memory.retain_pids(&live);
         self.app_cache = Some(((self.clock)(), apps.clone()));
         Ok(apps)
     }
@@ -268,13 +337,42 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn resolve_window(&mut self, app: &AppInfo, query: Option<&str>) -> Result<WindowInfo> {
-        let mut windows = self.backend.list_windows(app)?;
+    /// The app's windows, reusing a list taken within `cache.snapshot_ttl_ms`
+    /// when no action ran since (unless `fresh`).
+    fn list_windows(&mut self, app: &AppInfo, fresh: bool) -> Result<Vec<WindowInfo>> {
+        let ttl = Duration::from_millis(self.store.config.cache.snapshot_ttl_ms);
+        let now = (self.clock)();
+        if !fresh
+            && let Some((at, epoch, list)) = self.window_cache.get(&app.pid)
+            && *epoch == self.epoch
+            && now.saturating_duration_since(*at) < ttl
+        {
+            return Ok(list.clone());
+        }
+        let list = self.backend.list_windows(app)?;
+        self.window_cache
+            .insert(app.pid, ((self.clock)(), self.epoch, list.clone()));
+        Ok(list)
+    }
+
+    fn resolve_window(
+        &mut self,
+        app: &AppInfo,
+        query: Option<&str>,
+        fresh: bool,
+    ) -> Result<WindowInfo> {
+        let mut windows = self.list_windows(app, fresh)?;
         if windows.is_empty() {
             return Err(Error::NoWindows {
                 app: app.name.clone(),
             });
         }
+        let state = self.states.entry(app.pid).or_default();
+        let seen = std::mem::replace(
+            &mut state.seen_windows,
+            windows.iter().map(|w| w.id).collect(),
+        );
+        let remembered = state.window_id;
         if let Some(q) = query {
             let ql = q.to_lowercase();
             if let Some(w) = windows.iter().find(|w| w.id.to_string() == q) {
@@ -307,8 +405,26 @@ impl<B: Backend> Engine<B> {
                 }
             };
         }
-        // No query: remembered window, else focused/main, else first.
-        if let Some(id) = self.states.get(&app.pid).and_then(|s| s.window_id)
+        // No query: a window that just opened (a dialog or menu the last
+        // action brought up) — the focused one, else the only one — then the
+        // remembered window, the focused/main one, or the first.
+        if !seen.is_empty() && self.store.config.follow_new_windows {
+            let opened: Vec<&WindowInfo> = windows
+                .iter()
+                .filter(|w| !w.minimized && !seen.contains(&w.id))
+                .collect();
+            let pick = opened
+                .iter()
+                .find(|w| w.focused)
+                .or(match opened.as_slice() {
+                    [only] => Some(only),
+                    _ => None,
+                });
+            if let Some(w) = pick {
+                return Ok((*w).clone());
+            }
+        }
+        if let Some(id) = remembered
             && let Some(w) = windows.iter().find(|w| w.id == id && !w.minimized)
         {
             return Ok(w.clone());
@@ -317,83 +433,257 @@ impl<B: Backend> Engine<B> {
         Ok(windows.into_iter().next().unwrap())
     }
 
-    /// Refresh an app's state cache from a live snapshot.
-    fn refresh(
-        &mut self,
-        app: &AppInfo,
-        window: &WindowInfo,
-        disable_diff: bool,
-    ) -> Result<Refreshed> {
+    /// Snapshot `window` (or reuse a snapshot from within
+    /// `cache.snapshot_ttl_ms` when no action ran since, unless `fresh`), work
+    /// out which screen it shows, and number its elements. What the model is
+    /// known to have seen is left alone (see [`Self::commit`]).
+    fn observe(&mut self, app: &AppInfo, window: &WindowInfo, fresh: bool) -> Result<()> {
+        let ttl = Duration::from_millis(self.store.config.cache.snapshot_ttl_ms);
+        if !fresh
+            && let Some(s) = self.states.get(&app.pid)
+            && s.stamped
+            && s.window_id == Some(window.id)
+            && s.snap_epoch == self.epoch
+            && s.snap_at
+                .is_some_and(|t| (self.clock)().saturating_duration_since(t) < ttl)
+        {
+            return Ok(());
+        }
+
         let tcfg = &self.store.config.tree;
         let opts = SnapshotOptions {
             max_nodes: tcfg.max_walk,
             max_depth: tcfg.max_depth,
         };
         let raw = self.backend.snapshot(app, window, &opts)?;
-        let tcfg = &self.store.config.tree;
-        let pruned = tree::prune(&raw, window.bounds, tcfg);
+        let snap_at = (self.clock)();
+        let pruned = tree::prune(&raw, window.bounds, &self.store.config.tree);
         drop(raw);
+        let mut nodes = pruned.nodes;
 
-        // Take the previous state by value: no clones of the old tree.
-        let (mut alloc, old_nodes, old_coord) = match self.states.remove(&app.pid) {
-            Some(prev) if prev.window_id == Some(window.id) => (prev.alloc, prev.nodes, prev.coord),
-            _ => (IndexAllocator::default(), Vec::new(), None),
+        let cache = &self.store.config.cache;
+        let ratio = self.store.config.tree.diff_full_ratio;
+        let mut st = self.states.remove(&app.pid).unwrap_or_default();
+        let same_window = st.screen != 0 && st.window_id == Some(window.id);
+
+        // Which screen is this? A small change keeps the current screen;
+        // otherwise look for the most similar screen: the current one (a big
+        // update of the same layout), the one the model knows, or one it saw
+        // earlier.
+        let small = same_window
+            && (tree::change_count(&st.nodes, &nodes) as f64) < ratio * nodes.len().max(1) as f64;
+        let screen = if small {
+            st.screen
+        } else {
+            let shapes: HashSet<u64> = nodes.iter().map(|n| n.shape).collect();
+            let threshold = cache.match_threshold;
+            let mut best: Option<(u32, f64)> = None;
+            if same_window {
+                let sim = shape_similarity(&st.nodes, &shapes);
+                if sim >= threshold {
+                    best = Some((st.screen, sim));
+                }
+            }
+            if cache.enabled {
+                if let Some(k) = st.known.as_ref().filter(|k| k.id != st.screen) {
+                    let sim = k.view.similarity(&shapes);
+                    if sim >= threshold && best.is_none_or(|b| sim > b.1) {
+                        best = Some((k.id, sim));
+                    }
+                }
+                if let Some(m) = self
+                    .memory
+                    .best_match(app.pid, window.id, &shapes, threshold)
+                    && best.is_none_or(|b| m.1 > b.1)
+                {
+                    best = Some(m);
+                }
+            }
+            match best {
+                Some((id, _)) => id,
+                None => self.memory.new_id(),
+            }
         };
 
-        let mut nodes = pruned.nodes;
-        let want_diff = tcfg.diff && !disable_diff && !old_nodes.is_empty();
-        if want_diff {
-            alloc.assign_stable(&mut nodes);
-        } else {
-            alloc.assign_fresh(&mut nodes);
+        // Numbering: a screen seen before gets its old indices back.
+        if screen != st.screen {
+            let view = match &st.known {
+                Some(k) if k.id == screen => Some(&k.view),
+                _ => self.memory.get(screen).map(|s| &s.view),
+            };
+            match view {
+                Some(v) => v.restore_indices(&mut st.alloc, &nodes),
+                None if !same_window => st.alloc.clear_keys(),
+                None => {}
+            }
         }
+        st.alloc.assign_stable(&mut nodes);
 
-        let interactive = nodes
-            .iter()
-            .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
-            .count();
-        let bounds: HashMap<ElementHandle, Rect> = nodes
+        st.bounds = nodes
             .iter()
             .filter_map(|n| n.bounds.map(|b| (n.handle, b)))
             .collect();
+        st.window_id = Some(window.id);
+        st.nodes = nodes;
+        st.omitted = pruned.omitted;
+        st.screen = screen;
+        st.snap_at = Some(snap_at);
+        st.snap_epoch = self.epoch;
+        st.stamped = true;
+        self.states.insert(app.pid, st);
+        Ok(())
+    }
 
-        let (mut text, fresh, large_change, changes) = if want_diff {
-            let d = tree::diff(&old_nodes, &nodes);
-            let changes = d.len();
-            if changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64 {
-                (tree::render_full(&nodes, tcfg.indent), false, true, changes)
-            } else {
-                (tree::render_diff(&d, &nodes), false, false, changes)
-            }
-        } else {
-            (tree::render_full(&nodes, tcfg.indent), true, false, 0)
-        };
-        drop(old_nodes);
-
-        if pruned.omitted > 0 {
-            text.push_str(&format!("[{} more elements not shown]\n", pruned.omitted));
-        }
-
-        self.states.insert(
-            app.pid,
-            AppState {
-                window_id: Some(window.id),
-                alloc,
-                nodes,
-                // Keep the last screenshot's mapping until a new one is taken.
-                coord: old_coord,
-                bounds,
-                stamped: true,
+    /// Render the latest snapshot against what the model has seen of that
+    /// screen: a diff, the full tree, or a note that nothing changed.
+    fn render(&self, pid: u32, full: bool) -> Result<Refreshed> {
+        let st = self.state(pid)?;
+        let tcfg = &self.store.config.tree;
+        let (seen, base) = match &st.known {
+            Some(k) if k.id == st.screen => (Seen::Same, Some(&k.view)),
+            _ => match self.memory.get(st.screen) {
+                Some(s) if self.store.config.cache.enabled => (Seen::Revisit, Some(&s.view)),
+                _ => (Seen::New, None),
             },
-        );
+        };
+        let nodes = &st.nodes;
+        let mut out = Refreshed {
+            seen,
+            screen: st.screen,
+            text: String::new(),
+            full: false,
+            large_change: false,
+            changes: 0,
+            interactive: nodes
+                .iter()
+                .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
+                .count(),
+        };
+        match base {
+            None => {
+                out.text = tree::render_full(nodes, tcfg.indent);
+                out.full = true;
+            }
+            Some(view) => {
+                let d = view.diff(nodes);
+                out.changes = d.len();
+                let large = out.changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64;
+                if full || !tcfg.diff || large {
+                    out.text = tree::render_full(nodes, tcfg.indent);
+                    out.full = true;
+                    out.large_change = large;
+                } else if seen == Seen::Same {
+                    out.text = tree::render_diff(&d, nodes);
+                } else if d.is_empty() {
+                    out.text = format!(
+                        "Identical to when you last saw screen #{}; element indices are as they were then.\n",
+                        st.screen
+                    );
+                } else {
+                    let intro = format!(
+                        "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
+                        st.screen
+                    );
+                    out.text = tree::render_diff_with(&d, nodes, &intro);
+                }
+            }
+        }
+        if out.full && st.omitted > 0 {
+            out.text
+                .push_str(&format!("[{} more elements not shown]\n", st.omitted));
+        }
+        Ok(out)
+    }
 
-        Ok(Refreshed {
-            text,
-            fresh,
-            large_change,
-            changes,
-            interactive,
-        })
+    /// The model has now been shown the latest snapshot: it becomes the known
+    /// screen. Leaving a screen files it in the screen memory; returning to
+    /// one takes it back out, with its screenshot's coordinate map. Returns
+    /// whether a returning screen's window changed size (its old screenshot
+    /// no longer lines up).
+    fn commit(&mut self, pid: u32, window: &WindowInfo) -> bool {
+        let Some(mut st) = self.states.remove(&pid) else {
+            return false;
+        };
+        let cache = self.store.config.cache.clone();
+        let view = View::from_nodes(&st.nodes);
+        let size = window.bounds.map(|b| (b.width, b.height));
+        let origin = window.bounds.map(|b| (b.x, b.y));
+        let mut size_changed = false;
+        match st.known.as_mut() {
+            Some(k) if k.id == st.screen => {
+                k.view = view;
+                k.window = window.id;
+                k.size = size;
+                k.origin = origin;
+            }
+            _ => {
+                let mut next = self
+                    .memory
+                    .take(st.screen)
+                    .unwrap_or_else(|| Screen::new(st.screen, pid, window.id, View::default()));
+                if let Some(old) = st.known.take()
+                    && cache.enabled
+                {
+                    self.memory.remember(
+                        old,
+                        cache.max_screens,
+                        cache.max_memory_kb.saturating_mul(1024),
+                    );
+                }
+                // The old screenshot still lines up if the window kept its
+                // size; follow the window if it moved.
+                if next.shot {
+                    match (next.size, size) {
+                        (Some(a), Some(b))
+                            if (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0 =>
+                        {
+                            if let (Some(o0), Some(o1), Some(c)) =
+                                (next.origin, origin, next.coord.as_mut())
+                            {
+                                c.bounds.x += o1.0 - o0.0;
+                                c.bounds.y += o1.1 - o0.1;
+                            }
+                        }
+                        _ => {
+                            next.coord = None;
+                            next.pixels = None;
+                            next.shot = false;
+                            size_changed = true;
+                        }
+                    }
+                }
+                next.view = view;
+                next.window = window.id;
+                next.size = size;
+                next.origin = origin;
+                if let Some(c) = next.coord {
+                    st.coord = Some(c);
+                }
+                st.known = Some(next);
+            }
+        }
+        self.states.insert(pid, st);
+        size_changed
+    }
+
+    /// Record that the images handed out by the finished top-level call
+    /// reached the model: their screens now have that screenshot.
+    fn commit_images(&mut self) {
+        for p in std::mem::take(&mut self.pending_images) {
+            let Some(st) = self.states.get_mut(&p.pid) else {
+                continue;
+            };
+            st.coord = Some(p.coord);
+            let screen = match st.known.as_mut() {
+                Some(k) if k.id == p.screen => Some(k),
+                _ => self.memory.get_mut(p.screen),
+            };
+            if let Some(s) = screen {
+                s.coord = Some(p.coord);
+                s.pixels = p.pixels;
+                s.shot = true;
+            }
+        }
     }
 
     fn state(&self, pid: u32) -> Result<&AppState> {
@@ -500,6 +790,21 @@ impl<B: Backend> Engine<B> {
 
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        self.depth += 1;
+        let out = self.dispatch(call, approver);
+        self.depth -= 1;
+        if self.depth == 0 {
+            // Only the image in the final result reaches the model.
+            if out.as_ref().is_ok_and(|o| o.image.is_some()) {
+                self.commit_images();
+            } else {
+                self.pending_images.clear();
+            }
+        }
+        out
+    }
+
+    fn dispatch(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
         if !self.store.config.tools.is_enabled(call.name()) {
             return Err(Error::Blocked(
                 call.name().into(),
@@ -507,11 +812,12 @@ impl<B: Backend> Engine<B> {
             ));
         }
         // For mutating actions, remember which app to re-inspect afterwards.
-        let report_app = if self.store.config.tree.report_changes {
-            mutating_app(&call)
-        } else {
-            None
-        };
+        let acting = mutating_app(&call);
+        if acting.is_some() || matches!(call, ToolCall::LaunchApp(_)) {
+            // Anything read before this action is stale now.
+            self.epoch += 1;
+        }
+        let report_app = acting.filter(|_| self.store.config.tree.report_changes);
         let out = match call {
             ToolCall::ListApps => self.list_apps(),
             ToolCall::LaunchApp(a) => self.launch_app(a, approver),
@@ -683,8 +989,10 @@ impl<B: Backend> Engine<B> {
         approver: &mut dyn Approver,
     ) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "get_app_state", approver)?;
-        let window = self.resolve_window(&app, args.window.as_deref())?;
-        let r = self.refresh(&app, &window, args.disable_diff)?;
+        let window = self.resolve_window(&app, args.window.as_deref(), false)?;
+        self.observe(&app, &window, false)?;
+        let r = self.render(app.pid, args.disable_diff)?;
+        let size_changed = self.commit(app.pid, &window);
 
         let mut header = format!(
             "App: {} ({}, pid {}) · window \"{}\" (id {}",
@@ -696,35 +1004,92 @@ impl<B: Backend> Engine<B> {
                 b.width, b.height, b.x, b.y
             ));
         }
-        header.push(')');
+        header.push_str(&format!(") · screen #{}", r.screen));
+        match r.seen {
+            Seen::New => header.push_str(" (new)"),
+            Seen::Revisit => header.push_str(" (seen before)"),
+            Seen::Same => {}
+        }
 
-        // Decide whether this view needs pixels (screenshot.attach).
+        // Decide whether this view needs pixels (screenshot.attach): a screen
+        // the model has no picture of, a big change, a returning screen whose
+        // window changed size, or custom-drawn UI with little in the tree.
         let shot = &self.store.config.screenshot;
+        let cache = &self.store.config.cache;
         let allowed = shot.enabled && !self.store.config.text_only;
+        let known = self
+            .state(app.pid)?
+            .known
+            .as_ref()
+            .ok_or(Error::Internal("no known screen".into()))?;
         let want = allowed
             && args.screenshot.unwrap_or(match shot.attach {
                 AttachMode::Always => true,
                 AttachMode::Never => false,
                 AttachMode::Auto => {
-                    r.fresh || r.large_change || r.interactive < shot.auto_sparse_threshold
+                    !known.shot
+                        || r.large_change
+                        || size_changed
+                        || r.interactive < shot.auto_sparse_threshold
                 }
             });
+        let (dedupe, grid, tolerance) = (
+            cache.dedupe_screenshots && args.screenshot != Some(true),
+            cache.pixel_grid,
+            cache.pixel_tolerance,
+        );
+        let fingerprint = cache.dedupe_screenshots;
+        let (known_pixels, known_coord, known_shot) =
+            (known.pixels.clone(), known.coord, known.shot);
 
         let mut image = None;
         if want {
             match self.backend.capture(&app, &window) {
-                Ok(cap) => match imaging::encode(cap, &self.store.config.screenshot) {
-                    Ok((img, map)) => {
-                        header.push_str(&format!("\nScreenshot: {}x{} px.", img.width, img.height));
-                        if let Some(s) = self.states.get_mut(&app.pid) {
-                            s.coord = Some(map);
+                Ok(cap) => {
+                    let sig = fingerprint.then(|| PixelSig::of(&cap, grid));
+                    let unchanged = dedupe
+                        && known_coord.is_some_and(|c| c.bounds == cap.bounds)
+                        && matches!((&sig, &known_pixels), (Some(a), Some(b)) if a.same_as(b, tolerance));
+                    if unchanged {
+                        // The model already has this picture.
+                        if let Some(st) = self.states.get_mut(&app.pid) {
+                            st.coord = known_coord;
                         }
-                        image = Some(img);
+                        header.push_str(
+                            "\nScreenshot: unchanged since you last saw it, not re-sent (screenshot=true forces one).",
+                        );
+                    } else {
+                        match imaging::encode(cap, &self.store.config.screenshot) {
+                            Ok((img, map)) => {
+                                header.push_str(&format!(
+                                    "\nScreenshot: {}x{} px.",
+                                    img.width, img.height
+                                ));
+                                self.pending_images.push(PendingImage {
+                                    pid: app.pid,
+                                    screen: r.screen,
+                                    coord: map,
+                                    pixels: sig,
+                                });
+                                image = Some(img);
+                            }
+                            Err(e) => {
+                                self.mark_shot(app.pid);
+                                header.push_str(&format!("\n[screenshot encode failed: {e}]"));
+                            }
+                        }
                     }
-                    Err(e) => header.push_str(&format!("\n[screenshot encode failed: {e}]")),
-                },
-                Err(e) => header.push_str(&format!("\n[screenshot unavailable: {e}]")),
+                }
+                Err(e) => {
+                    self.mark_shot(app.pid);
+                    header.push_str(&format!("\n[screenshot unavailable: {e}]"));
+                }
             }
+        } else if allowed && r.seen == Seen::Revisit && known_shot && known_coord.is_some() {
+            header.push_str(&format!(
+                "\nScreenshot: not re-sent (your earlier one of screen #{} still applies).",
+                r.screen
+            ));
         } else if allowed {
             header.push_str("\nScreenshot: not attached (pass screenshot=true for one).");
         }
@@ -734,6 +1099,14 @@ impl<B: Backend> Engine<B> {
             image,
             is_error: false,
         })
+    }
+
+    /// A screenshot of the known screen was attempted and failed: don't
+    /// retry it on every view.
+    fn mark_shot(&mut self, pid: u32) {
+        if let Some(k) = self.states.get_mut(&pid).and_then(|s| s.known.as_mut()) {
+            k.shot = true;
+        }
     }
 
     fn click(&mut self, args: ClickArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
@@ -967,8 +1340,8 @@ impl<B: Backend> Engine<B> {
         approver: &mut dyn Approver,
     ) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "find_element", approver)?;
-        let window = self.resolve_window(&app, args.window.as_deref())?;
-        self.refresh(&app, &window, true)?;
+        let window = self.resolve_window(&app, args.window.as_deref(), false)?;
+        self.observe(&app, &window, false)?;
         let role = args.role.map(|r| r.to_lowercase());
         let name = args.name.map(|n| n.to_lowercase());
         let text = args.text.map(|t| t.to_lowercase());
@@ -1017,8 +1390,8 @@ impl<B: Backend> Engine<B> {
         let deadline = (self.clock)() + timeout;
 
         loop {
-            if let Ok(window) = self.resolve_window(&app, args.window.as_deref())
-                && self.refresh(&app, &window, true).is_ok()
+            if let Ok(window) = self.resolve_window(&app, args.window.as_deref(), true)
+                && self.observe(&app, &window, true).is_ok()
             {
                 let state = self.state(app.pid)?;
                 let found = state.nodes.iter().find(|n| {
@@ -1092,10 +1465,10 @@ impl<B: Backend> Engine<B> {
                     .as_deref()
                     .ok_or_else(|| Error::InvalidArgs("window mode needs `app`".into()))?;
                 let app = self.authorize(query, "screenshot", approver)?;
-                let window = self.resolve_window(&app, args.window.as_deref())?;
+                let window = self.resolve_window(&app, args.window.as_deref(), false)?;
                 let cap = self.backend.capture(&app, &window)?;
                 let marks = if args.annotate {
-                    self.refresh(&app, &window, true)?;
+                    self.observe(&app, &window, false)?;
                     Some(
                         self.state(app.pid)?
                             .nodes
@@ -1154,12 +1527,15 @@ impl<B: Backend> Engine<B> {
                 step_args.insert("app".into(), serde_json::json!(app));
             }
             let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
+            let before = self.pending_images.len();
             let result = parsed.and_then(|c| self.call(c, approver));
             match result {
                 Ok(out) => {
                     let first = out.text.lines().next().unwrap_or("");
                     report.push_str(&format!("{}. {} — {first}\n", i + 1, step.tool));
                     if out.image.is_some() {
+                        // Earlier images are replaced by this one.
+                        self.pending_images.drain(..before);
                         last_image = out.image;
                     }
                     if out.is_error {
@@ -1246,7 +1622,8 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Re-inspect an app after a mutating action and append what changed
-    /// (capped at `tree.report_changes_max_lines`).
+    /// (capped at `tree.report_changes_max_lines`): a diff, the new screen,
+    /// or that the model is back on a screen it has seen.
     fn append_changes(&mut self, app_query: &str, mut out: ToolOutput) -> ToolOutput {
         if out.is_error {
             return out;
@@ -1254,26 +1631,48 @@ impl<B: Backend> Engine<B> {
         let Ok(app) = self.resolve_app(app_query) else {
             return out;
         };
-        let Ok(window) = self.resolve_window(&app, None) else {
+        let Ok(window) = self.resolve_window(&app, None, true) else {
             return out;
         };
-        let Ok(r) = self.refresh(&app, &window, false) else {
-            return out;
-        };
-        if !r.fresh && r.changes == 0 {
+        if self.observe(&app, &window, true).is_err() {
             return out;
         }
+        let Ok(r) = self.render(app.pid, false) else {
+            return out;
+        };
+        if r.seen == Seen::Same && !r.full && r.changes == 0 {
+            return out;
+        }
+        let title = match r.seen {
+            Seen::Same if r.large_change => {
+                "State after the action (large change, full tree):".to_string()
+            }
+            Seen::Same => "State after the action:".to_string(),
+            Seen::New => format!(
+                "State after the action: now on screen #{} (new), window \"{}\":",
+                r.screen, window.title
+            ),
+            Seen::Revisit => format!(
+                "State after the action: back on screen #{} (seen before), window \"{}\":",
+                r.screen, window.title
+            ),
+        };
         let max = self.store.config.tree.report_changes_max_lines.max(1);
         let lines: Vec<&str> = r.text.lines().collect();
-        out.text.push_str("\n\nState after the action:\n");
+        out.text.push_str("\n\n");
+        out.text.push_str(&title);
+        out.text.push('\n');
         if lines.len() > max {
             out.text.push_str(&lines[..max].join("\n"));
             out.text.push_str(&format!(
                 "\n[+{} more lines; call get_app_state for the rest]",
                 lines.len() - max
             ));
+            // The model hasn't seen all of it: the next get_app_state
+            // reports against what it had seen before.
         } else {
-            out.text.push_str(&r.text);
+            out.text.push_str(r.text.trim_end());
+            self.commit(app.pid, &window);
         }
         out
     }
@@ -1313,6 +1712,16 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
     }
+}
+
+/// Jaccard similarity between the shapes of `nodes` and `shapes`.
+fn shape_similarity(nodes: &[Node], shapes: &HashSet<u64>) -> f64 {
+    let mine: HashSet<u64> = nodes.iter().map(|n| n.shape).collect();
+    if mine.is_empty() && shapes.is_empty() {
+        return 1.0;
+    }
+    let common = mine.intersection(shapes).count();
+    common as f64 / (mine.len() + shapes.len() - common).max(1) as f64
 }
 
 /// Lowercased name + value of a node, for text matching.
@@ -1951,5 +2360,397 @@ mod tests {
         );
         assert!(out.text.contains("State after the action"), "{}", out.text);
         assert!(out.text.contains("changed!"), "{}", out.text);
+    }
+    // -- screen memory & caches ------------------------------------------
+
+    use crate::mock::{MockApp, MockElement, MockWindow};
+
+    fn button(h: u64, name: &str, parent: u64, x: f64) -> MockElement {
+        MockElement::new(h, "button", name, Rect::new(x, 8.0, 50.0, 24.0))
+            .child_of(parent)
+            .with_actions(&["AXPress"])
+    }
+
+    /// Page A: the editor plus a "Next" button.
+    fn page_a(pid: u32) -> MockApp {
+        let mut a = MockBackend::text_editor(pid);
+        a.elements.push(button(20, "Next", 2, 200.0));
+        a
+    }
+
+    /// Page B: same toolbar, a list instead of the document, and "Back".
+    fn page_b(pid: u32) -> MockApp {
+        let mut a = MockBackend::text_editor(pid);
+        a.elements.retain(|e| e.handle != 5);
+        a.elements.push(button(30, "Back", 2, 200.0));
+        a.elements.push(
+            MockElement::new(31, "list", "Results", Rect::new(0.0, 40.0, 800.0, 500.0)).child_of(1),
+        );
+        for i in 0..4u64 {
+            a.elements.push(
+                MockElement::new(
+                    32 + i,
+                    "list item",
+                    &format!("Result {i}"),
+                    Rect::new(0.0, 40.0 + 30.0 * i as f64, 800.0, 30.0),
+                )
+                .child_of(31)
+                .with_actions(&["AXPress"]),
+            );
+        }
+        a
+    }
+
+    fn nav_engine(report: bool) -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        backend.add_app(page_a(7));
+        backend.on_press.insert(20, page_b(7));
+        backend.on_press.insert(30, page_a(7));
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        cfg.tree.report_changes = report;
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    fn index_named(e: &Engine<MockBackend>, pid: u32, name: &str) -> u32 {
+        e.state(pid)
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no {name}"))
+            .index
+    }
+
+    fn state_of(e: &mut Engine<MockBackend>, extra: serde_json::Value) -> ToolOutput {
+        let mut args = serde_json::json!({"app": "TextEdit"});
+        if let (Some(a), Some(x)) = (args.as_object_mut(), extra.as_object()) {
+            a.extend(x.clone());
+        }
+        let out = e.call_tool("get_app_state", args, &mut allow());
+        assert!(!out.is_error, "{}", out.text);
+        out
+    }
+
+    fn press(e: &mut Engine<MockBackend>, index: u32) -> ToolOutput {
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": index}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        out
+    }
+
+    fn press_named(e: &mut Engine<MockBackend>, pid: u32, name: &str) -> ToolOutput {
+        let i = index_named(e, pid, name);
+        press(e, i)
+    }
+
+    #[test]
+    fn returning_to_a_seen_screen_skips_tree_and_screenshot() {
+        let mut e = nav_engine(false);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("screen #1 (new)"), "{}", out.text);
+        assert!(out.image.is_some());
+        let (doc, next) = (index_named(&e, 7, "Document"), index_named(&e, 7, "Next"));
+
+        press(&mut e, next);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("screen #2 (new)"), "{}", out.text);
+        assert!(out.text.contains("Result 0"), "{}", out.text);
+        assert!(out.image.is_some(), "a new screen gets a picture");
+        let back = index_named(&e, 7, "Back");
+        assert!(back > next, "numbers are never reused: {back} vs {next}");
+
+        press(&mut e, back);
+        let captures = e.backend().captures;
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("screen #1 (seen before)"), "{}", out.text);
+        assert!(
+            out.text
+                .contains("Identical to when you last saw screen #1"),
+            "{}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("text area"),
+            "no tree re-sent: {}",
+            out.text
+        );
+        assert!(out.image.is_none(), "no screenshot re-sent");
+        assert_eq!(e.backend().captures, captures, "not even captured");
+        // The indices the model analysed are back.
+        assert_eq!(index_named(&e, 7, "Document"), doc);
+        assert_eq!(index_named(&e, 7, "Next"), next);
+        // An index from page B is refused rather than hitting something else.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": back}),
+            &mut allow(),
+        );
+        assert!(out.is_error, "{}", out.text);
+
+        // Coordinates from page A's screenshot still map (1:1 here).
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 100, "y": 100}),
+            &mut allow(),
+        );
+        assert!(matches!(
+            e.backend().events.last().unwrap(),
+            Event::Click(7, p, _, _) if (p.x - 100.0).abs() < 1.0 && (p.y - 100.0).abs() < 1.0
+        ));
+    }
+
+    #[test]
+    fn returning_screen_reports_only_what_changed_since() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let next = index_named(&e, 7, "Next");
+        let doc = index_named(&e, 7, "Document");
+        press(&mut e, next);
+        state_of(&mut e, serde_json::json!({}));
+        // Going back finds the document edited meanwhile.
+        let mut edited = page_a(7);
+        edited
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .value = Some("Edited".into());
+        e.backend_mut().on_press.insert(30, edited);
+        press_named(&mut e, 7, "Back");
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(
+            out.text.contains("Changes since you last saw screen #1"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains(&format!("~ {doc} text area")),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("button \"Bold\""), "{}", out.text);
+    }
+
+    #[test]
+    fn change_report_announces_new_and_returning_screens() {
+        let mut e = nav_engine(true);
+        state_of(&mut e, serde_json::json!({}));
+        let out = press_named(&mut e, 7, "Next");
+        assert!(out.text.contains("now on screen #2 (new)"), "{}", out.text);
+        assert!(out.text.contains("Result 3"), "{}", out.text);
+        let out = press_named(&mut e, 7, "Back");
+        assert!(
+            out.text.contains("back on screen #1 (seen before)"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text
+                .contains("Identical to when you last saw screen #1")
+        );
+        // The report was the model's view of it: nothing new to say now.
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("No changes"), "{}", out.text);
+        assert!(out.image.is_none());
+    }
+
+    #[test]
+    fn dialog_is_followed_and_main_window_recognised_after() {
+        let pid = 9;
+        let main = || {
+            let mut a = MockBackend::text_editor(pid);
+            a.elements.push(button(20, "Delete", 2, 200.0));
+            a
+        };
+        let with_dialog = {
+            let mut a = main();
+            a.windows[0].focused = false;
+            a.windows.push(MockWindow {
+                id: 2,
+                title: "Confirm".into(),
+                bounds: Rect::new(200.0, 200.0, 300.0, 120.0),
+                root: 40,
+                focused: true,
+            });
+            a.elements.push(MockElement::new(
+                40,
+                "dialog",
+                "Confirm",
+                Rect::new(200.0, 200.0, 300.0, 120.0),
+            ));
+            a.elements.push(
+                MockElement::new(
+                    42,
+                    "text",
+                    "Delete the document?",
+                    Rect::new(210.0, 210.0, 280.0, 20.0),
+                )
+                .child_of(40),
+            );
+            a.elements.push(button(41, "OK", 40, 400.0));
+            a.elements.last_mut().unwrap().bounds = Rect::new(400.0, 280.0, 60.0, 24.0);
+            a
+        };
+        let mut backend = MockBackend::new();
+        backend.add_app(main());
+        backend.on_press.insert(20, with_dialog);
+        backend.on_press.insert(41, main());
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+
+        state_of(&mut e, serde_json::json!({}));
+        let delete = index_named(&e, pid, "Delete");
+        let out = press(&mut e, delete);
+        assert!(
+            out.text
+                .contains("now on screen #2 (new), window \"Confirm\""),
+            "{}",
+            out.text
+        );
+        let ok = index_named(&e, pid, "OK");
+        assert!(ok > delete, "dialog numbers don't collide: {ok}");
+        let out = press(&mut e, ok);
+        assert!(
+            out.text
+                .contains("back on screen #1 (seen before), window \"Untitled\""),
+            "{}",
+            out.text
+        );
+        assert_eq!(index_named(&e, pid, "Delete"), delete);
+    }
+
+    #[test]
+    fn unchanged_screenshots_are_not_resent() {
+        // A custom-drawn app: almost nothing in the tree, so every view wants
+        // pixels — but identical pixels are not sent twice.
+        let mut backend = MockBackend::new();
+        let mut canvas = MockBackend::text_editor(3);
+        canvas.elements.retain(|el| el.handle == 1);
+        backend.add_app(canvas);
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        assert!(state_of(&mut e, serde_json::json!({})).image.is_some());
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_none(), "{}", out.text);
+        assert!(
+            out.text.contains("unchanged since you last saw"),
+            "{}",
+            out.text
+        );
+        // Explicitly asked for: always sent.
+        assert!(
+            state_of(&mut e, serde_json::json!({"screenshot": true}))
+                .image
+                .is_some()
+        );
+        // The picture changed: sent again.
+        e.backend_mut().fill = 10;
+        assert!(state_of(&mut e, serde_json::json!({})).image.is_some());
+        // Dedupe off: sent every time.
+        let mut cfg = e.store().config.clone();
+        cfg.cache.dedupe_screenshots = false;
+        e.set_config(ConfigStore::in_memory(cfg));
+        assert!(state_of(&mut e, serde_json::json!({})).image.is_some());
+    }
+
+    #[test]
+    fn recent_snapshots_are_reused_until_an_action() {
+        // A clock that stands still: reuse depends on actions, not on how
+        // long the (debug-mode) screenshot encoding took.
+        let now = Instant::now();
+        let mut e = nav_engine(false).with_time(move || now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let (snaps, lists) = (e.backend().snapshots, e.backend().window_lists);
+        e.call_tool(
+            "find_element",
+            serde_json::json!({"app": "TextEdit", "name": "Next"}),
+            &mut allow(),
+        );
+        state_of(&mut e, serde_json::json!({}));
+        assert_eq!(e.backend().snapshots, snaps, "tree read reused");
+        assert_eq!(e.backend().window_lists, lists, "window list reused");
+        // An action makes them stale.
+        press_named(&mut e, 7, "Bold");
+        state_of(&mut e, serde_json::json!({}));
+        assert_eq!(e.backend().snapshots, snaps + 1);
+        // Turned off: every call reads again.
+        let mut cfg = e.store().config.clone();
+        cfg.cache.snapshot_ttl_ms = 0;
+        e.set_config(ConfigStore::in_memory(cfg));
+        state_of(&mut e, serde_json::json!({}));
+        state_of(&mut e, serde_json::json!({}));
+        assert_eq!(e.backend().snapshots, snaps + 3);
+    }
+
+    #[test]
+    fn screen_memory_can_be_disabled() {
+        let mut e = nav_engine(false);
+        let mut cfg = e.store().config.clone();
+        cfg.cache.enabled = false;
+        e.set_config(ConfigStore::in_memory(cfg));
+        state_of(&mut e, serde_json::json!({}));
+        press_named(&mut e, 7, "Next");
+        state_of(&mut e, serde_json::json!({}));
+        press_named(&mut e, 7, "Back");
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("(new)"), "{}", out.text);
+        assert!(out.text.contains("text area"), "{}", out.text);
+        assert_eq!(e.screen_memory_stats().0, 0);
+    }
+
+    #[test]
+    fn find_element_keeps_indices_the_model_knows() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let next = index_named(&e, 7, "Next");
+        let out = e.call_tool(
+            "find_element",
+            serde_json::json!({"app": "TextEdit", "name": "Next"}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains(&format!("{next} button \"Next\"")),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn batch_only_counts_the_screenshot_that_is_returned() {
+        // Step 1's window screenshot is replaced by step 2's full-screen one,
+        // so the model never got a picture of the window: the next view sends it.
+        let mut e = nav_engine(false);
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                {"tool": "get_app_state", "arguments": {}},
+                {"tool": "screenshot", "arguments": {"mode": "full"}}
+            ]}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_some(), "{}", out.text);
+
+        // A batch whose last image is the window's: it counts.
+        let mut e = nav_engine(false);
+        e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                {"tool": "get_app_state", "arguments": {}}
+            ]}),
+            &mut allow(),
+        );
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_none(), "{}", out.text);
     }
 }

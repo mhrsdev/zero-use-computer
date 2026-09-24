@@ -39,6 +39,28 @@ a window is in the background.
    do call it, after the first call it returns a **diff** (`+ added`,
    `~ changed`, `- removed`); pass `disable_diff: true` for the full tree.
 
+## Screens you've already seen
+
+Every view is labelled with a screen number. Trust these labels — they save
+you from re-reading and re-analysing:
+
+- `screen #N (new)` — you haven't seen this one; read the tree (and the
+  screenshot, if attached).
+- `screen #N (seen before)` / "back on screen #N" — you were here earlier (you
+  went back a page, a dialog closed, a panel reopened). **Don't re-analyse it:**
+  your earlier understanding of screen #N still holds, its element indices are
+  exactly the ones you saw then, and your earlier screenshot of it still
+  applies. Only the listed changes (if any) are new.
+- When an action opens a dialog or menu, the report after it switches to that
+  window automatically ("now on screen #N (new), window …"); act on it, and
+  when it closes you'll be told which screen you're back on.
+- "Screenshot: unchanged … not re-sent" means the picture you already have is
+  current. Pass `screenshot: true` only if you truly need a fresh image (for
+  example, you no longer have the earlier one).
+- An index from a screen that is gone is refused ("unknown element_index")
+  rather than hitting something else — call `get_app_state` and use the
+  current numbers.
+
 Use `list_apps` to find the exact app, and `launch_app` to start one that isn't
 running (then `get_app_state`).
 

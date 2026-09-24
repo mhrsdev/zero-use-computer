@@ -3,7 +3,8 @@
 
 It exposes, over AT-SPI: a push button, a text entry, a check box, and a
 label that reflects their state so the test can verify that accessibility
-actions actually took effect.
+actions actually took effect. A second page ("Next page" / "Back") and a
+modal dialog ("Open dialog" / "OK") exercise screen recognition.
 """
 import gi
 
@@ -16,10 +17,12 @@ GLib.set_prgname("cutest")
 class App(Gtk.Window):
     def __init__(self):
         super().__init__(title="CU Test")
-        self.set_default_size(420, 260)
+        self.set_default_size(420, 320)
+        self.stack = Gtk.Stack()
+        self.add(self.stack)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_border_width(12)
-        self.add(box)
+        self.stack.add_named(box, "main")
 
         self.status = Gtk.Label(label="status: idle")
         self.status.set_xalign(0.0)
@@ -38,7 +41,32 @@ class App(Gtk.Window):
         self.check.connect("toggled", self.on_toggle)
         box.pack_start(self.check, False, False, 0)
 
+        nav = Gtk.Box(spacing=8)
+        next_btn = Gtk.Button(label="Next page")
+        next_btn.connect("clicked", lambda _b: self.stack.set_visible_child_name("second"))
+        nav.pack_start(next_btn, False, False, 0)
+        dialog_btn = Gtk.Button(label="Open dialog")
+        dialog_btn.connect("clicked", self.on_dialog)
+        nav.pack_start(dialog_btn, False, False, 0)
+        box.pack_start(nav, False, False, 0)
+
+        page2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        page2.set_border_width(12)
+        for i in range(5):
+            page2.pack_start(Gtk.Label(label="Detail line %d" % i), False, False, 0)
+        back = Gtk.Button(label="Back")
+        back.connect("clicked", lambda _b: self.stack.set_visible_child_name("main"))
+        page2.pack_start(back, False, False, 0)
+        self.stack.add_named(page2, "second")
+
         self.connect("destroy", Gtk.main_quit)
+
+    def on_dialog(self, _btn):
+        dlg = Gtk.Dialog(title="CU Dialog", transient_for=self, modal=True)
+        dlg.get_content_area().pack_start(Gtk.Label(label="Proceed with the thing?"), False, False, 8)
+        dlg.add_button("OK", Gtk.ResponseType.OK)
+        dlg.connect("response", lambda d, _r: d.destroy())
+        dlg.show_all()
 
     def on_click(self, _btn):
         self.status.set_text("status: clicked")

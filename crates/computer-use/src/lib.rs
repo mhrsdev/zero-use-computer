@@ -17,6 +17,11 @@
 //! * **Turn-scoped indices with diffs.** Element indices are only valid until
 //!   the next `get_app_state`; subsequent calls return a diff unless
 //!   `disable_diff` is set.
+//! * **Screen memory.** Screens the model has seen are remembered compactly;
+//!   when the app returns to one, its old element indices come back and only
+//!   what changed since is sent — no fresh tree or screenshot to re-analyse
+//!   (see [`screens`]). Unchanged screenshots are never sent twice, and recent
+//!   reads are reused until the next action (`[cache]` settings).
 //! * **Approvals.** Each app is approved before it is controlled (once,
 //!   for the session, or always), and terminals, credential/security prompts
 //!   and the agent's own host app can never be controlled.
@@ -47,6 +52,7 @@ pub mod keys;
 pub mod mock;
 pub mod policy;
 pub mod roles;
+pub mod screens;
 pub mod tools;
 pub mod tree;
 pub mod types;

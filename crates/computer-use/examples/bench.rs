@@ -4,6 +4,10 @@
 //! cargo run --release -p computer-use --example bench -- <app> [window] [iterations]
 //! ```
 //!
+//! With `BENCH_NAV="Next page|Back"` it also navigates between two screens by
+//! pressing those buttons, and compares returning to a screen with the screen
+//! memory off and on.
+//!
 //! Reports, per operation: wall time (mean / min), backend IPC round trips
 //! (Linux), output size in characters and estimated tokens, screenshot size and
 //! estimated image tokens, plus the size of the tool definitions and the
@@ -66,6 +70,9 @@ fn run(
     if out.is_error {
         eprintln!("  ! {tool} error: {}", out.text);
     }
+    if std::env::var_os("BENCH_DEBUG").is_some() {
+        eprintln!("--- {tool} ---\n{}", out.text);
+    }
     Sample {
         time,
         ipc: ipc() - ipc0,
@@ -94,7 +101,40 @@ fn report(name: &str, samples: &[Sample]) {
             image_tokens(w, h)
         ));
     }
+    if std::env::var_os("BENCH_RSS").is_some()
+        && let Some(kib) = peak_rss_kib()
+    {
+        line.push_str(&format!("  [peak {:.1} MiB]", kib as f64 / 1024.0));
+    }
     println!("{line}");
+}
+
+fn set_ttl(engine: &mut Engine<Box<dyn computer_use::Backend>>, ms: u64) {
+    let mut cfg = engine.store().config.clone();
+    cfg.cache.snapshot_ttl_ms = ms;
+    engine.set_config(ConfigStore::in_memory(cfg));
+}
+
+/// Press the element named `name` (found with find_element).
+fn press(
+    engine: &mut Engine<Box<dyn computer_use::Backend>>,
+    base: &serde_json::Value,
+    name: &str,
+) {
+    let mut args = base.clone();
+    args["name"] = json!(name);
+    let found = engine.call_tool("find_element", args, &mut AllowApprover);
+    let index: u32 = found
+        .text
+        .lines()
+        .nth(1)
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("no element named {name}: {}", found.text));
+    let mut args = base.clone();
+    args["element_index"] = json!(index);
+    engine.call_tool("click", args, &mut AllowApprover);
+    std::thread::sleep(Duration::from_millis(150));
 }
 
 fn main() {
@@ -146,6 +186,8 @@ fn main() {
         .collect();
     report("list_apps", &s);
 
+    // Cold: every call reads the app again.
+    set_ttl(&mut engine, 0);
     let s: Vec<Sample> = (0..iters)
         .map(|_| {
             run(
@@ -162,6 +204,13 @@ fn main() {
         .collect();
     report("get_app_state (diff)", &s);
 
+    // Back-to-back calls reuse the read (cache.snapshot_ttl_ms).
+    set_ttl(&mut engine, 200);
+    let s: Vec<Sample> = (0..iters)
+        .map(|_| run(&mut engine, "get_app_state", win_arg(json!({}))))
+        .collect();
+    report("get_app_state (cached)", &s);
+
     let s: Vec<Sample> = (0..iters)
         .map(|_| {
             run(
@@ -177,6 +226,35 @@ fn main() {
         .map(|_| run(&mut engine, "screenshot", json!({"mode": "full"})))
         .collect();
     report("screenshot (full)", &s);
+
+    if let Ok(nav) = std::env::var("BENCH_NAV")
+        && let Some((forward, back)) = nav.split_once('|')
+    {
+        println!();
+        for memory in [false, true] {
+            let mut cfg = engine.store().config.clone();
+            cfg.cache.enabled = memory;
+            cfg.tree.report_changes = false;
+            engine.set_config(ConfigStore::in_memory(cfg));
+            engine.clear_screen_memory();
+            run(&mut engine, "get_app_state", win_arg(json!({})));
+            let (mut there, mut home) = (Vec::new(), Vec::new());
+            for _ in 0..iters {
+                press(&mut engine, &win_arg(json!({})), forward);
+                there.push(run(&mut engine, "get_app_state", win_arg(json!({}))));
+                press(&mut engine, &win_arg(json!({})), back);
+                home.push(run(&mut engine, "get_app_state", win_arg(json!({}))));
+            }
+            let label = if memory { "on" } else { "off" };
+            report(&format!("other screen (memory {label})"), &there);
+            report(&format!("back again (memory {label})"), &home);
+        }
+        let (screens, bytes) = engine.screen_memory_stats();
+        println!(
+            "screen memory: {screens} screen(s), ~{:.1} KiB",
+            bytes as f64 / 1024.0
+        );
+    }
 
     if let Some(kib) = peak_rss_kib() {
         println!("\npeak RSS: {:.1} MiB", kib as f64 / 1024.0);

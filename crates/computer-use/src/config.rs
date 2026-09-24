@@ -349,6 +349,48 @@ impl ToolsConfig {
     }
 }
 
+/// Screen memory and caches (see `screens.rs`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// Recognise screens the model has already seen: restore their element
+    /// indices and report only what differs, with no new screenshot.
+    pub enabled: bool,
+    /// Screens remembered across all apps (least recently used go first).
+    pub max_screens: usize,
+    /// Memory budget for remembered screens, in KiB.
+    pub max_memory_kb: usize,
+    /// How alike (0–1, share of common elements) a view must be to a
+    /// remembered screen to count as the same screen.
+    pub match_threshold: f64,
+    /// Don't re-send a screenshot whose pixels haven't changed since the
+    /// model last received one of that screen (an explicit screenshot=true
+    /// always sends).
+    pub dedupe_screenshots: bool,
+    /// Cells across the longer side of the pixel fingerprint.
+    pub pixel_grid: u32,
+    /// Per-cell brightness drift (0–255) still counted as unchanged.
+    pub pixel_tolerance: u8,
+    /// Reuse a window list / tree snapshot this recent (ms) when no action
+    /// ran in between. 0 turns it off.
+    pub snapshot_ttl_ms: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_screens: 32,
+            max_memory_kb: 8192,
+            match_threshold: 0.8,
+            dedupe_screenshots: true,
+            pixel_grid: 64,
+            pixel_tolerance: 2,
+            snapshot_ttl_ms: 200,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimingConfig {
@@ -471,6 +513,7 @@ pub struct Config {
     pub screenshot: ScreenshotConfig,
     pub tree: TreeConfig,
     pub timing: TimingConfig,
+    pub cache: CacheConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -480,6 +523,9 @@ pub struct Config {
     pub clipboard: bool,
     /// Never attach screenshots to any tool result (tree-only operation).
     pub text_only: bool,
+    /// When an action opens a new window (a dialog, a menu), switch to it
+    /// for the change report and the next get_app_state without a `window`.
+    pub follow_new_windows: bool,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -496,6 +542,7 @@ impl Default for Config {
             screenshot: ScreenshotConfig::default(),
             tree: TreeConfig::default(),
             timing: TimingConfig::default(),
+            cache: CacheConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -503,9 +550,30 @@ impl Default for Config {
             windows: WindowsConfig::default(),
             clipboard: true,
             text_only: false,
+            follow_new_windows: true,
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
+    }
+}
+
+impl Config {
+    /// Range checks the types can't express.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let c = &self.cache;
+        if !(0.0..=1.0).contains(&c.match_threshold) {
+            return Err(format!(
+                "cache.match_threshold must be between 0 and 1 (got {})",
+                c.match_threshold
+            ));
+        }
+        if !(4..=256).contains(&c.pixel_grid) {
+            return Err(format!(
+                "cache.pixel_grid must be between 4 and 256 (got {})",
+                c.pixel_grid
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -688,7 +756,9 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
     let new_text = doc.to_string();
     // Validate the whole file before writing.
     toml::from_str::<Config>(&new_text)
-        .map_err(|e| Error::Config(format!("`{key}`: {}", e.message())))?;
+        .map_err(|e| Error::Config(format!("`{key}`: {}", e.message())))?
+        .validate()
+        .map_err(Error::Config)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
@@ -754,8 +824,12 @@ impl ConfigStore {
                 for key in unknown_keys(&text) {
                     log::warn!("{}: unknown setting `{key}` (ignored)", path.display());
                 }
-                toml::from_str(&text)
-                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?
+                let config: Config = toml::from_str(&text)
+                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+                config
+                    .validate()
+                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+                config
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
@@ -977,5 +1051,20 @@ mod tests {
             ApprovalMode::AllowAll
         );
         assert!("yolo".parse::<ApprovalMode>().is_err());
+    }
+
+    #[test]
+    fn out_of_range_cache_settings_are_rejected() {
+        assert!(Config::default().validate().is_ok());
+        let dir = std::env::temp_dir().join(format!("cu-cfg-range-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        let err = edit_file(&path, "cache.match_threshold", Edit::Set("2".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("between 0 and 1"), "{err}");
+        edit_file(&path, "cache.match_threshold", Edit::Set("0.6".into())).unwrap();
+        std::fs::write(&path, "[cache]\npixel_grid = 1\n").unwrap();
+        assert!(ConfigStore::load(Some(&path)).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

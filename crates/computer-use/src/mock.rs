@@ -101,6 +101,15 @@ pub struct MockBackend {
     pub launchable: HashMap<String, MockApp>,
     /// Current clipboard contents.
     pub clipboard: String,
+    /// Scripted navigation: pressing this element replaces the app (same pid)
+    /// with the given state — a new page, a dialog, or the previous page.
+    pub on_press: HashMap<ElementHandle, MockApp>,
+    /// Brightness of captured pixels (tests change it to alter the picture).
+    pub fill: u8,
+    /// Backend calls, for cache assertions.
+    pub snapshots: usize,
+    pub captures: usize,
+    pub window_lists: usize,
     next_handle: ElementHandle,
 }
 
@@ -108,6 +117,7 @@ impl MockBackend {
     pub fn new() -> Self {
         Self {
             next_handle: 1000,
+            fill: 200,
             ..Default::default()
         }
     }
@@ -120,7 +130,7 @@ impl MockBackend {
         self.launchable.insert(name.to_lowercase(), app);
     }
 
-    fn app_mut(&mut self, pid: u32) -> Option<&mut MockApp> {
+    pub fn app_mut(&mut self, pid: u32) -> Option<&mut MockApp> {
         self.apps.iter_mut().find(|a| a.info.pid == pid)
     }
 
@@ -233,6 +243,7 @@ impl Backend for MockBackend {
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
+        self.window_lists += 1;
         let a = self
             .apps
             .iter()
@@ -258,6 +269,7 @@ impl Backend for MockBackend {
         window: &WindowInfo,
         _opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
+        self.snapshots += 1;
         let a = self
             .apps
             .iter()
@@ -315,13 +327,16 @@ impl Backend for MockBackend {
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
+        self.captures += 1;
         let b = window.bounds.unwrap_or(Rect::new(0.0, 0.0, 100.0, 100.0));
-        Ok(fake_capture(b))
+        Ok(fake_capture(b, self.fill))
     }
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        self.captures += 1;
         Ok(fake_capture(
             region.unwrap_or(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+            self.fill,
         ))
     }
 
@@ -338,6 +353,11 @@ impl Backend for MockBackend {
         self.element(element)?;
         self.events
             .push(Event::Action(element, native_action.into()));
+        if let Some(next) = self.on_press.get(&element).cloned()
+            && let Some(app) = self.app_mut(next.info.pid)
+        {
+            *app = next;
+        }
         Ok(())
     }
 
@@ -426,12 +446,12 @@ impl Backend for MockBackend {
     }
 }
 
-fn fake_capture(b: Rect) -> Capture {
+fn fake_capture(b: Rect, fill: u8) -> Capture {
     let (w, h) = (b.width.max(1.0) as u32, b.height.max(1.0) as u32);
     Capture {
         width: w,
         height: h,
-        rgba: vec![200; (w * h * 4) as usize],
+        rgba: vec![fill; (w * h * 4) as usize],
         bounds: b,
     }
 }
