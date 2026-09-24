@@ -5,6 +5,7 @@
 //! every accessible is addressed by `(bus_name, object_path)`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use zbus::blocking::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
@@ -19,6 +20,17 @@ const EDITABLE_IFACE: &str = "org.a11y.atspi.EditableText";
 const VALUE_IFACE: &str = "org.a11y.atspi.Value";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
+
+/// Number of D-Bus round trips made so far (diagnostics / benchmarking).
+static IPC_CALLS: AtomicU64 = AtomicU64::new(0);
+
+pub fn ipc_calls() -> u64 {
+    IPC_CALLS.load(Ordering::Relaxed)
+}
+
+fn count() {
+    IPC_CALLS.fetch_add(1, Ordering::Relaxed);
+}
 
 /// A reference to one accessible element.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -124,6 +136,7 @@ impl AtspiConnection {
         B: serde::Serialize + zbus::zvariant::DynamicType,
         R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
     {
+        count();
         let path = ObjectPath::try_from(r.path.as_str()).map_err(bus_err)?;
         let reply = self
             .conn
@@ -134,6 +147,7 @@ impl AtspiConnection {
 
     /// The unix pid behind an accessible's bus connection.
     pub fn pid_of(&self, r: &ObjRef) -> Option<u32> {
+        count();
         let reply = self
             .conn
             .call_method(

@@ -201,24 +201,74 @@ pub enum ImageFormat {
     Jpeg,
 }
 
+/// When get_app_state attaches a screenshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachMode {
+    /// Every get_app_state (Codex behaviour; most tokens).
+    Always,
+    /// Only when it adds information: the first view of a window, a large
+    /// change, or a sparse tree (canvas / custom-drawn UI). Default.
+    #[default]
+    Auto,
+    /// Never (use the `screenshot` tool when an image is needed).
+    Never,
+}
+
+/// PNG compression effort: faster encoding vs. smaller files. File size does
+/// not change the model's token cost (that depends on pixel dimensions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PngCompression {
+    #[default]
+    Fast,
+    Default,
+    Best,
+}
+
+/// Downscaling quality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ResizeFilter {
+    /// Area averaging; fastest, good for UI text. Default.
+    #[default]
+    Fast,
+    /// Bilinear (triangle) filter.
+    Smooth,
+    /// Lanczos3; sharpest, slowest.
+    Sharp,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScreenshotConfig {
-    /// Attach a screenshot to get_app_state.
+    /// Allow screenshots at all (get_app_state images and the screenshot tool).
     pub enabled: bool,
-    /// Longest edge of the image sent to the model, in pixels.
+    /// When get_app_state attaches an image: always | auto | never.
+    pub attach: AttachMode,
+    /// In `auto` mode, attach when the tree has fewer interactive elements
+    /// than this (the UI is probably custom-drawn and needs pixels).
+    pub auto_sparse_threshold: usize,
+    /// Longest edge of the image sent to the model, in pixels. Image token cost
+    /// grows with width x height, so this is the main image-token knob.
     pub max_dimension: u32,
     pub format: ImageFormat,
     pub jpeg_quality: u8,
+    pub png_compression: PngCompression,
+    pub resize_filter: ResizeFilter,
 }
 
 impl Default for ScreenshotConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            attach: AttachMode::Auto,
+            auto_sparse_threshold: 5,
             max_dimension: 1280,
             format: ImageFormat::Png,
             jpeg_quality: 85,
+            png_compression: PngCompression::Fast,
+            resize_filter: ResizeFilter::Fast,
         }
     }
 }
@@ -233,10 +283,21 @@ pub struct TreeConfig {
     pub max_depth: usize,
     /// Longest text/value shown per element before truncation.
     pub max_text_len: usize,
+    /// Spaces of indentation per tree level.
+    pub indent: usize,
+    /// Show each element's secondary actions (actions=[...]).
+    pub show_actions: bool,
+    /// Show state flags such as (focused, disabled, checked).
+    pub show_states: bool,
     /// Return a diff instead of the full tree when little changed.
     pub diff: bool,
+    /// Fall back to the full tree when the diff touches more than this
+    /// fraction of the elements.
+    pub diff_full_ratio: f64,
     /// After a mutating action, re-snapshot and append what changed.
     pub report_changes: bool,
+    /// Longest change report (lines) appended to an action result.
+    pub report_changes_max_lines: usize,
 }
 
 impl Default for TreeConfig {
@@ -245,9 +306,157 @@ impl Default for TreeConfig {
             max_nodes: 1200,
             max_walk: 6000,
             max_depth: 64,
-            max_text_len: 200,
+            max_text_len: 160,
+            indent: 1,
+            show_actions: true,
+            show_states: true,
             diff: true,
+            diff_full_ratio: 0.33,
             report_changes: true,
+            report_changes_max_lines: 25,
+        }
+    }
+}
+
+/// How tool definitions are presented to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DescriptionStyle {
+    /// Detailed descriptions for every tool and parameter.
+    Full,
+    /// One-line tool descriptions, no per-parameter prose. Default; the tool
+    /// list is sent with every model request, so this saves the most tokens.
+    #[default]
+    Compact,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Tools to hide from the model entirely (e.g. ["drag", "batch"]).
+    pub disabled: Vec<String>,
+    /// If non-empty, ONLY these tools are exposed.
+    pub enabled: Vec<String>,
+    pub descriptions: DescriptionStyle,
+}
+
+impl ToolsConfig {
+    pub fn is_enabled(&self, name: &str) -> bool {
+        if self.disabled.iter().any(|d| d == name) {
+            return false;
+        }
+        self.enabled.is_empty() || self.enabled.iter().any(|e| e == name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimingConfig {
+    /// Pause after each action so the UI can update before the next read.
+    pub settle_ms: u64,
+    /// Pause between keys of a press_key sequence.
+    pub key_delay_ms: u64,
+    /// How long the running-app list is reused between calls.
+    pub app_cache_ms: u64,
+    /// Default wait_for timeout and poll interval.
+    pub wait_timeout_ms: u64,
+    pub wait_poll_ms: u64,
+}
+
+impl Default for TimingConfig {
+    fn default() -> Self {
+        Self {
+            settle_ms: 40,
+            key_delay_ms: 10,
+            app_cache_ms: 1500,
+            wait_timeout_ms: 10_000,
+            wait_poll_ms: 400,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinuxConfig {
+    /// Elements whose AT-SPI queries are sent concurrently in one batch.
+    pub batch_size: usize,
+    /// Longest text read from a text element.
+    pub text_max_chars: usize,
+}
+
+impl Default for LinuxConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 48,
+            text_max_chars: 2000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MacosConfig {
+    /// Fetch all of an element's attributes in one AX call.
+    pub batch_attributes: bool,
+    /// Seconds an AX call may block on an unresponsive app.
+    pub messaging_timeout_secs: f32,
+}
+
+impl Default for MacosConfig {
+    fn default() -> Self {
+        Self {
+            batch_attributes: true,
+            messaging_timeout_secs: 2.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowsConfig {
+    /// Walk the tree with a UI Automation CacheRequest (one cross-process
+    /// call for the whole window instead of several per element).
+    pub use_cache_request: bool,
+}
+
+impl Default for WindowsConfig {
+    fn default() -> Self {
+        Self {
+            use_cache_request: true,
+        }
+    }
+}
+
+/// What to do when approval is needed but no one can be asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HeadlessPolicy {
+    #[default]
+    Deny,
+    Allow,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Approval fallback when the MCP client can't show a prompt.
+    pub headless_approve: HeadlessPolicy,
+    /// Log level: error, warn, info, debug, trace.
+    pub log: String,
+    /// Serve MCP over HTTP on this address instead of stdio (needs the `http`
+    /// build feature). Empty = stdio.
+    pub http_addr: String,
+    /// Bearer token required on the HTTP endpoint.
+    pub http_token: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            headless_approve: HeadlessPolicy::Deny,
+            log: "warn".into(),
+            http_addr: String::new(),
+            http_token: String::new(),
         }
     }
 }
@@ -258,13 +467,21 @@ pub struct Config {
     pub approvals: ApprovalConfig,
     pub sensitive: SensitiveConfig,
     pub guard: GuardConfig,
+    pub tools: ToolsConfig,
     pub screenshot: ScreenshotConfig,
     pub tree: TreeConfig,
+    pub timing: TimingConfig,
     pub audit: AuditConfig,
+    pub server: ServerConfig,
+    pub linux: LinuxConfig,
+    pub macos: MacosConfig,
+    pub windows: WindowsConfig,
     /// Expose the clipboard tools (get_clipboard / set_clipboard).
     pub clipboard: bool,
     /// Never attach screenshots to any tool result (tree-only operation).
     pub text_only: bool,
+    /// Re-read this file when it changes, without restarting the server.
+    pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
     pub launch_timeout_secs: f64,
 }
@@ -275,11 +492,18 @@ impl Default for Config {
             approvals: ApprovalConfig::default(),
             sensitive: SensitiveConfig::default(),
             guard: GuardConfig::default(),
+            tools: ToolsConfig::default(),
             screenshot: ScreenshotConfig::default(),
             tree: TreeConfig::default(),
+            timing: TimingConfig::default(),
             audit: AuditConfig::default(),
+            server: ServerConfig::default(),
+            linux: LinuxConfig::default(),
+            macos: MacosConfig::default(),
+            windows: WindowsConfig::default(),
             clipboard: true,
             text_only: false,
+            hot_reload: true,
             launch_timeout_secs: 15.0,
         }
     }

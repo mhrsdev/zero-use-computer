@@ -12,6 +12,7 @@ mod x11;
 use std::collections::HashMap;
 use std::process::Command;
 
+pub use atspi::ipc_calls;
 use atspi::{AtspiConnection, ObjRef, state};
 use x11::X11;
 
