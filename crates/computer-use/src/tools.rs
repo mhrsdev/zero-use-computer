@@ -304,7 +304,10 @@ pub struct WaitForArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ScreenshotMode {
-    /// The whole (virtual) screen.
+    /// The whole screen, or only the part that changed since the last
+    /// full-screen screenshot (default without `app`).
+    Auto,
+    /// Always the whole (virtual) screen.
     Full,
     /// A screen-space rectangle (x, y, width, height).
     Region,
@@ -328,6 +331,9 @@ pub struct ScreenshotArgs {
     /// Draw each element's index over the window image (set-of-marks).
     #[serde(default)]
     pub annotate: bool,
+    /// Zoom into this element of the window (from get_app_state).
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -665,18 +671,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot",
             title: "Screenshot",
-            description: "Capture an image: the whole screen (mode=full), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With annotate=true on a window, each element's index is drawn over it (set-of-marks).",
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["full", "region", "window"], "description": "What to capture. Defaults to window when app is given, else full."},
+                    "mode": {"type": "string", "enum": ["auto", "full", "region", "window"], "description": "What to capture. Defaults to window when app is given, else auto."},
                     "app": {"type": "string", "description": "App for mode=window."},
                     "window": {"type": "string", "description": "Window id or title substring for mode=window."},
                     "x": {"type": "number", "description": "Region left (screen pixels)."},
                     "y": {"type": "number", "description": "Region top (screen pixels)."},
                     "width": {"type": "number", "description": "Region width."},
                     "height": {"type": "number", "description": "Region height."},
-                    "annotate": {"type": "boolean", "default": false, "description": "Draw element indices over a window capture."}
+                    "annotate": {"type": "boolean", "default": false, "description": "Draw element indices over a window capture."},
+                    "element_index": index_prop("Zoom into this element of the window (from get_app_state).")
                 },
                 "additionalProperties": false
             }),
@@ -755,7 +762,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
         "screenshot" => {
-            "Image of the full screen, a region (x,y,width,height), or an app window (annotate=true draws element indices)."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices)."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
         "get_clipboard" => "Read the clipboard text.",

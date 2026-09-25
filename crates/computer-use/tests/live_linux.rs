@@ -502,3 +502,55 @@ fn stop_key_and_idle_time_over_x11() {
     );
     eprintln!("stop key live test passed (idle {idle:?}, paused {waited:?})");
 }
+
+#[test]
+fn follow_up_screenshots_send_only_what_changed() {
+    if !live() {
+        return;
+    }
+    let backend = LinuxBackend::new().expect("connect to AT-SPI/X11");
+    let mut cfg = Config::default();
+    cfg.approvals.mode = ApprovalMode::AllowAll;
+    cfg.screenshot.attach = computer_use::config::AttachMode::Always;
+    let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
+    let app = wait_for_app(&mut e);
+    let state = |e: &mut Engine<LinuxBackend>| {
+        e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": app, "window": "CU Test", "disable_diff": true}),
+            &mut AllowApprover,
+        )
+    };
+    let out = state(&mut e);
+    let full = out.image.as_ref().expect("first screenshot").width;
+    // Tick the checkbox: a small part of the window changes.
+    let check = index_of(&out.text, "Enable feature");
+    let r = e.call_tool(
+        "click",
+        serde_json::json!({"app": app, "element_index": check}),
+        &mut AllowApprover,
+    );
+    assert!(!r.is_error, "{}", r.text);
+    let out = state(&mut e);
+    eprintln!(
+        "{}",
+        out.text.lines().take(3).collect::<Vec<_>>().join("\n")
+    );
+    let part = out.image.as_ref().expect("a screenshot");
+    assert!(
+        out.text.contains("only the part that changed") && part.width < full,
+        "{}",
+        out.text
+    );
+    // Put it back.
+    let check = index_of(&out.text, "Enable feature");
+    e.call_tool(
+        "click",
+        serde_json::json!({"app": app, "element_index": check}),
+        &mut AllowApprover,
+    );
+    eprintln!(
+        "smart screenshot live test passed ({full} px wide → {} px)",
+        part.width
+    );
+}

@@ -106,6 +106,8 @@ pub struct MockBackend {
     pub on_press: HashMap<ElementHandle, MockApp>,
     /// Brightness of captured pixels (tests change it to alter the picture).
     pub fill: u8,
+    /// A screen area drawn in another brightness (a local change).
+    pub patch: Option<(Rect, u8)>,
     /// Backend calls, for cache assertions.
     pub snapshots: usize,
     pub captures: usize,
@@ -226,6 +228,22 @@ impl MockBackend {
                 }
             }
         }
+    }
+
+    /// Draw the patch (if any) into a capture.
+    fn paint(&self, mut cap: Capture) -> Capture {
+        if let Some((r, v)) = self.patch {
+            for y in 0..cap.height {
+                for x in 0..cap.width {
+                    let p = Point::new(cap.bounds.x + f64::from(x), cap.bounds.y + f64::from(y));
+                    if r.contains(p) {
+                        let i = ((y * cap.width + x) * 4) as usize;
+                        cap.rgba[i..i + 3].fill(v);
+                    }
+                }
+            }
+        }
+        cap
     }
 
     pub fn alloc(&mut self) -> ElementHandle {
@@ -359,15 +377,15 @@ impl Backend for MockBackend {
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
         self.captures += 1;
         let b = window.bounds.unwrap_or(Rect::new(0.0, 0.0, 100.0, 100.0));
-        Ok(fake_capture(b, self.fill))
+        Ok(self.paint(fake_capture(b, self.fill)))
     }
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
         self.captures += 1;
-        Ok(fake_capture(
+        Ok(self.paint(fake_capture(
             region.unwrap_or(Rect::new(0.0, 0.0, 1280.0, 800.0)),
             self.fill,
-        ))
+        )))
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {

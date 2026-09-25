@@ -256,6 +256,28 @@ pub struct ScreenshotConfig {
     pub jpeg_quality: u8,
     pub png_compression: PngCompression,
     pub resize_filter: ResizeFilter,
+    /// What a screenshot of a screen the model has already seen covers:
+    /// `auto` = only the part that changed, when that is a small part of the
+    /// window; `full` = always the whole window.
+    pub scope: ShotScope,
+    /// In `auto`, a change bigger than this share of the window area sends
+    /// the whole window.
+    pub region_max_ratio: f64,
+    /// Margin around the changed part (pixels of the capture).
+    pub region_padding: u32,
+    /// The part sent is at least this many pixels on each side, for context.
+    pub region_min_size: u32,
+}
+
+/// How much of the window a follow-up screenshot covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ShotScope {
+    /// Only the changed part when it's small. Default.
+    #[default]
+    Auto,
+    /// Always the whole window.
+    Full,
 }
 
 impl Default for ScreenshotConfig {
@@ -269,6 +291,10 @@ impl Default for ScreenshotConfig {
             jpeg_quality: 85,
             png_compression: PngCompression::Fast,
             resize_filter: ResizeFilter::Fast,
+            scope: ShotScope::Auto,
+            region_max_ratio: 0.5,
+            region_padding: 24,
+            region_min_size: 200,
         }
     }
 }
@@ -868,6 +894,12 @@ impl Config {
                     "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
                 ));
             }
+        }
+        let r = self.screenshot.region_max_ratio;
+        if !(0.0..=1.0).contains(&r) {
+            return Err(format!(
+                "screenshot.region_max_ratio must be between 0 and 1 (got {r})"
+            ));
         }
         let hotkey = self.control.stop_hotkey.trim();
         if !hotkey.is_empty()

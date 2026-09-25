@@ -126,6 +126,29 @@ below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
 text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
 holds ~7.5 KiB per screen; peak process memory is unchanged.
 
+### Smart screenshots: the whole window, or just the part that changed
+
+When a screenshot is attached and the model already has a picture of the same
+screen, the engine compares the new pixels with that picture
+(`screenshot.scope = "auto"`):
+
+- **Only a small part changed** (a menu, a tooltip, a ticked box, a new line
+  of text): only that part is sent, with a margin (`region_padding`,
+  `region_min_size`), at the same scale. The model is told where it goes:
+  "the area x 400–600, y 300–500 of your earlier screenshot". Coordinates keep
+  referring to the whole screenshot, so nothing shifts.
+- **Much of it changed** (more than `region_max_ratio` of the window), the
+  window changed size, the screen is new, or the model asked
+  (`screenshot: true`): the whole window is sent.
+- **Nothing changed**: nothing is sent.
+
+The `screenshot` tool works the same way for the whole screen: `mode: "auto"`
+(the default without `app`) sends only what changed since the last
+full-screen screenshot, and `mode: "full"` always sends all of it. The model
+can also pick the part itself: `element_index` zooms into one element of a
+window at full resolution, for small text. `scope = "full"` turns the
+automatic choice off.
+
 ## On-screen indicator (overlay)
 
 While the agent works, the user sees what it is doing — without it ever taking

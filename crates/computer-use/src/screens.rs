@@ -362,6 +362,34 @@ impl PixelSig {
         }
     }
 
+    /// The part of the picture that differs from `other` (same size), as a
+    /// pixel rectangle of the capture: (x, y, width, height). `None` when
+    /// nothing differs or the pictures can't be compared.
+    pub fn changed_area(&self, other: &PixelSig, tolerance: u8) -> Option<(u32, u32, u32, u32)> {
+        if (self.width, self.height, self.cols, self.rows)
+            != (other.width, other.height, other.cols, other.rows)
+        {
+            return None;
+        }
+        let (mut c0, mut r0, mut c1, mut r1) = (u32::MAX, u32::MAX, 0, 0);
+        for (i, (a, b)) in self.cells.iter().zip(&other.cells).enumerate() {
+            if a.abs_diff(*b) > tolerance {
+                let (c, r) = (i as u32 % self.cols, i as u32 / self.cols);
+                (c0, r0, c1, r1) = (c0.min(c), r0.min(r), c1.max(c), r1.max(r));
+            }
+        }
+        if c0 == u32::MAX {
+            return None;
+        }
+        let x0 = c0 * self.width / self.cols;
+        let y0 = r0 * self.height / self.rows;
+        let x1 = ((c1 + 1) * self.width).div_ceil(self.cols).min(self.width);
+        let y1 = ((r1 + 1) * self.height)
+            .div_ceil(self.rows)
+            .min(self.height);
+        Some((x0, y0, x1 - x0, y1 - y0))
+    }
+
     /// Same picture, allowing each cell's average to drift by `tolerance`.
     pub fn same_as(&self, other: &PixelSig, tolerance: u8) -> bool {
         self.width == other.width

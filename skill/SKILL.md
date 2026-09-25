@@ -76,6 +76,10 @@ running (then `get_app_state`).
 - `screenshot(mode)` — capture the `full` screen, a `region` (x/y/width/height),
   or a `window`; add `annotate: true` on a window to see each element's index
   drawn on the image.
+- A follow-up screenshot may be **only the part that changed**; the text says
+  where it sits in your earlier screenshot, and x/y still refer to that
+  whole screenshot. To read small text, `screenshot(app, element_index)`
+  zooms into one element.
 - `get_clipboard` / `set_clipboard` — move text between apps (set it, then
   `press_key` "cmd+v" / "ctrl+v").
 

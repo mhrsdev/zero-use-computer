@@ -210,6 +210,83 @@ fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: 
     }
 }
 
+/// Cut a pixel rectangle (x, y, width, height) out of a capture.
+pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
+    let x = px.0.min(cap.width.saturating_sub(1));
+    let y = px.1.min(cap.height.saturating_sub(1));
+    let w = px.2.clamp(1, cap.width - x);
+    let h = px.3.clamp(1, cap.height - y);
+    let stride = cap.width as usize * 4;
+    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    for row in y..y + h {
+        let start = row as usize * stride + x as usize * 4;
+        rgba.extend_from_slice(&cap.rgba[start..start + w as usize * 4]);
+    }
+    let sx = cap.bounds.width / f64::from(cap.width.max(1));
+    let sy = cap.bounds.height / f64::from(cap.height.max(1));
+    Capture {
+        width: w,
+        height: h,
+        rgba,
+        bounds: Rect::new(
+            cap.bounds.x + f64::from(x) * sx,
+            cap.bounds.y + f64::from(y) * sy,
+            f64::from(w) * sx,
+            f64::from(h) * sy,
+        ),
+    }
+}
+
+/// Grow a pixel rectangle by `pad` on every side and to at least `min` per
+/// side (centred on it), kept inside `width` x `height`.
+pub fn widen(
+    r: (u32, u32, u32, u32),
+    pad: u32,
+    min: u32,
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    let grow = |start: u32, len: u32, limit: u32| -> (u32, u32) {
+        let mut a = start.saturating_sub(pad);
+        let mut b = (start + len + pad).min(limit);
+        let want = min.min(limit);
+        if b - a < want {
+            let extra = want - (b - a);
+            a = a.saturating_sub(extra / 2);
+            b = (a + want).min(limit);
+            a = b.saturating_sub(want);
+        }
+        (a, b - a)
+    };
+    let (x, w) = grow(r.0, r.2, width);
+    let (y, h) = grow(r.1, r.3, height);
+    (x, y, w, h)
+}
+
+/// Encode part of a capture at the scale an earlier full image of it was
+/// sent at (`full`), so positions in the part line up with that image.
+/// Returns the image and the part's offset in the full image's pixels.
+pub fn encode_part(
+    cap: &Capture,
+    px: (u32, u32, u32, u32),
+    full: &CoordMap,
+    cfg: &ScreenshotConfig,
+) -> Result<(EncodedImage, (u32, u32))> {
+    let part = crop(cap, px);
+    let scale = f64::from(full.width) / f64::from(cap.width.max(1));
+    let longest = ((f64::from(part.width.max(part.height)) * scale).round() as u32).max(1);
+    let cfg = ScreenshotConfig {
+        max_dimension: longest,
+        ..cfg.clone()
+    };
+    let (img, _) = encode(part, &cfg)?;
+    let offset = (
+        (f64::from(px.0) * scale).round() as u32,
+        (f64::from(px.1) * scale).round() as u32,
+    );
+    Ok((img, offset))
+}
+
 /// Black out screen-space rectangles of a capture (private data), before it
 /// is encoded or fingerprinted. Returns how many areas were covered.
 pub fn redact(cap: &mut Capture, rects: &[Rect], style: crate::config::RedactStyle) -> usize {
