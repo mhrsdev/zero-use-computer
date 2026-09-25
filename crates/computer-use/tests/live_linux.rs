@@ -554,3 +554,57 @@ fn follow_up_screenshots_send_only_what_changed() {
         part.width
     );
 }
+
+#[test]
+fn window_management_over_x11() {
+    if !live() {
+        return;
+    }
+    let mut e = engine();
+    let app = wait_for_app(&mut e);
+    let win = |e: &mut Engine<LinuxBackend>, extra: serde_json::Value| {
+        let mut args = serde_json::json!({"app": app, "window": "CU Test"});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        let out = e.call_tool("window", args, &mut AllowApprover);
+        eprintln!("{}", out.text.trim_end());
+        out
+    };
+    let out = e.call_tool(
+        "window",
+        serde_json::json!({"action": "displays"}),
+        &mut AllowApprover,
+    );
+    assert!(
+        out.text.contains("display 0 (primary): 1280x1024 at 0,0"),
+        "{}",
+        out.text
+    );
+
+    let out = win(
+        &mut e,
+        serde_json::json!({"action": "move", "x": 200, "y": 150}),
+    );
+    assert!(out.text.contains("at 200,150"), "{}", out.text);
+    let out = win(
+        &mut e,
+        serde_json::json!({"action": "resize", "width": 520, "height": 380}),
+    );
+    assert!(out.text.contains("520x380 at 200,150"), "{}", out.text);
+    let out = win(&mut e, serde_json::json!({"action": "tile_right"}));
+    assert!(out.text.contains("640x1024 at 640,0"), "{}", out.text);
+    let out = win(&mut e, serde_json::json!({"action": "minimize"}));
+    assert!(!out.is_error, "{}", out.text);
+    let out = win(&mut e, serde_json::json!({"action": "restore"}));
+    assert!(!out.is_error, "{}", out.text);
+    // Back where the other tests expect it.
+    let out = win(
+        &mut e,
+        serde_json::json!({"action": "move", "x": 0, "y": 0, "width": 420, "height": 320}),
+    );
+    assert!(out.text.contains("420x320 at 0,0"), "{}", out.text);
+    let out = win(&mut e, serde_json::json!({"action": "focus"}));
+    assert!(!out.is_error, "{}", out.text);
+    eprintln!("window management live test passed");
+}

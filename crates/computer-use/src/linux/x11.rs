@@ -340,6 +340,11 @@ impl X11 {
         )))
     }
 
+    /// Window management on this display.
+    pub fn wm(&self) -> super::wm::Wm<'_> {
+        super::wm::Wm::new(&self.conn, self.root)
+    }
+
     /// The full screen rectangle (the root window's size).
     pub fn root_rect(&self) -> Rect {
         Rect::new(0.0, 0.0, f64::from(self.root_w), f64::from(self.root_h))

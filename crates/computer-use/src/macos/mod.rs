@@ -5,6 +5,7 @@
 pub(crate) mod cg;
 mod ffi;
 mod pasteboard;
+mod wm;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -391,6 +392,15 @@ impl Backend for MacBackend {
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
         cg::capture_screen(region)
+    }
+
+    fn displays(&mut self) -> Result<Vec<Display>> {
+        wm::displays()
+    }
+
+    fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        let win = self.resolve(window.handle)?;
+        wm::apply(win.as_ref(), app.pid, op)
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {

@@ -354,6 +354,60 @@ pub struct BatchArgs {
     pub continue_on_error: bool,
 }
 
+/// What the `window` tool does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAction {
+    /// The screens (and virtual desktops).
+    Displays,
+    /// The app's windows with their positions and states.
+    List,
+    Focus,
+    /// To x, y (and width, height if given), in screen coordinates.
+    Move,
+    Resize,
+    Maximize,
+    Minimize,
+    Restore,
+    Fullscreen,
+    ExitFullscreen,
+    Close,
+    /// Fill the left/right/top/bottom half of a display, or center it.
+    TileLeft,
+    TileRight,
+    TileTop,
+    TileBottom,
+    Center,
+    MoveToDisplay,
+    MoveToDesktop,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct WindowArgs {
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    pub action: WindowAction,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    /// Display index (from action=displays).
+    #[serde(default)]
+    pub display: Option<u32>,
+    /// Virtual desktop index, from 0.
+    #[serde(default)]
+    pub desktop: Option<u32>,
+}
+
+impl WindowAction {
+    /// Whether it changes anything.
+    pub fn mutating(self) -> bool {
+        !matches!(self, WindowAction::Displays | WindowAction::List)
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct SetClipboardArgs {
     pub text: String,
@@ -379,6 +433,7 @@ pub enum ToolCall {
     Batch(BatchArgs),
     GetClipboard,
     SetClipboard(SetClipboardArgs),
+    Window(WindowArgs),
 }
 
 fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
@@ -406,6 +461,7 @@ impl ToolCall {
             "batch" => ToolCall::Batch(parse_args(name, args)?),
             "get_clipboard" => ToolCall::GetClipboard,
             "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
+            "window" => ToolCall::Window(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
         })
     }
@@ -429,6 +485,7 @@ impl ToolCall {
             ToolCall::Batch(_) => "batch",
             ToolCall::GetClipboard => "get_clipboard",
             ToolCall::SetClipboard(_) => "set_clipboard",
+            ToolCall::Window(_) => "window",
         }
     }
 }
@@ -718,6 +775,28 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Batch actions"),
         },
         ToolDefinition {
+            name: "window",
+            title: "Manage windows",
+            description: "Arrange app windows and see the screens. action: displays (the screens and virtual desktops; no app needed), list (the app's windows with position, size and state), focus, move (x, y and optionally width, height), resize (width, height), maximize, minimize, restore, fullscreen, exit_fullscreen, close, tile_left / tile_right / tile_top / tile_bottom (half of a display), center, move_to_display (display), move_to_desktop (desktop). Positions and sizes are screen coordinates (as in get_app_state's window line), not screenshot pixels.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "app": {"type": "string", "description": "App name, id or pid (not needed for displays)."},
+                    "window": {"type": "string", "description": "Window id or title substring (default: the app's current window)."},
+                    "action": {"type": "string", "enum": ["displays", "list", "focus", "move", "resize", "maximize", "minimize", "restore", "fullscreen", "exit_fullscreen", "close", "tile_left", "tile_right", "tile_top", "tile_bottom", "center", "move_to_display", "move_to_desktop"]},
+                    "x": {"type": "number", "description": "Left edge, screen coordinates."},
+                    "y": {"type": "number", "description": "Top edge, screen coordinates."},
+                    "width": {"type": "number"},
+                    "height": {"type": "number"},
+                    "display": {"type": "integer", "minimum": 0, "description": "Display index from action=displays (default: the window's own)."},
+                    "desktop": {"type": "integer", "minimum": 0, "description": "Virtual desktop, from 0."}
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Manage windows"),
+        },
+        ToolDefinition {
             name: "get_clipboard",
             title: "Get clipboard",
             description: "Read the system clipboard as text.",
@@ -765,6 +844,9 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices)."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
+        "window" => {
+            "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
+        }
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
         _ => return None,
@@ -860,7 +942,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 17);
+        assert_eq!(defs.len(), 18);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -887,13 +969,14 @@ mod tests {
         // Each declared property name must round-trip through the parser.
         let full = json!({
             "app": "X", "window": "1", "element_index": 1, "x": 1.0, "y": 2.0,
-            "button": "right", "click_count": 2, "action": "show_menu", "value": "v",
+            "button": "right", "click_count": 2, "value": "v",
             "text": "t", "occurrence": 1, "direction": "down", "amount": 0.5,
             "from_element_index": 1, "from_x": 1, "from_y": 1, "to_element_index": 2,
             "to_x": 2, "to_y": 2, "key": "Return", "disable_diff": true,
             "role": "button", "editable": true, "max_results": 5, "state": "visible",
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
+            "action": "move", "display": 0, "desktop": 1,
             "steps": [{"tool": "list_apps"}]
         });
         for d in definitions() {
@@ -913,7 +996,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 17);
+        assert_eq!(compact.len(), 18);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

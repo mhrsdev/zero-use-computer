@@ -9,6 +9,7 @@
 mod capture;
 mod clipboard;
 pub(crate) mod input;
+mod wm;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -569,7 +570,7 @@ impl Backend for WindowsBackend {
                 bounds,
                 focused,
                 main: focused,
-                minimized: false,
+                minimized: wm::minimized(hwnd),
                 handle,
             });
         }
@@ -619,6 +620,14 @@ impl Backend for WindowsBackend {
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
         capture::capture_screen(region)
+    }
+
+    fn displays(&mut self) -> Result<Vec<Display>> {
+        wm::displays()
+    }
+
+    fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        wm::apply(HWND(window.id as usize as *mut _), app.pid, op)
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {

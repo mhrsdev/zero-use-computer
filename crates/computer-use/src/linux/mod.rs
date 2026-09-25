@@ -7,6 +7,7 @@
 
 mod atspi;
 mod clipboard;
+mod wm;
 pub(crate) mod x11;
 
 use std::collections::HashMap;
@@ -327,6 +328,28 @@ impl Backend for LinuxBackend {
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         self.x11.as_ref().and_then(|x| x.idle())
+    }
+
+    fn displays(&mut self) -> Result<Vec<Display>> {
+        Ok(self.x11()?.wm().displays())
+    }
+
+    fn desktops(&mut self) -> Option<(u32, u32)> {
+        self.x11.as_ref().and_then(|x| x.wm().desktops())
+    }
+
+    fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        let x11 = self.x11()?;
+        let wm = x11.wm();
+        let win = wm
+            .find(app.pid, &window.title, window.bounds)
+            .ok_or_else(|| {
+                Error::ActionFailed(format!(
+                    "could not find the X11 window of \"{}\"",
+                    window.title
+                ))
+            })?;
+        wm.apply(win, op)
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {

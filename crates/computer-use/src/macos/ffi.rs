@@ -215,6 +215,26 @@ pub fn set_range(element: AXUIElementRef, attr: &str, location: isize, length: i
     ok
 }
 
+fn set_value_of<T>(element: AXUIElementRef, attr: &str, kind: u32, v: &T) -> bool {
+    let value = unsafe { AXValueCreate(kind, v as *const T as *const c_void) };
+    if value.is_null() {
+        return false;
+    }
+    let name = cfstr(attr);
+    let ok =
+        unsafe { AXUIElementSetAttributeValue(element, as_ref(&name), value) == kAXErrorSuccess };
+    unsafe { core_foundation::base::CFRelease(value) };
+    ok
+}
+
+pub fn set_point(element: AXUIElementRef, attr: &str, p: CGPoint) -> bool {
+    set_value_of(element, attr, kAXValueCGPointType, &p)
+}
+
+pub fn set_size(element: AXUIElementRef, attr: &str, s: CGSize) -> bool {
+    set_value_of(element, attr, kAXValueCGSizeType, &s)
+}
+
 pub fn copy_point(element: AXUIElementRef, attr: &str) -> Option<CGPoint> {
     let v = copy_attr(element, attr)?;
     let mut p = CGPoint { x: 0.0, y: 0.0 };

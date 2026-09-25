@@ -212,6 +212,34 @@ pub struct InputTarget {
     pub window_handle: Option<ElementHandle>,
 }
 
+/// A screen (monitor), in screen coordinates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Display {
+    pub index: u32,
+    pub bounds: Rect,
+    /// The part not taken by task bars, docks and menu bars.
+    pub work_area: Rect,
+    pub primary: bool,
+}
+
+/// A change to a top-level window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowOp {
+    /// Bring it to the front and give it focus.
+    Focus,
+    /// Move and/or resize (screen coordinates).
+    SetBounds(Rect),
+    Maximize,
+    Minimize,
+    /// Un-minimize / un-maximize / leave full screen.
+    Restore,
+    Fullscreen(bool),
+    /// Ask it to close (as its close button does; the app may ask first).
+    Close,
+    /// Move it to virtual desktop n (0-based).
+    ToDesktop(u32),
+}
+
 /// Status of an OS-level permission the backend needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionStatus {

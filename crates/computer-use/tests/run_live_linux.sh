@@ -68,6 +68,11 @@ dbus-run-session -- bash -euc '
     [ -x "$r" ] && "$r" >/tmp/atspi-reg.log 2>&1 & break
   done
   sleep 1
+  # Optionally a window manager (CU_WM=openbox) to exercise the EWMH paths.
+  if [ -n "${CU_WM:-}" ] && command -v "$CU_WM" >/dev/null 2>&1; then
+    "$CU_WM" >/tmp/wm.log 2>&1 &
+    sleep 1
+  fi
 
   '"$py"' '"$fixture"' >/tmp/gtkapp.log 2>&1 &
   app_pid=$!

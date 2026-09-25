@@ -158,6 +158,20 @@ impl Backend for Box<dyn Backend> {
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         (**self).user_idle()
     }
+    fn displays(&mut self) -> Result<Vec<types::Display>> {
+        (**self).displays()
+    }
+    fn desktops(&mut self) -> Option<(u32, u32)> {
+        (**self).desktops()
+    }
+    fn window_op(
+        &mut self,
+        app: &types::AppInfo,
+        window: &types::WindowInfo,
+        op: &types::WindowOp,
+    ) -> Result<()> {
+        (**self).window_op(app, window, op)
+    }
     fn clipboard_get(&mut self) -> Result<String> {
         (**self).clipboard_get()
     }

@@ -80,6 +80,10 @@ running (then `get_app_state`).
   where it sits in your earlier screenshot, and x/y still refer to that
   whole screenshot. To read small text, `screenshot(app, element_index)`
   zooms into one element.
+- `window(app, action)` — focus, move/resize, maximize/minimize/restore,
+  tile_left/tile_right, move_to_display, close; `window(action="displays")`
+  lists the screens. Positions are screen coordinates (as in the window line
+  of `get_app_state`), not screenshot pixels.
 - `get_clipboard` / `set_clipboard` — move text between apps (set it, then
   `press_key` "cmd+v" / "ctrl+v").
 

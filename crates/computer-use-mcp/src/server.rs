@@ -477,8 +477,9 @@ mod tests {
         assert_eq!(out.len(), 3);
         // initialize
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "computer-use");
-        // tools/list has 11 tools
-        assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), 17);
+        // tools/list has every tool the default settings expose
+        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), all);
         // list_apps ran
         let text = out[2]["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("TextEdit"));
@@ -574,7 +575,8 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         let first = msgs.iter().find(|m| m["id"] == 2).unwrap();
-        assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 17);
+        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        assert_eq!(first["result"]["tools"].as_array().unwrap().len(), all);
         assert!(
             msgs.iter()
                 .any(|m| m["method"] == "notifications/tools/list_changed"),

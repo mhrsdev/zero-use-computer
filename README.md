@@ -126,6 +126,31 @@ below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
 text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
 holds ~7.5 KiB per screen; peak process memory is unchanged.
 
+### Windows and screens
+
+The `window` tool arranges app windows. Its actions:
+
+- `list`: the app's windows, with position, size and state;
+- `focus`, `move` (x, y, optionally width, height), `resize`;
+- `maximize`, `minimize`, `restore`, `fullscreen` / `exit_fullscreen`,
+  `close` (as the close button does, so the app can still ask to save);
+- `tile_left` / `tile_right` / `tile_top` / `tile_bottom` (half of a display)
+  and `center`;
+- `move_to_display`, `move_to_desktop`;
+- `displays`: every monitor's area and usable area (without task bar, dock or
+  menu bar), plus the virtual desktops.
+
+Positions are screen coordinates, the same as the window line of
+`get_app_state`. Each result reports where the window really ended up, and
+notes when the app or window manager adjusted it (a minimum size, say).
+After a move the next `get_app_state` takes a fresh screenshot.
+
+| | Linux (X11) | Windows | macOS |
+|---|---|---|---|
+| Placement, state, close | EWMH/ICCCM messages to the window manager (plain X requests without one) | `SetWindowPos`, `ShowWindow`, `WM_CLOSE` | the window's AX position, size, minimized and full-screen attributes, its close button |
+| Displays | RandR, work area from `_NET_WORKAREA` | monitor list with work areas | CoreGraphics, AppKit's visible frame |
+| Virtual desktops | `_NET_WM_DESKTOP` | not available (Windows only lets a program move its own windows) | not available (no public API for Spaces) |
+
 ### Smart screenshots: the whole window, or just the part that changed
 
 When a screenshot is attached and the model already has a picture of the same

@@ -1227,7 +1227,9 @@ impl<B: Backend> Engine<B> {
         }
         // For mutating actions, remember which app to re-inspect afterwards.
         let acting = mutating_app(&call);
-        let mutating = acting.is_some() || matches!(call, ToolCall::LaunchApp(_));
+        let mutating = acting.is_some()
+            || matches!(call, ToolCall::LaunchApp(_))
+            || matches!(&call, ToolCall::Window(w) if w.action.mutating());
         if mutating {
             // Anything read before this action is stale now.
             self.epoch += 1;
@@ -1253,6 +1255,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Batch(a) => self.batch(a, approver),
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
+            ToolCall::Window(a) => self.window_tool(a, approver),
         };
         if mutating {
             self.last_input = Some((self.clock)());
@@ -2373,6 +2376,205 @@ impl<B: Backend> Engine<B> {
         })
     }
 
+    fn window_tool(&mut self, args: WindowArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        use crate::tools::WindowAction as A;
+        if args.action == A::Displays {
+            let displays = self.backend.displays()?;
+            let mut out = format!("{} display(s), in screen coordinates:\n", displays.len());
+            for d in &displays {
+                out.push_str(&format!(
+                    "- display {}{}: {} (usable area {})\n",
+                    d.index,
+                    if d.primary { " (primary)" } else { "" },
+                    show_rect(d.bounds),
+                    show_rect(d.work_area)
+                ));
+            }
+            match self.backend.desktops() {
+                Some((n, cur)) => out.push_str(&format!(
+                    "Virtual desktops: {n} (current: {cur}; numbered from 0).\n"
+                )),
+                None => out.push_str("Virtual desktops: not available here.\n"),
+            }
+            return Ok(ToolOutput::text(out));
+        }
+        let query = args
+            .app
+            .as_deref()
+            .ok_or_else(|| Error::InvalidArgs("this window action needs `app`".into()))?;
+        let app = self.authorize(query, "window", approver)?;
+        if args.action == A::List {
+            let windows = self.list_windows(&app, true)?;
+            if windows.is_empty() {
+                return Ok(ToolOutput::text(format!(
+                    "{} has no open windows.",
+                    app.name
+                )));
+            }
+            let mut out = format!("{} window(s) of {}:\n", windows.len(), app.name);
+            for w in &windows {
+                out.push_str(&format!("- {}\n", describe_window(w)));
+            }
+            return Ok(ToolOutput::text(out));
+        }
+
+        let window = self.resolve_window(&app, args.window.as_deref(), true)?;
+        let bounds = window.bounds;
+        // The display to place it on: the one asked for, else its own.
+        let displays = self.backend.displays().unwrap_or_default();
+        let display =
+            match args.display {
+                Some(i) => Some(displays.iter().find(|d| d.index == i).cloned().ok_or_else(
+                    || Error::InvalidArgs(format!("no display {i}; see window action=displays")),
+                )?),
+                None => bounds
+                    .and_then(|b| {
+                        displays
+                            .iter()
+                            .find(|d| d.bounds.contains(b.center()))
+                            .or_else(|| displays.iter().find(|d| d.primary))
+                            .or(displays.first())
+                    })
+                    .cloned(),
+            };
+        let area = || {
+            display.as_ref().map(|d| d.work_area).ok_or_else(|| {
+                Error::Unsupported("the display layout is not known on this platform".into())
+            })
+        };
+        let size =
+            || bounds.ok_or_else(|| Error::ActionFailed("the window's size is not known".into()));
+        let (op, what) = match args.action {
+            A::Displays | A::List => unreachable!("handled above"),
+            A::Focus => (WindowOp::Focus, "Focused".to_string()),
+            A::Maximize if args.display.is_some() => {
+                (WindowOp::SetBounds(area()?), "Maximized".to_string())
+            }
+            A::Maximize => (WindowOp::Maximize, "Maximized".to_string()),
+            A::Minimize => (WindowOp::Minimize, "Minimized".to_string()),
+            A::Restore => (WindowOp::Restore, "Restored".to_string()),
+            A::Fullscreen => (WindowOp::Fullscreen(true), "Made full screen".to_string()),
+            A::ExitFullscreen => (WindowOp::Fullscreen(false), "Left full screen".to_string()),
+            A::Close => (WindowOp::Close, "Asked to close".to_string()),
+            A::Move => {
+                let (x, y) = match (args.x, args.y) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => return Err(Error::InvalidArgs("move needs x and y".into())),
+                };
+                let b = size()?;
+                let r = Rect::new(
+                    x,
+                    y,
+                    args.width.unwrap_or(b.width),
+                    args.height.unwrap_or(b.height),
+                );
+                (WindowOp::SetBounds(r), "Moved".to_string())
+            }
+            A::Resize => {
+                let b = size()?;
+                let (w, h) = match (args.width, args.height) {
+                    (None, None) => {
+                        return Err(Error::InvalidArgs(
+                            "resize needs width and/or height".into(),
+                        ));
+                    }
+                    (w, h) => (w.unwrap_or(b.width), h.unwrap_or(b.height)),
+                };
+                if !(w >= 1.0 && h >= 1.0) {
+                    return Err(Error::InvalidArgs(
+                        "width and height must be positive".into(),
+                    ));
+                }
+                (
+                    WindowOp::SetBounds(Rect::new(b.x, b.y, w, h)),
+                    "Resized".to_string(),
+                )
+            }
+            A::TileLeft | A::TileRight | A::TileTop | A::TileBottom => {
+                let a = area()?;
+                let (hw, hh) = (a.width / 2.0, a.height / 2.0);
+                let r = match args.action {
+                    A::TileLeft => Rect::new(a.x, a.y, hw, a.height),
+                    A::TileRight => Rect::new(a.x + hw, a.y, a.width - hw, a.height),
+                    A::TileTop => Rect::new(a.x, a.y, a.width, hh),
+                    _ => Rect::new(a.x, a.y + hh, a.width, a.height - hh),
+                };
+                (WindowOp::SetBounds(r), "Tiled".to_string())
+            }
+            A::Center | A::MoveToDisplay => {
+                let a = area()?;
+                let b = size()?;
+                let (w, h) = (b.width.min(a.width), b.height.min(a.height));
+                let r = Rect::new(a.x + (a.width - w) / 2.0, a.y + (a.height - h) / 2.0, w, h);
+                let what = match (args.action, &display) {
+                    (A::MoveToDisplay, Some(d)) => format!("Moved to display {}", d.index),
+                    _ => "Centered".to_string(),
+                };
+                (WindowOp::SetBounds(r), what)
+            }
+            A::MoveToDesktop => {
+                let d = args
+                    .desktop
+                    .ok_or_else(|| Error::InvalidArgs("move_to_desktop needs desktop".into()))?;
+                (WindowOp::ToDesktop(d), format!("Moved to desktop {d}"))
+            }
+        };
+        if let WindowOp::SetBounds(r) = op
+            && !(r.width >= 1.0 && r.height >= 1.0 && r.x.is_finite() && r.y.is_finite())
+        {
+            return Err(Error::InvalidArgs(format!(
+                "invalid window area {}",
+                show_rect(r)
+            )));
+        }
+        if let (WindowOp::SetBounds(r), Some(_)) = (op, &bounds) {
+            self.overlay_send(OverlayCmd::Target {
+                rect: Some([r.x, r.y, r.width, r.height]),
+            });
+        }
+        self.backend.window_op(&app, &window, &op)?;
+        self.settle();
+
+        // The window's screenshot no longer lines up: the next
+        // get_app_state takes a fresh one.
+        if let Some(st) = self.states.get_mut(&app.pid) {
+            st.coord = None;
+            if let Some(k) = st.known.as_mut() {
+                k.shot = false;
+                k.coord = None;
+                k.pixels = None;
+            }
+        }
+        let now = self
+            .list_windows(&app, true)
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.id == window.id));
+        let mut msg = format!("{what} \"{}\" of {}.", window.title, app.name);
+        match now {
+            Some(w) => msg.push_str(&format!(" Now: {}.", describe_window(&w))),
+            None if op == WindowOp::Close => msg.push_str(" It is closed."),
+            None => {}
+        }
+        if let (WindowOp::SetBounds(want), Some(got)) = (op, self.window_bounds(&app, window.id)) {
+            let off = (got.x - want.x).abs().max((got.y - want.y).abs());
+            let size_off = (got.width - want.width)
+                .abs()
+                .max((got.height - want.height).abs());
+            if self.store.config.verify.enabled && (off > 16.0 || size_off > 16.0) {
+                msg.push_str(" (The app or window manager adjusted it; it may have a minimum size or be maximized.)");
+            }
+        }
+        Ok(ToolOutput::text(msg))
+    }
+
+    /// A window's current bounds, from the latest window list.
+    fn window_bounds(&self, app: &AppInfo, id: u64) -> Option<Rect> {
+        self.window_cache
+            .get(&app.pid)
+            .and_then(|(_, _, ws)| ws.iter().find(|w| w.id == id))
+            .and_then(|w| w.bounds)
+    }
+
     fn get_clipboard(&mut self) -> Result<ToolOutput> {
         if !self.store.config.clipboard {
             return Err(Error::Blocked(
@@ -2539,6 +2741,7 @@ const MUTATING_TOOLS: &[&str] = &[
     "drag",
     "press_key",
     "type_text",
+    "window",
 ];
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
@@ -2603,6 +2806,28 @@ fn describe_matcher(args: &WaitForArgs) -> String {
     } else {
         parts.join(", ")
     }
+}
+
+fn show_rect(r: Rect) -> String {
+    format!("{:.0}x{:.0} at {:.0},{:.0}", r.width, r.height, r.x, r.y)
+}
+
+fn describe_window(w: &WindowInfo) -> String {
+    let mut s = format!("\"{}\" (id {})", w.title, w.id);
+    if let Some(b) = w.bounds {
+        s.push_str(&format!(", {}", show_rect(b)));
+    }
+    let mut flags = Vec::new();
+    if w.focused {
+        flags.push("focused");
+    }
+    if w.minimized {
+        flags.push("minimized");
+    }
+    if !flags.is_empty() {
+        s.push_str(&format!(" [{}]", flags.join(", ")));
+    }
+    s
 }
 
 fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
@@ -4253,5 +4478,96 @@ mod tests {
             img.width,
             img.height
         );
+    }
+
+    // -- window management ----------------------------------------------------
+
+    #[test]
+    fn windows_can_be_arranged() {
+        let mut e = engine();
+        let win = |e: &mut Engine<MockBackend>, args: serde_json::Value| {
+            e.call_tool("window", args, &mut allow())
+        };
+        let out = win(&mut e, serde_json::json!({"action": "displays"}));
+        assert!(
+            out.text.contains("display 0 (primary): 1280x800 at 0,0"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("display 1: 1920x1080 at 1280,0"),
+            "{}",
+            out.text
+        );
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "list"}),
+        );
+        assert!(
+            out.text.contains("\"Untitled\" (id 1), 800x600 at 0,0"),
+            "{}",
+            out.text
+        );
+
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "move", "x": 100, "y": 50}),
+        );
+        assert!(
+            out.text
+                .contains("Now: \"Untitled\" (id 1), 800x600 at 100,50"),
+            "{}",
+            out.text
+        );
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "tile_right"}),
+        );
+        assert!(out.text.contains("640x760 at 640,0"), "{}", out.text);
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "move_to_display", "display": 1}),
+        );
+        assert!(out.text.contains("at 1920,"), "{}", out.text);
+        // The app's minimum size is reported.
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "resize", "width": 50, "height": 50}),
+        );
+        assert!(out.text.contains("adjusted"), "{}", out.text);
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "minimize"}),
+        );
+        assert!(out.text.contains("minimized]"), "{}", out.text);
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "restore"}),
+        );
+        assert!(!out.text.contains("minimized]"), "{}", out.text);
+        // Unsupported operations say so; bad arguments are errors.
+        assert!(
+            win(
+                &mut e,
+                serde_json::json!({"app": "TextEdit", "action": "move_to_desktop", "desktop": 2})
+            )
+            .is_error
+        );
+        assert!(
+            win(
+                &mut e,
+                serde_json::json!({"app": "TextEdit", "action": "move"})
+            )
+            .is_error
+        );
+        assert!(win(&mut e, serde_json::json!({"action": "maximize"})).is_error);
+        // A moved window needs a fresh screenshot for coordinates.
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_some(), "{}", out.text);
+        let out = win(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "action": "close"}),
+        );
+        assert!(out.text.contains("It is closed"), "{}", out.text);
     }
 }

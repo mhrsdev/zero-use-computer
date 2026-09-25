@@ -9,8 +9,8 @@
 use crate::error::Result;
 use crate::keys::KeyCombo;
 use crate::types::{
-    AppInfo, Capture, ElementHandle, InputTarget, MouseButton, PermissionStatus, Point, RawNode,
-    Rect, ScrollDirection, SnapshotOptions, WindowInfo,
+    AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, PermissionStatus, Point,
+    RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
 };
 
 /// Result of an attempt to handle an element-level operation natively.
@@ -63,6 +63,25 @@ pub trait Backend {
         Err(crate::error::Error::Unsupported(
             "screen capture is not implemented on this platform".into(),
         ))
+    }
+
+    /// The screens (monitors).
+    fn displays(&mut self) -> Result<Vec<Display>> {
+        Err(crate::error::Error::Unsupported(
+            "listing displays is not implemented on this platform".into(),
+        ))
+    }
+
+    /// Virtual desktops as (count, current index), where the OS exposes them.
+    fn desktops(&mut self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Move, resize, maximize, minimize, focus or close a top-level window.
+    fn window_op(&mut self, _app: &AppInfo, _window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        Err(crate::error::Error::Unsupported(format!(
+            "{op:?} is not available for windows on this platform"
+        )))
     }
 
     /// How long ago anyone last used the mouse or keyboard: the system's

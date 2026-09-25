@@ -7,8 +7,8 @@ use crate::backend::{Backend, Native};
 use crate::error::{Error, Result};
 use crate::keys::KeyCombo;
 use crate::types::{
-    ActionDesc, AppInfo, Capture, ElementHandle, InputTarget, MouseButton, NodeStates,
-    PermissionStatus, Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo,
+    ActionDesc, AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, NodeStates,
+    PermissionStatus, Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
 };
 
 /// A scriptable element.
@@ -108,6 +108,9 @@ pub struct MockBackend {
     pub fill: u8,
     /// A screen area drawn in another brightness (a local change).
     pub patch: Option<(Rect, u8)>,
+    /// Minimized windows, and window operations performed.
+    pub minimized: std::collections::HashSet<u64>,
+    pub window_ops: Vec<(u64, WindowOp)>,
     /// Backend calls, for cache assertions.
     pub snapshots: usize,
     pub captures: usize,
@@ -300,7 +303,7 @@ impl Backend for MockBackend {
                 bounds: Some(w.bounds),
                 focused: w.focused,
                 main: w.focused,
-                minimized: false,
+                minimized: self.minimized.contains(&w.id),
                 handle: w.root,
             })
             .collect())
@@ -386,6 +389,60 @@ impl Backend for MockBackend {
             region.unwrap_or(Rect::new(0.0, 0.0, 1280.0, 800.0)),
             self.fill,
         )))
+    }
+
+    fn displays(&mut self) -> Result<Vec<Display>> {
+        Ok(vec![
+            Display {
+                index: 0,
+                bounds: Rect::new(0.0, 0.0, 1280.0, 800.0),
+                work_area: Rect::new(0.0, 0.0, 1280.0, 760.0),
+                primary: true,
+            },
+            Display {
+                index: 1,
+                bounds: Rect::new(1280.0, 0.0, 1920.0, 1080.0),
+                work_area: Rect::new(1280.0, 0.0, 1920.0, 1040.0),
+                primary: false,
+            },
+        ])
+    }
+
+    fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        self.window_ops.push((window.id, *op));
+        let a = self
+            .app_mut(app.pid)
+            .ok_or_else(|| Error::AppNotFound(app.name.clone()))?;
+        let i = a
+            .windows
+            .iter()
+            .position(|w| w.id == window.id)
+            .ok_or_else(|| Error::ActionFailed("mock: no such window".into()))?;
+        match op {
+            WindowOp::SetBounds(r) => {
+                // Like real apps: a minimum size.
+                let r = Rect::new(r.x, r.y, r.width.max(200.0), r.height.max(150.0));
+                a.windows[i].bounds = r;
+                let root = a.windows[i].root;
+                if let Some(e) = a.elements.iter_mut().find(|e| e.handle == root) {
+                    e.bounds = r;
+                }
+            }
+            WindowOp::Close => {
+                a.windows.remove(i);
+            }
+            WindowOp::Minimize => {
+                self.minimized.insert(window.id);
+            }
+            WindowOp::Restore | WindowOp::Focus => {
+                self.minimized.remove(&window.id);
+            }
+            WindowOp::ToDesktop(_) => {
+                return Err(Error::Unsupported("mock: no virtual desktops".into()));
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {
