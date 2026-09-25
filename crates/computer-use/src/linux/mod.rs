@@ -7,6 +7,7 @@
 
 mod atspi;
 mod clipboard;
+mod notify;
 mod wm;
 pub(crate) mod x11;
 
@@ -42,6 +43,8 @@ pub struct LinuxBackend {
     next_handle: ElementHandle,
     batch_size: usize,
     text_max: usize,
+    /// Listens for notifications while [notifications] is enabled.
+    notifications: Option<notify::Listener>,
 }
 
 impl LinuxBackend {
@@ -65,6 +68,7 @@ impl LinuxBackend {
             next_handle: 1,
             batch_size: defaults.batch_size,
             text_max: defaults.text_max_chars,
+            notifications: None,
         })
     }
 
@@ -323,6 +327,25 @@ impl Backend for LinuxBackend {
         self.text_max = cfg.linux.text_max_chars.max(1);
         if let Some(x) = self.x11.as_mut() {
             x.restore_pointer = cfg.restore_pointer;
+        }
+        let n = &cfg.notifications;
+        match (&self.notifications, n.enabled) {
+            (Some(l), true) if l.running() => l.set_keep(n.keep),
+            (_, true) => self.notifications = Some(notify::Listener::start(n.keep)),
+            (Some(l), false) => {
+                l.stop();
+                self.notifications = None;
+            }
+            (None, false) => {}
+        }
+    }
+
+    fn notifications(&mut self) -> Result<Vec<Notification>> {
+        match &self.notifications {
+            Some(l) => l.recent(),
+            None => Err(Error::Unsupported(
+                "not listening for notifications ([notifications] enabled = false)".into(),
+            )),
         }
     }
 

@@ -8,8 +8,8 @@ use crate::error::{Error, Result};
 use crate::keys::KeyCombo;
 use crate::types::{
     ActionDesc, AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, NodeStates,
-    OcrLine, PermissionStatus, Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo,
-    WindowOp,
+    Notification, OcrLine, PermissionStatus, Point, RawNode, Rect, ScrollDirection,
+    SnapshotOptions, WindowInfo, WindowOp,
 };
 
 /// A scriptable element.
@@ -113,6 +113,8 @@ pub struct MockBackend {
     /// often it ran.
     pub ocr_text: Option<Vec<OcrLine>>,
     pub ocr_runs: usize,
+    /// Notifications "received".
+    pub notes: Vec<Notification>,
     /// Minimized windows, and window operations performed.
     pub minimized: std::collections::HashSet<u64>,
     pub window_ops: Vec<(u64, WindowOp)>,
@@ -404,6 +406,10 @@ impl Backend for MockBackend {
             }
             None => Err(Error::Unsupported("mock: no OCR".into())),
         }
+    }
+
+    fn notifications(&mut self) -> Result<Vec<Notification>> {
+        Ok(self.notes.clone())
     }
 
     fn displays(&mut self) -> Result<Vec<Display>> {

@@ -315,6 +315,7 @@ mod tests {
             use crate::Backend as _;
             match crate::platform_backend() {
                 Ok(mut b) => engines.push(("built-in", b.ocr(&cap, &[]))),
+                Err(e) if std::env::var_os("CI").is_some() => panic!("no backend on CI: {e}"),
                 Err(e) => eprintln!("no backend: {e}"),
             }
         }

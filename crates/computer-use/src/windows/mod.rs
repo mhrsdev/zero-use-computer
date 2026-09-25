@@ -9,6 +9,7 @@
 mod capture;
 mod clipboard;
 pub(crate) mod input;
+mod notify;
 mod ocr;
 mod wm;
 
@@ -629,6 +630,10 @@ impl Backend for WindowsBackend {
 
     fn ocr(&mut self, cap: &Capture, languages: &[String]) -> Result<Vec<OcrLine>> {
         ocr::recognize(cap, languages)
+    }
+
+    fn notifications(&mut self) -> Result<Vec<Notification>> {
+        notify::recent()
     }
 
     fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {

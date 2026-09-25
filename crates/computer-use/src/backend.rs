@@ -9,8 +9,8 @@
 use crate::error::Result;
 use crate::keys::KeyCombo;
 use crate::types::{
-    AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, OcrLine, PermissionStatus,
-    Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
+    AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, Notification, OcrLine,
+    PermissionStatus, Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
 };
 
 /// Result of an attempt to handle an element-level operation natively.
@@ -72,6 +72,14 @@ pub trait Backend {
     fn ocr(&mut self, _cap: &Capture, _languages: &[String]) -> Result<Vec<OcrLine>> {
         Err(crate::error::Error::Unsupported(
             "no built-in OCR on this platform".into(),
+        ))
+    }
+
+    /// Recent desktop notifications, oldest first (only while
+    /// `[notifications]` is enabled; see each platform for what it can see).
+    fn notifications(&mut self) -> Result<Vec<Notification>> {
+        Err(crate::error::Error::Unsupported(
+            "reading notifications is not available on this platform".into(),
         ))
     }
 

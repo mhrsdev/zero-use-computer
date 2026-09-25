@@ -357,6 +357,16 @@ pub struct BatchArgs {
     pub continue_on_error: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct NotificationsArgs {
+    /// Only this app's notifications (name substring).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    /// Most notifications returned (newest).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 /// What the `window` tool does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -437,6 +447,7 @@ pub enum ToolCall {
     GetClipboard,
     SetClipboard(SetClipboardArgs),
     Window(WindowArgs),
+    GetNotifications(NotificationsArgs),
 }
 
 fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
@@ -465,6 +476,7 @@ impl ToolCall {
             "get_clipboard" => ToolCall::GetClipboard,
             "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
             "window" => ToolCall::Window(parse_args(name, args)?),
+            "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
         })
     }
@@ -489,6 +501,7 @@ impl ToolCall {
             ToolCall::GetClipboard => "get_clipboard",
             ToolCall::SetClipboard(_) => "set_clipboard",
             ToolCall::Window(_) => "window",
+            ToolCall::GetNotifications(_) => "get_notifications",
         }
     }
 }
@@ -801,6 +814,20 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Manage windows"),
         },
         ToolDefinition {
+            name: "get_notifications",
+            title: "Read notifications",
+            description: "Read the user's recent desktop notifications (app, title, text, how long ago), newest last. Codes and card numbers in them are masked, and notifications from apps the user blocked are left out.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "app": {"type": "string", "description": "Only this app's notifications (name substring)."},
+                    "limit": {"type": "integer", "minimum": 1, "default": 10, "description": "Most notifications to return (the newest)."}
+                },
+                "additionalProperties": false
+            }),
+            annotations: read_only("Read notifications"),
+        },
+        ToolDefinition {
             name: "get_clipboard",
             title: "Get clipboard",
             description: "Read the system clipboard as text.",
@@ -851,6 +878,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "window" => {
             "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
         }
+        "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
         _ => return None,
@@ -915,6 +943,7 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
         .into_iter()
         .filter(|d| match d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
+            "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
             _ => true,
         })
@@ -946,7 +975,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 18);
+        assert_eq!(defs.len(), 19);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -971,7 +1000,8 @@ mod tests {
     #[test]
     fn declared_properties_are_accepted() {
         // Each declared property name must round-trip through the parser.
-        let full = json!({
+        let full: Value = serde_json::from_str(
+            r#"{
             "app": "X", "window": "1", "element_index": 1, "x": 1.0, "y": 2.0,
             "button": "right", "click_count": 2, "value": "v",
             "text": "t", "occurrence": 1, "direction": "down", "amount": 0.5,
@@ -980,9 +1010,11 @@ mod tests {
             "role": "button", "editable": true, "max_results": 5, "state": "visible",
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
-            "action": "move", "display": 0, "desktop": 1, "ocr": true,
+            "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
             "steps": [{"tool": "list_apps"}]
-        });
+            }"#,
+        )
+        .unwrap();
         for d in definitions() {
             let mut args = serde_json::Map::new();
             for (k, _) in d.input_schema["properties"].as_object().unwrap() {
@@ -1000,7 +1032,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 18);
+        assert_eq!(compact.len(), 19);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

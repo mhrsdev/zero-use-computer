@@ -520,6 +520,33 @@ impl Default for OverlayConfig {
     }
 }
 
+/// Reading desktop notifications. Off by default: notifications carry other
+/// apps' content (messages, codes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// Offer the get_notifications tool (and, on Linux, listen for them).
+    pub enabled: bool,
+    /// Only these apps' notifications (names, case-insensitive; [] = any app
+    /// that isn't blocked by [approvals] / [sensitive]).
+    pub apps: Vec<String>,
+    /// Mask what looks like a one-time or verification code.
+    pub mask_codes: bool,
+    /// Notifications kept (Linux listens from the start of the server).
+    pub keep: usize,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            apps: Vec::new(),
+            mask_codes: true,
+            keep: 50,
+        }
+    }
+}
+
 /// When text is read off the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -876,6 +903,7 @@ pub struct Config {
     pub privacy: PrivacyConfig,
     pub verify: VerifyConfig,
     pub ocr: OcrConfig,
+    pub notifications: NotificationsConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -913,6 +941,7 @@ impl Default for Config {
             privacy: PrivacyConfig::default(),
             verify: VerifyConfig::default(),
             ocr: OcrConfig::default(),
+            notifications: NotificationsConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),

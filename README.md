@@ -151,6 +151,25 @@ text (`[privacy]`).
 `ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "fa"]`).
 If no engine is available, the agent is told once.
 
+### Notifications
+
+`get_notifications` reads the user's recent desktop notifications: app,
+title, text and how long ago. It is **off by default** because notifications
+carry other apps' content; turn it on with
+`computer-use-mcp config set notifications.enabled true`.
+
+- Notifications from apps blocked in `[approvals]` / `[sensitive]` (a
+  password manager, say) are left out, and `notifications.apps` can narrow it
+  to a list.
+- Card numbers and anything that looks like a one-time or verification code
+  are masked (`notifications.mask_codes`).
+
+| | How | What it sees |
+|---|---|---|
+| Linux | Listens on the session bus for `org.freedesktop.Notifications.Notify` calls (the D-Bus monitoring interface `dbus-monitor` uses) while enabled | Everything sent since the server started (`notifications.keep`) |
+| Windows | `UserNotificationListener`; Windows asks the user once for access | The notifications in Action Center |
+| macOS | Notification Center's banners, read through Accessibility (there is no public API) | What is on screen now |
+
 ### Windows and screens
 
 The `window` tool arranges app windows. Its actions:

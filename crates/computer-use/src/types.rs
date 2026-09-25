@@ -212,6 +212,17 @@ pub struct InputTarget {
     pub window_handle: Option<ElementHandle>,
 }
 
+/// A desktop notification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification {
+    /// The app that posted it (its display name).
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    /// When it arrived (Unix seconds), if known.
+    pub time: Option<u64>,
+}
+
 /// A line of text read off the screen by OCR.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OcrLine {

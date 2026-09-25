@@ -88,6 +88,8 @@ running (then `get_app_state`).
   tile_left/tile_right, move_to_display, close; `window(action="displays")`
   lists the screens. Positions are screen coordinates (as in the window line
   of `get_app_state`), not screenshot pixels.
+- `get_notifications(app?, limit?)` — the user's recent notifications, when
+  they have turned it on. Codes in them are masked on purpose.
 - `get_clipboard` / `set_clipboard` — move text between apps (set it, then
   `press_key` "cmd+v" / "ctrl+v").
 

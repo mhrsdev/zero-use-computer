@@ -220,6 +220,14 @@ min_confidence = 0.4        # leave out lines recognised with less confidence (0
 max_lines = 150
 tesseract_path = "tesseract"
 
+# Reading desktop notifications (the get_notifications tool). Off by
+# default: notifications carry other apps' messages and codes.
+[notifications]
+enabled = false
+apps = []                   # only these apps ([] = any app not blocked above)
+mask_codes = true           # mask one-time / verification codes
+keep = 50                   # how many are kept (Linux)
+
 # Checking that actions worked.
 [verify]
 enabled = true              # check each action's result; tell the agent when it didn't work

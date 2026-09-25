@@ -89,6 +89,67 @@ pub fn mask_card_numbers(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// `s` with what looks like a one-time / verification code masked: a
+/// standalone 4–8 digit number (or two groups like "123 456") in text that
+/// talks about a code, PIN or password.
+pub fn mask_codes(s: &str) -> Option<String> {
+    const WORDS: [&str; 10] = [
+        "code",
+        "otp",
+        "pin",
+        "passcode",
+        "password",
+        "verification",
+        "verify",
+        "2fa",
+        "کد",
+        "رمز",
+    ];
+    let low = s.to_lowercase();
+    if !WORDS.iter().any(|w| low.contains(w)) {
+        return None;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+            // A run of digits, allowing one space or dash inside.
+            let mut j = i;
+            let mut digits = 0;
+            let mut seps = 0;
+            while j < chars.len() {
+                if chars[j].is_ascii_digit() {
+                    digits += 1;
+                } else if matches!(chars[j], ' ' | '-')
+                    && seps == 0
+                    && chars.get(j + 1).is_some_and(char::is_ascii_digit)
+                {
+                    seps += 1;
+                } else {
+                    break;
+                }
+                j += 1;
+            }
+            let standalone = chars.get(j).is_none_or(|c| !c.is_alphanumeric());
+            if (4..=8).contains(&digits) && standalone {
+                for c in &chars[i..j] {
+                    out.push(if c.is_ascii_digit() { MASK } else { *c });
+                }
+                changed = true;
+            } else {
+                out.extend(&chars[i..j]);
+            }
+            i = j;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    changed.then_some(out)
+}
+
 fn masked(v: &str) -> String {
     MASK.to_string().repeat(v.chars().count().clamp(4, 8))
 }
@@ -154,6 +215,21 @@ pub fn active(cfg: &PrivacyConfig) -> bool {
 mod tests {
     use super::*;
     use crate::types::NodeStates;
+
+    #[test]
+    fn masks_codes_only_where_a_code_is_meant() {
+        assert_eq!(
+            mask_codes("Your verification code is 482913").as_deref(),
+            Some("Your verification code is ••••••")
+        );
+        assert_eq!(
+            mask_codes("کد ورود شما: 123 456").as_deref(),
+            Some("کد ورود شما: ••• •••")
+        );
+        assert_eq!(mask_codes("Meeting at 1530 in room 4"), None);
+        assert_eq!(mask_codes("code v2.1 released"), None);
+        assert_eq!(mask_codes("Order 123456789 code"), None, "too long");
+    }
 
     #[test]
     fn finds_card_numbers_only() {

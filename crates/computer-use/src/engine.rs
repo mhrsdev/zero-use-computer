@@ -1387,6 +1387,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
             ToolCall::Window(a) => self.window_tool(a, approver),
+            ToolCall::GetNotifications(a) => self.get_notifications(a),
         };
         if mutating {
             self.last_input = Some((self.clock)());
@@ -2744,6 +2745,102 @@ impl<B: Backend> Engine<B> {
             .get(&app.pid)
             .and_then(|(_, _, ws)| ws.iter().find(|w| w.id == id))
             .and_then(|w| w.bounds)
+    }
+
+    fn get_notifications(&mut self, args: NotificationsArgs) -> Result<ToolOutput> {
+        let cfg = self.store.config.notifications.clone();
+        if !cfg.enabled {
+            return Err(Error::Blocked(
+                "notifications".into(),
+                "reading notifications is off in settings ([notifications] enabled = false)".into(),
+            ));
+        }
+        let all = self.backend.notifications()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut hidden = 0;
+        let mut shown = Vec::new();
+        for n in all {
+            if let Some(q) = &args.app
+                && !n.app.to_lowercase().contains(&q.to_lowercase())
+            {
+                continue;
+            }
+            // The user's app rules apply to what their notifications say.
+            let probe = AppInfo {
+                name: n.app.clone(),
+                id: n.app.clone(),
+                pid: 0,
+                exe: None,
+                frontmost: false,
+                hidden: false,
+            };
+            let allowed_app =
+                cfg.apps.is_empty() || cfg.apps.iter().any(|a| a.eq_ignore_ascii_case(&n.app));
+            if !allowed_app
+                || matches!(
+                    policy::evaluate(&probe, &self.store, &self.session_allowed),
+                    Verdict::Blocked(_)
+                )
+            {
+                hidden += 1;
+                continue;
+            }
+            shown.push(n);
+        }
+        let limit = args.limit.unwrap_or(10).max(1);
+        let skip = shown.len().saturating_sub(limit);
+        let privacy = &self.store.config.privacy;
+        let clean = |s: &str| -> String {
+            let mut s = s.to_string();
+            if privacy.redact_card_numbers
+                && let Some(m) = crate::privacy::mask_card_numbers(&s)
+            {
+                s = m;
+            }
+            if cfg.mask_codes
+                && let Some(m) = crate::privacy::mask_codes(&s)
+            {
+                s = m;
+            }
+            tree::truncate(&s.replace('\n', " / "), 300)
+        };
+        let mut out = if shown.is_empty() {
+            "No recent notifications.".to_string()
+        } else {
+            format!(
+                "{} recent notification(s), newest last:\n",
+                shown.len() - skip
+            )
+        };
+        for n in &shown[skip..] {
+            let when = match n.time.map(|t| now.saturating_sub(t)) {
+                Some(s) if s < 60 => "just now".to_string(),
+                Some(s) if s < 3600 => format!("{} min ago", s / 60),
+                Some(s) if s < 86_400 => format!("{} h ago", s / 3600),
+                Some(s) => format!("{} d ago", s / 86_400),
+                None => "on screen".to_string(),
+            };
+            let app = if n.app.is_empty() {
+                "?"
+            } else {
+                n.app.as_str()
+            };
+            let body = clean(&n.body);
+            out.push_str(&format!("- [{when}] {app} — {}", clean(&n.title)));
+            if !body.is_empty() {
+                out.push_str(&format!(": {body}"));
+            }
+            out.push('\n');
+        }
+        if hidden > 0 {
+            out.push_str(&format!(
+                "[{hidden} from apps blocked in settings not shown]\n"
+            ));
+        }
+        Ok(ToolOutput::text(out))
     }
 
     fn get_clipboard(&mut self) -> Result<ToolOutput> {
@@ -4896,6 +4993,74 @@ mod tests {
         );
         assert!(
             !out.text.contains("Text recognition unavailable"),
+            "{}",
+            out.text
+        );
+    }
+
+    // -- notifications --------------------------------------------------------
+
+    #[test]
+    fn notifications_are_read_only_when_enabled_and_private_bits_masked() {
+        let mut e = engine();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let note = |app: &str, title: &str, body: &str, ago: u64| Notification {
+            app: app.into(),
+            title: title.into(),
+            body: body.into(),
+            time: Some(now - ago),
+        };
+        e.backend_mut().notes = vec![
+            note("Slack", "Ada", "Lunch at 1?", 600),
+            note("Bank", "Sign-in", "Your verification code is 482913", 30),
+            note("1Password", "Vault", "unlocked", 20),
+            note("Shop", "Receipt", "Card 4111 1111 1111 1111 charged", 5),
+        ];
+        // Off by default: the tool isn't even offered.
+        assert!(
+            !crate::tools::definitions_from(&e.store().config)
+                .iter()
+                .any(|d| d.name == "get_notifications")
+        );
+        let out = e.call_tool("get_notifications", serde_json::json!({}), &mut allow());
+        assert!(
+            out.is_error && out.text.contains("off in settings"),
+            "{}",
+            out.text
+        );
+
+        let mut cfg = e.store().config.clone();
+        cfg.notifications.enabled = true;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool("get_notifications", serde_json::json!({}), &mut allow());
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("[10 min ago] Slack — Ada: Lunch at 1?"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("code is ••••••"), "{}", out.text);
+        assert!(!out.text.contains("482913"), "{}", out.text);
+        assert!(out.text.contains("•••• •••• •••• 1111"), "{}", out.text);
+        // A password manager is a blocked category.
+        assert!(!out.text.contains("Vault"), "{}", out.text);
+        assert!(out.text.contains("1 from apps blocked"), "{}", out.text);
+        let out = e.call_tool(
+            "get_notifications",
+            serde_json::json!({"app": "slack"}),
+            &mut allow(),
+        );
+        assert!(out.text.contains("1 recent notification"), "{}", out.text);
+        let out = e.call_tool(
+            "get_notifications",
+            serde_json::json!({"limit": 1}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains("Receipt") && !out.text.contains("Ada"),
             "{}",
             out.text
         );

@@ -162,6 +162,9 @@ impl Backend for Box<dyn Backend> {
     fn ocr(&mut self, cap: &types::Capture, languages: &[String]) -> Result<Vec<types::OcrLine>> {
         (**self).ocr(cap, languages)
     }
+    fn notifications(&mut self) -> Result<Vec<types::Notification>> {
+        (**self).notifications()
+    }
     fn displays(&mut self) -> Result<Vec<types::Display>> {
         (**self).displays()
     }

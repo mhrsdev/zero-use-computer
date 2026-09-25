@@ -670,3 +670,66 @@ fn ocr_reads_and_clicks_custom_drawn_text() {
     assert!(tree.contains("canvas clicked"), "{tree}");
     eprintln!("OCR live test passed");
 }
+
+#[test]
+fn notifications_are_heard_on_the_session_bus() {
+    if !live() {
+        return;
+    }
+    let backend = LinuxBackend::new().expect("connect to AT-SPI/X11");
+    let mut cfg = Config::default();
+    cfg.approvals.mode = ApprovalMode::AllowAll;
+    cfg.notifications.enabled = true;
+    let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
+    std::thread::sleep(Duration::from_millis(500));
+    // Stand in for the notification server, so the call has somewhere to go.
+    let server = zbus::blocking::Connection::session().expect("session bus");
+    server
+        .request_name("org.freedesktop.Notifications")
+        .expect("own the notification service name");
+    let sent = std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--timeout",
+            "1",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+            "org.freedesktop.Notifications.Notify",
+            "Chat",
+            "uint32 0",
+            "",
+            "Hello from <b>Ada</b>",
+            "Your verification code is 482913",
+            "@as []",
+            "@a{sv} {}",
+            "int32 5000",
+        ])
+        .output()
+        .expect("gdbus");
+    eprintln!("gdbus: {}", String::from_utf8_lossy(&sent.stderr).trim());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let out = loop {
+        let out = e.call_tool(
+            "get_notifications",
+            serde_json::json!({}),
+            &mut AllowApprover,
+        );
+        if out.text.contains("Hello") || Instant::now() > deadline {
+            break out;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    eprintln!("{}", out.text.trim_end());
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("Chat — Hello from Ada"), "{}", out.text);
+    assert!(
+        out.text.contains("••••••") && !out.text.contains("482913"),
+        "{}",
+        out.text
+    );
+    eprintln!("notifications live test passed");
+}
