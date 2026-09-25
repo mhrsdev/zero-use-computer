@@ -410,6 +410,8 @@ pub struct OverlayConfig {
     pub color_done: String,
     /// The agent cursor's own colour (its ring follows the state).
     pub cursor_color: String,
+    /// Name tag shown beside the agent cursor ("" = none).
+    pub cursor_tag: String,
     /// No new action for this long after the last one: done (green), then hidden.
     pub done_after_ms: u64,
     /// How long "done" stays on screen before everything disappears.
@@ -465,6 +467,7 @@ impl Default for OverlayConfig {
             color_error: "#E53935".into(),
             color_done: "#2E7D32".into(),
             cursor_color: "#9C27B0".into(),
+            cursor_tag: "Zero".into(),
             done_after_ms: 20_000,
             done_linger_ms: 1_500,
             error_hold_ms: 2_500,

@@ -74,18 +74,67 @@ fn stroke(width: f32) -> Stroke {
     }
 }
 
-/// The agent's pointer: an arrow in its own `body` colour (so it can't be
-/// mistaken for the real mouse), outlined in white and in the state colour
-/// `ring`, with a soft halo in `ring` and, while `ripple` (0–1) runs, an
-/// expanding click ring. The arrow's tip is at the image centre.
-pub fn cursor(scale: f32, body: Color, ring: Color, ripple: Option<f32>, pulse: f32) -> Pixmap {
-    let side = (CURSOR_BOX * scale).ceil().max(8.0) as u32;
-    let mut pm = Pixmap::new(side, side).expect("non-zero cursor size");
-    let c = side as f32 / 2.0;
-    let s = scale;
+/// The agent's pointer, drawn with its hotspot (the arrow tip) at `hotspot`.
+pub struct CursorArt {
+    pub image: Pixmap,
+    pub hotspot: (f32, f32),
+}
+
+/// Mix `c` toward black by `t` (0–1).
+fn darken(c: Color, t: f32) -> Color {
+    let m = |v: f32| v * (1.0 - t);
+    Color::from_rgba(m(c.red()), m(c.green()), m(c.blue()), c.alpha()).unwrap_or(c)
+}
+
+/// The arrowhead outline (tip at the origin, pointing up-left), in px at
+/// scale 1: tip, lower wing, inner notch, side wing.
+const ARROW: [(f32, f32); 4] = [(0.0, 0.0), (5.4, 18.6), (8.6, 10.9), (18.0, 7.9)];
+
+fn arrow_path(x: f32, y: f32, s: f32) -> Option<tiny_skia::Path> {
+    let mut pb = PathBuilder::new();
+    for (i, (ax, ay)) in ARROW.iter().enumerate() {
+        let (px, py) = (x + ax * s, y + ay * s);
+        if i == 0 {
+            pb.move_to(px, py);
+        } else {
+            pb.line_to(px, py);
+        }
+    }
+    pb.close();
+    pb.finish()
+}
+
+/// The agent's pointer: a rounded arrowhead in its own `body` colour (a
+/// soft gradient, so it can't be mistaken for the real mouse), edged in
+/// white and outlined in the state colour `ring`, over a soft shadow and a
+/// glow in `ring`; beside it, a small name `tag` in the same colours. While
+/// `ripple` (0–1) runs, a click ring expands from the tip.
+pub fn cursor(
+    fonts: &Fonts,
+    tag: &str,
+    scale: f32,
+    body: Color,
+    ring: Color,
+    ripple: Option<f32>,
+    pulse: f32,
+) -> CursorArt {
+    // About the size of a system pointer, so it is easy to follow.
+    let s = scale * 1.35;
+    // Room around the tip for the glow and the ripple.
+    let pad = (CURSOR_BOX / 2.0) * s;
+    let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
+    let tag_text = tag_text.filter(|t| t.width > 0.0);
+    let (tag_x, tag_y) = (12.5 * s, 16.0 * s);
+    let (tag_w, tag_h) = tag_text.as_ref().map_or((0.0, 0.0), |t| {
+        (t.width + 12.0 * s, (t.height + 3.0 * s).max(16.0 * s))
+    });
+    let w = pad + pad.max(tag_x + tag_w + 4.0 * s);
+    let h = pad + pad.max(tag_y + tag_h + 4.0 * s);
+    let mut pm = Pixmap::new(w.ceil() as u32, h.ceil() as u32).expect("non-zero cursor size");
+    let (c, id) = (pad, Transform::identity());
 
     // A soft glow around the tip in the state colour.
-    let glow_r = (17.0 + 3.0 * pulse) * s;
+    let glow_r = (16.0 + 4.0 * pulse) * s;
     if let (Some(p), Some(shader)) = (
         PathBuilder::from_circle(c, c, glow_r),
         RadialGradient::new(
@@ -93,12 +142,12 @@ pub fn cursor(scale: f32, body: Color, ring: Color, ripple: Option<f32>, pulse: 
             Point::from_xy(c, c),
             glow_r,
             vec![
-                GradientStop::new(0.0, with_alpha(ring, 0.55)),
-                GradientStop::new(0.45, with_alpha(ring, 0.30)),
+                GradientStop::new(0.0, with_alpha(ring, 0.60)),
+                GradientStop::new(0.5, with_alpha(ring, 0.28)),
                 GradientStop::new(1.0, with_alpha(ring, 0.0)),
             ],
             SpreadMode::Pad,
-            Transform::identity(),
+            id,
         ),
     ) {
         let glow = Paint {
@@ -106,7 +155,7 @@ pub fn cursor(scale: f32, body: Color, ring: Color, ripple: Option<f32>, pulse: 
             anti_alias: true,
             ..Paint::default()
         };
-        pm.fill_path(&p, &glow, FillRule::Winding, Transform::identity(), None);
+        pm.fill_path(&p, &glow, FillRule::Winding, id, None);
     }
 
     // Click ripple.
@@ -117,7 +166,7 @@ pub fn cursor(scale: f32, body: Color, ring: Color, ripple: Option<f32>, pulse: 
                 &p,
                 &paint(with_alpha(ring, 1.0 - t)),
                 &stroke(3.0 * s * (1.0 - 0.5 * t)),
-                Transform::identity(),
+                id,
                 None,
             );
         }
@@ -126,45 +175,88 @@ pub fn cursor(scale: f32, body: Color, ring: Color, ripple: Option<f32>, pulse: 
                 &p,
                 &paint(with_alpha(ring, 0.8 * (1.0 - t))),
                 FillRule::Winding,
-                Transform::identity(),
+                id,
                 None,
             );
         }
     }
 
-    // The arrow (tip at the centre, pointing up-left).
-    let pts: [(f32, f32); 7] = [
-        (0.0, 0.0),
-        (0.0, 18.0),
-        (4.6, 14.0),
-        (7.6, 20.6),
-        (10.6, 19.3),
-        (7.7, 12.9),
-        (13.6, 12.9),
-    ];
-    let mut pb = PathBuilder::new();
-    for (i, (x, y)) in pts.iter().enumerate() {
-        let (x, y) = (c + x * s, c + y * s);
-        if i == 0 {
-            pb.move_to(x, y);
-        } else {
-            pb.line_to(x, y);
+    // Soft shadow: the arrow, offset and blurred by layered strokes.
+    if let Some(shadow) = arrow_path(c + 1.2 * s, c + 2.2 * s, s) {
+        for (width, a) in [(7.0, 0.05), (4.5, 0.08), (2.0, 0.12)] {
+            pm.stroke_path(
+                &shadow,
+                &paint(Color::from_rgba(0.0, 0.0, 0.0, a).unwrap_or(Color::BLACK)),
+                &stroke(width * s),
+                id,
+                None,
+            );
         }
+        pm.fill_path(
+            &shadow,
+            &paint(Color::from_rgba(0.0, 0.0, 0.0, 0.18).unwrap_or(Color::BLACK)),
+            FillRule::Winding,
+            id,
+            None,
+        );
     }
-    pb.close();
-    if let Some(arrow) = pb.finish() {
-        let t = Transform::identity();
-        pm.stroke_path(&arrow, &paint(ring), &stroke(5.0 * s), t, None);
+
+    // The arrowhead: state-colour outline, white edge, gradient body.
+    if let Some(arrow) = arrow_path(c, c, s) {
+        pm.stroke_path(&arrow, &paint(ring), &stroke(5.0 * s), id, None);
         pm.stroke_path(
             &arrow,
             &paint(Color::from_rgba8(255, 255, 255, 255)),
-            &stroke(2.2 * s),
-            t,
+            &stroke(2.6 * s),
+            id,
             None,
         );
-        pm.fill_path(&arrow, &paint(body), FillRule::Winding, t, None);
+        let fill = LinearGradient::new(
+            Point::from_xy(c, c),
+            Point::from_xy(c + 12.0 * s, c + 14.0 * s),
+            vec![
+                GradientStop::new(0.0, lighten(body, 0.28)),
+                GradientStop::new(1.0, darken(body, 0.18)),
+            ],
+            SpreadMode::Pad,
+            id,
+        )
+        .map(|shader| Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        })
+        .unwrap_or_else(|| paint(body));
+        pm.fill_path(&arrow, &fill, FillRule::Winding, id, None);
+        // Round the body's corners to match the outline.
+        pm.stroke_path(&arrow, &fill, &stroke(1.2 * s), id, None);
     }
-    pm
+
+    // The name tag.
+    if let Some(t) = tag_text {
+        let (x, y) = (c + tag_x, c + tag_y);
+        if let Some(pill) = rounded_rect(x, y, tag_w, tag_h, tag_h / 2.0) {
+            pm.fill_path(&pill, &paint(body), FillRule::Winding, id, None);
+            pm.stroke_path(&pill, &paint(ring), &stroke(1.5 * s), id, None);
+        }
+        if let Some(p) = &t.path {
+            pm.fill_path(
+                p,
+                &paint(Color::from_rgba8(255, 255, 255, 255)),
+                FillRule::Winding,
+                Transform::from_translate(
+                    x + (tag_w - t.width) / 2.0,
+                    y + (tag_h - t.height) / 2.0,
+                ),
+                None,
+            );
+        }
+    }
+
+    CursorArt {
+        image: pm,
+        hotspot: (c, c),
+    }
 }
 
 /// The status label: a pill with a dot in the state colour and `text`.
@@ -435,13 +527,21 @@ mod tests {
     fn sprites_render() {
         let body = parse_color("#8E24AA").unwrap();
         let ring = parse_color("#1E88E5").unwrap();
-        let c = cursor(1.0, body, ring, Some(0.3), 0.0);
-        assert_eq!(c.width(), 64);
-        // The tip (centre) is painted; a far corner is transparent.
-        let at = |x: u32, y: u32| c.pixel(x, y).unwrap().alpha();
-        assert!(at(33, 36) > 200);
-        assert_eq!(at(1, 1), 0);
         let fonts = Fonts::load("");
+        let art = cursor(&Fonts::default(), "", 1.0, body, ring, Some(0.3), 0.0);
+        let c = &art.image;
+        let (hx, hy) = art.hotspot;
+        assert!((hx - 43.2).abs() < 0.01 && hx == hy, "{:?}", art.hotspot);
+        // Just inside the tip is painted; a far corner is transparent.
+        let at = |x: u32, y: u32| c.pixel(x, y).unwrap().alpha();
+        assert!(at(47, 51) > 200);
+        assert_eq!(at(1, 1), 0);
+        // A name tag widens the image to the right, the tip stays put.
+        let tagged = cursor(&fonts, "Zero", 1.0, body, ring, None, 0.0);
+        if !fonts.is_empty() {
+            assert!(tagged.image.width() > c.width());
+        }
+        assert_eq!(tagged.hotspot, art.hotspot);
         let l = label(&fonts, "Zero is using the computer", 1.0, ring);
         assert!(l.height() >= 26);
         let e = edge(100, 30, ring, 0, 3.0);
@@ -479,10 +579,12 @@ mod tests {
         ];
         for (name, color, text_str) in states {
             let c = parse_color(color).unwrap();
-            cursor(2.0, body, c, None, 0.0)
+            cursor(&fonts, "Zero", 3.0, body, c, None, 0.0)
+                .image
                 .save_png(dir.join(format!("cursor-{name}.png")))
                 .unwrap();
-            cursor(2.0, body, c, Some(0.35), 0.0)
+            cursor(&fonts, "Zero", 3.0, body, c, Some(0.35), 0.0)
+                .image
                 .save_png(dir.join(format!("cursor-{name}-click.png")))
                 .unwrap();
             label(&fonts, text_str, 2.0, c)

@@ -178,6 +178,7 @@ color_danger = "#000000"     # black: a sensitive action (send, delete, pay…)
 color_error = "#E53935"      # red: something failed
 color_done = "#2E7D32"       # green: finished, then everything disappears
 cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the state
+cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
 error_hold_ms = 2500

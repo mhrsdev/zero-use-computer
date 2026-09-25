@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use tiny_skia::{Color, Pixmap};
 
-use super::draw::{self, CURSOR_BOX};
+use super::draw;
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
@@ -567,6 +567,8 @@ pub struct Painter {
     label_size: (f64, f64),
     cursor_img: Option<CursorKey>,
     cursor_pos: Option<(i64, i64)>,
+    /// Where the arrow tip sits in the cursor image (screen units).
+    cursor_hot: (f64, f64),
     /// Whether the surface fades natively, and the opacity last given to it.
     native_fade: Option<bool>,
     opacity: f32,
@@ -768,14 +770,28 @@ impl Painter {
                     (c.pulse * 10.0) as i32,
                     ak,
                 );
-                let half = f64::from(CURSOR_BOX * scale) / 2.0 / f64::from(ppu);
-                let (x, y) = (c.pos.0 - half, c.pos.1 - half);
-                let pos = (x.round() as i64, y.round() as i64);
-                if self.cursor_img != Some(key) {
-                    let img = faded(
-                        draw::cursor(scale, c.body, c.ring, c.ripple, c.pulse),
-                        alpha,
+                let redraw = self.cursor_img != Some(key);
+                let art = redraw.then(|| {
+                    draw::cursor(
+                        fonts,
+                        &cfg.cursor_tag,
+                        scale,
+                        c.body,
+                        c.ring,
+                        c.ripple,
+                        c.pulse,
+                    )
+                });
+                if let Some(a) = &art {
+                    self.cursor_hot = (
+                        f64::from(a.hotspot.0) / f64::from(ppu),
+                        f64::from(a.hotspot.1) / f64::from(ppu),
                     );
+                }
+                let (x, y) = (c.pos.0 - self.cursor_hot.0, c.pos.1 - self.cursor_hot.1);
+                let pos = (x.round() as i64, y.round() as i64);
+                if let Some(a) = art {
+                    let img = faded(a.image, alpha);
                     s.show(Layer::Cursor, &img, x, y);
                     self.cursor_img = Some(key);
                 } else if self.cursor_pos != Some(pos) {
@@ -790,6 +806,21 @@ impl Painter {
                 }
             }
         }
+    }
+
+    /// Take everything off screen and forget it (e.g. after new settings).
+    pub fn clear(&mut self, s: &mut dyn Surface) {
+        for l in [
+            Layer::Top,
+            Layer::Right,
+            Layer::Bottom,
+            Layer::Left,
+            Layer::Label,
+            Layer::Cursor,
+        ] {
+            s.hide(l);
+        }
+        *self = Self::default();
     }
 
     /// Anything on screen?
@@ -918,12 +949,13 @@ pub fn run(args: &[String]) -> i32 {
                     hidden = false;
                 }
                 other => {
-                    if let Cmd::Config { config } = &other
-                        && config.font != font_path
-                    {
-                        font_path = config.font.clone();
-                        fonts = Fonts::load(&font_path);
-                        painter = Painter::default();
+                    if let Cmd::Config { config } = &other {
+                        if config.font != font_path {
+                            font_path = config.font.clone();
+                            fonts = Fonts::load(&font_path);
+                        }
+                        // Redraw everything with the new settings.
+                        painter.clear(surface.as_mut());
                     }
                     if let Some((id, action)) = machine.apply(other, Instant::now()) {
                         let cfg = machine.config();
