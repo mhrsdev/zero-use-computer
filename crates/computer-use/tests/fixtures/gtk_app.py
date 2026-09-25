@@ -4,14 +4,19 @@
 It exposes, over AT-SPI: a push button, a text entry, a check box, and a
 label that reflects their state so the test can verify that accessibility
 actions actually took effect. A second page ("Next page" / "Back") and a
-modal dialog ("Open dialog" / "OK") exercise screen recognition.
+modal dialog ("Open dialog" / "OK") exercise screen recognition. A
+custom-drawn canvas (text painted with cairo, invisible to accessibility)
+exercises OCR.
 """
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk  # noqa: E402
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 GLib.set_prgname("cutest")
+# A steady caret, so pixel comparisons in the tests don't depend on its blink.
+Gtk.Settings.get_default().set_property("gtk-cursor-blink", False)
 
 
 class App(Gtk.Window):
@@ -41,6 +46,13 @@ class App(Gtk.Window):
         self.check.connect("toggled", self.on_toggle)
         box.pack_start(self.check, False, False, 0)
 
+        canvas = Gtk.DrawingArea()
+        canvas.set_size_request(380, 34)
+        canvas.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        canvas.connect("draw", self.on_draw)
+        canvas.connect("button-press-event", self.on_canvas_click)
+        box.pack_start(canvas, False, False, 0)
+
         nav = Gtk.Box(spacing=8)
         next_btn = Gtk.Button(label="Next page")
         next_btn.connect("clicked", lambda _b: self.stack.set_visible_child_name("second"))
@@ -67,6 +79,18 @@ class App(Gtk.Window):
         dlg.add_button("OK", Gtk.ResponseType.OK)
         dlg.connect("response", lambda d, _r: d.destroy())
         dlg.show_all()
+
+    def on_draw(self, _area, cr):
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        cr.set_source_rgb(0, 0, 0)
+        cr.select_font_face("Sans")
+        cr.set_font_size(20)
+        cr.move_to(6, 25)
+        cr.show_text("Canvas score 1234")
+
+    def on_canvas_click(self, _area, _event):
+        self.status.set_text("status: canvas clicked")
 
     def on_click(self, _btn):
         self.status.set_text("status: clicked")

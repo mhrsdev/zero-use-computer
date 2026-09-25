@@ -114,6 +114,9 @@ pub struct GetAppStateArgs {
     /// `screenshot.attach`.
     #[serde(default, alias = "include_screenshot")]
     pub screenshot: Option<bool>,
+    /// Also read the window's text off the screen (OCR), whatever settings say.
+    #[serde(default)]
+    pub ocr: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -561,7 +564,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
-                    "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."}
+                    "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."},
+                    "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."}
                 }),
                 &[],
             ),
@@ -976,7 +980,7 @@ mod tests {
             "role": "button", "editable": true, "max_results": 5, "state": "visible",
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
-            "action": "move", "display": 0, "desktop": 1,
+            "action": "move", "display": 0, "desktop": 1, "ocr": true,
             "steps": [{"tool": "list_apps"}]
         });
         for d in definitions() {
@@ -1034,6 +1038,7 @@ mod tests {
                 window: Some("42".into()),
                 disable_diff: true,
                 screenshot: None,
+                ocr: false,
             })
         );
         let c = ToolCall::parse(

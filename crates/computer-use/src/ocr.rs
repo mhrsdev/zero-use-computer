@@ -1,0 +1,350 @@
+//! Reading text off the screen for apps whose accessibility tree has
+//! little or nothing in it (games, canvases, remote desktops, some custom
+//! toolkits). Each OS's own OCR is used — Windows.Media.Ocr on Windows, the
+//! Vision framework on macOS — and Tesseract (`tesseract` on PATH) wherever
+//! there is none. Recognised lines become `ocr text` elements in the tree:
+//! numbered like any other element and clickable by index (the engine
+//! clicks at their position).
+
+use std::io::Write as _;
+use std::process::{Command, Stdio};
+
+use crate::error::{Error, Result};
+use crate::types::{ActionDesc, Capture, ElementHandle, NodeStates, OcrLine, RawNode, Rect};
+
+/// Handles of elements read by OCR carry this bit (backends never make
+/// such handles), so the engine knows to act on them by position.
+pub const OCR_HANDLE: ElementHandle = 1 << 62;
+
+/// Role of an element read by OCR.
+pub const OCR_ROLE: &str = "ocr text";
+
+pub fn is_ocr(handle: ElementHandle) -> bool {
+    handle & OCR_HANDLE != 0
+}
+
+/// Text reduced to lowercase words (letters and digits), for comparing what
+/// OCR read with what the accessibility tree says.
+pub fn words(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Pixel rectangle of a capture → screen rectangle.
+pub fn to_screen(cap: &Capture, x: f64, y: f64, w: f64, h: f64) -> Rect {
+    let sx = cap.bounds.width / f64::from(cap.width.max(1));
+    let sy = cap.bounds.height / f64::from(cap.height.max(1));
+    Rect::new(cap.bounds.x + x * sx, cap.bounds.y + y * sy, w * sx, h * sy)
+}
+
+/// Tree elements for recognised lines, children of the window (node 0).
+pub fn nodes(lines: &[OcrLine], min_confidence: f64, max: usize) -> Vec<RawNode> {
+    lines
+        .iter()
+        .filter(|l| f64::from(l.confidence) >= min_confidence && !l.text.trim().is_empty())
+        .take(max)
+        .enumerate()
+        .map(|(i, l)| RawNode {
+            handle: OCR_HANDLE | i as u64,
+            parent: Some(0),
+            // Stable across small moves, so indices survive a re-read.
+            key: Some(format!(
+                "ocr:{}:{}:{}",
+                l.text.trim(),
+                (l.bounds.x / 24.0).round() as i64,
+                (l.bounds.y / 24.0).round() as i64
+            )),
+            role: OCR_ROLE.into(),
+            native_role: "ocr".into(),
+            name: Some(l.text.trim().to_string()),
+            bounds: Some(l.bounds),
+            actions: Vec::<ActionDesc>::new(),
+            states: NodeStates {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Tesseract's language code for a common ISO 639-1 code.
+fn tesseract_lang(code: &str) -> String {
+    let full = code.trim().to_lowercase();
+    // "en-US" / "en_US" → "en"; Tesseract's own codes ("chi_tra") pass through.
+    let base = full.split(['-', '_']).next().unwrap_or("");
+    if base.len() != 2 {
+        return full;
+    }
+    match base {
+        "en" => "eng",
+        "fa" => "fas",
+        "ar" => "ara",
+        "de" => "deu",
+        "fr" => "fra",
+        "es" => "spa",
+        "it" => "ita",
+        "pt" => "por",
+        "ru" => "rus",
+        "tr" => "tur",
+        "zh" => "chi_sim",
+        "ja" => "jpn",
+        "ko" => "kor",
+        "nl" => "nld",
+        "pl" => "pol",
+        "uk" => "ukr",
+        "hi" => "hin",
+        "he" => "heb",
+        other => return other.to_string(),
+    }
+    .to_string()
+}
+
+/// Run Tesseract on a capture. UI text is small, so the image is enlarged
+/// first (Tesseract reads best at a larger x-height).
+pub fn tesseract(cap: &Capture, languages: &[String], program: &str) -> Result<Vec<OcrLine>> {
+    let scale: u32 = if cap.width.max(cap.height) <= 2400 {
+        2
+    } else {
+        1
+    };
+    let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
+        .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
+    let img = if scale > 1 {
+        image::imageops::resize(
+            &img,
+            cap.width * scale,
+            cap.height * scale,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| Error::Internal(format!("encoding for OCR: {e}")))?;
+
+    let langs: Vec<String> = languages.iter().map(|l| tesseract_lang(l)).collect();
+    let mut cmd = Command::new(program);
+    cmd.args(["stdin", "stdout", "--psm", "11"]);
+    if !langs.is_empty() {
+        cmd.args(["-l", &langs.join("+")]);
+    }
+    cmd.arg("tsv")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| {
+        Error::Unsupported(format!(
+            "no OCR: `{program}` could not be started ({e}); install Tesseract or set ocr.tesseract_path"
+        ))
+    })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&png)
+            .map_err(|e| Error::Platform(format!("tesseract: {e}")))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Error::Platform(format!("tesseract: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Platform(format!(
+            "tesseract failed ({}); are the language data files installed for {:?}?",
+            out.status, langs
+        )));
+    }
+    Ok(parse_tsv(
+        &String::from_utf8_lossy(&out.stdout),
+        cap,
+        f64::from(scale),
+    ))
+}
+
+/// Words from Tesseract's TSV output, grouped into lines.
+fn parse_tsv(tsv: &str, cap: &Capture, scale: f64) -> Vec<OcrLine> {
+    struct Acc {
+        words: Vec<String>,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        conf: f64,
+    }
+    let mut lines: Vec<((u32, u32, u32), Acc)> = Vec::new();
+    for row in tsv.lines().skip(1) {
+        let f: Vec<&str> = row.split('\t').collect();
+        if f.len() < 12 || f[0] != "5" {
+            continue;
+        }
+        let num = |i: usize| f[i].trim().parse::<f64>().unwrap_or(-1.0);
+        let text = f[11].trim();
+        let conf = num(10);
+        if text.is_empty() || conf < 0.0 {
+            continue;
+        }
+        let key = (num(2) as u32, num(3) as u32, num(4) as u32);
+        let (x, y, w, h) = (num(6), num(7), num(8), num(9));
+        let acc = match lines.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, a)) => a,
+            None => {
+                lines.push((
+                    key,
+                    Acc {
+                        words: Vec::new(),
+                        x0: f64::MAX,
+                        y0: f64::MAX,
+                        x1: 0.0,
+                        y1: 0.0,
+                        conf: 0.0,
+                    },
+                ));
+                &mut lines.last_mut().expect("just pushed").1
+            }
+        };
+        acc.words.push(text.to_string());
+        acc.x0 = acc.x0.min(x);
+        acc.y0 = acc.y0.min(y);
+        acc.x1 = acc.x1.max(x + w);
+        acc.y1 = acc.y1.max(y + h);
+        acc.conf += conf;
+    }
+    lines
+        .into_iter()
+        .map(|(_, a)| OcrLine {
+            confidence: (a.conf / a.words.len() as f64 / 100.0) as f32,
+            text: a.words.join(" "),
+            bounds: to_screen(
+                cap,
+                a.x0 / scale,
+                a.y0 / scale,
+                (a.x1 - a.x0) / scale,
+                (a.y1 - a.y0) / scale,
+            ),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cap() -> Capture {
+        Capture {
+            width: 200,
+            height: 100,
+            rgba: vec![255; 200 * 100 * 4],
+            bounds: Rect::new(100.0, 50.0, 100.0, 50.0),
+        }
+    }
+
+    #[test]
+    fn tsv_words_become_lines_in_screen_coordinates() {
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
+            4\t1\t1\t1\t1\t0\t20\t40\t200\t30\t-1\t\n\
+            5\t1\t1\t1\t1\t1\t20\t40\t80\t30\t96\tHello\n\
+            5\t1\t1\t1\t1\t2\t120\t40\t100\t30\t90\tworld\n\
+            5\t1\t2\t1\t1\t1\t20\t140\t60\t20\t40\tOK\n";
+        // A 2x enlarged image of a Retina-like (2 px per point) capture.
+        let lines = parse_tsv(tsv, &cap(), 2.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "Hello world");
+        assert!((lines[0].confidence - 0.93).abs() < 0.01);
+        assert_eq!(lines[0].bounds, Rect::new(105.0, 60.0, 50.0, 7.5));
+        let nodes = nodes(&lines, 0.5, 10);
+        assert_eq!(nodes.len(), 1, "low confidence dropped");
+        assert!(is_ocr(nodes[0].handle));
+        assert_eq!(nodes[0].role, OCR_ROLE);
+    }
+
+    #[test]
+    fn language_codes() {
+        assert_eq!(tesseract_lang("en-US"), "eng");
+        assert_eq!(tesseract_lang("fa"), "fas");
+        assert_eq!(tesseract_lang("chi_tra"), "chi_tra");
+    }
+
+    /// Black text on white, drawn with a system font; `None` without fonts.
+    fn sample(text: &str) -> Option<Capture> {
+        use tiny_skia::{Color, FillRule, Paint, Pixmap, Transform};
+        let fonts = crate::overlay::text::Fonts::load("");
+        let t = crate::overlay::text::layout(&fonts, text, 36.0);
+        let path = t.path?;
+        let (w, h) = (t.width.ceil() as u32 + 80, t.height.ceil() as u32 + 60);
+        let mut pm = Pixmap::new(w, h)?;
+        pm.fill(Color::WHITE);
+        let mut paint = Paint::default();
+        paint.set_color(Color::BLACK);
+        paint.anti_alias = true;
+        pm.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::from_translate(40.0, 30.0),
+            None,
+        );
+        Some(Capture {
+            width: w,
+            height: h,
+            rgba: pm.data().to_vec(),
+            bounds: Rect::new(1000.0, 500.0, f64::from(w), f64::from(h)),
+        })
+    }
+
+    /// Reads real text with every engine this machine has: the OS's own
+    /// (Windows, macOS) and Tesseract when installed.
+    #[test]
+    fn reads_rendered_text() {
+        let Some(cap) = sample("Hello OCR world 2026") else {
+            eprintln!("no font to draw with; skipped");
+            return;
+        };
+        let mut engines: Vec<(&str, Result<Vec<OcrLine>>)> = Vec::new();
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            use crate::Backend as _;
+            match crate::platform_backend() {
+                Ok(mut b) => engines.push(("built-in", b.ocr(&cap, &[]))),
+                Err(e) => eprintln!("no backend: {e}"),
+            }
+        }
+        engines.push(("tesseract", tesseract(&cap, &[], "tesseract")));
+        for (name, result) in engines {
+            match result {
+                Ok(lines) => {
+                    let all: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+                    eprintln!("{name}: {all:?}");
+                    let joined = all.join(" ").to_lowercase();
+                    assert!(
+                        joined.contains("hello") && joined.contains("world"),
+                        "{name} read {all:?}"
+                    );
+                    // In screen coordinates, inside the capture.
+                    let l = &lines[0];
+                    assert!(
+                        l.bounds.x >= 1000.0 && l.bounds.y >= 500.0,
+                        "{name}: {:?}",
+                        l.bounds
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{name} OCR unavailable here: {e}");
+                    // The OS's own OCR must work on the CI runners.
+                    if name == "built-in" && std::env::var_os("CI").is_some() {
+                        panic!("built-in OCR failed on CI: {e}");
+                    }
+                }
+            }
+        }
+    }
+}

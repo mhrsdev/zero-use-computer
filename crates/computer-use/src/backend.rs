@@ -9,8 +9,8 @@
 use crate::error::Result;
 use crate::keys::KeyCombo;
 use crate::types::{
-    AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, PermissionStatus, Point,
-    RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
+    AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, OcrLine, PermissionStatus,
+    Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
 };
 
 /// Result of an attempt to handle an element-level operation natively.
@@ -62,6 +62,16 @@ pub trait Backend {
     fn capture_screen(&mut self, _region: Option<Rect>) -> Result<Capture> {
         Err(crate::error::Error::Unsupported(
             "screen capture is not implemented on this platform".into(),
+        ))
+    }
+
+    /// Read the text in a capture with the OS's own OCR, as lines in screen
+    /// coordinates. `languages` are BCP-47 / ISO codes ("en", "fa"); empty
+    /// means the user's languages. Unsupported where the OS has none (the
+    /// engine then uses Tesseract).
+    fn ocr(&mut self, _cap: &Capture, _languages: &[String]) -> Result<Vec<OcrLine>> {
+        Err(crate::error::Error::Unsupported(
+            "no built-in OCR on this platform".into(),
         ))
     }
 

@@ -126,6 +126,31 @@ below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
 text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
 holds ~7.5 KiB per screen; peak process memory is unchanged.
 
+### Text read off the screen (OCR)
+
+Some apps show almost nothing to accessibility APIs: games, canvases, remote
+desktops, some custom toolkits. For those, the engine reads the text off the
+window. The lines become `ocr text` elements in the tree: numbered like any
+other element, found by `find_element`, and clicked by `element_index` (at
+their place on screen). They can't be set or selected.
+
+It runs by itself when a window has fewer than `ocr.sparse_threshold`
+interactive elements (`ocr.mode = "auto"`). The agent can ask for it with
+`get_app_state(ocr: true)`; `"always"` and `"off"` are also possible. Lines
+that repeat what the tree already says there are left out, as is glyph noise.
+A picture that hasn't changed isn't read again, and the picture read is also
+used as the screenshot. Card numbers read this way are masked like any other
+text (`[privacy]`).
+
+| Engine | Where |
+|---|---|
+| `Windows.Media.Ocr` (the languages the user installed) | Windows |
+| Vision framework (`VNRecognizeTextRequest`, accurate) | macOS |
+| Tesseract (`tesseract` on `PATH`, `ocr.tesseract_path`) | Linux, and anywhere the built-in engine is missing |
+
+`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "fa"]`).
+If no engine is available, the agent is told once.
+
 ### Windows and screens
 
 The `window` tool arranges app windows. Its actions:

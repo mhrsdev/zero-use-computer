@@ -212,6 +212,16 @@ pub struct InputTarget {
     pub window_handle: Option<ElementHandle>,
 }
 
+/// A line of text read off the screen by OCR.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OcrLine {
+    pub text: String,
+    /// Where it is, in screen coordinates.
+    pub bounds: Rect,
+    /// 0–1.
+    pub confidence: f32,
+}
+
 /// A screen (monitor), in screen coordinates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Display {

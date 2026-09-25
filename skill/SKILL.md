@@ -80,6 +80,10 @@ running (then `get_app_state`).
   where it sits in your earlier screenshot, and x/y still refer to that
   whole screenshot. To read small text, `screenshot(app, element_index)`
   zooms into one element.
+- In apps with little accessibility info (games, canvases, remote desktops)
+  the tree may contain `ocr text` elements: text read off the screen. Click
+  them by `element_index`; they can't be set or selected. Ask for them in
+  any app with `get_app_state(ocr: true)`.
 - `window(app, action)` — focus, move/resize, maximize/minimize/restore,
   tile_left/tile_right, move_to_display, close; `window(action="displays")`
   lists the screens. Positions are screen coordinates (as in the window line

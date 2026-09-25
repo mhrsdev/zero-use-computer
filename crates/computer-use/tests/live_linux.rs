@@ -514,6 +514,17 @@ fn follow_up_screenshots_send_only_what_changed() {
     cfg.screenshot.attach = computer_use::config::AttachMode::Always;
     let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
     let app = wait_for_app(&mut e);
+    // Park the pointer off the window: hover highlights are real changes too.
+    {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::ConnectionExt as _;
+        let (conn, screen) = x11rb::connect(None).expect("X");
+        let root = conn.setup().roots[screen].root;
+        conn.warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, 1200, 1000)
+            .unwrap();
+        conn.get_input_focus().unwrap().reply().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let state = |e: &mut Engine<LinuxBackend>| {
         e.call_tool(
             "get_app_state",
@@ -522,6 +533,12 @@ fn follow_up_screenshots_send_only_what_changed() {
         )
     };
     let out = state(&mut e);
+    let save = |name: &str, out: &computer_use::ToolOutput| {
+        if let (Some(img), Ok(dir)) = (&out.image, std::env::var("CU_SHOT_DIR")) {
+            std::fs::write(format!("{dir}/{name}.png"), &img.data).ok();
+        }
+    };
+    save("before", &out);
     let full = out.image.as_ref().expect("first screenshot").width;
     // Tick the checkbox: a small part of the window changes.
     let check = index_of(&out.text, "Enable feature");
@@ -532,6 +549,7 @@ fn follow_up_screenshots_send_only_what_changed() {
     );
     assert!(!r.is_error, "{}", r.text);
     let out = state(&mut e);
+    save("after", &out);
     eprintln!(
         "{}",
         out.text.lines().take(3).collect::<Vec<_>>().join("\n")
@@ -607,4 +625,48 @@ fn window_management_over_x11() {
     let out = win(&mut e, serde_json::json!({"action": "focus"}));
     assert!(!out.is_error, "{}", out.text);
     eprintln!("window management live test passed");
+}
+
+#[test]
+fn ocr_reads_and_clicks_custom_drawn_text() {
+    if !live() {
+        return;
+    }
+    if std::process::Command::new("tesseract")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: tesseract not installed");
+        return;
+    }
+    let mut e = engine();
+    let app = wait_for_app(&mut e);
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": app, "window": "CU Test", "ocr": true, "disable_diff": true}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "{}", out.text);
+    if let (Some(img), Ok(dir)) = (&out.image, std::env::var("CU_SHOT_DIR")) {
+        std::fs::write(format!("{dir}/ocr-window.png"), &img.data).ok();
+    }
+    let line = out
+        .text
+        .lines()
+        .find(|l| l.contains("ocr text") && l.contains("1234"))
+        .unwrap_or_else(|| panic!("canvas text not read:\n{}", out.text));
+    eprintln!("read: {}", line.trim());
+    // What the tree already says is not repeated.
+    assert!(!out.text.contains("ocr text \"Click Me\""), "{}", out.text);
+    let index = index_of(&out.text, "1234");
+    let r = e.call_tool(
+        "click",
+        serde_json::json!({"app": app, "window": "CU Test", "element_index": index}),
+        &mut AllowApprover,
+    );
+    assert!(!r.is_error, "{}", r.text);
+    let tree = state_text(&mut e, &app);
+    assert!(tree.contains("canvas clicked"), "{tree}");
+    eprintln!("OCR live test passed");
 }

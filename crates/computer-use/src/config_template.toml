@@ -208,6 +208,18 @@ capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
 font = ""                    # label font file ("" = a system font)
 command = ""                 # helper program for library embedders
 
+# Reading text off the screen, for apps whose accessibility tree has almost
+# nothing in it (games, canvases, remote desktops). Recognised lines become
+# numbered "ocr text" elements the agent can click.
+[ocr]
+mode = "auto"               # "auto" (sparse trees only), "always" or "off"
+engine = "auto"             # "auto" (the OS's own, else Tesseract), "native", "tesseract"
+sparse_threshold = 3        # auto: fewer interactive elements than this
+languages = []              # e.g. ["en", "fa"]; [] = your languages (Tesseract: English)
+min_confidence = 0.4        # leave out lines recognised with less confidence (0–1)
+max_lines = 150
+tesseract_path = "tesseract"
+
 # Checking that actions worked.
 [verify]
 enabled = true              # check each action's result; tell the agent when it didn't work

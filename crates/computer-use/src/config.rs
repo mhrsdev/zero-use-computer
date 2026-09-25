@@ -520,6 +520,65 @@ impl Default for OverlayConfig {
     }
 }
 
+/// When text is read off the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OcrMode {
+    /// When a window's accessibility tree has almost nothing to act on
+    /// (fewer interactive elements than `sparse_threshold`). Default.
+    #[default]
+    Auto,
+    /// For every window read (slow).
+    Always,
+    /// Never (the agent can still ask with get_app_state ocr=true).
+    Off,
+}
+
+/// Which OCR engine reads the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OcrEngineChoice {
+    /// The OS's own (Windows.Media.Ocr, Vision), else Tesseract. Default.
+    #[default]
+    Auto,
+    Native,
+    Tesseract,
+}
+
+/// Reading text off the screen for apps with little accessibility
+/// information; the lines become clickable `ocr text` elements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OcrConfig {
+    pub mode: OcrMode,
+    pub engine: OcrEngineChoice,
+    /// In `auto`, windows with fewer interactive elements than this.
+    pub sparse_threshold: usize,
+    /// Languages to read ("en", "fa", …); [] = the user's languages
+    /// (Tesseract: English).
+    pub languages: Vec<String>,
+    /// Lines recognised with less confidence (0–1) are left out.
+    pub min_confidence: f64,
+    /// Most lines added per window.
+    pub max_lines: usize,
+    /// The Tesseract program.
+    pub tesseract_path: String,
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            mode: OcrMode::Auto,
+            engine: OcrEngineChoice::Auto,
+            sparse_threshold: 3,
+            languages: Vec::new(),
+            min_confidence: 0.4,
+            max_lines: 150,
+            tesseract_path: "tesseract".into(),
+        }
+    }
+}
+
 /// Checking that actions worked, and retrying another way when they
 /// clearly didn't.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -816,6 +875,7 @@ pub struct Config {
     pub control: ControlConfig,
     pub privacy: PrivacyConfig,
     pub verify: VerifyConfig,
+    pub ocr: OcrConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -852,6 +912,7 @@ impl Default for Config {
             control: ControlConfig::default(),
             privacy: PrivacyConfig::default(),
             verify: VerifyConfig::default(),
+            ocr: OcrConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -894,6 +955,12 @@ impl Config {
                     "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
                 ));
             }
+        }
+        if !(0.0..=1.0).contains(&self.ocr.min_confidence) {
+            return Err(format!(
+                "ocr.min_confidence must be between 0 and 1 (got {})",
+                self.ocr.min_confidence
+            ));
         }
         let r = self.screenshot.region_max_ratio;
         if !(0.0..=1.0).contains(&r) {

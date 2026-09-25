@@ -41,6 +41,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Security_Cryptography",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",

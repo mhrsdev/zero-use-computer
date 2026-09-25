@@ -54,6 +54,7 @@ pub mod error;
 pub mod imaging;
 pub mod keys;
 pub mod mock;
+pub mod ocr;
 pub mod overlay;
 pub mod policy;
 pub mod privacy;
@@ -157,6 +158,9 @@ impl Backend for Box<dyn Backend> {
     }
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         (**self).user_idle()
+    }
+    fn ocr(&mut self, cap: &types::Capture, languages: &[String]) -> Result<Vec<types::OcrLine>> {
+        (**self).ocr(cap, languages)
     }
     fn displays(&mut self) -> Result<Vec<types::Display>> {
         (**self).displays()

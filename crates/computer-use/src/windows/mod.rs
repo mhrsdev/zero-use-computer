@@ -9,6 +9,7 @@
 mod capture;
 mod clipboard;
 pub(crate) mod input;
+mod ocr;
 mod wm;
 
 use std::collections::HashMap;
@@ -624,6 +625,10 @@ impl Backend for WindowsBackend {
 
     fn displays(&mut self) -> Result<Vec<Display>> {
         wm::displays()
+    }
+
+    fn ocr(&mut self, cap: &Capture, languages: &[String]) -> Result<Vec<OcrLine>> {
+        ocr::recognize(cap, languages)
     }
 
     fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {

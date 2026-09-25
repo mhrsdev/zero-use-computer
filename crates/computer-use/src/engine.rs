@@ -107,6 +107,11 @@ struct AppState {
     stamped: bool,
     /// Screen areas of private data in the latest snapshot ([privacy]).
     private: Vec<Rect>,
+    /// The last text read off the window (OCR), with the picture it was
+    /// read from, so an unchanged picture isn't read again.
+    ocr_cache: Option<(PixelSig, Vec<OcrLine>)>,
+    /// Lines of OCR text in the latest snapshot.
+    ocr_lines: usize,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -151,6 +156,15 @@ pub struct Engine<B: Backend> {
     settled: Option<u64>,
     /// The last full-screen screenshot sent: its fingerprint and scale.
     screen_shot: Option<(PixelSig, CoordMap)>,
+    /// Read text off the screen in the next observe (get_app_state ocr=true).
+    force_ocr: bool,
+    /// Reuse the last OCR result instead of reading again (while settling).
+    ocr_reuse: bool,
+    /// Why OCR isn't available, once found out (told to the model once).
+    ocr_note: Option<String>,
+    ocr_note_shown: bool,
+    /// A window capture taken for OCR at this epoch, reused as the screenshot.
+    last_capture: Option<(u32, u64, u64, Capture)>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
@@ -218,6 +232,11 @@ impl<B: Backend> Engine<B> {
             last_input: None,
             settled: None,
             screen_shot: None,
+            force_ocr: false,
+            ocr_reuse: false,
+            ocr_note: None,
+            ocr_note_shown: false,
+            last_capture: None,
             config_mtime,
             overrides: None,
             clock: Box::new(Instant::now),
@@ -759,6 +778,87 @@ impl<B: Backend> Engine<B> {
     /// `cache.snapshot_ttl_ms` when no action ran since, unless `fresh`), work
     /// out which screen it shows, and number its elements. What the model is
     /// known to have seen is left alone (see [`Self::commit`]).
+    /// Whether to read text off this window: a sparse tree (`ocr.mode`), or
+    /// the agent asked.
+    fn ocr_wanted(&self, raw: &[RawNode]) -> bool {
+        use crate::config::OcrMode;
+        let cfg = &self.store.config;
+        if !cfg.screenshot.enabled {
+            return false;
+        }
+        if self.force_ocr {
+            return true;
+        }
+        match cfg.ocr.mode {
+            OcrMode::Off => false,
+            OcrMode::Always => true,
+            OcrMode::Auto => {
+                raw.iter()
+                    .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
+                    .count()
+                    < cfg.ocr.sparse_threshold
+            }
+        }
+    }
+
+    /// The text on a window (OCR), reusing the last result when the picture
+    /// hasn't changed (or, while settling, without looking again).
+    fn read_screen_text(&mut self, app: &AppInfo, window: &WindowInfo) -> Vec<OcrLine> {
+        let cached = self.states.get(&app.pid).and_then(|s| s.ocr_cache.clone());
+        if self.ocr_reuse
+            && let Some((_, lines)) = &cached
+        {
+            return lines.clone();
+        }
+        let cap = match self.capture_clean(|b| b.capture(app, window)) {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("no capture for OCR: {e}");
+                return Vec::new();
+            }
+        };
+        let cache = &self.store.config.cache;
+        let sig = PixelSig::of(&cap, cache.pixel_grid);
+        let lines = match cached {
+            Some((old, lines)) if old.same_as(&sig, cache.pixel_tolerance) => lines,
+            _ => self.run_ocr(&cap),
+        };
+        self.states.entry(app.pid).or_default().ocr_cache = Some((sig, lines.clone()));
+        self.last_capture = Some((app.pid, window.id, self.epoch, cap));
+        lines
+    }
+
+    /// Recognise the text in a capture with the configured engine.
+    fn run_ocr(&mut self, cap: &Capture) -> Vec<OcrLine> {
+        use crate::config::OcrEngineChoice;
+        let cfg = self.store.config.ocr.clone();
+        let tesseract = || crate::ocr::tesseract(cap, &cfg.languages, &cfg.tesseract_path);
+        let result = match cfg.engine {
+            OcrEngineChoice::Native => self.backend.ocr(cap, &cfg.languages),
+            OcrEngineChoice::Tesseract => tesseract(),
+            OcrEngineChoice::Auto => match self.backend.ocr(cap, &cfg.languages) {
+                Ok(lines) => Ok(lines),
+                Err(e) => {
+                    log::debug!("built-in OCR unavailable ({e}); trying Tesseract");
+                    tesseract()
+                }
+            },
+        };
+        match result {
+            Ok(lines) => {
+                self.ocr_note = None;
+                lines
+            }
+            Err(e) => {
+                if self.ocr_note.is_none() {
+                    log::warn!("text recognition unavailable: {e}");
+                }
+                self.ocr_note = Some(e.to_string());
+                Vec::new()
+            }
+        }
+    }
+
     fn observe(&mut self, app: &AppInfo, window: &WindowInfo, fresh: bool) -> Result<()> {
         let ttl = Duration::from_millis(self.store.config.cache.snapshot_ttl_ms);
         if !fresh
@@ -779,6 +879,36 @@ impl<B: Backend> Engine<B> {
         };
         let mut raw = self.backend.snapshot(app, window, &opts)?;
         let snap_at = (self.clock)();
+        // Custom-drawn UI: add the text read off the window.
+        let mut ocr_lines = 0;
+        if !raw.is_empty() && self.ocr_wanted(&raw) {
+            let lines = self.read_screen_text(app, window);
+            let cfg = &self.store.config.ocr;
+            let mut extra = crate::ocr::nodes(&lines, cfg.min_confidence, cfg.max_lines);
+            // Leave out glyph noise and what the tree already says there.
+            extra.retain(|o| {
+                let text = crate::ocr::words(o.name.as_deref().unwrap_or(""));
+                text.chars().filter(|c| c.is_alphanumeric()).count() >= 2
+                    && !raw.iter().any(|n| {
+                        // The window itself overlaps everything: not a match.
+                        let Some((a, b)) = n.bounds.zip(o.bounds) else {
+                            return false;
+                        };
+                        if n.parent.is_none() || !a.intersects(&b) {
+                            return false;
+                        }
+                        // A line-sized element (not a big container) whose
+                        // text the line merely adds glyphs to also counts.
+                        let line_sized = a.height <= 3.0 * b.height.max(8.0);
+                        [&n.name, &n.value].into_iter().flatten().any(|t| {
+                            let t = crate::ocr::words(t);
+                            t.contains(&text) || (line_sized && t.len() >= 3 && text.contains(&t))
+                        })
+                    })
+            });
+            ocr_lines = extra.len();
+            raw.extend(extra);
+        }
         // Private data never reaches the model (or the screen memory).
         let private = if crate::privacy::active(&self.store.config.privacy) {
             crate::privacy::scrub(&mut raw, &self.store.config.privacy)
@@ -859,6 +989,7 @@ impl<B: Backend> Engine<B> {
         st.snap_epoch = self.epoch;
         st.stamped = true;
         st.private = private;
+        st.ocr_lines = ocr_lines;
         self.states.insert(app.pid, st);
         Ok(())
     }
@@ -1131,12 +1262,11 @@ impl<B: Backend> Engine<B> {
         let poll = Duration::from_millis(cfg.timing.settle_poll_ms.max(5));
         let deadline = (self.clock)() + max;
         let mut last = None;
-        loop {
-            let Ok(window) = self.pick_window(app, None, true) else {
-                return;
-            };
+        // Text read off the screen isn't read again for every look.
+        let reuse = std::mem::replace(&mut self.ocr_reuse, true);
+        while let Ok(window) = self.pick_window(app, None, true) {
             if self.observe(app, &window, true).is_err() {
-                return;
+                break;
             }
             self.settled = Some(self.epoch);
             let now = self.tree_fingerprint(app.pid);
@@ -1149,6 +1279,7 @@ impl<B: Backend> Engine<B> {
             }
             (self.sleep)(poll);
         }
+        self.ocr_reuse = reuse;
     }
 
     /// Whether the current action's result was read back (verification on).
@@ -1417,7 +1548,10 @@ impl<B: Backend> Engine<B> {
     ) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "get_app_state", approver)?;
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
-        self.observe(&app, &window, false)?;
+        self.force_ocr = args.ocr;
+        let observed = self.observe(&app, &window, args.ocr);
+        self.force_ocr = false;
+        observed?;
         let r = self.render(app.pid, args.disable_diff)?;
         let size_changed = self.commit(app.pid, &window);
 
@@ -1436,6 +1570,25 @@ impl<B: Backend> Engine<B> {
             Seen::New => header.push_str(" (new)"),
             Seen::Revisit => header.push_str(" (seen before)"),
             Seen::Same => {}
+        }
+        let ocr_lines = self.state(app.pid).map(|s| s.ocr_lines).unwrap_or(0);
+        if ocr_lines > 0 {
+            let how =
+                "\"ocr text\" elements: click them by element_index; they can't be set or selected";
+            header.push_str(&if args.ocr {
+                format!("\nRead {ocr_lines} more line(s) of text off the screen ({how}).")
+            } else {
+                format!(
+                    "\nThis window has little accessibility information, so {ocr_lines} line(s) of text were read off the screen ({how})."
+                )
+            });
+        }
+        if let Some(note) = &self.ocr_note
+            && !self.ocr_note_shown
+            && (args.ocr || r.interactive < self.store.config.ocr.sparse_threshold)
+        {
+            header.push_str(&format!("\n[Text recognition unavailable: {note}]"));
+            self.ocr_note_shown = true;
         }
 
         // Decide whether this view needs pixels (screenshot.attach): a screen
@@ -1472,7 +1625,20 @@ impl<B: Backend> Engine<B> {
 
         let mut image = None;
         if want {
-            match self.capture_clean(|b| b.capture(&app, &window)) {
+            // The picture just read for OCR, if any, is the screenshot.
+            let reuse = match self.last_capture.take() {
+                Some((pid, wid, epoch, cap))
+                    if pid == app.pid && wid == window.id && epoch == self.epoch =>
+                {
+                    Some(cap)
+                }
+                _ => None,
+            };
+            let captured = match reuse {
+                Some(cap) => Ok(cap),
+                None => self.capture_clean(|b| b.capture(&app, &window)),
+            };
+            match captured {
                 Ok(mut cap) => {
                     let redacted = self.redact_capture(&mut cap);
                     if redacted > 0 {
@@ -1697,6 +1863,7 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "perform_secondary_action", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
+        ocr_can_only_be_clicked(handle, "perform_secondary_action")?;
         let action = node.has_action(&args.action).ok_or_else(|| {
             let available: Vec<&str> = node.actions.iter().map(|a| a.name.as_str()).collect();
             Error::InvalidArgs(format!(
@@ -1724,6 +1891,7 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "set_value", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
+        ocr_can_only_be_clicked(handle, "set_value")?;
         self.overlay_point_element(&app, handle, true);
         // Text fields can be typed into when setting fails.
         let typable = node.states.editable && node.states.checked.is_none();
@@ -1780,6 +1948,7 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "select_text", approver)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
+        ocr_can_only_be_clicked(handle, "select_text")?;
         self.overlay_point_element(&app, handle, false);
         self.backend
             .select_text(handle, args.text.as_deref(), args.occurrence.max(1))?;
@@ -1811,6 +1980,7 @@ impl<B: Backend> Engine<B> {
         let lines = (pages * 3.0).round().max(1.0) as i32;
 
         if let Anchor::Element(h) = &anchor
+            && !crate::ocr::is_ocr(*h)
             && let Native::Done(_) = self.backend.scroll_element(*h, args.direction, pages)?
         {
             self.settle_on(&app);
@@ -2000,10 +2170,11 @@ impl<B: Backend> Engine<B> {
     /// Give an element keyboard focus; a text field that won't take focus
     /// through accessibility is clicked instead (when retries are on).
     fn focus_element(&mut self, app: &AppInfo, handle: ElementHandle, node: &Node) -> Result<()> {
-        let focused = matches!(self.backend.focus(handle), Ok(Native::Done(_)));
+        let ocr = crate::ocr::is_ocr(handle);
+        let focused = !ocr && matches!(self.backend.focus(handle), Ok(Native::Done(_)));
+        // Text read off the screen is focused by clicking it.
         if !focused
-            && self.store.config.verify.retry
-            && node.states.editable
+            && (ocr || self.store.config.verify.retry && node.states.editable)
             && let Some(p) = node.bounds.filter(|b| !b.is_empty()).map(|b| b.center())
         {
             let target = self.input_target(app);
@@ -2658,8 +2829,10 @@ impl<B: Backend> Engine<B> {
         let Ok(app) = self.resolve_app(app_query) else {
             return out;
         };
-        // Settling already read the app back after the action.
-        let fresh = self.settled != Some(self.epoch);
+        // Settling already read the app back after the action (without
+        // reading its text off the screen again).
+        let ocr = self.states.get(&app.pid).is_some_and(|s| s.ocr_lines > 0);
+        let fresh = self.settled != Some(self.epoch) || ocr;
         let Ok(window) = self.resolve_window(&app, None, fresh) else {
             return out;
         };
@@ -2726,6 +2899,17 @@ impl<B: Backend> Engine<B> {
             Anchor::Point(_) => "the point".into(),
         }
     }
+}
+
+/// Elements read by OCR exist only as pictures: they can be clicked, not
+/// set, selected or asked to do something.
+fn ocr_can_only_be_clicked(handle: ElementHandle, tool: &str) -> Result<()> {
+    if crate::ocr::is_ocr(handle) {
+        return Err(Error::InvalidArgs(format!(
+            "this element was read off the screen (OCR), so {tool} can't work on it; click it by element_index (and type after clicking) instead"
+        )));
+    }
+    Ok(())
 }
 
 /// Appended when an action changed nothing that can be seen.
@@ -3702,6 +3886,7 @@ mod tests {
         backend.add_app(canvas);
         let mut cfg = Config::default();
         cfg.approvals.mode = ApprovalMode::AllowAll;
+        cfg.ocr.mode = crate::config::OcrMode::Off;
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         assert!(state_of(&mut e, serde_json::json!({})).image.is_some());
@@ -4569,5 +4754,150 @@ mod tests {
             serde_json::json!({"app": "TextEdit", "action": "close"}),
         );
         assert!(out.text.contains("It is closed"), "{}", out.text);
+    }
+
+    // -- OCR ------------------------------------------------------------------
+
+    /// A custom-drawn app: a window with nothing but a canvas in its tree.
+    fn canvas_engine(lines: Option<Vec<OcrLine>>) -> Engine<MockBackend> {
+        let win = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let app = MockApp {
+            info: AppInfo {
+                name: "Game".into(),
+                id: "game".into(),
+                pid: 77,
+                exe: None,
+                frontmost: true,
+                hidden: false,
+            },
+            windows: vec![MockWindow {
+                id: 9,
+                title: "Game".into(),
+                bounds: win,
+                root: 1,
+                focused: true,
+            }],
+            elements: vec![
+                MockElement::new(1, "window", "Game", win),
+                MockElement::new(2, "canvas", "", win).child_of(1),
+            ],
+        };
+        let mut backend = MockBackend::new();
+        backend.add_app(app);
+        backend.ocr_text = lines;
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
+        // Every read looks again (the tests change the picture).
+        cfg.cache.snapshot_ttl_ms = 0;
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    fn line(text: &str, x: f64, y: f64) -> OcrLine {
+        OcrLine {
+            text: text.into(),
+            bounds: Rect::new(x, y, 80.0, 20.0),
+            confidence: 0.9,
+        }
+    }
+
+    #[test]
+    fn custom_drawn_apps_get_their_text_read_and_clickable() {
+        let mut e = canvas_engine(Some(vec![
+            line("New Game", 100.0, 100.0),
+            line("Options", 100.0, 140.0),
+            OcrLine {
+                confidence: 0.1,
+                ..line("~~noise~~", 300.0, 300.0)
+            },
+        ]));
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Game"}),
+            &mut allow(),
+        );
+        assert!(out.text.contains("ocr text \"New Game\""), "{}", out.text);
+        assert!(
+            out.text.contains("2 line(s) of text were read"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("noise"), "low confidence left out");
+        assert!(out.image.is_some(), "sparse tree: a screenshot too");
+        let options = index_of_name(&out.text, "\"Options\"");
+        // Clicked at its place on screen.
+        let r = e.call_tool(
+            "click",
+            serde_json::json!({"app": "Game", "element_index": options}),
+            &mut allow(),
+        );
+        assert!(!r.is_error, "{}", r.text);
+        assert!(e.backend().events.iter().any(|ev| matches!(
+            ev,
+            Event::Click(77, p, MouseButton::Left, 1) if *p == Point::new(140.0, 150.0)
+        )));
+        // It can't be set or selected.
+        let r = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "Game", "element_index": options, "value": "x"}),
+            &mut allow(),
+        );
+        assert!(r.is_error && r.text.contains("OCR"), "{}", r.text);
+        // An unchanged picture isn't read again.
+        let runs = e.backend().ocr_runs;
+        e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Game"}),
+            &mut allow(),
+        );
+        assert_eq!(e.backend().ocr_runs, runs);
+        e.backend_mut().fill = 90;
+        e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Game"}),
+            &mut allow(),
+        );
+        assert_eq!(e.backend().ocr_runs, runs + 1);
+    }
+
+    #[test]
+    fn apps_with_a_real_tree_are_not_read_unless_asked() {
+        let mut e = engine();
+        e.backend_mut().ocr_text = Some(vec![line("Bold", 10.0, 8.0), line("Extra", 300.0, 300.0)]);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(!out.text.contains("ocr text"), "{}", out.text);
+        assert_eq!(e.backend().ocr_runs, 0);
+        // Asked: read, minus what the tree already says there.
+        let out = state_of(
+            &mut e,
+            serde_json::json!({"ocr": true, "disable_diff": true}),
+        );
+        assert!(out.text.contains("ocr text \"Extra\""), "{}", out.text);
+        assert!(!out.text.contains("ocr text \"Bold\""), "{}", out.text);
+    }
+
+    #[test]
+    fn missing_ocr_is_explained_once() {
+        let mut e = canvas_engine(None);
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Game"}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains("Text recognition unavailable"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "Game"}),
+            &mut allow(),
+        );
+        assert!(
+            !out.text.contains("Text recognition unavailable"),
+            "{}",
+            out.text
+        );
     }
 }
