@@ -76,6 +76,21 @@ impl std::str::FromStr for Status {
 pub enum Cmd {
     Config {
         config: Box<OverlayConfig>,
+        /// The emergency stop key the helper listens for ("" = none).
+        #[serde(default)]
+        hotkey: String,
+        /// Whether the agent is stopped right now.
+        #[serde(default)]
+        stopped: bool,
+    },
+    /// The agent waits (on) for the user to stop using the mouse/keyboard,
+    /// or carries on (off).
+    Paused {
+        on: bool,
+    },
+    /// The agent is stopped (on) or may continue (off).
+    Stopped {
+        on: bool,
     },
     /// A tool call started.
     Begin,
@@ -122,9 +137,28 @@ pub enum Cmd {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Reply {
-    Ready { excluded: bool, available: bool },
-    Hidden { id: u64, shown: bool },
-    Answer { id: u64, ok: bool },
+    Ready {
+        excluded: bool,
+        available: bool,
+    },
+    Hidden {
+        id: u64,
+        shown: bool,
+    },
+    Answer {
+        id: u64,
+        ok: bool,
+    },
+    /// The user pressed the stop key: the agent is now stopped (on) or may
+    /// continue (off).
+    Stop {
+        on: bool,
+    },
+    /// Whether the system accepted the stop key (another program may own it).
+    Hotkey {
+        key: String,
+        ok: bool,
+    },
 }
 
 /// How to start the helper process.
@@ -152,6 +186,8 @@ pub struct Overlay {
     rx: mpsc::Receiver<Reply>,
     backlog: Vec<Reply>,
     alive: Arc<AtomicBool>,
+    /// Set by the stop key (shared with the engine).
+    stop: Arc<AtomicBool>,
     excluded: bool,
     /// Whether the helper can draw (known once it reports ready).
     available: Option<bool>,
@@ -159,7 +195,14 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn spawn(launcher: &Launcher, config: &OverlayConfig) -> std::io::Result<Self> {
+    /// Start the helper. `hotkey` is the emergency stop key it listens for;
+    /// pressing it sets (and pressing it again clears) `stop`.
+    pub fn spawn(
+        launcher: &Launcher,
+        config: &OverlayConfig,
+        hotkey: &str,
+        stop: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
         let mut cmd = Command::new(&launcher.program);
         cmd.args(&launcher.args)
             .arg("--parent")
@@ -198,15 +241,37 @@ impl Overlay {
 
         let (rtx, rx) = mpsc::channel::<Reply>();
         let a = alive.clone();
+        let flag = stop.clone();
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
-                    if let Ok(r) = serde_json::from_str::<Reply>(&line)
-                        && rtx.send(r).is_err()
-                    {
-                        break;
+                    let Ok(r) = serde_json::from_str::<Reply>(&line) else {
+                        continue;
+                    };
+                    match r {
+                        // Acted on here, so it works even while the engine
+                        // is busy (waiting for an app, a long batch…).
+                        Reply::Stop { on } => {
+                            flag.store(on, Ordering::SeqCst);
+                            if on {
+                                log::warn!("stopped by the user (stop key)");
+                            } else {
+                                log::info!("the user let the agent continue");
+                            }
+                        }
+                        Reply::Hotkey { key, ok: false } => {
+                            log::warn!(
+                                "the stop key {key} could not be registered (another program may use it); set control.stop_hotkey to another combination"
+                            );
+                        }
+                        Reply::Hotkey { .. } => {}
+                        r => {
+                            if rtx.send(r).is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
                 a.store(false, Ordering::Relaxed);
@@ -218,14 +283,22 @@ impl Overlay {
             rx,
             backlog: Vec::new(),
             alive,
+            stop,
             excluded: false,
             available: None,
             next_id: 0,
         };
-        o.send(&Cmd::Config {
-            config: Box::new(config.clone()),
-        });
+        o.configure(config, hotkey);
         Ok(o)
+    }
+
+    /// Send (new) settings.
+    pub fn configure(&self, config: &OverlayConfig, hotkey: &str) {
+        self.send(&Cmd::Config {
+            config: Box::new(config.clone()),
+            hotkey: hotkey.to_string(),
+            stopped: self.stop.load(Ordering::SeqCst),
+        });
     }
 
     pub fn alive(&self) -> bool {
@@ -324,12 +397,23 @@ impl Overlay {
             action: action.to_string(),
             ask: true,
         });
-        match self.wait_for(
-            timeout,
-            |r| matches!(r, Reply::Answer { id: i, .. } if *i == id),
-        ) {
-            Some(Reply::Answer { ok, .. }) => Some(ok),
-            _ => None,
+        let deadline = Instant::now() + timeout;
+        loop {
+            // The stop key answers "no" to anything pending.
+            if self.stop.load(Ordering::SeqCst) {
+                self.send(&Cmd::ApprovalDone);
+                return Some(false);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || !self.alive() {
+                return None;
+            }
+            if let Some(Reply::Answer { ok, .. }) = self.wait_for(
+                left.min(Duration::from_millis(100)),
+                |r| matches!(r, Reply::Answer { id: i, .. } if *i == id),
+            ) {
+                return Some(ok);
+            }
         }
     }
 }
@@ -426,6 +510,13 @@ mod tests {
             Cmd::Status {
                 state: Status::Done,
             },
+            Cmd::Paused { on: true },
+            Cmd::Stopped { on: false },
+            Cmd::Config {
+                config: Box::default(),
+                hotkey: "ctrl+alt+escape".into(),
+                stopped: true,
+            },
         ];
         for c in cmds {
             let line = serde_json::to_string(&c).unwrap();
@@ -438,6 +529,13 @@ mod tests {
     #[test]
     fn a_missing_helper_is_harmless() {
         let l = Launcher::helper("/nonexistent/computer-use-mcp");
-        assert!(Overlay::spawn(&l, &OverlayConfig::default()).is_err());
+        let stop = Arc::new(AtomicBool::new(false));
+        assert!(Overlay::spawn(&l, &OverlayConfig::default(), "", stop).is_err());
+        // Old helpers' config lines (no hotkey fields) still parse.
+        let line = r#"{"t":"config","config":{}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Cmd>(line).unwrap(),
+            Cmd::Config { stopped: false, .. }
+        ));
     }
 }

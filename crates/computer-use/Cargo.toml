@@ -28,7 +28,7 @@ serde_json.workspace = true
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 async-io = "2"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await-macro"] }
-x11rb = { version = "0.14", features = ["xtest", "shape"] }
+x11rb = { version = "0.14", features = ["xtest", "shape", "screensaver"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -51,6 +51,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Accessibility",

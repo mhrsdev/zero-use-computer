@@ -247,7 +247,7 @@ fn capture_from_image(ptr: *const c_void, rect: Rect) -> Result<Capture> {
 }
 
 /// macOS virtual key code for a key, and whether it needs Shift.
-fn keycode(key: Key) -> Option<(u16, bool)> {
+pub(crate) fn keycode(key: Key) -> Option<(u16, bool)> {
     let code = match key {
         Key::Named(n) => match n {
             NamedKey::Return => 36,

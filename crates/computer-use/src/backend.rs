@@ -65,6 +65,13 @@ pub trait Backend {
         ))
     }
 
+    /// How long ago anyone last used the mouse or keyboard: the system's
+    /// idle time (synthesized input may count too; the engine allows for
+    /// its own). Never what the input was. `None` if unknown.
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Read the system clipboard as text.
     fn clipboard_get(&mut self) -> Result<String> {
         Err(crate::error::Error::Unsupported(

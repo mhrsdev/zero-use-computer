@@ -15,14 +15,15 @@ use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     ClipOrdering, ColormapAlloc, ConfigureWindowAux, ConnectionExt as _, CreateGCAux,
-    CreateWindowAux, EventMask, ImageFormat, Rectangle, StackMode, VisualClass, Window,
-    WindowClass,
+    CreateWindowAux, EventMask, GrabMode, ImageFormat, ModMask, Rectangle, StackMode, VisualClass,
+    Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 
 use super::draw;
-use super::helper::{Ask, Layer, Surface};
+use super::helper::{Ask, Layer, Surface, SurfaceEvent};
 use super::text::Fonts;
+use crate::keys::KeyCombo;
 use crate::types::Rect;
 
 struct Win {
@@ -54,7 +55,13 @@ pub struct X11Surface {
     hidden: bool,
     last_raise: Instant,
     fonts: Fonts,
+    /// The stop key's passive grab: keycode and modifiers.
+    hotkey: Option<(u8, ModMask)>,
 }
+
+/// NumLock (Mod2) and CapsLock variants, so the stop key works whatever
+/// state those locks are in.
+const LOCKS: [u16; 4] = [0, 0x0002, 0x0010, 0x0012];
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -128,7 +135,36 @@ impl X11Surface {
             hidden: false,
             last_raise: Instant::now(),
             fonts: Fonts::default(),
+            hotkey: None,
         })
+    }
+
+    /// The keycode that produces `keysym` on this keyboard.
+    fn keycode_for(&self, keysym: u32) -> Option<u8> {
+        let setup = self.conn.setup();
+        let (min, max) = (setup.min_keycode, setup.max_keycode);
+        let map = self
+            .conn
+            .get_keyboard_mapping(min, max - min + 1)
+            .ok()?
+            .reply()
+            .ok()?;
+        let per = usize::from(map.keysyms_per_keycode).max(1);
+        map.keysyms
+            .chunks(per)
+            .position(|syms| syms.contains(&keysym))
+            .map(|i| min + i as u8)
+    }
+
+    fn ungrab_hotkey(&mut self) {
+        if let Some((code, mods)) = self.hotkey.take() {
+            for lock in LOCKS {
+                let _ = self
+                    .conn
+                    .ungrab_key(code, self.root, mods | ModMask::from(lock));
+            }
+            let _ = self.conn.flush();
+        }
     }
 
     fn create(&self, x: i16, y: i16, w: u16, h: u16, input: bool) -> Result<Win, String> {
@@ -409,10 +445,64 @@ impl Surface for X11Surface {
         });
     }
 
-    fn pump(&mut self) -> Vec<(u64, bool)> {
+    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
+        self.ungrab_hotkey();
+        let Some(combo) = combo else {
+            return false;
+        };
+        let Some(code) = crate::linux::x11::keysym_for(combo.key).and_then(|k| self.keycode_for(k))
+        else {
+            return false;
+        };
+        let m = combo.modifiers;
+        let mut mods = 0u16;
+        for (on, bit) in [
+            (m.shift, 0x0001u16),
+            (m.ctrl, 0x0004),
+            (m.alt, 0x0008),
+            (m.meta, 0x0040),
+        ] {
+            if on {
+                mods |= bit;
+            }
+        }
+        let mods = ModMask::from(mods);
+        // A passive grab of exactly this combination: the X server reports
+        // this key and nothing else. It fails if another program owns it.
+        let mut ok = true;
+        for lock in LOCKS {
+            let grabbed = self
+                .conn
+                .grab_key(
+                    false,
+                    self.root,
+                    mods | ModMask::from(lock),
+                    code,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                )
+                .map_err(err)
+                .and_then(|c| c.check().map_err(err));
+            if grabbed.is_err() {
+                ok = false;
+                break;
+            }
+        }
+        self.hotkey = Some((code, mods));
+        if !ok {
+            self.ungrab_hotkey();
+        }
+        let _ = self.conn.flush();
+        ok
+    }
+
+    fn pump(&mut self) -> Vec<SurfaceEvent> {
         let mut answers = Vec::new();
         while let Ok(Some(ev)) = self.conn.poll_for_event() {
             match ev {
+                Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
+                    answers.push(SurfaceEvent::Hotkey);
+                }
                 Event::Expose(e) if e.count == 0 => {
                     if let Some(w) = self.layers.values().find(|w| w.id == e.window) {
                         self.put(w);
@@ -440,7 +530,7 @@ impl Surface for X11Surface {
                         let p = self.panels.remove(i);
                         let _ = self.conn.destroy_window(p.win.id);
                         let _ = self.conn.flush();
-                        answers.push((p.id, ok));
+                        answers.push(SurfaceEvent::Answer(p.id, ok));
                     }
                 }
                 _ => {}
@@ -456,6 +546,7 @@ impl Surface for X11Surface {
     }
 
     fn close(&mut self) {
+        self.ungrab_hotkey();
         for w in self.layers.values() {
             let _ = self.conn.destroy_window(w.id);
         }

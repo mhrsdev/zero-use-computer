@@ -56,6 +56,7 @@ pub mod keys;
 pub mod mock;
 pub mod overlay;
 pub mod policy;
+pub mod privacy;
 pub mod roles;
 pub mod screens;
 pub mod tools;
@@ -153,6 +154,9 @@ impl Backend for Box<dyn Backend> {
     }
     fn capture_screen(&mut self, region: Option<types::Rect>) -> Result<types::Capture> {
         (**self).capture_screen(region)
+    }
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        (**self).user_idle()
     }
     fn clipboard_get(&mut self) -> Result<String> {
         (**self).clipboard_get()

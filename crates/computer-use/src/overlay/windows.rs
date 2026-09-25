@@ -25,22 +25,30 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
+    UnregisterHotKey,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetSystemMetrics,
     HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
     SM_CYSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
-    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_NCHITTEST, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_LBUTTONUP, WM_NCHITTEST,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
 use super::draw;
-use super::helper::{Ask, Layer, Surface};
+use super::helper::{Ask, Layer, Surface, SurfaceEvent};
 use super::text::Fonts;
+use crate::keys::KeyCombo;
 use crate::types::Rect;
 
 const CLASS: PCWSTR = w!("ComputerUseOverlay");
+/// Id of the stop key registration (thread-wide, no window).
+const HOTKEY_ID: i32 = 0x5A01;
 
 type Button = (f32, f32, f32, f32);
 
@@ -110,6 +118,7 @@ pub struct WinSurface {
     /// Current fade level (the windows' constant alpha).
     opacity: f32,
     fonts: Fonts,
+    hotkey: bool,
 }
 
 impl WinSurface {
@@ -134,6 +143,7 @@ impl WinSurface {
             hidden: false,
             opacity: 1.0,
             fonts: Fonts::default(),
+            hotkey: false,
         })
     }
 
@@ -407,19 +417,66 @@ impl Surface for WinSurface {
         Self::raise(hwnd);
     }
 
-    fn pump(&mut self) -> Vec<(u64, bool)> {
+    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
+        if self.hotkey {
+            // SAFETY: removing our own thread's registration.
+            unsafe {
+                let _ = UnregisterHotKey(None, HOTKEY_ID);
+            }
+            self.hotkey = false;
+        }
+        let Some(combo) = combo else {
+            return false;
+        };
+        let Ok((vk, _)) = crate::windows::input::resolve(combo.key) else {
+            return false;
+        };
+        let m = combo.modifiers;
+        let mut mods = MOD_NOREPEAT;
+        for (on, flag) in [
+            (m.shift, MOD_SHIFT),
+            (m.ctrl, MOD_CONTROL),
+            (m.alt, MOD_ALT),
+            (m.meta, MOD_WIN),
+        ] {
+            if on {
+                mods |= flag;
+            }
+        }
+        // RegisterHotKey delivers WM_HOTKEY for this one combination only;
+        // it fails if another program already registered it.
+        // SAFETY: a thread-wide registration (no window), removed in close().
+        self.hotkey =
+            unsafe { RegisterHotKey(None, HOTKEY_ID, HOT_KEY_MODIFIERS(mods.0), u32::from(vk.0)) }
+                .is_ok();
+        self.hotkey
+    }
+
+    fn pump(&mut self) -> Vec<SurfaceEvent> {
         let mut msg = MSG::default();
+        let mut events = Vec::new();
         // SAFETY: the standard non-blocking message pump for this thread.
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_HOTKEY && msg.wParam.0 == HOTKEY_ID as usize {
+                    events.push(SurfaceEvent::Hotkey);
+                    continue;
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
-        ANSWERS.with(|a| std::mem::take(&mut *a.borrow_mut()))
+        events.extend(
+            ANSWERS
+                .with(|a| std::mem::take(&mut *a.borrow_mut()))
+                .into_iter()
+                .map(|(id, ok)| SurfaceEvent::Answer(id, ok)),
+        );
+        events
     }
 
     fn close(&mut self) {
+        self.set_hotkey(None);
         for p in PANELS.with(|p| std::mem::take(&mut *p.borrow_mut())) {
             // SAFETY: destroying our own panels.
             unsafe {

@@ -110,6 +110,10 @@ pub struct MockBackend {
     pub snapshots: usize,
     pub captures: usize,
     pub window_lists: usize,
+    /// What `user_idle` reports (None = unknown); `idle_script` values are
+    /// reported first, one per call.
+    pub idle: Option<std::time::Duration>,
+    pub idle_script: std::collections::VecDeque<std::time::Duration>,
     next_handle: ElementHandle,
 }
 
@@ -338,6 +342,10 @@ impl Backend for MockBackend {
             region.unwrap_or(Rect::new(0.0, 0.0, 1280.0, 800.0)),
             self.fill,
         ))
+    }
+
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        self.idle_script.pop_front().or(self.idle)
     }
 
     fn clipboard_get(&mut self) -> Result<String> {

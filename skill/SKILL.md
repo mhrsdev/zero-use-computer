@@ -98,5 +98,13 @@ running (then `get_app_state`).
 - The user watches you work through an on-screen indicator (your own cursor,
   a glow and a status label); their real mouse is never moved, and it is not
   in your screenshots, so ignore it.
+- **The user can stop you at any moment** (an emergency stop key). If a call
+  fails saying the user stopped the agent, stop: don't retry or work around
+  it; ask the user what to do.
+- If an action fails because the user is using the mouse or keyboard, they
+  are busy — wait a little or ask; don't hammer it.
+- Password fields, card numbers and codes are masked (`••••`) and blacked
+  out of screenshots on purpose. Don't try to read them another way; ask the
+  user if you need such a value.
 - Keep tasks narrow; when the tree is ambiguous, ask for a screenshot
   (`get_app_state` with `screenshot: true`, or the `screenshot` tool).

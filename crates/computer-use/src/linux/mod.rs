@@ -7,7 +7,7 @@
 
 mod atspi;
 mod clipboard;
-mod x11;
+pub(crate) mod x11;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -323,6 +323,10 @@ impl Backend for LinuxBackend {
         if let Some(x) = self.x11.as_mut() {
             x.restore_pointer = cfg.restore_pointer;
         }
+    }
+
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        self.x11.as_ref().and_then(|x| x.idle())
     }
 
     fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {

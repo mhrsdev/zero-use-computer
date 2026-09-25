@@ -4,6 +4,8 @@
 //! and diffs, and maps screenshot coordinates to the screen.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::backend::{Backend, Native};
@@ -103,6 +105,8 @@ struct AppState {
     /// Window ids at the last lookup (to notice a newly opened dialog).
     seen_windows: Vec<u64>,
     stamped: bool,
+    /// Screen areas of private data in the latest snapshot ([privacy]).
+    private: Vec<Rect>,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -137,6 +141,12 @@ pub struct Engine<B: Backend> {
     /// Start attempts, so a helper that keeps failing is left alone.
     overlay_starts: u32,
     overlay_retry_at: Option<Instant>,
+    /// Set by the user's stop key (through the overlay helper) or the host;
+    /// while set, every tool call is refused.
+    stop: Arc<AtomicBool>,
+    /// When the engine's own synthesized input last ended, so the system
+    /// idle time isn't mistaken for the user's input.
+    last_input: Option<Instant>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
@@ -200,6 +210,8 @@ impl<B: Backend> Engine<B> {
             overlay_launcher: None,
             overlay_starts: 0,
             overlay_retry_at: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            last_input: None,
             config_mtime,
             overrides: None,
             clock: Box::new(Instant::now),
@@ -277,7 +289,10 @@ impl<B: Backend> Engine<B> {
     /// it can't run, the engine simply works without it.
     fn overlay(&mut self) -> Option<&mut Overlay> {
         let cfg = &self.store.config.overlay;
-        if !cfg.enabled {
+        // The helper also listens for the stop key, so it runs when either
+        // is wanted (with the overlay off it draws nothing).
+        let hotkey = self.store.config.control.stop_hotkey.trim().to_string();
+        if !cfg.enabled && hotkey.is_empty() {
             self.overlay = None;
             return None;
         }
@@ -297,7 +312,7 @@ impl<B: Backend> Engine<B> {
                 return None;
             }
             self.overlay_starts += 1;
-            match Overlay::spawn(&launcher, cfg) {
+            match Overlay::spawn(&launcher, cfg, &hotkey, self.stop.clone()) {
                 Ok(o) => self.overlay = Some(o),
                 Err(e) => {
                     log::warn!("overlay unavailable: {e}");
@@ -316,13 +331,113 @@ impl<B: Backend> Engine<B> {
 
     fn overlay_reconfigure(&mut self) {
         let cfg = self.store.config.overlay.clone();
-        if !cfg.enabled {
+        let hotkey = self.store.config.control.stop_hotkey.trim().to_string();
+        if !cfg.enabled && hotkey.is_empty() {
             self.overlay = None;
         } else if let Some(o) = &self.overlay {
-            o.send(&OverlayCmd::Config {
-                config: Box::new(cfg),
-            });
+            o.configure(&cfg, &hotkey);
+        } else if !hotkey.is_empty() {
+            // Listen for the stop key from now on, not only once work starts.
+            self.overlay();
         }
+    }
+
+    /// Start listening for the user's stop key (and get the overlay ready)
+    /// before the first tool call. Hosts call this once at start-up.
+    pub fn arm(&mut self) {
+        self.overlay();
+    }
+
+    /// Shared stop flag: the stop key sets and clears it; a host may too
+    /// (e.g. its own Stop button). While set, every tool call is refused.
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+
+    /// Whether the user stopped the agent.
+    pub fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// Stop the agent (or let it continue), as the stop key does.
+    pub fn set_stopped(&mut self, on: bool) {
+        self.stop.store(on, Ordering::SeqCst);
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Stopped { on });
+        }
+    }
+
+    fn stopped_error(&self) -> Error {
+        let key = self.store.config.control.stop_hotkey.trim();
+        Error::Stopped(if key.is_empty() {
+            "the host's stop control".into()
+        } else {
+            crate::overlay::helper::pretty_key(key)
+        })
+    }
+
+    /// Before an action: wait while the user is using the mouse or keyboard
+    /// (`control.pause_on_user_input`). Only the system idle time is read.
+    fn wait_for_user(&mut self) -> Result<()> {
+        /// Allowance for the delivery of the engine's own input.
+        const OWN_INPUT_MARGIN: Duration = Duration::from_millis(250);
+        let ctl = self.store.config.control.clone();
+        if !ctl.pause_on_user_input {
+            return Ok(());
+        }
+        let resume = Duration::from_millis(ctl.resume_after_idle_ms.max(1));
+        let limit = Duration::from_secs(ctl.max_pause_secs);
+        let start = (self.clock)();
+        let mut paused = false;
+        let result = loop {
+            if self.is_stopped() {
+                break Err(self.stopped_error());
+            }
+            let Some(idle) = self.backend.user_idle() else {
+                break Ok(());
+            };
+            let now = (self.clock)();
+            // Input after the engine's own last input is the user's.
+            let own = self.last_input.map(|t| now.saturating_duration_since(t));
+            let user_active = idle < resume && own.is_none_or(|o| idle + OWN_INPUT_MARGIN < o);
+            if !user_active {
+                break Ok(());
+            }
+            if !paused {
+                paused = true;
+                log::info!("the user is using the computer; waiting");
+                self.overlay_send(OverlayCmd::Paused { on: true });
+            }
+            let waited = now.saturating_duration_since(start);
+            if waited >= limit {
+                break Err(Error::UserBusy(waited.as_secs()));
+            }
+            (self.sleep)(
+                (resume - idle).clamp(Duration::from_millis(50), Duration::from_millis(250)),
+            );
+        };
+        if paused {
+            self.overlay_send(OverlayCmd::Paused { on: false });
+        }
+        result
+    }
+
+    /// Black out private areas ([privacy]) of a capture: those found in the
+    /// latest trees of every app (other windows can overlap a capture).
+    /// Returns how many areas were covered.
+    fn redact_capture(&self, cap: &mut Capture) -> usize {
+        if !crate::privacy::active(&self.store.config.privacy) {
+            return 0;
+        }
+        let rects: Vec<Rect> = self
+            .states
+            .values()
+            .flat_map(|s| s.private.iter().copied())
+            .collect();
+        if rects.is_empty() {
+            return 0;
+        }
+        imaging::redact(cap, &rects, self.store.config.privacy.style)
     }
 
     /// Point the agent cursor at an element (its centre), optionally clicking.
@@ -351,6 +466,9 @@ impl<B: Backend> Engine<B> {
     /// Whether to ask the user on the screen rather than through `approver`.
     fn ask_on_screen(&self, approver: &dyn Approver) -> bool {
         use crate::config::ScreenConfirm;
+        if !self.store.config.overlay.enabled {
+            return false;
+        }
         match self.store.config.overlay.confirm_on_screen {
             ScreenConfirm::Never => false,
             ScreenConfirm::Always => true,
@@ -361,6 +479,9 @@ impl<B: Backend> Engine<B> {
     /// Show that `action` waits for the user, and ask on screen when that is
     /// the way to ask. `Some(answer)` if the screen answered.
     fn overlay_approval(&mut self, action: &str, approver: &dyn Approver) -> Option<bool> {
+        if !self.store.config.overlay.enabled {
+            return None;
+        }
         let ask = self.ask_on_screen(approver);
         let timeout = Duration::from_secs(self.store.config.overlay.confirm_timeout_secs.max(1));
         let o = self.overlay()?;
@@ -650,8 +771,14 @@ impl<B: Backend> Engine<B> {
             max_nodes: tcfg.max_walk,
             max_depth: tcfg.max_depth,
         };
-        let raw = self.backend.snapshot(app, window, &opts)?;
+        let mut raw = self.backend.snapshot(app, window, &opts)?;
         let snap_at = (self.clock)();
+        // Private data never reaches the model (or the screen memory).
+        let private = if crate::privacy::active(&self.store.config.privacy) {
+            crate::privacy::scrub(&mut raw, &self.store.config.privacy)
+        } else {
+            Vec::new()
+        };
         let pruned = tree::prune(&raw, window.bounds, &self.store.config.tree);
         drop(raw);
         let mut nodes = pruned.nodes;
@@ -725,6 +852,7 @@ impl<B: Backend> Engine<B> {
         st.snap_at = Some(snap_at);
         st.snap_epoch = self.epoch;
         st.stamped = true;
+        st.private = private;
         self.states.insert(app.pid, st);
         Ok(())
     }
@@ -985,6 +1113,13 @@ impl<B: Backend> Engine<B> {
 
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
+        if self.is_stopped() {
+            // Show it again so the user sees why nothing happens.
+            if self.depth == 0 && self.overlay.is_some() {
+                self.overlay_send(OverlayCmd::Stopped { on: true });
+            }
+            return Err(self.stopped_error());
+        }
         self.depth += 1;
         if self.depth == 1 {
             self.overlay_send(OverlayCmd::Begin);
@@ -1015,9 +1150,12 @@ impl<B: Backend> Engine<B> {
         }
         // For mutating actions, remember which app to re-inspect afterwards.
         let acting = mutating_app(&call);
-        if acting.is_some() || matches!(call, ToolCall::LaunchApp(_)) {
+        let mutating = acting.is_some() || matches!(call, ToolCall::LaunchApp(_));
+        if mutating {
             // Anything read before this action is stale now.
             self.epoch += 1;
+            // Don't act while the user is using the mouse or keyboard.
+            self.wait_for_user()?;
         }
         let report_app = acting.filter(|_| self.store.config.tree.report_changes);
         let out = match call {
@@ -1038,7 +1176,11 @@ impl<B: Backend> Engine<B> {
             ToolCall::Batch(a) => self.batch(a, approver),
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
-        }?;
+        };
+        if mutating {
+            self.last_input = Some((self.clock)());
+        }
+        let out = out?;
         match report_app {
             Some(app) => Ok(self.append_changes(&app, out)),
             None => Ok(out),
@@ -1175,6 +1317,9 @@ impl<B: Backend> Engine<B> {
                     app.name, app.id, app.pid
                 )));
             }
+            if self.is_stopped() {
+                return Err(self.stopped_error());
+            }
             if (self.clock)() >= deadline {
                 return Ok(ToolOutput::text(format!(
                     "Requested launch of `{}`. It hasn't shown a window yet; call list_apps or get_app_state shortly.",
@@ -1247,7 +1392,13 @@ impl<B: Backend> Engine<B> {
         let mut image = None;
         if want {
             match self.capture_clean(|b| b.capture(&app, &window)) {
-                Ok(cap) => {
+                Ok(mut cap) => {
+                    let redacted = self.redact_capture(&mut cap);
+                    if redacted > 0 {
+                        header.push_str(&format!(
+                            "\n[{redacted} private area(s) blacked out of the screenshot]"
+                        ));
+                    }
                     let sig = fingerprint.then(|| PixelSig::of(&cap, grid));
                     let unchanged = dedupe
                         && known_coord.is_some_and(|c| c.bounds == cap.bounds)
@@ -1634,6 +1785,9 @@ impl<B: Backend> Engine<B> {
                     )));
                 }
             }
+            if self.is_stopped() {
+                return Err(self.stopped_error());
+            }
             if (self.clock)() >= deadline {
                 return Err(Error::ActionFailed(format!(
                     "timed out after {}ms waiting for an element matching {}",
@@ -1689,6 +1843,10 @@ impl<B: Backend> Engine<B> {
                     .ok_or_else(|| Error::InvalidArgs("window mode needs `app`".into()))?;
                 let app = self.authorize(query, "screenshot", approver)?;
                 let window = self.resolve_window(&app, args.window.as_deref(), false)?;
+                if crate::privacy::active(&self.store.config.privacy) {
+                    // A current tree, to know where private data is.
+                    self.observe(&app, &window, false)?;
+                }
                 let cap = self.capture_clean(|b| b.capture(&app, &window))?;
                 let marks = if args.annotate {
                     self.observe(&app, &window, false)?;
@@ -1711,12 +1869,21 @@ impl<B: Backend> Engine<B> {
         };
 
         let mut capture = capture;
+        let redacted = self.redact_capture(&mut capture);
         if let Some(marks) = marks {
             imaging::annotate(&mut capture, &marks);
         }
         let (img, _map) = imaging::encode(capture, &self.store.config.screenshot)?;
+        let note = if redacted > 0 {
+            format!(" [{redacted} private area(s) blacked out]")
+        } else {
+            String::new()
+        };
         Ok(ToolOutput {
-            text: format!("Screenshot of {label}: {}x{} px.", img.width, img.height),
+            text: format!(
+                "Screenshot of {label}: {}x{} px.{note}",
+                img.width, img.height
+            ),
             image: Some(img),
             is_error: false,
         })
@@ -1771,7 +1938,7 @@ impl<B: Backend> Engine<B> {
                 Err(e) => {
                     report.push_str(&format!("{}. {} — ERROR: {e}\n", i + 1, step.tool));
                     any_error = true;
-                    if !args.continue_on_error {
+                    if !args.continue_on_error || matches!(e, Error::Stopped(_)) {
                         break;
                     }
                 }
@@ -3100,5 +3267,250 @@ mod tests {
         let mut e = engine();
         state_of(&mut e, serde_json::json!({}));
         assert!(e.overlay.is_none());
+    }
+
+    // -- the user's controls ------------------------------------------------
+
+    /// An engine on a fake clock that sleeping advances.
+    fn timed_engine(
+        backend: MockBackend,
+        cfg: Config,
+    ) -> (Engine<MockBackend>, Arc<std::sync::Mutex<Instant>>) {
+        let now = Arc::new(std::sync::Mutex::new(Instant::now()));
+        let (c, s) = (now.clone(), now.clone());
+        let e = Engine::new(backend, ConfigStore::in_memory(cfg))
+            .with_time(move || *c.lock().unwrap(), move |d| *s.lock().unwrap() += d);
+        (e, now)
+    }
+
+    #[test]
+    fn stop_refuses_every_call_until_the_user_lets_it_continue() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let stop = e.stop_handle();
+        stop.store(true, Ordering::SeqCst);
+        for (tool, args) in [
+            ("list_apps", serde_json::json!({})),
+            ("get_app_state", serde_json::json!({"app": "TextEdit"})),
+            (
+                "click",
+                serde_json::json!({"app": "TextEdit", "element_index": 1}),
+            ),
+        ] {
+            let out = e.call_tool(tool, args, &mut allow());
+            assert!(out.is_error, "{tool}");
+            assert!(out.text.contains("Ctrl+Alt+Esc"), "{}", out.text);
+        }
+        // A batch stops at once, even with continue_on_error.
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "continue_on_error": true,
+                "steps": [{"tool": "list_apps"}, {"tool": "list_apps"}]}),
+            &mut allow(),
+        );
+        assert!(out.is_error);
+        e.set_stopped(false);
+        assert!(!e.is_stopped());
+        assert!(
+            !e.call_tool("list_apps", serde_json::json!({}), &mut allow())
+                .is_error
+        );
+    }
+
+    #[test]
+    fn actions_wait_while_the_user_uses_the_computer() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        // The user is typing (input 0.1 s and 0.4 s ago), then stops.
+        backend.idle_script = [100, 400].map(Duration::from_millis).into();
+        backend.idle = Some(Duration::from_secs(5));
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let (mut e, clock) = timed_engine(backend, cfg);
+        state_of(&mut e, serde_json::json!({}));
+        let t0 = *clock.lock().unwrap();
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "Return"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let waited = clock.lock().unwrap().saturating_duration_since(t0);
+        assert!(waited >= Duration::from_millis(100), "{waited:?}");
+        assert!(
+            e.backend()
+                .events
+                .contains(&Event::Key(4242, "Return".into()))
+        );
+
+        // Reading is never held up.
+        e.backend_mut().idle = Some(Duration::ZERO);
+        assert!(
+            !e.call_tool("list_apps", serde_json::json!({}), &mut allow())
+                .is_error
+        );
+    }
+
+    #[test]
+    fn a_busy_user_makes_the_action_give_up_and_say_why() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        backend.idle = Some(Duration::from_millis(100));
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        cfg.control.max_pause_secs = 3;
+        let (mut e, _) = timed_engine(backend, cfg);
+        state_of(&mut e, serde_json::json!({}));
+        let before = e.backend().events.len();
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "Return"}),
+            &mut allow(),
+        );
+        assert!(
+            out.is_error && out.text.contains("using the mouse or keyboard"),
+            "{}",
+            out.text
+        );
+        assert_eq!(e.backend().events.len(), before, "nothing was done");
+
+        // Switched off: no waiting at all.
+        let mut cfg = e.store().config.clone();
+        cfg.control.pause_on_user_input = false;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "Return"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn own_input_is_not_taken_for_the_user() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let (mut e, clock) = timed_engine(backend, cfg);
+        state_of(&mut e, serde_json::json!({}));
+        let press = |e: &mut Engine<MockBackend>| {
+            e.call_tool(
+                "press_key",
+                serde_json::json!({"app": "TextEdit", "key": "Tab"}),
+                &mut allow(),
+            )
+        };
+        assert!(!press(&mut e).is_error);
+        // 1 s later the system saw input 1 s ago: the engine's own.
+        *clock.lock().unwrap() += Duration::from_secs(1);
+        e.backend_mut().idle = Some(Duration::from_secs(1));
+        let t = *clock.lock().unwrap();
+        assert!(!press(&mut e).is_error);
+        let took = clock.lock().unwrap().saturating_duration_since(t);
+        // Only the action's own settle/key delays, no pause.
+        assert!(
+            took < Duration::from_millis(200),
+            "waited {took:?} for its own input"
+        );
+    }
+
+    fn login_app(pid: u32) -> MockApp {
+        let mut app = MockBackend::text_editor(pid);
+        let mut pw = MockElement::new(
+            20,
+            "secure text field",
+            "Password",
+            Rect::new(100.0, 100.0, 200.0, 30.0),
+        )
+        .child_of(1)
+        .editable();
+        pw.value = Some("hunter2".into());
+        let mut card = MockElement::new(
+            21,
+            "text field",
+            "Payment",
+            Rect::new(100.0, 200.0, 200.0, 30.0),
+        )
+        .child_of(1)
+        .editable();
+        card.value = Some("4111 1111 1111 1111".into());
+        app.elements.extend([pw, card]);
+        app
+    }
+
+    #[test]
+    fn private_data_never_reaches_the_model() {
+        let mut backend = MockBackend::new();
+        backend.add_app(login_app(4242));
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+        assert!(!out.text.contains("hunter2"), "{}", out.text);
+        assert!(!out.text.contains("4111 1111 1111 1111"), "{}", out.text);
+        assert!(out.text.contains("•••• •••• •••• 1111"), "{}", out.text);
+        assert!(
+            out.text.contains("2 private area(s) blacked out"),
+            "{}",
+            out.text
+        );
+        // The password field's pixels are grey in the image.
+        let img = out.image.unwrap();
+        let rgb = image::load_from_memory(&img.data).unwrap().to_rgb8();
+        let at = |x: u32, y: u32| rgb.get_pixel(x, y).0;
+        assert_eq!(at(150, 110), [128, 128, 128]);
+        assert_eq!(at(700, 500), [200, 200, 200]);
+
+        // The screenshot tool too.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit"}),
+            &mut allow(),
+        );
+        assert!(out.text.contains("blacked out"), "{}", out.text);
+
+        // Settings can switch it off.
+        let mut cfg = e.store().config.clone();
+        cfg.privacy.redact_passwords = false;
+        cfg.privacy.redact_card_numbers = false;
+        cfg.privacy.redact_labels.clear();
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+        assert!(out.text.contains("4111 1111 1111 1111"), "{}", out.text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_stop_key_in_the_helper_stops_the_engine() {
+        let dir = std::env::temp_dir().join(format!("cu-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stop.log");
+        // A stand-in helper whose user presses the stop key at once.
+        let script = format!(
+            r#"echo '{{"t":"ready","excluded":true,"available":true}}'; echo '{{"t":"stop","on":true}}'; cat > '{}'"#,
+            log.display()
+        );
+        let mut e = engine().with_overlay(Launcher {
+            program: "sh".into(),
+            args: vec!["-c".into(), script],
+        });
+        e.arm();
+        for _ in 0..100 {
+            if e.is_stopped() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(e.is_stopped());
+        let out = e.call_tool("list_apps", serde_json::json!({}), &mut allow());
+        assert!(
+            out.is_error && out.text.contains("stop key"),
+            "{}",
+            out.text
+        );
+        drop(e);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

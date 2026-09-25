@@ -401,3 +401,104 @@ fn overlay_is_left_out_of_screenshots_and_the_mouse_stays_put() {
     assert_eq!(pointer(&conn), before, "the user's mouse was moved");
     eprintln!("overlay live test passed");
 }
+
+/// Press a key combination through XTest, as a user would on the keyboard.
+fn press_keys(keysyms: &[u32]) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    use x11rb::protocol::xtest::ConnectionExt as _;
+    let (conn, screen) = x11rb::connect(None).expect("X");
+    let root = conn.setup().roots[screen].root;
+    let (min, max) = (conn.setup().min_keycode, conn.setup().max_keycode);
+    let map = conn
+        .get_keyboard_mapping(min, max - min + 1)
+        .unwrap()
+        .reply()
+        .unwrap();
+    let per = usize::from(map.keysyms_per_keycode);
+    let code = |sym: u32| {
+        min + map
+            .keysyms
+            .chunks(per)
+            .position(|c| c.contains(&sym))
+            .expect("keysym on keyboard") as u8
+    };
+    let codes: Vec<u8> = keysyms.iter().map(|s| code(*s)).collect();
+    // Like a person: one key at a time; and the server must have handled
+    // the events before this connection closes (or it drops them).
+    let events = codes
+        .iter()
+        .map(|c| (2u8, *c))
+        .chain(codes.iter().rev().map(|c| (3u8, *c)));
+    for (kind, c) in events {
+        conn.xtest_fake_input(kind, c, 0, root, 0, 0, 0).unwrap();
+        conn.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    conn.get_input_focus().unwrap().reply().unwrap();
+}
+
+#[test]
+fn stop_key_and_idle_time_over_x11() {
+    if !live() {
+        return;
+    }
+    let Some(bin) = std::env::var_os("COMPUTER_USE_OVERLAY_BIN") else {
+        eprintln!("skipping: COMPUTER_USE_OVERLAY_BIN not set");
+        return;
+    };
+    let mut e = engine().with_overlay(computer_use::overlay::Launcher::helper(bin));
+    // The helper starts listening for Ctrl+Alt+Esc (a debug build takes a
+    // moment to start and load its fonts).
+    e.arm();
+    std::thread::sleep(Duration::from_millis(2500));
+    const CTRL: u32 = 0xffe3;
+    const ALT: u32 = 0xffe9;
+    const ESC: u32 = 0xff1b;
+    let wait_until = |e: &Engine<LinuxBackend>, stopped: bool| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while e.is_stopped() != stopped && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        e.is_stopped() == stopped
+    };
+    press_keys(&[CTRL, ALT, ESC]);
+    assert!(wait_until(&e, true), "the stop key did not stop the agent");
+    let out = e.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+    assert!(
+        out.is_error && out.text.contains("Ctrl+Alt+Esc"),
+        "{}",
+        out.text
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    press_keys(&[CTRL, ALT, ESC]);
+    assert!(wait_until(&e, false), "pressing it again did not resume");
+    let out = e.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+    assert!(!out.is_error, "{}", out.text);
+
+    // The key presses count as input: the idle time is short now.
+    let idle = e
+        .backend_mut()
+        .user_idle()
+        .expect("MIT-SCREEN-SAVER idle time");
+    assert!(idle < Duration::from_secs(5), "{idle:?}");
+
+    // The "user" just typed: an action waits until they have been idle for
+    // control.resume_after_idle_ms (1.5 s), then runs.
+    let app = wait_for_app(&mut e);
+    state_text(&mut e, &app);
+    press_keys(&[0xffe1]); // Shift
+    let t = Instant::now();
+    let out = e.call_tool(
+        "press_key",
+        serde_json::json!({"app": app, "key": "Tab"}),
+        &mut AllowApprover,
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let waited = t.elapsed();
+    assert!(
+        waited >= Duration::from_millis(1200),
+        "acted while the user was typing ({waited:?})"
+    );
+    eprintln!("stop key live test passed (idle {idle:?}, paused {waited:?})");
+}

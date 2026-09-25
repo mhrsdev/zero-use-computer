@@ -168,6 +168,8 @@ label_approval = "Waiting for your approval: {action}"
 label_danger = "Sensitive action: {action}"
 label_error = "Zero hit an error"
 label_done = "Zero is done"
+label_paused = "Paused while you use the computer"
+label_stopped = "Zero stopped. Press {hotkey} to let it continue"
 label_allow = "Allow"        # buttons of the on-screen confirmation
 label_deny = "Deny"
 # Colours per state (#RRGGBB or #RRGGBBAA).
@@ -177,6 +179,8 @@ color_approval = "#FFE600"   # yellow: waiting for your approval
 color_danger = "#000000"     # black: a sensitive action (send, delete, pay…)
 color_error = "#E53935"      # red: something failed
 color_done = "#2E7D32"       # green: finished, then everything disappears
+color_paused = "#78909C"     # grey: waiting while you use the mouse/keyboard
+color_stopped = "#FF6D00"    # orange: stopped with the emergency stop key
 cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the state
 cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
 done_after_ms = 20000        # no new action for this long: done, then hidden
@@ -191,6 +195,34 @@ confirm_timeout_secs = 120   # an unanswered on-screen confirmation is denied
 capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
 font = ""                    # label font file ("" = a system font)
 command = ""                 # helper program for library embedders
+
+# Your controls over a running agent.
+[control]
+# Emergency stop: this key combination stops the agent at once, from any app
+# (every tool call is refused until you press it again). "" = no stop key.
+stop_hotkey = "ctrl+alt+escape"
+# Before each action, wait while you are using the mouse or keyboard and
+# continue once you stop. Only the system idle time is read — never what you
+# type or where you click.
+pause_on_user_input = true
+resume_after_idle_ms = 1500  # how long you must be idle before it continues
+max_pause_secs = 120         # then the action fails and the agent is told why
+
+# Private data is masked in element text and blacked out of screenshots
+# before anything is sent to the model.
+[privacy]
+redact_passwords = true      # password fields
+redact_card_numbers = true   # card numbers (only the last 4 digits stay in text)
+# Fields whose label contains one of these have their contents masked too.
+redact_labels = [
+    "cvv",
+    "cvc",
+    "security code",
+    "card number",
+    "one-time code",
+    "verification code",
+]
+style = "fill"               # "fill" (solid box) or "pixelate"
 
 [audit]
 enabled = false             # append a JSONL line (metadata only) per call

@@ -74,7 +74,7 @@ dbus-run-session -- bash -euc '
   sleep 2
 
   echo "== running test =="
-  COMPUTER_USE_LIVE=1 "'"$test_bin"'" --nocapture --test-threads=1
+  COMPUTER_USE_LIVE=1 "'"$test_bin"'" --nocapture --test-threads=1 ${CU_TEST_FILTER:-}
   status=$?
   kill "$app_pid" 2>/dev/null || true
   exit $status

@@ -398,6 +398,10 @@ pub struct OverlayConfig {
     pub label_danger: String,
     pub label_error: String,
     pub label_done: String,
+    /// While the agent waits for the user to stop using the mouse/keyboard.
+    pub label_paused: String,
+    /// After the emergency stop key; `{hotkey}` is replaced by the key.
+    pub label_stopped: String,
     /// Buttons of the on-screen confirmation.
     pub label_allow: String,
     pub label_deny: String,
@@ -408,6 +412,8 @@ pub struct OverlayConfig {
     pub color_danger: String,
     pub color_error: String,
     pub color_done: String,
+    pub color_paused: String,
+    pub color_stopped: String,
     /// The agent cursor's own colour (its ring follows the state).
     pub cursor_color: String,
     /// Name tag shown beside the agent cursor ("" = none).
@@ -458,6 +464,8 @@ impl Default for OverlayConfig {
             label_danger: "Sensitive action: {action}".into(),
             label_error: "Zero hit an error".into(),
             label_done: "Zero is done".into(),
+            label_paused: "Paused while you use the computer".into(),
+            label_stopped: "Zero stopped. Press {hotkey} to let it continue".into(),
             label_allow: "Allow".into(),
             label_deny: "Deny".into(),
             color_thinking: "#D4A017".into(),
@@ -466,6 +474,8 @@ impl Default for OverlayConfig {
             color_danger: "#000000".into(),
             color_error: "#E53935".into(),
             color_done: "#2E7D32".into(),
+            color_paused: "#78909C".into(),
+            color_stopped: "#FF6D00".into(),
             cursor_color: "#9C27B0".into(),
             cursor_tag: "Zero".into(),
             done_after_ms: 20_000,
@@ -480,6 +490,84 @@ impl Default for OverlayConfig {
             capture_hide_ms: 40,
             font: String::new(),
             command: String::new(),
+        }
+    }
+}
+
+/// The user's controls over a running agent: an emergency stop key and
+/// pausing while the user works.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlConfig {
+    /// Global key combination that stops the agent at once (every tool call
+    /// is refused); pressing it again lets it continue. "" = no stop key.
+    pub stop_hotkey: String,
+    /// Before each action, wait while the user is using the mouse or
+    /// keyboard, and continue once they have stopped. Only *whether* there
+    /// was input is checked (the system's idle time), never what it was.
+    pub pause_on_user_input: bool,
+    /// How long the user must leave the mouse and keyboard alone before the
+    /// agent continues (ms).
+    pub resume_after_idle_ms: u64,
+    /// Give up (the action fails with a message to the agent) after waiting
+    /// this long for the user (seconds).
+    pub max_pause_secs: u64,
+}
+
+impl Default for ControlConfig {
+    fn default() -> Self {
+        Self {
+            stop_hotkey: "ctrl+alt+escape".into(),
+            pause_on_user_input: true,
+            resume_after_idle_ms: 1500,
+            max_pause_secs: 120,
+        }
+    }
+}
+
+/// How redacted areas look in screenshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RedactStyle {
+    /// A solid grey box. Default; nothing of the original survives.
+    #[default]
+    Fill,
+    /// Coarse pixelation (keeps the layout recognisable).
+    Pixelate,
+}
+
+/// Private data kept away from the model: masked in element text and
+/// blacked out of screenshots before anything is sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrivacyConfig {
+    /// Password fields.
+    pub redact_passwords: bool,
+    /// Payment card numbers (13–19 digits passing the Luhn check); element
+    /// text keeps only the last four digits.
+    pub redact_card_numbers: bool,
+    /// Fields whose label contains one of these (case-insensitive) have
+    /// their contents masked too.
+    pub redact_labels: Vec<String>,
+    pub style: RedactStyle,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        Self {
+            redact_passwords: true,
+            redact_card_numbers: true,
+            redact_labels: [
+                "cvv",
+                "cvc",
+                "security code",
+                "card number",
+                "one-time code",
+                "verification code",
+            ]
+            .map(String::from)
+            .to_vec(),
+            style: RedactStyle::Fill,
         }
     }
 }
@@ -650,6 +738,8 @@ pub struct Config {
     pub timing: TimingConfig,
     pub cache: CacheConfig,
     pub overlay: OverlayConfig,
+    pub control: ControlConfig,
+    pub privacy: PrivacyConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -683,6 +773,8 @@ impl Default for Config {
             timing: TimingConfig::default(),
             cache: CacheConfig::default(),
             overlay: OverlayConfig::default(),
+            control: ControlConfig::default(),
+            privacy: PrivacyConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -716,6 +808,8 @@ impl Config {
             ("overlay.color_danger", &o.color_danger),
             ("overlay.color_error", &o.color_error),
             ("overlay.color_done", &o.color_done),
+            ("overlay.color_paused", &o.color_paused),
+            ("overlay.color_stopped", &o.color_stopped),
             ("overlay.cursor_color", &o.cursor_color),
         ] {
             if crate::overlay::draw::parse_color(value).is_none() {
@@ -723,6 +817,12 @@ impl Config {
                     "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
                 ));
             }
+        }
+        let hotkey = self.control.stop_hotkey.trim();
+        if !hotkey.is_empty()
+            && let Err(e) = crate::keys::parse_combo(hotkey)
+        {
+            return Err(format!("control.stop_hotkey: {e}"));
         }
         if !(4..=256).contains(&c.pixel_grid) {
             return Err(format!(

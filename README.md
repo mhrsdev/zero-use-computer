@@ -151,6 +151,8 @@ their mouse:
 | sensitive | black | a guarded action runs (send, delete, pay, confirm…) or the agent acts in a sensitive app the user opened up |
 | error | red | the last action failed |
 | done | green | the task is finished — then everything disappears |
+| paused | grey | waiting while you use the mouse or keyboard |
+| stopped | orange | you pressed the emergency stop key |
 
 - **Approvals on screen.** A sensitive action waits for the user. When the
   agent's client can ask (MCP elicitation) it asks there; when it can't, it
@@ -190,6 +192,41 @@ task is complete) can say so with a JSON-RPC notification:
 (`thinking`, `working`, `done`, `error`, `hidden`; the library has
 `Engine::set_status`). Every text, colour, size and timing is in `[overlay]`;
 `computer-use-mcp overlay --demo` shows each state once on your screen.
+
+## You stay in control
+
+- **Emergency stop key** — `Ctrl+Alt+Esc` by default (`control.stop_hotkey`),
+  from any app. The agent stops at once: every tool call is refused with a
+  message telling the model that the user stopped it and to ask how to
+  proceed; a batch, a wait or an on-screen question in progress ends too.
+  The label turns orange ("Zero stopped. Press Ctrl+Alt+Esc to let it
+  continue"). Press the key again to let it continue. The overlay helper
+  registers exactly that one combination with the OS (`RegisterHotKey` on
+  Windows, a passive key grab on X11, `RegisterEventHotKey` on macOS), so it
+  receives that key and nothing else. If another program already owns the
+  combination, a warning is logged: pick another one. Hosts can stop the agent
+  too (`Engine::stop_handle`, `set_stopped`).
+- **Pause while you work** (`control.pause_on_user_input`, on by default).
+  Before each action, the engine checks how long ago anyone last used the
+  mouse or keyboard (the system idle time: `GetLastInputInfo`,
+  `CGEventSourceSecondsSinceLastEventType`, the X11 screen-saver idle
+  counter). While you are active it waits (grey "Paused while you use the
+  computer"). It continues once you have been idle for `resume_after_idle_ms`.
+  After `max_pause_secs` it gives up and tells the model why. Only the time of
+  the last input is read — never which key or where — and the engine's own
+  synthesized input is not taken for yours. Reading (trees, screenshots) is
+  never held up.
+- **Private data is kept from the model** (`[privacy]`). These are masked in
+  element text and blacked out of every screenshot before it is sent:
+  - password fields (never even their length);
+  - payment card numbers (13–19 digits passing the Luhn check; text keeps
+    the last four digits);
+  - fields whose label contains `cvv`, `security code`, `one-time code`…
+    (`redact_labels`).
+
+  Tool results say how many areas were hidden. `style = "fill"` (a solid box,
+  default) or `"pixelate"`; each rule can be switched off. Full-screen
+  captures use the private areas of the app windows the agent has read.
 
 ## Architecture
 
@@ -444,7 +481,9 @@ The first use of any other app is gated by approval. On top of that, the
 **action guard** confirms consequential presses (Send / Delete / Pay …) at the
 engine level — not just by trusting the model — and an optional **audit log**
 records every call. The model is also instructed (see the skill) to pause before
-such actions.
+such actions. The user can stop the agent at any moment with the stop key; it
+waits while they use the computer; and password fields and card numbers are
+never sent to the model (see "You stay in control").
 
 ## Development
 

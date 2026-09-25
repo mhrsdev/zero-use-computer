@@ -324,6 +324,22 @@ impl X11 {
             .next()
     }
 
+    /// Time since the last mouse or keyboard input on this display (the
+    /// MIT-SCREEN-SAVER idle counter; synthesized input counts too). Only
+    /// the time is read, never the input itself.
+    pub fn idle(&self) -> Option<std::time::Duration> {
+        use x11rb::protocol::screensaver::ConnectionExt as _;
+        let info = self
+            .conn
+            .screensaver_query_info(self.root)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some(std::time::Duration::from_millis(u64::from(
+            info.ms_since_user_input,
+        )))
+    }
+
     /// The full screen rectangle (the root window's size).
     pub fn root_rect(&self) -> Rect {
         Rect::new(0.0, 0.0, f64::from(self.root_w), f64::from(self.root_h))
@@ -385,7 +401,7 @@ impl X11 {
     }
 }
 
-fn keysym_for(key: Key) -> Option<u32> {
+pub(crate) fn keysym_for(key: Key) -> Option<u32> {
     Some(match key {
         Key::Char(c) => {
             let cp = c as u32;

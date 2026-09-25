@@ -5,6 +5,8 @@
 //! window server removes the windows if the helper process dies.
 
 use std::collections::HashMap;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
@@ -17,8 +19,58 @@ use objc2_app_kit::{
 use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 use tiny_skia::Pixmap;
 
-use super::helper::{Ask, Layer, Surface};
+use super::helper::{Ask, Layer, Surface, SurfaceEvent};
+use crate::keys::KeyCombo;
 use crate::types::Rect;
+
+// Carbon's hot key API: the system reports this one key combination to us,
+// and nothing else (no Accessibility or Input Monitoring permission needed).
+#[repr(C)]
+struct EventTypeSpec {
+    event_class: u32,
+    event_kind: u32,
+}
+
+#[repr(C)]
+struct EventHotKeyID {
+    signature: u32,
+    id: u32,
+}
+
+type EventHandler = extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn GetApplicationEventTarget() -> *mut c_void;
+    fn InstallEventHandler(
+        target: *mut c_void,
+        handler: EventHandler,
+        num_types: u32,
+        list: *const EventTypeSpec,
+        user_data: *mut c_void,
+        out_ref: *mut *mut c_void,
+    ) -> i32;
+    fn RegisterEventHotKey(
+        key_code: u32,
+        modifiers: u32,
+        id: EventHotKeyID,
+        target: *mut c_void,
+        options: u32,
+        out_ref: *mut *mut c_void,
+    ) -> i32;
+    fn UnregisterEventHotKey(hot_key: *mut c_void) -> i32;
+}
+
+const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
+const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
+
+/// Set by the hot key handler, read by `pump`.
+static HOTKEY_HIT: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_hotkey(_next: *mut c_void, _event: *mut c_void, _data: *mut c_void) -> i32 {
+    HOTKEY_HIT.store(true, Ordering::SeqCst);
+    0 // noErr
+}
 
 struct Win {
     window: Retained<NSWindow>,
@@ -42,6 +94,9 @@ pub struct MacSurface {
     /// Current fade level, applied to every window.
     opacity: f32,
     answers: Vec<(u64, bool)>,
+    /// The registered stop key, and whether the handler is installed.
+    hotkey: Option<*mut c_void>,
+    handler: bool,
 }
 
 impl MacSurface {
@@ -73,6 +128,8 @@ impl MacSurface {
             hidden: false,
             opacity: 1.0,
             answers: Vec::new(),
+            hotkey: None,
+            handler: false,
         })
     }
 
@@ -224,7 +281,58 @@ impl Surface for MacSurface {
         self.answers.push((id, answer));
     }
 
-    fn pump(&mut self) -> Vec<(u64, bool)> {
+    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
+        if let Some(r) = self.hotkey.take() {
+            // SAFETY: unregistering the hot key we registered.
+            unsafe { UnregisterEventHotKey(r) };
+        }
+        let Some(combo) = combo else {
+            return false;
+        };
+        let Some((code, _)) = crate::macos::cg::keycode(combo.key) else {
+            return false;
+        };
+        // SAFETY: Carbon calls on the main thread with valid arguments; the
+        // handler is a plain function that only sets a flag.
+        unsafe {
+            let target = GetApplicationEventTarget();
+            if !self.handler {
+                let spec = EventTypeSpec {
+                    event_class: K_EVENT_CLASS_KEYBOARD,
+                    event_kind: K_EVENT_HOT_KEY_PRESSED,
+                };
+                let mut r = std::ptr::null_mut();
+                self.handler =
+                    InstallEventHandler(target, on_hotkey, 1, &spec, std::ptr::null_mut(), &mut r)
+                        == 0;
+            }
+            let m = combo.modifiers;
+            let mut mods = 0u32;
+            for (on, bit) in [
+                (m.meta, 0x0100u32), // cmdKey
+                (m.shift, 0x0200),   // shiftKey
+                (m.alt, 0x0800),     // optionKey
+                (m.ctrl, 0x1000),    // controlKey
+            ] {
+                if on {
+                    mods |= bit;
+                }
+            }
+            let id = EventHotKeyID {
+                signature: u32::from_be_bytes(*b"ZSTP"),
+                id: 1,
+            };
+            let mut r = std::ptr::null_mut();
+            if self.handler
+                && RegisterEventHotKey(u32::from(code), mods, id, target, 0, &mut r) == 0
+            {
+                self.hotkey = Some(r);
+            }
+        }
+        self.hotkey.is_some()
+    }
+
+    fn pump(&mut self) -> Vec<SurfaceEvent> {
         let past = NSDate::distantPast();
         // SAFETY: reading a constant Foundation string.
         let mode = unsafe { NSDefaultRunLoopMode };
@@ -236,10 +344,18 @@ impl Surface for MacSurface {
         ) {
             self.app.sendEvent(&event);
         }
-        std::mem::take(&mut self.answers)
+        let mut events: Vec<SurfaceEvent> = std::mem::take(&mut self.answers)
+            .into_iter()
+            .map(|(id, ok)| SurfaceEvent::Answer(id, ok))
+            .collect();
+        if HOTKEY_HIT.swap(false, Ordering::SeqCst) {
+            events.push(SurfaceEvent::Hotkey);
+        }
+        events
     }
 
     fn close(&mut self) {
+        self.set_hotkey(None);
         for (_, w) in self.layers.drain() {
             w.window.orderOut(None);
             w.window.close();

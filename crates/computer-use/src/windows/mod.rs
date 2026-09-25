@@ -8,7 +8,7 @@
 
 mod capture;
 mod clipboard;
-mod input;
+pub(crate) mod input;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -46,7 +46,7 @@ pub struct WindowsBackend {
 }
 
 /// Properties prefetched for every element by the cache request.
-const CACHED_PROPS: [UIA_PROPERTY_ID; 20] = [
+const CACHED_PROPS: [UIA_PROPERTY_ID; 21] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_AutomationIdPropertyId,
@@ -67,6 +67,7 @@ const CACHED_PROPS: [UIA_PROPERTY_ID; 20] = [
     UIA_ExpandCollapseExpandCollapseStatePropertyId,
     UIA_SelectionItemIsSelectedPropertyId,
     UIA_LegacyIAccessibleDefaultActionPropertyId,
+    UIA_IsPasswordPropertyId,
 ];
 
 impl WindowsBackend {
@@ -142,7 +143,12 @@ impl WindowsBackend {
         parent: Option<usize>,
     ) -> RawNode {
         let control_type = unsafe { el.CurrentControlType() }.map(|c| c.0).unwrap_or(0);
-        let role = roles::from_uia(control_type);
+        let password = unsafe { el.CurrentIsPassword() }.is_ok_and(|b| b.as_bool());
+        let role = if password {
+            "secure text field".to_string()
+        } else {
+            roles::from_uia(control_type)
+        };
         let name = bstr(unsafe { el.CurrentName() });
         let automation_id = bstr(unsafe { el.CurrentAutomationId() });
         let class = bstr(unsafe { el.CurrentClassName() });
@@ -164,14 +170,20 @@ impl WindowsBackend {
         let value_pat = self.value_pattern(el);
         let (mut value, mut editable, mut value_settable) = (None, false, false);
         if let Some(v) = &value_pat {
-            value = bstr(unsafe { v.CurrentValue() });
+            // Never read a password field's contents.
+            value = (!password)
+                .then(|| bstr(unsafe { v.CurrentValue() }))
+                .flatten();
             let readonly = unsafe { v.CurrentIsReadOnly() }
                 .map(|b| b.as_bool())
                 .unwrap_or(true);
             value_settable = !readonly;
             editable = !readonly;
         }
-        if matches!(role.as_str(), "text field" | "document") {
+        if matches!(
+            role.as_str(),
+            "text field" | "document" | "secure text field"
+        ) {
             editable = editable || value_settable;
         }
 
@@ -307,7 +319,12 @@ impl WindowsBackend {
         parent: Option<usize>,
     ) -> RawNode {
         let control_type = unsafe { el.CachedControlType() }.map(|c| c.0).unwrap_or(0);
-        let role = roles::from_uia(control_type);
+        let password = cached_bool(el, UIA_IsPasswordPropertyId).unwrap_or(false);
+        let role = if password {
+            "secure text field".to_string()
+        } else {
+            roles::from_uia(control_type)
+        };
         let name = bstr(unsafe { el.CachedName() });
         let automation_id = bstr(unsafe { el.CachedAutomationId() });
         let class = bstr(unsafe { el.CachedClassName() });
@@ -327,12 +344,17 @@ impl WindowsBackend {
         let has = |p: UIA_PROPERTY_ID| cached_bool(el, p).unwrap_or(false);
         let (mut value, mut editable, mut value_settable) = (None, false, false);
         if has(UIA_IsValuePatternAvailablePropertyId) {
-            value = cached_string(el, UIA_ValueValuePropertyId);
+            value = (!password)
+                .then(|| cached_string(el, UIA_ValueValuePropertyId))
+                .flatten();
             let readonly = cached_bool(el, UIA_ValueIsReadOnlyPropertyId).unwrap_or(true);
             value_settable = !readonly;
             editable = !readonly;
         }
-        if matches!(role.as_str(), "text field" | "document") {
+        if matches!(
+            role.as_str(),
+            "text field" | "document" | "secure text field"
+        ) {
             editable = editable || value_settable;
         }
         let mut checked = None;
@@ -597,6 +619,21 @@ impl Backend for WindowsBackend {
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
         capture::capture_screen(region)
+    }
+
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        use windows::Win32::System::SystemInformation::GetTickCount;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+        let mut info = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        // SAFETY: fills in the tick count of the last input event (only
+        // its time; nothing about what it was).
+        let ok = unsafe { GetLastInputInfo(&mut info) }.as_bool();
+        // Tick counts wrap every ~49 days; the difference still works.
+        let now = unsafe { GetTickCount() };
+        ok.then(|| std::time::Duration::from_millis(u64::from(now.wrapping_sub(info.dwTime))))
     }
 
     fn clipboard_get(&mut self) -> Result<String> {

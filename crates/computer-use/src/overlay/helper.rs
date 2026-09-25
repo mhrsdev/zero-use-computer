@@ -36,6 +36,15 @@ pub struct Ask {
     pub deny: String,
 }
 
+/// Something that happened on the surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceEvent {
+    /// The user answered an on-screen confirmation.
+    Answer(u64, bool),
+    /// The user pressed the emergency stop key.
+    Hotkey,
+}
+
 /// A platform's way of putting images on screen: always on top,
 /// click-through, never activated, and (where the OS allows) left out of
 /// screen captures. Coordinates are the engine's screen units.
@@ -67,8 +76,14 @@ pub trait Surface {
     }
     /// Ask the user to allow something; the answer comes back from `pump`.
     fn confirm(&mut self, id: u64, ask: &Ask);
-    /// Handle native events; returns answered confirmations.
-    fn pump(&mut self) -> Vec<(u64, bool)>;
+    /// Listen for the emergency stop key anywhere on the system (`None`
+    /// stops listening). Only this one key combination is received, never
+    /// other keys. Returns whether the system accepted it.
+    fn set_hotkey(&mut self, _combo: Option<crate::keys::KeyCombo>) -> bool {
+        false
+    }
+    /// Handle native events; returns answers and stop-key presses.
+    fn pump(&mut self) -> Vec<SurfaceEvent>;
     fn close(&mut self);
 }
 
@@ -81,6 +96,51 @@ pub enum Phase {
     Danger,
     Error,
     Done,
+    /// Waiting while the user uses the mouse/keyboard.
+    Paused,
+    /// Stopped with the emergency stop key.
+    Stopped,
+}
+
+/// How long "stopped" stays on screen when nothing else happens.
+const STOPPED_HOLD: Duration = Duration::from_millis(5000);
+
+/// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc".
+pub fn pretty_key(key: &str) -> String {
+    key.split('+')
+        .map(|p| {
+            let p = p.trim();
+            match p.to_ascii_lowercase().as_str() {
+                "escape" | "esc" => "Esc".to_string(),
+                "ctrl" | "control" => "Ctrl".to_string(),
+                "cmd" | "command" => "Cmd".to_string(),
+                "meta" | "super" | "win" => {
+                    if cfg!(target_os = "macos") {
+                        "Cmd".to_string()
+                    } else if cfg!(windows) {
+                        "Win".to_string()
+                    } else {
+                        "Super".to_string()
+                    }
+                }
+                "alt" | "option" | "opt" => {
+                    if cfg!(target_os = "macos") {
+                        "Option".to_string()
+                    } else {
+                        "Alt".to_string()
+                    }
+                }
+                _ => {
+                    let mut c = p.chars();
+                    match c.next() {
+                        Some(f) => f.to_uppercase().chain(c).collect(),
+                        None => String::new(),
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 struct Colors {
@@ -90,6 +150,8 @@ struct Colors {
     danger: Color,
     error: Color,
     done: Color,
+    paused: Color,
+    stopped: Color,
     cursor: Color,
 }
 
@@ -107,6 +169,8 @@ impl Colors {
             danger: c(&cfg.color_danger, "#000000"),
             error: c(&cfg.color_error, "#E53935"),
             done: c(&cfg.color_done, "#2E7D32"),
+            paused: c(&cfg.color_paused, "#78909C"),
+            stopped: c(&cfg.color_stopped, "#FF6D00"),
             cursor: c(&cfg.cursor_color, "#9C27B0"),
         }
     }
@@ -192,6 +256,12 @@ pub struct Machine {
     glide: Option<Glide>,
     click_pending: bool,
     ripple_at: Option<Instant>,
+    /// Waiting for the user to stop using the mouse/keyboard.
+    paused: bool,
+    /// Stopped with the stop key.
+    stopped: bool,
+    /// The stop key, for the label.
+    hotkey: String,
 }
 
 impl Machine {
@@ -216,6 +286,28 @@ impl Machine {
             glide: None,
             click_pending: false,
             ripple_at: None,
+            paused: false,
+            stopped: false,
+            hotkey: String::new(),
+        }
+    }
+
+    /// Whether the agent is stopped (the stop key toggles this).
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    fn set_stopped(&mut self, on: bool, now: Instant) {
+        self.stopped = on;
+        if on {
+            self.set_phase(Phase::Stopped, now);
+        } else if self.busy {
+            let p = self.active_phase();
+            self.set_phase(p, now);
+        } else {
+            // Nothing running: just go away gently.
+            let d = Duration::from_millis(self.cfg.fade_out_ms);
+            self.leave(now, d);
         }
     }
 
@@ -283,8 +375,12 @@ impl Machine {
 
     /// The phase that applies while a call runs.
     fn active_phase(&self) -> Phase {
-        if self.approval.is_some() {
+        if self.stopped {
+            Phase::Stopped
+        } else if self.approval.is_some() {
             Phase::Approval
+        } else if self.paused {
+            Phase::Paused
         } else if self.danger.is_some() {
             Phase::Danger
         } else {
@@ -295,13 +391,29 @@ impl Machine {
     /// Apply a command. Returns a confirmation to ask on screen, if any.
     pub fn apply(&mut self, cmd: Cmd, now: Instant) -> Option<(u64, String)> {
         match cmd {
-            Cmd::Config { config } => {
+            Cmd::Config {
+                config,
+                hotkey,
+                stopped,
+            } => {
                 self.colors = Colors::from(&config);
                 self.cfg = *config;
+                self.hotkey = hotkey;
                 if !self.cfg.enabled {
                     self.set_phase(Phase::Off, now);
                 }
+                if stopped != self.stopped {
+                    self.set_stopped(stopped, now);
+                }
             }
+            Cmd::Paused { on } => {
+                self.paused = on;
+                if self.busy || on {
+                    let p = self.active_phase();
+                    self.set_phase(p, now);
+                }
+            }
+            Cmd::Stopped { on } => self.set_stopped(on, now),
             Cmd::Begin => {
                 self.busy = true;
                 let p = self.active_phase();
@@ -311,8 +423,16 @@ impl Machine {
                 self.busy = false;
                 self.danger = None;
                 self.approval = None;
+                self.paused = false;
                 self.last_end = Some(now);
-                self.set_phase(if ok { Phase::Thinking } else { Phase::Error }, now);
+                let p = if self.stopped {
+                    Phase::Stopped
+                } else if ok {
+                    Phase::Thinking
+                } else {
+                    Phase::Error
+                };
+                self.set_phase(p, now);
             }
             Cmd::Target { rect } => {
                 self.target = rect.map(|r| Rect::new(r[0], r[1], r[2], r[3]));
@@ -399,6 +519,10 @@ impl Machine {
                 let d = Duration::from_millis(self.cfg.fade_out_ms);
                 self.leave(now, d);
             }
+            Phase::Stopped if !self.busy && since >= STOPPED_HOLD => {
+                let d = Duration::from_millis(self.cfg.fade_out_ms);
+                self.leave(now, d);
+            }
             _ => {}
         }
         if self.leaving && self.fade.done(now) {
@@ -471,6 +595,8 @@ impl Machine {
             Phase::Danger => c.danger,
             Phase::Error => c.error,
             Phase::Done => c.done,
+            Phase::Paused => c.paused,
+            Phase::Stopped => c.stopped,
         }
     }
 
@@ -483,8 +609,12 @@ impl Machine {
             Phase::Danger => (&cfg.label_danger, self.danger.as_deref()),
             Phase::Error => (&cfg.label_error, None),
             Phase::Done => (&cfg.label_done, None),
+            Phase::Paused => (&cfg.label_paused, None),
+            Phase::Stopped => (&cfg.label_stopped, None),
         };
-        template.replace("{action}", &crate::tree::truncate(action.unwrap_or(""), 60))
+        template
+            .replace("{action}", &crate::tree::truncate(action.unwrap_or(""), 60))
+            .replace("{hotkey}", &pretty_key(&self.hotkey))
     }
 
     /// What should be on screen now.
@@ -893,6 +1023,8 @@ pub fn run(args: &[String]) -> i32 {
     let mut font_path = String::new();
     let mut painter = Painter::default();
     let mut hidden = false;
+    let mut hotkey_now = String::new();
+    let mut last_hotkey: Option<Instant> = None;
     let mut last_parent_check = Instant::now();
     // Set once told to stop: fade out, then exit.
     let mut quitting: Option<Instant> = None;
@@ -949,10 +1081,21 @@ pub fn run(args: &[String]) -> i32 {
                     hidden = false;
                 }
                 other => {
-                    if let Cmd::Config { config } = &other {
+                    if let Cmd::Config { config, hotkey, .. } = &other {
                         if config.font != font_path {
                             font_path = config.font.clone();
                             fonts = Fonts::load(&font_path);
+                        }
+                        if *hotkey != hotkey_now {
+                            hotkey_now = hotkey.clone();
+                            let combo = crate::keys::parse_combo(hotkey.trim()).ok();
+                            let ok = surface.set_hotkey(combo);
+                            if !hotkey.trim().is_empty() {
+                                reply(&Reply::Hotkey {
+                                    key: hotkey.clone(),
+                                    ok,
+                                });
+                            }
                         }
                         // Redraw everything with the new settings.
                         painter.clear(surface.as_mut());
@@ -971,8 +1114,23 @@ pub fn run(args: &[String]) -> i32 {
             }
         }
 
-        for (id, ok) in surface.pump() {
-            reply(&Reply::Answer { id, ok });
+        for ev in surface.pump() {
+            match ev {
+                SurfaceEvent::Answer(id, ok) => reply(&Reply::Answer { id, ok }),
+                SurfaceEvent::Hotkey
+                    if quitting.is_none()
+                        && last_hotkey
+                            .is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) =>
+                {
+                    // Shown at once, whatever the engine is doing. (Presses
+                    // in quick succession are key repeat, not a second press.)
+                    last_hotkey = Some(Instant::now());
+                    let on = !machine.stopped();
+                    machine.apply(Cmd::Stopped { on }, Instant::now());
+                    reply(&Reply::Stop { on });
+                }
+                SurfaceEvent::Hotkey => {}
+            }
         }
         if let Some(pid) = parent
             && last_parent_check.elapsed() >= Duration::from_millis(500)
@@ -1030,6 +1188,8 @@ fn demo_script(tx: mpsc::Sender<Input>) {
     }
     send(Cmd::Config {
         config: Box::new(cfg),
+        hotkey: "ctrl+alt+escape".into(),
+        stopped: false,
     });
     send(Cmd::Target {
         rect: Some([200.0, 160.0, 640.0, 420.0]),
@@ -1064,6 +1224,15 @@ fn demo_script(tx: mpsc::Sender<Input>) {
     pause(1500);
     send(Cmd::End { ok: false });
     pause(2800);
+    send(Cmd::Begin);
+    send(Cmd::Paused { on: true });
+    pause(1500);
+    send(Cmd::Paused { on: false });
+    send(Cmd::End { ok: true });
+    send(Cmd::Stopped { on: true });
+    pause(1800);
+    send(Cmd::Stopped { on: false });
+    pause(600);
     send(Cmd::Status {
         state: Status::Done,
     });
@@ -1151,6 +1320,48 @@ mod tests {
             at(3300),
         );
         assert_eq!(m.phase, Phase::Done);
+    }
+
+    #[test]
+    fn pause_and_stop_show_and_clear() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(
+            Cmd::Config {
+                config: Box::new(cfg()),
+                hotkey: "ctrl+alt+escape".into(),
+                stopped: false,
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        m.apply(Cmd::Paused { on: true }, at(10));
+        assert_eq!(m.phase, Phase::Paused);
+        assert!(m.scene(at(10)).label.unwrap().0.contains("Paused"));
+        m.apply(Cmd::Paused { on: false }, at(20));
+        assert_eq!(m.phase, Phase::Working);
+
+        // The stop key: shown at once, stays through the end of the call.
+        m.apply(Cmd::Stopped { on: true }, at(30));
+        assert_eq!(m.phase, Phase::Stopped);
+        let label = m.scene(at(30)).label.unwrap().0;
+        assert!(label.contains("Ctrl+Alt+Esc"), "{label}");
+        m.apply(Cmd::End { ok: false }, at(40));
+        assert_eq!(m.phase, Phase::Stopped);
+        assert!(m.stopped());
+        // Fades out after a while, but stays stopped.
+        m.tick(at(40) + STOPPED_HOLD);
+        m.tick(at(60) + STOPPED_HOLD + Duration::from_millis(500));
+        assert_eq!(m.phase, Phase::Off);
+        assert!(m.stopped());
+        // Any new call shows it again.
+        m.apply(Cmd::Begin, at(7000));
+        assert_eq!(m.phase, Phase::Stopped);
+        m.apply(Cmd::Stopped { on: false }, at(7100));
+        assert_eq!(m.phase, Phase::Working);
+        assert!(!m.stopped());
+        assert_eq!(pretty_key("ctrl+shift+f12"), "Ctrl+Shift+F12");
     }
 
     #[test]
@@ -1296,7 +1507,7 @@ mod tests {
         }
         fn set_hidden(&mut self, _: bool) {}
         fn confirm(&mut self, _: u64, _: &Ask) {}
-        fn pump(&mut self) -> Vec<(u64, bool)> {
+        fn pump(&mut self) -> Vec<SurfaceEvent> {
             Vec::new()
         }
         fn close(&mut self) {}

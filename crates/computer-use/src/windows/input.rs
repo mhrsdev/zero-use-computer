@@ -194,7 +194,7 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
 }
 
 /// Virtual-key code for a key, and whether Shift is required.
-fn resolve(key: Key) -> Result<(VIRTUAL_KEY, bool)> {
+pub(crate) fn resolve(key: Key) -> Result<(VIRTUAL_KEY, bool)> {
     let vk = match key {
         Key::Named(n) => match n {
             NamedKey::Return => VK_RETURN,

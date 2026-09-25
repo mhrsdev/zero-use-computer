@@ -79,7 +79,15 @@ unsafe extern "C" {
     ) -> *const c_void; // CGImageRef
     pub fn CGMainDisplayID() -> u32;
     pub fn CGDisplayBounds(display: u32) -> CGRect;
+    /// Seconds since the last input event of a type (only the time).
+    pub fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
 }
+
+/// `kCGEventSourceStateHIDSystemState`: hardware input only (events posted
+/// to an app with `CGEventPostToPid` don't count).
+pub const kCGEventSourceStateHIDSystemState: i32 = 1;
+/// `kCGAnyInputEventType`.
+pub const kCGAnyInputEventType: u32 = !0;
 
 // CGWindowListOption / CGWindowImageOption bits we use.
 pub const kCGWindowListOptionOnScreenOnly: u32 = 1 << 0;

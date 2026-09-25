@@ -210,6 +210,75 @@ fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: 
     }
 }
 
+/// Black out screen-space rectangles of a capture (private data), before it
+/// is encoded or fingerprinted. Returns how many areas were covered.
+pub fn redact(cap: &mut Capture, rects: &[Rect], style: crate::config::RedactStyle) -> usize {
+    if cap.bounds.width <= 0.0 || cap.bounds.height <= 0.0 {
+        return 0;
+    }
+    let sx = f64::from(cap.width) / cap.bounds.width;
+    let sy = f64::from(cap.height) / cap.bounds.height;
+    let (w, h) = (i64::from(cap.width), i64::from(cap.height));
+    let mut covered = 0;
+    for r in rects {
+        // A small margin so glyph edges and focus rings go too.
+        let m = 2.0;
+        let x0 = (((r.x - m - cap.bounds.x) * sx).floor() as i64).clamp(0, w);
+        let y0 = (((r.y - m - cap.bounds.y) * sy).floor() as i64).clamp(0, h);
+        let x1 = (((r.x + r.width + m - cap.bounds.x) * sx).ceil() as i64).clamp(0, w);
+        let y1 = (((r.y + r.height + m - cap.bounds.y) * sy).ceil() as i64).clamp(0, h);
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        covered += 1;
+        let stride = cap.width as usize * 4;
+        match style {
+            crate::config::RedactStyle::Fill => {
+                for y in y0..y1 {
+                    let row = y as usize * stride;
+                    for x in x0..x1 {
+                        let i = row + x as usize * 4;
+                        cap.rgba[i..i + 3].copy_from_slice(&[128, 128, 128]);
+                        cap.rgba[i + 3] = 255;
+                    }
+                }
+            }
+            crate::config::RedactStyle::Pixelate => {
+                // Blocks as tall as the field, so no line of text survives.
+                let block = (y1 - y0).clamp(8, 32);
+                let mut by = y0;
+                while by < y1 {
+                    let ey = (by + block).min(y1);
+                    let mut bx = x0;
+                    while bx < x1 {
+                        let ex = (bx + block).min(x1);
+                        let mut sum = [0u64; 3];
+                        let n = ((ey - by) * (ex - bx)).max(1) as u64;
+                        for y in by..ey {
+                            for x in bx..ex {
+                                let i = y as usize * stride + x as usize * 4;
+                                for (acc, v) in sum.iter_mut().zip(&cap.rgba[i..i + 3]) {
+                                    *acc += u64::from(*v);
+                                }
+                            }
+                        }
+                        let avg = sum.map(|v| (v / n) as u8);
+                        for y in by..ey {
+                            for x in bx..ex {
+                                let i = y as usize * stride + x as usize * 4;
+                                cap.rgba[i..i + 3].copy_from_slice(&avg);
+                            }
+                        }
+                        bx = ex;
+                    }
+                    by = ey;
+                }
+            }
+        }
+    }
+    covered
+}
+
 /// Draw each element's index over the capture (set-of-marks). `marks` are
 /// (index, screen-space bounds); they are mapped into the capture's pixels.
 pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
@@ -315,5 +384,36 @@ mod tests {
         let (img, _) = encode(cap, &cfg).unwrap();
         assert_eq!(img.mime, "image/jpeg");
         assert_eq!(&img.data[..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn redaction_covers_only_the_private_area() {
+        use crate::config::RedactStyle;
+        // A 2x capture (Retina-like) of a 100x50 area at (10, 10).
+        let mut cap = Capture {
+            width: 200,
+            height: 100,
+            rgba: vec![0; 200 * 100 * 4],
+            bounds: Rect::new(10.0, 10.0, 100.0, 50.0),
+        };
+        let field = Rect::new(30.0, 20.0, 20.0, 10.0);
+        assert_eq!(redact(&mut cap, &[field], RedactStyle::Fill), 1);
+        let px = |c: &Capture, x: usize, y: usize| c.rgba[(y * 200 + x) * 4];
+        assert_eq!(px(&cap, 50, 30), 128, "inside the field");
+        assert_eq!(px(&cap, 150, 80), 0, "elsewhere untouched");
+        // Off-image areas are ignored.
+        assert_eq!(
+            redact(
+                &mut cap,
+                &[Rect::new(500.0, 500.0, 5.0, 5.0)],
+                RedactStyle::Fill
+            ),
+            0
+        );
+        let mut cap2 = Capture {
+            rgba: (0..200 * 100 * 4).map(|i| (i % 251) as u8).collect(),
+            ..cap
+        };
+        assert_eq!(redact(&mut cap2, &[field], RedactStyle::Pixelate), 1);
     }
 }

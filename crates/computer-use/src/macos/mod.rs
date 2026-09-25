@@ -2,7 +2,7 @@
 //! actions, and CoreGraphics events posted to the target pid for background
 //! input, with `CGWindowListCreateImage` for capturing background windows.
 
-mod cg;
+pub(crate) mod cg;
 mod ffi;
 mod pasteboard;
 
@@ -391,6 +391,17 @@ impl Backend for MacBackend {
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
         cg::capture_screen(region)
+    }
+
+    fn user_idle(&mut self) -> Option<std::time::Duration> {
+        // SAFETY: a plain query of the HID system's idle time.
+        let secs = unsafe {
+            ffi::CGEventSourceSecondsSinceLastEventType(
+                ffi::kCGEventSourceStateHIDSystemState,
+                ffi::kCGAnyInputEventType,
+            )
+        };
+        (secs.is_finite() && secs >= 0.0).then(|| std::time::Duration::from_secs_f64(secs))
     }
 
     fn clipboard_get(&mut self) -> Result<String> {

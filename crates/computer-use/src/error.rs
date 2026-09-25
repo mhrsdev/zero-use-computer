@@ -49,6 +49,16 @@ pub enum Error {
     #[error("{0}")]
     ActionFailed(String),
 
+    #[error(
+        "the user stopped the agent with the emergency stop key ({0}). Stop here: don't retry, and ask the user how to proceed. Only the user can let the agent continue (by pressing {0} again)."
+    )]
+    Stopped(String),
+
+    #[error(
+        "paused: the user has been using the mouse or keyboard for {0}s, so the action was not run. Try again later, or ask the user."
+    )]
+    UserBusy(u64),
+
     #[error("not supported on this platform: {0}")]
     Unsupported(String),
 
