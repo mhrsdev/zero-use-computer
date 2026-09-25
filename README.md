@@ -195,7 +195,8 @@ task is complete) can say so with a JSON-RPC notification:
 
 ## You stay in control
 
-- **Emergency stop key** — `Ctrl+Alt+Esc` by default (`control.stop_hotkey`),
+- **Emergency stop key** — `Ctrl+Alt+Esc` by default (`Ctrl+Option+Esc` on a
+  Mac; `control.stop_hotkey`),
   from any app. The agent stops at once: every tool call is refused with a
   message telling the model that the user stopped it and to ask how to
   proceed; a batch, a wait or an on-screen question in progress ends too.

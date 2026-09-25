@@ -1346,7 +1346,7 @@ mod tests {
         m.apply(Cmd::Stopped { on: true }, at(30));
         assert_eq!(m.phase, Phase::Stopped);
         let label = m.scene(at(30)).label.unwrap().0;
-        assert!(label.contains("Ctrl+Alt+Esc"), "{label}");
+        assert!(label.contains(&pretty_key("ctrl+alt+escape")), "{label}");
         m.apply(Cmd::End { ok: false }, at(40));
         assert_eq!(m.phase, Phase::Stopped);
         assert!(m.stopped());

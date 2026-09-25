@@ -3596,7 +3596,9 @@ mod tests {
         ] {
             let out = e.call_tool(tool, args, &mut allow());
             assert!(out.is_error, "{tool}");
-            assert!(out.text.contains("Ctrl+Alt+Esc"), "{}", out.text);
+            // "Ctrl+Alt+Esc" (Ctrl+Option+Esc on a Mac).
+            let key = crate::overlay::helper::pretty_key("ctrl+alt+escape");
+            assert!(out.text.contains(&key), "{}", out.text);
         }
         // A batch stops at once, even with continue_on_error.
         let out = e.call_tool(
