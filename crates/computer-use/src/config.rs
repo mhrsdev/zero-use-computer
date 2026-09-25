@@ -494,6 +494,34 @@ impl Default for OverlayConfig {
     }
 }
 
+/// Checking that actions worked, and retrying another way when they
+/// clearly didn't.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VerifyConfig {
+    /// Check the result of each action (a value really set, text really
+    /// typed, something changed) and tell the agent when it didn't work.
+    pub enabled: bool,
+    /// When an action clearly failed (the accessibility call errored, a
+    /// value didn't take, typed text didn't land), try once more another way
+    /// (mouse click, focus + select + type…).
+    pub retry: bool,
+    /// Also retry a press after which nothing visible changed. Off by
+    /// default: some actions (pay, send…) show their effect late, and a
+    /// retry could repeat them. Guarded actions are never retried.
+    pub retry_on_no_change: bool,
+}
+
+impl Default for VerifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retry: true,
+            retry_on_no_change: false,
+        }
+    }
+}
+
 /// The user's controls over a running agent: an emergency stop key and
 /// pausing while the user works.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -614,11 +642,29 @@ impl Default for CacheConfig {
     }
 }
 
+/// How the engine waits for the UI after an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SettleMode {
+    /// Just pause `settle_ms`.
+    Fixed,
+    /// Pause `settle_ms`, then re-read the app until it stops changing (two
+    /// reads in a row agree), at most `settle_max_ms`. Default.
+    #[default]
+    Adaptive,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimingConfig {
-    /// Pause after each action so the UI can update before the next read.
+    /// Pause after each action before looking at the UI again.
     pub settle_ms: u64,
+    /// `adaptive`: wait until the UI stops changing; `fixed`: only settle_ms.
+    pub settle: SettleMode,
+    /// Longest adaptive wait after an action.
+    pub settle_max_ms: u64,
+    /// Interval between checks while waiting.
+    pub settle_poll_ms: u64,
     /// Pause between keys of a press_key sequence.
     pub key_delay_ms: u64,
     /// How long the running-app list is reused between calls.
@@ -632,6 +678,9 @@ impl Default for TimingConfig {
     fn default() -> Self {
         Self {
             settle_ms: 40,
+            settle: SettleMode::Adaptive,
+            settle_max_ms: 2000,
+            settle_poll_ms: 50,
             key_delay_ms: 10,
             app_cache_ms: 1500,
             wait_timeout_ms: 10_000,
@@ -740,6 +789,7 @@ pub struct Config {
     pub overlay: OverlayConfig,
     pub control: ControlConfig,
     pub privacy: PrivacyConfig,
+    pub verify: VerifyConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -775,6 +825,7 @@ impl Default for Config {
             overlay: OverlayConfig::default(),
             control: ControlConfig::default(),
             privacy: PrivacyConfig::default(),
+            verify: VerifyConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),

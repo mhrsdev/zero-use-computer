@@ -147,6 +147,8 @@ pub struct Engine<B: Backend> {
     /// When the engine's own synthesized input last ended, so the system
     /// idle time isn't mistaken for the user's input.
     last_input: Option<Instant>,
+    /// The action epoch whose result has a fresh snapshot (after settling).
+    settled: Option<u64>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
@@ -212,6 +214,7 @@ impl<B: Backend> Engine<B> {
             overlay_retry_at: None,
             stop: Arc::new(AtomicBool::new(false)),
             last_input: None,
+            settled: None,
             config_mtime,
             overrides: None,
             clock: Box::new(Instant::now),
@@ -1109,6 +1112,77 @@ impl<B: Backend> Engine<B> {
         (self.sleep)(Duration::from_millis(self.store.config.timing.settle_ms));
     }
 
+    /// After an action on `app`: pause `timing.settle_ms`, then (adaptive)
+    /// re-read the app until two reads in a row agree — the UI has finished
+    /// reacting — or `settle_max_ms` passes. Leaves a fresh snapshot for
+    /// verification and the change report.
+    fn settle_on(&mut self, app: &AppInfo) {
+        use crate::config::SettleMode;
+        self.settle();
+        let cfg = &self.store.config;
+        let adaptive = cfg.timing.settle == SettleMode::Adaptive;
+        if !adaptive && !cfg.verify.enabled && !cfg.tree.report_changes {
+            return;
+        }
+        let max = Duration::from_millis(cfg.timing.settle_max_ms);
+        let poll = Duration::from_millis(cfg.timing.settle_poll_ms.max(5));
+        let deadline = (self.clock)() + max;
+        let mut last = None;
+        loop {
+            let Ok(window) = self.pick_window(app, None, true) else {
+                return;
+            };
+            if self.observe(app, &window, true).is_err() {
+                return;
+            }
+            self.settled = Some(self.epoch);
+            let now = self.tree_fingerprint(app.pid);
+            if !adaptive || (now.is_some() && now == last) {
+                break;
+            }
+            last = now;
+            if self.is_stopped() || (self.clock)() >= deadline {
+                break;
+            }
+            (self.sleep)(poll);
+        }
+    }
+
+    /// Whether the current action's result was read back (verification on).
+    fn verified(&self) -> bool {
+        self.store.config.verify.enabled && self.settled == Some(self.epoch)
+    }
+
+    /// A cheap identity of what the latest snapshot of an app shows: its
+    /// windows, and every element's text, state and position.
+    fn tree_fingerprint(&self, pid: u32) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let st = self.states.get(&pid).filter(|s| s.stamped)?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        st.window_id.hash(&mut h);
+        let mut windows = st.seen_windows.clone();
+        windows.sort_unstable();
+        windows.hash(&mut h);
+        for n in &st.nodes {
+            n.key.hash(&mut h);
+            n.line.hash(&mut h);
+            if let Some(b) = n.bounds {
+                [b.x, b.y, b.width, b.height]
+                    .map(|v| v.round() as i64)
+                    .hash(&mut h);
+            }
+        }
+        Some(h.finish())
+    }
+
+    /// Point the agent cursor at a click/scroll anchor.
+    fn overlay_anchor(&mut self, app: &AppInfo, anchor: &Anchor, click: bool) {
+        match anchor {
+            Anchor::Element(h) => self.overlay_point_element(app, *h, click),
+            Anchor::Point(p) => self.overlay_point(*p, click),
+        }
+    }
+
     // -- tool dispatch -----------------------------------------------------
 
     /// Run one tool call.
@@ -1466,55 +1540,88 @@ impl<B: Backend> Engine<B> {
         let app = self.authorize(&args.app, "click", approver)?;
         let count = args.click_count.clamp(1, 3);
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
+        // What things looked like, to tell whether the click did anything.
+        let before = self.tree_fingerprint(app.pid);
+        let what = self.describe_anchor(&app, &anchor);
+        let point = self.anchor_point(&app, &anchor).ok();
 
         // The agent cursor goes there first, so the user sees what is next.
-        match &anchor {
-            Anchor::Element(h) => self.overlay_point_element(&app, *h, false),
-            Anchor::Point(p) => self.overlay_point(*p, false),
-        }
+        self.overlay_anchor(&app, &anchor, false);
         // Confirm consequential presses (Send / Delete / Pay …) when guarded.
+        let mut guarded = false;
         if let Anchor::Element(h) = &anchor {
             let label = self.describe(&app, *h);
-            self.guard_action(&label, approver)?;
+            guarded = self.guard_action(&label, approver)?;
         }
-        match &anchor {
-            Anchor::Element(h) => self.overlay_point_element(&app, *h, true),
-            Anchor::Point(p) => self.overlay_point(*p, true),
-        }
+        self.overlay_anchor(&app, &anchor, true);
 
         // A single left click on an element with a press action goes through
         // the accessibility API so it works in the background.
+        let mut note = String::new();
         if let (Anchor::Element(h), MouseButton::Left, 1) = (&anchor, args.button, count) {
             let node = self.node_for_handle(&app, *h);
             if let Some(action) = node
                 .and_then(|n| n.has_action("press"))
                 .map(|a| a.native.clone())
             {
-                self.backend.perform_action(*h, &action)?;
-                self.settle();
-                return Ok(ToolOutput::text(format!(
-                    "Pressed {}.",
-                    self.describe(&app, *h)
-                )));
+                match self.backend.perform_action(*h, &action) {
+                    Ok(()) => {
+                        self.settle_on(&app);
+                        let unchanged = self.verified() && self.tree_fingerprint(app.pid) == before;
+                        let v = &self.store.config.verify;
+                        if unchanged
+                            && v.retry
+                            && v.retry_on_no_change
+                            && !guarded
+                            && let Some(p) = point
+                        {
+                            // Nothing happened: click it with the mouse.
+                            let target = self.input_target(&app);
+                            self.backend.click(&target, p, MouseButton::Left, 1)?;
+                            self.settle_on(&app);
+                            let mut msg = format!(
+                                "Pressed {what}; nothing changed, so clicked it with the mouse too."
+                            );
+                            if self.verified() && self.tree_fingerprint(app.pid) == before {
+                                msg.push_str(NO_CHANGE_NOTE);
+                            }
+                            return Ok(ToolOutput::text(msg));
+                        }
+                        let mut msg = format!("Pressed {what}.");
+                        if unchanged {
+                            msg.push_str(NO_CHANGE_NOTE);
+                        }
+                        return Ok(ToolOutput::text(msg));
+                    }
+                    Err(e) if self.store.config.verify.retry && point.is_some() => {
+                        log::info!("accessibility press failed ({e}); clicking instead");
+                        note = format!(
+                            " (its accessibility action failed: {e}; clicked it with the mouse instead)"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
 
-        let point = self.anchor_point(&app, &anchor)?;
+        let point = match point {
+            Some(p) => p,
+            None => self.anchor_point(&app, &anchor)?,
+        };
         let target = self.input_target(&app);
         self.backend.click(&target, point, args.button, count)?;
-        self.settle();
+        self.settle_on(&app);
         let verb = match (args.button, count) {
             (MouseButton::Right, _) => "Right-clicked",
             (_, 2) => "Double-clicked",
             (_, 3) => "Triple-clicked",
             _ => "Clicked",
         };
-        Ok(ToolOutput::text(format!(
-            "{verb} {} at ({:.0}, {:.0}).",
-            self.describe_anchor(&app, &anchor),
-            point.x,
-            point.y
-        )))
+        let mut msg = format!("{verb} {what} at ({:.0}, {:.0}).{note}", point.x, point.y);
+        if self.verified() && self.tree_fingerprint(app.pid) == before {
+            msg.push_str(NO_CHANGE_NOTE);
+        }
+        Ok(ToolOutput::text(msg))
     }
 
     fn perform_secondary(
@@ -1535,16 +1642,17 @@ impl<B: Backend> Engine<B> {
             ))
         })?;
         let native = action.native.clone();
+        let before = self.tree_fingerprint(app.pid);
         self.overlay_point_element(&app, handle, false);
         self.guard_action(&node.label(), approver)?;
         self.overlay_point_element(&app, handle, true);
         self.backend.perform_action(handle, &native)?;
-        self.settle();
-        Ok(ToolOutput::text(format!(
-            "Performed `{}` on {}.",
-            args.action,
-            node.label()
-        )))
+        self.settle_on(&app);
+        let mut msg = format!("Performed `{}` on {}.", args.action, node.label());
+        if self.verified() && self.tree_fingerprint(app.pid) == before {
+            msg.push_str(NO_CHANGE_NOTE);
+        }
+        Ok(ToolOutput::text(msg))
     }
 
     fn set_value(&mut self, args: SetValueArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
@@ -1552,13 +1660,51 @@ impl<B: Backend> Engine<B> {
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         self.overlay_point_element(&app, handle, true);
-        self.backend.set_value(handle, &args.value)?;
-        self.settle();
-        Ok(ToolOutput::text(format!(
-            "Set {} to \"{}\".",
-            node.label(),
-            tree::truncate(&args.value, 80)
-        )))
+        // Text fields can be typed into when setting fails.
+        let typable = node.states.editable && node.states.checked.is_none();
+        let retry = self.store.config.verify.retry && typable;
+        let mut how = String::new();
+        if let Err(e) = self.backend.set_value(handle, &args.value) {
+            if !retry {
+                return Err(e);
+            }
+            log::info!("set_value failed ({e}); typing instead");
+            self.retype(&app, handle, &node, &args.value)?;
+            how = format!(" (setting it directly failed: {e}; typed it instead)");
+        }
+        self.settle_on(&app);
+        let shown = tree::truncate(&args.value, 80);
+        let mut msg = format!("Set {} to \"{shown}\".{how}", node.label());
+        if self.verified() && self.value_took(&app, args.element_index, &args.value) == Some(false)
+        {
+            let fresh = self.node_by_index(&app, args.element_index).ok().cloned();
+            if retry
+                && how.is_empty()
+                && let Some(n) = fresh
+            {
+                // The value didn't take: type it into the field instead.
+                self.retype(&app, n.handle, &n, &args.value)?;
+                self.settle_on(&app);
+                msg = format!(
+                    "Set {} to \"{shown}\" (the value didn't take at first; typed it instead).",
+                    node.label()
+                );
+            }
+            if self.verified()
+                && self.value_took(&app, args.element_index, &args.value) == Some(false)
+            {
+                let now = self
+                    .node_by_index(&app, args.element_index)
+                    .ok()
+                    .and_then(|n| n.value.clone())
+                    .unwrap_or_default();
+                msg.push_str(&format!(
+                    " Note: it now shows \"{}\", not the value that was set; check it before going on.",
+                    tree::truncate(&now, 80)
+                ));
+            }
+        }
+        Ok(ToolOutput::text(msg))
     }
 
     fn select_text(
@@ -1572,7 +1718,7 @@ impl<B: Backend> Engine<B> {
         self.overlay_point_element(&app, handle, false);
         self.backend
             .select_text(handle, args.text.as_deref(), args.occurrence.max(1))?;
-        self.settle();
+        self.settle_on(&app);
         let what = match &args.text {
             Some(t) => format!("\"{}\"", tree::truncate(t, 60)),
             None => "all text".into(),
@@ -1591,34 +1737,56 @@ impl<B: Backend> Engine<B> {
             1.0
         };
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "scroll")?;
-        match &anchor {
-            Anchor::Element(h) => self.overlay_point_element(&app, *h, false),
-            Anchor::Point(p) => self.overlay_point(*p, false),
-        }
+        let before = self.tree_fingerprint(app.pid);
+        let what = self.describe_anchor(&app, &anchor);
+        let point = self.anchor_point(&app, &anchor).ok();
+        self.overlay_anchor(&app, &anchor, false);
+        let (ux, uy) = args.direction.unit();
+        // ~3 wheel lines per page.
+        let lines = (pages * 3.0).round().max(1.0) as i32;
 
         if let Anchor::Element(h) = &anchor
             && let Native::Done(_) = self.backend.scroll_element(*h, args.direction, pages)?
         {
-            self.settle();
-            return Ok(ToolOutput::text(format!(
-                "Scrolled {} {:?} by {pages} page(s).",
-                self.describe(&app, *h),
-                args.direction
-            )));
+            self.settle_on(&app);
+            let mut msg = format!("Scrolled {what} {:?} by {pages} page(s).", args.direction);
+            if self.verified() && self.tree_fingerprint(app.pid) == before {
+                // Scrolling again does no harm: try the mouse wheel.
+                if self.store.config.verify.retry
+                    && let Some(p) = point
+                {
+                    let target = self.input_target(&app);
+                    self.backend
+                        .scroll_wheel(&target, p, ux * lines, uy * lines)?;
+                    self.settle_on(&app);
+                    msg = format!(
+                        "Scrolled {what} {:?} by {pages} page(s) (with the mouse wheel; the first try didn't move it).",
+                        args.direction
+                    );
+                }
+                if self.verified() && self.tree_fingerprint(app.pid) == before {
+                    msg.push_str(" Nothing moved: it may already be at the end.");
+                }
+            }
+            return Ok(ToolOutput::text(msg));
         }
 
-        let point = self.anchor_point(&app, &anchor)?;
-        let (ux, uy) = args.direction.unit();
-        // ~3 wheel lines per page.
-        let lines = (pages * 3.0).round().max(1.0) as i32;
+        let point = match point {
+            Some(p) => p,
+            None => self.anchor_point(&app, &anchor)?,
+        };
         let target = self.input_target(&app);
         self.backend
             .scroll_wheel(&target, point, ux * lines, uy * lines)?;
-        self.settle();
-        Ok(ToolOutput::text(format!(
+        self.settle_on(&app);
+        let mut msg = format!(
             "Scrolled {:?} by {pages} page(s) at ({:.0}, {:.0}).",
             args.direction, point.x, point.y
-        )))
+        );
+        if self.verified() && self.tree_fingerprint(app.pid) == before {
+            msg.push_str(" Nothing moved: it may already be at the end, or not scrollable there.");
+        }
+        Ok(ToolOutput::text(msg))
     }
 
     fn drag(&mut self, args: DragArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
@@ -1641,15 +1809,20 @@ impl<B: Backend> Engine<B> {
             self.anchor_point(&app, &from)?,
             self.anchor_point(&app, &to)?,
         );
+        let before = self.tree_fingerprint(app.pid);
         self.overlay_point(p0, true);
         self.overlay_point(p1, false);
         let target = self.input_target(&app);
         self.backend.drag(&target, p0, p1)?;
-        self.settle();
-        Ok(ToolOutput::text(format!(
+        self.settle_on(&app);
+        let mut msg = format!(
             "Dragged from ({:.0}, {:.0}) to ({:.0}, {:.0}).",
             p0.x, p0.y, p1.x, p1.y
-        )))
+        );
+        if self.verified() && self.tree_fingerprint(app.pid) == before {
+            msg.push_str(NO_CHANGE_NOTE);
+        }
+        Ok(ToolOutput::text(msg))
     }
 
     fn press_key(&mut self, args: PressKeyArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
@@ -1657,15 +1830,19 @@ impl<B: Backend> Engine<B> {
         let combos = keys::parse_sequence(&args.key)?;
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
+            let node = self.node_by_index(&app, i)?.clone();
             self.overlay_point_element(&app, h, false);
-            let _ = self.backend.focus(h);
+            self.focus_element(&app, h, &node)?;
         }
         let target = self.input_target(&app);
         for combo in &combos {
+            if self.is_stopped() {
+                return Err(self.stopped_error());
+            }
             self.backend.press_key(&target, combo)?;
             (self.sleep)(Duration::from_millis(self.store.config.timing.key_delay_ms));
         }
-        self.settle();
+        self.settle_on(&app);
         let shown: Vec<String> = combos.iter().map(|c| c.to_string()).collect();
         Ok(ToolOutput::text(format!("Pressed {}.", shown.join(" "))))
     }
@@ -1675,16 +1852,69 @@ impl<B: Backend> Engine<B> {
         if args.text.is_empty() {
             return Err(Error::InvalidArgs("`text` must not be empty".into()));
         }
+        let mut field = None;
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
+            let node = self.node_by_index(&app, i)?.clone();
             self.overlay_point_element(&app, h, true);
-            let _ = self.backend.focus(h);
+            self.focus_element(&app, h, &node)?;
             self.settle();
+            field = Some((i, node));
         }
-        let target = self.input_target(&app);
+        self.type_into_focus(&app, &args.text)?;
+        self.settle_on(&app);
+        let mut msg = format!("Typed {} character(s).", args.text.chars().count());
+
+        // Typed into a field whose text we can read: did it land?
+        if let Some((i, node)) = field
+            && self.verified()
+            && node.states.editable
+            && node.value.is_some()
+        {
+            let unchanged = |e: &Self| {
+                e.node_by_index(&app, i)
+                    .ok()
+                    .is_some_and(|n| n.value.is_some() && n.value == node.value)
+            };
+            if unchanged(self) {
+                let fresh = self.node_by_index(&app, i).ok().cloned();
+                let point = fresh
+                    .as_ref()
+                    .and_then(|n| n.bounds)
+                    .filter(|b| !b.is_empty())
+                    .map(|b| b.center());
+                if self.store.config.verify.retry
+                    && let Some(p) = point
+                {
+                    // Click into the field and type again.
+                    let target = self.input_target(&app);
+                    self.backend.click(&target, p, MouseButton::Left, 1)?;
+                    self.settle();
+                    self.type_into_focus(&app, &args.text)?;
+                    self.settle_on(&app);
+                    msg.push_str(
+                        " The text didn't land in the field at first, so it was clicked and the text typed again (the first attempt may have gone to another element).",
+                    );
+                }
+                if self.verified() && unchanged(self) {
+                    msg.push_str(
+                        " Note: the field's text didn't change; the typing may have gone elsewhere. Check with get_app_state.",
+                    );
+                }
+            }
+        }
+        Ok(ToolOutput::text(msg))
+    }
+
+    /// Type `text` into the app's focused element (newlines press Return).
+    fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
+        let target = self.input_target(app);
         // Split on newlines so each becomes a Return press (works everywhere).
         let mut first = true;
-        for segment in args.text.split('\n') {
+        for segment in text.split('\n') {
+            if self.is_stopped() {
+                return Err(self.stopped_error());
+            }
             if !first {
                 self.backend.press_key(
                     &target,
@@ -1699,11 +1929,72 @@ impl<B: Backend> Engine<B> {
             }
             first = false;
         }
-        self.settle();
-        Ok(ToolOutput::text(format!(
-            "Typed {} character(s).",
-            args.text.chars().count()
-        )))
+        Ok(())
+    }
+
+    /// Give an element keyboard focus; a text field that won't take focus
+    /// through accessibility is clicked instead (when retries are on).
+    fn focus_element(&mut self, app: &AppInfo, handle: ElementHandle, node: &Node) -> Result<()> {
+        let focused = matches!(self.backend.focus(handle), Ok(Native::Done(_)));
+        if !focused
+            && self.store.config.verify.retry
+            && node.states.editable
+            && let Some(p) = node.bounds.filter(|b| !b.is_empty()).map(|b| b.center())
+        {
+            let target = self.input_target(app);
+            self.backend.click(&target, p, MouseButton::Left, 1)?;
+        }
+        Ok(())
+    }
+
+    /// Replace a text field's contents by typing: focus it, select all, type.
+    fn retype(
+        &mut self,
+        app: &AppInfo,
+        handle: ElementHandle,
+        node: &Node,
+        text: &str,
+    ) -> Result<()> {
+        self.focus_element(app, handle, node)?;
+        if self.backend.select_text(handle, None, 1).is_err() {
+            let target = self.input_target(app);
+            self.backend
+                .press_key(&target, &keys::parse_combo("primary+a")?)?;
+        }
+        self.type_into_focus(app, text)
+    }
+
+    /// Whether element `index` now holds `want` (after a set_value). `None`
+    /// when it can't be told (value not exposed, hidden for privacy, gone).
+    fn value_took(&self, app: &AppInfo, index: u32, want: &str) -> Option<bool> {
+        let n = self.node_by_index(app, index).ok()?;
+        if crate::privacy::is_password(&n.role) {
+            return None;
+        }
+        let truthy = |s: &str| {
+            matches!(
+                s.trim().to_lowercase().as_str(),
+                "true" | "1" | "on" | "checked" | "yes"
+            )
+        };
+        if let Some(c) = n.states.checked {
+            return Some(c == truthy(want));
+        }
+        let got = n.value.as_deref()?;
+        if let (Ok(a), Ok(b)) = (got.trim().parse::<f64>(), want.trim().parse::<f64>()) {
+            return Some((a - b).abs() <= 1e-6_f64.max(b.abs() * 0.01));
+        }
+        let cfg = &self.store.config.privacy;
+        // Compare the way the value is shown (card numbers are masked).
+        let want = if cfg.redact_card_numbers {
+            crate::privacy::mask_card_numbers(want).unwrap_or_else(|| want.to_string())
+        } else {
+            want.to_string()
+        };
+        if got.contains(crate::privacy::MASK) && !want.contains(crate::privacy::MASK) {
+            return None;
+        }
+        Some(got.trim_end() == want.trim_end())
     }
 
     // -- new tools ---------------------------------------------------------
@@ -1983,7 +2274,7 @@ impl<B: Backend> Engine<B> {
     /// The action guard: confirm/refuse a consequential press on `label`.
     /// While such an action waits for the user the overlay turns to the
     /// approval colour; once it runs, to the sensitive-action colour.
-    fn guard_action(&mut self, label: &str, approver: &mut dyn Approver) -> Result<()> {
+    fn guard_action(&mut self, label: &str, approver: &mut dyn Approver) -> Result<bool> {
         use crate::config::SensitiveMode;
         let guard = &self.store.config.guard;
         let low = label.to_lowercase();
@@ -1992,7 +2283,7 @@ impl<B: Backend> Engine<B> {
             .iter()
             .any(|k| low.contains(&k.to_lowercase()))
         {
-            return Ok(());
+            return Ok(false);
         }
         let action = format!("press {label}");
         match guard.mode {
@@ -2021,7 +2312,7 @@ impl<B: Backend> Engine<B> {
                 action: Some(action),
             });
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Re-inspect an app after a mutating action and append what changed
@@ -2034,10 +2325,12 @@ impl<B: Backend> Engine<B> {
         let Ok(app) = self.resolve_app(app_query) else {
             return out;
         };
-        let Ok(window) = self.resolve_window(&app, None, true) else {
+        // Settling already read the app back after the action.
+        let fresh = self.settled != Some(self.epoch);
+        let Ok(window) = self.resolve_window(&app, None, fresh) else {
             return out;
         };
-        if self.observe(&app, &window, true).is_err() {
+        if self.observe(&app, &window, fresh).is_err() {
             return out;
         }
         let Ok(r) = self.render(app.pid, false) else {
@@ -2101,6 +2394,9 @@ impl<B: Backend> Engine<B> {
         }
     }
 }
+
+/// Appended when an action changed nothing that can be seen.
+const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
 
 /// Tools that change something on screen.
 const MUTATING_TOOLS: &[&str] = &[
@@ -3092,17 +3388,18 @@ mod tests {
         state_of(&mut e, serde_json::json!({}));
         assert_eq!(e.backend().snapshots, snaps, "tree read reused");
         assert_eq!(e.backend().window_lists, lists, "window list reused");
-        // An action makes them stale.
+        // An action makes them stale: settling reads the app until two reads
+        // agree, and the next get_app_state reuses the last of them.
         press_named(&mut e, 7, "Bold");
         state_of(&mut e, serde_json::json!({}));
-        assert_eq!(e.backend().snapshots, snaps + 1);
+        assert_eq!(e.backend().snapshots, snaps + 2);
         // Turned off: every call reads again.
         let mut cfg = e.store().config.clone();
         cfg.cache.snapshot_ttl_ms = 0;
         e.set_config(ConfigStore::in_memory(cfg));
         state_of(&mut e, serde_json::json!({}));
         state_of(&mut e, serde_json::json!({}));
-        assert_eq!(e.backend().snapshots, snaps + 3);
+        assert_eq!(e.backend().snapshots, snaps + 4);
     }
 
     #[test]
@@ -3512,5 +3809,201 @@ mod tests {
         );
         drop(e);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -- smart waiting and verification -------------------------------------
+
+    fn index_of_name(out: &str, needle: &str) -> u32 {
+        out.lines()
+            .find(|l| l.contains(needle))
+            .and_then(|l| l.split_whitespace().next())
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("{needle} not in:\n{out}"))
+    }
+
+    #[test]
+    fn waits_until_the_ui_stops_changing() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        // The document keeps updating for three more reads, then settles.
+        let before = e.backend().snapshots;
+        e.backend_mut().snapshot_script = ["Loading.", "Loading..", "Done"]
+            .map(|v| (5, v.to_string()))
+            .into();
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        // Read until two reads agreed (after "Done"), and the report shows it.
+        assert!(
+            e.backend().snapshots >= before + 4,
+            "{}",
+            e.backend().snapshots
+        );
+        assert!(out.text.contains("Done"), "{}", out.text);
+
+        // Fixed mode: one read (for the report), no waiting for stability.
+        let mut cfg = e.store().config.clone();
+        cfg.timing.settle = crate::config::SettleMode::Fixed;
+        e.set_config(ConfigStore::in_memory(cfg));
+        state_of(&mut e, serde_json::json!({}));
+        let before = e.backend().snapshots;
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert_eq!(e.backend().snapshots, before + 1);
+    }
+
+    #[test]
+    fn a_press_that_fails_is_clicked_with_the_mouse() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        e.backend_mut().fail_actions.insert(3);
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("clicked it with the mouse instead"),
+            "{}",
+            out.text
+        );
+        assert!(e.backend().events.contains(&Event::Click(
+            4242,
+            Point::new(40.0, 20.0),
+            MouseButton::Left,
+            1
+        )));
+
+        // With retries off, the failure is reported instead.
+        let mut cfg = e.store().config.clone();
+        cfg.verify.retry = false;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn a_press_that_changes_nothing_is_reported_not_repeated() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains("Nothing on screen changed"),
+            "{}",
+            out.text
+        );
+        let presses = |e: &Engine<MockBackend>| {
+            e.backend()
+                .events
+                .iter()
+                .filter(|ev| matches!(ev, Event::Action(3, _) | Event::Click(..)))
+                .count()
+        };
+        assert_eq!(presses(&e), 1, "not repeated by default");
+
+        // Opted in: tried once more with the mouse.
+        let mut cfg = e.store().config.clone();
+        cfg.verify.retry_on_no_change = true;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains("clicked it with the mouse too"),
+            "{}",
+            out.text
+        );
+        assert_eq!(presses(&e), 3);
+    }
+
+    #[test]
+    fn guarded_presses_are_never_repeated() {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        app.elements.push(button(9, "Send", 2, 200.0));
+        backend.add_app(app);
+        let mut cfg = Config::default();
+        cfg.approvals.mode = ApprovalMode::AllowAll;
+        cfg.verify.retry_on_no_change = true;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        let out = state_of(&mut e, serde_json::json!({}));
+        let send = index_of_name(&out.text, "\"Send\"");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": send}),
+            &mut allow(),
+        );
+        assert!(
+            out.text.contains("Nothing on screen changed"),
+            "{}",
+            out.text
+        );
+        assert!(
+            !e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Click(..)))
+        );
+    }
+
+    #[test]
+    fn a_value_that_does_not_take_is_typed_instead() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let doc = index_of_name(&out.text, "\"Document\"");
+        e.backend_mut().ignore_set_value.insert(5);
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "Replaced"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("typed it instead"), "{}", out.text);
+        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+        assert!(out.text.contains("Replaced"), "{}", out.text);
+        assert!(!out.text.contains("HelloReplaced"), "{}", out.text);
+    }
+
+    #[test]
+    fn typing_that_does_not_land_clicks_the_field_and_types_again() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let doc = index_of_name(&out.text, "\"Document\"");
+        // Focus claims success but does nothing: the text goes nowhere.
+        e.backend_mut().fake_focus.insert(5);
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "text": " world"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("didn't land"), "{}", out.text);
+        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+        assert!(out.text.contains("Hello world"), "{}", out.text);
     }
 }

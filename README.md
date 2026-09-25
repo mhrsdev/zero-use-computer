@@ -228,6 +228,32 @@ task is complete) can say so with a JSON-RPC notification:
   default) or `"pixelate"`; each rule can be switched off. Full-screen
   captures use the private areas of the app windows the agent has read.
 
+## Waits for the UI, checks its work
+
+- **Smart waiting.** After an action the engine doesn't just sleep for a fixed
+  time. It re-reads the app until two reads in a row agree (the UI has
+  finished reacting), up to `timing.settle_max_ms`. That is
+  `timing.settle = "adaptive"`; `"fixed"` goes back to a plain `settle_ms`
+  pause. The last read is reused for the change report, so it costs about one
+  extra read per action.
+- **Verification** (`[verify]`). Each action's result is checked. If a value
+  didn't take, typed text didn't land in the field, or nothing changed after a
+  press, the model is told so ("Nothing on screen changed after it; check
+  before repeating it").
+- **Retry another way** when an action clearly failed (`verify.retry`):
+
+  | Failure | Retry |
+  |---|---|
+  | an accessibility press errors | a mouse click on the element |
+  | a value didn't take | focus, select all, type |
+  | typed text went nowhere | click into the field and type again |
+  | a scroll didn't move | the mouse wheel |
+  | a field won't take focus | click it |
+
+  A press that simply changed nothing is not repeated unless
+  `verify.retry_on_no_change = true`. Guarded actions (send, pay, delete…) are
+  never repeated.
+
 ## Architecture
 
 ```

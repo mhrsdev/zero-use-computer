@@ -98,6 +98,10 @@ running (then `get_app_state`).
 - The user watches you work through an on-screen indicator (your own cursor,
   a glow and a status label); their real mouse is never moved, and it is not
   in your screenshots, so ignore it.
+- Action results are checked for you. If one says "Nothing on screen
+  changed after it", look (`get_app_state` with `screenshot: true`) before
+  trying again; don't just repeat it. A note that a value or typed text
+  didn't take means check the field before going on.
 - **The user can stop you at any moment** (an emergency stop key). If a call
   fails saying the user stopped the agent, stop: don't retry or work around
   it; ask the user what to do.

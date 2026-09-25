@@ -110,6 +110,16 @@ pub struct MockBackend {
     pub snapshots: usize,
     pub captures: usize,
     pub window_lists: usize,
+    /// Elements whose accessibility action fails.
+    pub fail_actions: std::collections::HashSet<ElementHandle>,
+    /// Elements that accept set_value but keep their old value.
+    pub ignore_set_value: std::collections::HashSet<ElementHandle>,
+    /// Elements whose focus() reports success without focusing.
+    pub fake_focus: std::collections::HashSet<ElementHandle>,
+    /// A "select all" waiting for typed text to replace it.
+    select_all: Option<ElementHandle>,
+    /// Values to apply before successive snapshots (a UI still updating).
+    pub snapshot_script: std::collections::VecDeque<(ElementHandle, String)>,
     /// What `user_idle` reports (None = unknown); `idle_script` values are
     /// reported first, one per call.
     pub idle: Option<std::time::Duration>,
@@ -207,6 +217,17 @@ impl MockBackend {
         }
     }
 
+    /// Give `element` keyboard focus (and take it from the rest of its app).
+    fn set_focus(&mut self, element: ElementHandle) {
+        for app in &mut self.apps {
+            if app.elements.iter().any(|e| e.handle == element) {
+                for e in &mut app.elements {
+                    e.states.focused = e.handle == element;
+                }
+            }
+        }
+    }
+
     pub fn alloc(&mut self) -> ElementHandle {
         self.next_handle += 1;
         self.next_handle
@@ -274,6 +295,11 @@ impl Backend for MockBackend {
         _opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
         self.snapshots += 1;
+        if let Some((h, v)) = self.snapshot_script.pop_front()
+            && let Ok(e) = self.element_mut(h)
+        {
+            e.value = Some(v);
+        }
         let a = self
             .apps
             .iter()
@@ -359,6 +385,9 @@ impl Backend for MockBackend {
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {
         self.element(element)?;
+        if self.fail_actions.contains(&element) {
+            return Err(Error::ActionFailed("mock: action failed".into()));
+        }
         self.events
             .push(Event::Action(element, native_action.into()));
         if let Some(next) = self.on_press.get(&element).cloned()
@@ -370,8 +399,11 @@ impl Backend for MockBackend {
     }
 
     fn set_value(&mut self, element: ElementHandle, value: &str) -> Result<()> {
+        let ignore = self.ignore_set_value.contains(&element);
         let e = self.element_mut(element)?;
-        e.value = Some(value.into());
+        if !ignore {
+            e.value = Some(value.into());
+        }
         self.events.push(Event::SetValue(element, value.into()));
         Ok(())
     }
@@ -383,6 +415,9 @@ impl Backend for MockBackend {
         occurrence: usize,
     ) -> Result<()> {
         self.element(element)?;
+        if text.is_none() {
+            self.select_all = Some(element);
+        }
         self.events.push(Event::SelectText(
             element,
             text.map(String::from),
@@ -394,6 +429,9 @@ impl Backend for MockBackend {
     fn focus(&mut self, element: ElementHandle) -> Result<Native> {
         self.element(element)?;
         self.events.push(Event::Focus(element));
+        if !self.fake_focus.contains(&element) {
+            self.set_focus(element);
+        }
         Ok(Native::Done("focused".into()))
     }
 
@@ -421,6 +459,20 @@ impl Backend for MockBackend {
     ) -> Result<()> {
         self.events
             .push(Event::Click(target.pid, at, button, count));
+        // Clicking a text field focuses it.
+        let hit = self.app_mut(target.pid).and_then(|app| {
+            app.elements
+                .iter()
+                .filter(|e| e.states.editable && e.bounds.contains(at))
+                .min_by(|a, b| {
+                    (a.bounds.width * a.bounds.height)
+                        .total_cmp(&(b.bounds.width * b.bounds.height))
+                })
+                .map(|e| e.handle)
+        });
+        if let Some(h) = hit {
+            self.set_focus(h);
+        }
         Ok(())
     }
 
@@ -440,6 +492,7 @@ impl Backend for MockBackend {
     }
 
     fn type_text(&mut self, target: &InputTarget, text: &str) -> Result<()> {
+        let replace = self.select_all.take();
         if let Some(app) = self.app_mut(target.pid)
             && let Some(field) = app
                 .elements
@@ -447,6 +500,9 @@ impl Backend for MockBackend {
                 .find(|e| e.states.editable && e.states.focused)
         {
             let v = field.value.get_or_insert_with(String::new);
+            if replace == Some(field.handle) {
+                v.clear();
+            }
             v.push_str(text);
         }
         self.events.push(Event::Type(target.pid, text.into()));

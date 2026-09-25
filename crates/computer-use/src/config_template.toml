@@ -128,7 +128,12 @@ report_changes = true       # append "state after the action" to action results
 report_changes_max_lines = 25
 
 [timing]
-settle_ms = 40              # pause after each action for the UI to update
+settle_ms = 40              # pause after each action before looking again
+# "adaptive": then wait until the UI stops changing (two reads in a row
+# agree), at most settle_max_ms. "fixed": only the settle_ms pause.
+settle = "adaptive"
+settle_max_ms = 2000
+settle_poll_ms = 50         # interval between checks while waiting
 key_delay_ms = 10           # pause between keys in a press_key sequence
 app_cache_ms = 1500         # reuse the running-app list for this long
 wait_timeout_ms = 10000     # wait_for default timeout
@@ -195,6 +200,15 @@ confirm_timeout_secs = 120   # an unanswered on-screen confirmation is denied
 capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
 font = ""                    # label font file ("" = a system font)
 command = ""                 # helper program for library embedders
+
+# Checking that actions worked.
+[verify]
+enabled = true              # check each action's result; tell the agent when it didn't work
+retry = true                # an action that clearly failed is tried once more another way
+# Also retry presses after which nothing visible changed. Off: some actions
+# (pay, send…) show their effect late and must not be repeated. Guarded
+# actions are never retried.
+retry_on_no_change = false
 
 # Your controls over a running agent.
 [control]
