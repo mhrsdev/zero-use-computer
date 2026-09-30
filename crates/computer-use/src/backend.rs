@@ -36,9 +36,19 @@ pub trait Backend {
     /// Running GUI apps.
     fn list_apps(&mut self) -> Result<Vec<AppInfo>>;
 
-    /// Start an app by name, bundle id or executable. Returns once the launch
-    /// request has been issued; the engine waits for the app to appear.
-    fn launch_app(&mut self, query: &str) -> Result<()>;
+    /// Start an app. `app` is one name — an app's name as the OS lists it
+    /// ("Google Chrome"), a bundle id, an executable name, an absolute path or
+    /// a URI — and is never split into words. Returns once the launch request
+    /// has been issued; the engine waits for the app to appear. `args` are the command-line
+    /// arguments for an executable (each its own item); empty for a plain app.
+    fn launch_app(&mut self, app: &str, args: &[String]) -> Result<()>;
+
+    /// The program that `launch_app(app, [])` would start, when the OS can say
+    /// so without starting it (a `.desktop` entry's command, a file on PATH).
+    /// The engine checks it against the sensitive-app policy before launching.
+    fn launch_target(&mut self, _app: &str) -> Option<String> {
+        None
+    }
 
     /// Top-level windows of an app, most relevant first is not required.
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>>;

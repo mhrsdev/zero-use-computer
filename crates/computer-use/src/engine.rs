@@ -36,7 +36,12 @@ pub enum ApprovalDecision {
     Always,
     /// Allow for the rest of this session.
     Session,
+    /// The user (or the policy) said no.
     Deny,
+    /// Nobody could be asked: the client can't show an approval prompt and no
+    /// other way to ask is available. Not a refusal — the reply tells how to
+    /// grant access in advance instead.
+    Unavailable,
 }
 
 /// Decides whether an app may be controlled when policy says to ask.
@@ -747,6 +752,10 @@ impl<B: Backend> Engine<B> {
                 self.overlay_send(OverlayCmd::ApprovalDone);
                 match decision {
                     ApprovalDecision::Deny => Err(Error::Denied(app.name)),
+                    ApprovalDecision::Unavailable => Err(Error::ApprovalUnavailable {
+                        app: app.name,
+                        id: app.id,
+                    }),
                     ApprovalDecision::Once => Ok(app),
                     ApprovalDecision::Session => {
                         self.session_allowed.insert(app.id.to_lowercase());
@@ -1604,17 +1613,20 @@ impl<B: Backend> Engine<B> {
         args: LaunchAppArgs,
         approver: &mut dyn Approver,
     ) -> Result<ToolOutput> {
-        // Policy is judged on what would actually run. An app *name* with
-        // spaces ("Google Chrome") is checked as a whole and word by word (so
-        // `sudo xterm` can't hide a terminal); a *command line* is judged by
-        // its program, and — since arguments can turn any program into
-        // something else (`sh -c …`, `python evil.py`) — asks before it runs.
+        // `app` is one name (never a command line) and `args` the program's
+        // arguments, so nothing is ever split or guessed at. Policy is judged
+        // on what would actually run: the name as given, its file name (for a
+        // path), and — where the OS can say — the program it resolves to.
         let request = args.app.trim().to_string();
         if request.is_empty() {
             return Err(Error::ActionFailed("launch_app needs an app name.".into()));
         }
-        let (program, _) = launch::split_launch(&request);
-        let has_args = launch::has_arguments(&request);
+        let key = launch::program_key(&request);
+        let mut names = vec![request.clone(), key.clone()];
+        if let Some(target) = self.backend.launch_target(&request) {
+            names.push(launch::program_key(&target));
+        }
+        names.dedup();
         let probe_of = |name: &str| AppInfo {
             name: name.to_string(),
             id: name.to_string(),
@@ -1623,17 +1635,17 @@ impl<B: Backend> Engine<B> {
             frontmost: false,
             hidden: false,
         };
-        let mut candidates = vec![request.clone()];
-        candidates.extend(launch::words(&request));
-        for name in &candidates {
+        for name in &names {
             if let Verdict::Blocked(reason) =
                 policy::evaluate(&probe_of(name), &self.store, &self.session_allowed)
             {
                 return Err(Error::Blocked(name.clone(), reason));
             }
         }
-        if has_args {
-            let probe = probe_of(&program);
+        // Arguments can turn any program into something else (`sh -c …`,
+        // `python evil.py`): starting one with arguments asks first.
+        if !args.args.is_empty() {
+            let probe = probe_of(&request);
             if policy::evaluate(&probe, &self.store, &self.session_allowed)
                 == Verdict::NeedsApproval
             {
@@ -1642,7 +1654,7 @@ impl<B: Backend> Engine<B> {
         }
 
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
-        self.backend.launch_app(&request)?;
+        self.backend.launch_app(&request, &args.args)?;
 
         let timeout = self.store.config.launch_timeout_secs;
         let timeout = if timeout.is_finite() {
@@ -1652,11 +1664,7 @@ impl<B: Backend> Engine<B> {
         };
         let deadline = (self.clock)() + Duration::from_secs_f64(timeout);
         // What to look for among the running apps.
-        let ql = if has_args {
-            launch::program_key(&program)
-        } else {
-            request.to_lowercase()
-        };
+        let ql = key;
         loop {
             let apps = self.find_apps()?;
             // Prefer a newly-appeared app that matches the query.
@@ -3525,7 +3533,8 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     if key.len() == 1 {
         return Ok(key[0].clone());
     }
-    // Substring on name/id.
+    // Substring on name/id. Several candidates are never settled by a guess
+    // (not even "the frontmost one"): the caller says which.
     let sub: Vec<&AppInfo> = apps
         .iter()
         .filter(|a| a.name.to_lowercase().contains(&ql) || a.id.to_lowercase().contains(&ql))
@@ -3533,19 +3542,14 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     match sub.as_slice() {
         [a] => Ok((*a).clone()),
         [] => Err(Error::AppNotFound(query.into())),
-        many => {
-            if let Some(a) = many.iter().find(|a| a.frontmost) {
-                return Ok((*a).clone());
-            }
-            Err(Error::AmbiguousApp {
-                query: query.into(),
-                candidates: many
-                    .iter()
-                    .map(|a| format!("{} (pid {})", a.name, a.pid))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            })
-        }
+        many => Err(Error::AmbiguousApp {
+            query: query.into(),
+            candidates: many
+                .iter()
+                .map(|a| format!("{} (pid {})", a.name, a.pid))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
     }
 }
 
@@ -3827,6 +3831,7 @@ mod tests {
             .call(
                 ToolCall::LaunchApp(LaunchAppArgs {
                     app: "Notes".into(),
+                    args: Vec::new(),
                 }),
                 &mut allow(),
             )
@@ -3873,10 +3878,16 @@ mod tests {
         let apps = vec![a.clone(), b.clone()];
         assert_eq!(resolve_app_in(&apps, "1").unwrap().pid, 1);
         assert_eq!(resolve_app_in(&apps, "com.apple.Safari").unwrap().pid, 1);
-        // Exact name beats the frontmost tiebreak.
+        // An exact name wins over longer names that merely contain it.
         assert_eq!(resolve_app_in(&apps, "Safari").unwrap().pid, 1);
-        // "safari" (lowercased) is only a substring of both -> frontmost wins.
-        assert_eq!(resolve_app_in(&apps, "afari").unwrap().pid, 2);
+        // A fragment that two apps contain is ambiguous — even when one of
+        // them is frontmost, the caller says which; nothing is guessed.
+        let err = resolve_app_in(&apps, "afari").unwrap_err();
+        assert!(matches!(err, Error::AmbiguousApp { .. }), "{err}");
+        assert!(
+            err.to_string().contains("Safari Technology Preview"),
+            "{err}"
+        );
         assert!(resolve_app_in(&apps, "Firefox").is_err());
     }
 
@@ -5515,24 +5526,31 @@ mod tests {
     }
 
     #[test]
-    fn launch_app_is_judged_by_its_program_not_the_whole_string() {
+    fn launch_app_judges_the_program_and_never_splits_the_name() {
         let mut e = prompt_engine(vec![MockBackend::text_editor(60)]);
-        for request in [
-            "xterm",
-            "xterm ",
-            "xterm -e sh",
-            "sh -c id",
-            "/usr/bin/bash -lc x",
-            "cmd /c calc",
-        ] {
-            let out = e.call_tool(
+        let launch = |e: &mut Engine<MockBackend>, app: &str, args: serde_json::Value| {
+            e.call_tool(
                 "launch_app",
-                serde_json::json!({"app": request}),
+                serde_json::json!({"app": app, "args": args}),
                 &mut allow(),
-            );
+            )
+        };
+        // Terminals and shells are blocked however they are spelled or started.
+        for (app, args) in [
+            ("xterm", serde_json::json!([])),
+            ("xterm ", serde_json::json!([])),
+            ("xterm", serde_json::json!(["-e", "sh"])),
+            ("sh", serde_json::json!(["-c", "id"])),
+            ("/usr/bin/bash", serde_json::json!(["-lc", "x"])),
+            (
+                "C:\\Windows\\System32\\cmd.exe",
+                serde_json::json!(["/c", "calc"]),
+            ),
+        ] {
+            let out = launch(&mut e, app, args);
             assert!(
                 out.is_error && out.text.contains("blocked"),
-                "{request}: {}",
+                "{app}: {}",
                 out.text
             );
         }
@@ -5543,10 +5561,14 @@ mod tests {
                 .any(|ev| matches!(ev, Event::Launch(_))),
             "nothing was started"
         );
+        // A command line in `app` is just a name nothing has: not found, and
+        // never run as "sudo" with an argument.
+        let out = launch(&mut e, "sudo xterm -e sh", serde_json::json!([]));
+        assert!(out.is_error, "{}", out.text);
         // An ordinary program with arguments asks first and honours a "no".
         let out = e.call_tool(
             "launch_app",
-            serde_json::json!({"app": "calc --safe"}),
+            serde_json::json!({"app": "calc", "args": ["--safe"]}),
             &mut DenyApprover,
         );
         assert!(out.is_error, "{}", out.text);
@@ -5554,7 +5576,7 @@ mod tests {
             !e.backend()
                 .events
                 .iter()
-                .any(|ev| matches!(ev, Event::Launch(_)))
+                .any(|ev| matches!(ev, Event::Launch(s) if s == "calc"))
         );
     }
 
@@ -5576,13 +5598,14 @@ mod tests {
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("Launched Google Chrome"), "{}", out.text);
-        // A terminal can't hide behind a wrapper word.
+        // A name is never split into words: nothing is started for a string
+        // that is not an app.
         let out = e.call_tool(
             "launch_app",
-            serde_json::json!({"app": "sudo xterm"}),
+            serde_json::json!({"app": "Google Chrome Canary"}),
             &mut allow(),
         );
-        assert!(out.is_error && out.text.contains("blocked"), "{}", out.text);
+        assert!(out.is_error, "{}", out.text);
     }
 
     #[test]

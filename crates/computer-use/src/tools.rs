@@ -101,6 +101,10 @@ fn de_index<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<u32, D::Erro
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct LaunchAppArgs {
     pub app: String,
+    /// Command-line arguments; only for starting an executable with
+    /// arguments. Never part of `app`.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -595,10 +599,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app",
             title: "Launch app",
-            description: "Start (or bring up) a desktop app by name, bundle id or executable, and wait until it shows a window. Then call get_app_state.",
+            description: "Start (or bring up) a desktop app and wait until it shows a window. Then call get_app_state. `app` is ONE name, never a command line: the app's name as the OS lists it (\"Google Chrome\", \"Visual Studio Code\"), a bundle id, an executable name, an absolute path or a URI (ms-settings:display). Put command-line arguments in `args`.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"app": {"type": "string", "description": "App name, bundle id or executable."}},
+                "properties": {
+                    "app": {"type": "string", "description": "The app's name, bundle id, executable name, absolute path or URI. One name; no arguments."},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Command-line arguments for the executable (each one its own item). Starting a program with arguments asks for approval."}
+                },
                 "required": ["app"],
                 "additionalProperties": false
             }),
@@ -1107,7 +1114,7 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}], "path": "/tmp/x", "max_entries": 5,
+            "steps": [{"tool": "list_apps"}], "path": "/tmp/x", "max_entries": 5, "args": ["-a"],
             "offset": 0, "max_bytes": 100, "name": "files"
             }"#,
         )

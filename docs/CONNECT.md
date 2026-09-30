@@ -36,6 +36,10 @@ computer-use-mcp --approval allow-all serve          # every app not blocked by 
 computer-use-mcp --allow "TextEdit" --allow Notepad serve   # only these apps
 ```
 
+If a client can't show an approval prompt and no on-screen dialog is available, the tool
+reply says *nobody could be asked* (it is not a refusal) and names the app's id: pass
+`--allow "<id>"` or `--approval allow-all`, or add it to `approvals.always_allow`.
+
 Terminals, password managers, OS security prompts and the agent's own host app
 stay blocked unless you change `[sensitive]` in the settings.
 

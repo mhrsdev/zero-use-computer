@@ -1,48 +1,42 @@
-//! Understanding `launch_app` requests.
+//! Finding an app by its name.
 //!
-//! A request is either an **app name** — often with spaces ("Google Chrome",
-//! "Visual Studio Code") — or a **command line** (`code --new-window`,
-//! `sh -c id`). Telling them apart matters twice: the policy must judge the
-//! program of a command line, and the backends must find an app by its
-//! display name (Start Menu shortcut on Windows, `.desktop` entry on Linux)
-//! rather than run "Google" with the argument "Chrome".
+//! `launch_app` takes ONE name — never a command line — and arguments as a
+//! separate list, so nothing here ever splits or guesses at a string. An app
+//! "name" is looked up in the OS's own catalog of installed apps: Start Menu
+//! shortcuts on Windows, `.desktop` entries on Linux (`open -a` does it on
+//! macOS).
 
 use std::path::{Path, PathBuf};
 
-/// The program of a request (its first word, or a leading quoted path) and
-/// the rest of the line.
-pub fn split_launch(request: &str) -> (String, String) {
-    let r = request.trim();
-    if let Some(rest) = r.strip_prefix('"')
-        && let Some(end) = rest.find('"')
-    {
-        return (rest[..end].to_string(), rest[end + 1..].trim().to_string());
+/// Join arguments into a Windows command line, quoting each one the way
+/// `CommandLineToArgvW` reads them back.
+pub fn windows_command_line(args: &[String]) -> String {
+    fn quote(a: &str) -> String {
+        if !a.is_empty() && !a.contains([' ', '\t', '\n', '\x0b', '"']) {
+            return a.to_string();
+        }
+        let mut out = String::from('"');
+        let mut backslashes = 0usize;
+        for c in a.chars() {
+            match c {
+                '\\' => backslashes += 1,
+                '"' => {
+                    out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                    out.push('"');
+                    backslashes = 0;
+                }
+                c => {
+                    out.push_str(&"\\".repeat(backslashes));
+                    backslashes = 0;
+                    out.push(c);
+                }
+            }
+        }
+        out.push_str(&"\\".repeat(backslashes * 2));
+        out.push('"');
+        out
     }
-    match r.split_once(char::is_whitespace) {
-        Some((p, tail)) => (p.to_string(), tail.trim().to_string()),
-        None => (r.to_string(), String::new()),
-    }
-}
-
-/// Whether the words after the program look like command-line arguments
-/// (`-c`, `/c`, `--flag`, `KEY=value`, a path, a URL, a file name) rather than
-/// more words of an app's name.
-pub fn has_arguments(request: &str) -> bool {
-    let (_, rest) = split_launch(request);
-    rest.split_whitespace().any(|t| {
-        t.starts_with(['-', '/', '"', '\'', '~', '$', '%', '@'])
-            || t.contains(['=', '\\', ':', '.', ';', '&', '|', '<', '>', '`'])
-    })
-}
-
-/// The words of a request, for checking each one against the policy (so a
-/// wrapper like `sudo xterm` can't hide a terminal).
-pub fn words(request: &str) -> Vec<String> {
-    request
-        .split_whitespace()
-        .map(|w| w.trim_matches('"').to_string())
-        .filter(|w| !w.is_empty())
-        .collect()
+    args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
 
 /// A program as apps are matched: lowercase file name without `.exe`.
@@ -230,44 +224,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_names_with_spaces_are_names_not_command_lines() {
-        for name in [
-            "Google Chrome",
-            "Visual Studio Code",
-            "Microsoft Edge",
-            "Adobe Photoshop 2026",
-            "Notepad",
-            "Windows Terminal",
-        ] {
-            assert!(!has_arguments(name), "{name}");
-        }
-        for cmd in [
-            "xterm -e sh",
-            "sh -c id",
-            "cmd /c calc",
-            "code --new-window",
-            "python3 evil.py",
-            "env FOO=bar xterm",
-            "notepad C:\\x.txt",
-            "chrome https://example.com",
-            "\"C:\\Program Files\\x.exe\" --a",
-        ] {
-            assert!(has_arguments(cmd), "{cmd}");
-        }
+    fn program_keys_are_file_names_without_extension() {
+        assert_eq!(program_key("C:\\Apps\\Calc.EXE"), "calc");
+        assert_eq!(program_key("/usr/bin/bash"), "bash");
+        assert_eq!(program_key("Google Chrome"), "google chrome");
     }
 
     #[test]
-    fn splitting_and_keys() {
+    fn windows_arguments_are_quoted_so_they_read_back_unchanged() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(windows_command_line(&a(&["-c", "x"])), "-c x");
+        assert_eq!(windows_command_line(&a(&["a b", ""])), "\"a b\" \"\"");
         assert_eq!(
-            split_launch("  \"C:\\Program Files\\x.exe\" --a "),
-            ("C:\\Program Files\\x.exe".to_string(), "--a".to_string())
+            windows_command_line(&a(&["say \"hi\""])),
+            "\"say \\\"hi\\\"\""
         );
         assert_eq!(
-            split_launch("Google Chrome"),
-            ("Google".to_string(), "Chrome".to_string())
+            windows_command_line(&a(&["C:\\dir with space\\"])),
+            "\"C:\\dir with space\\\\\""
         );
-        assert_eq!(program_key("C:\\Apps\\Calc.EXE"), "calc");
-        assert_eq!(words("sudo \"xterm\" -e"), ["sudo", "xterm", "-e"]);
     }
 
     #[test]

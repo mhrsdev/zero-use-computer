@@ -487,7 +487,9 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         if !self.client_elicitation {
             return match self.headless {
                 HeadlessApproval::Allow => ApprovalDecision::Session,
-                HeadlessApproval::Deny => ApprovalDecision::Deny,
+                // The client can't ask and the policy says not to allow: no
+                // one was refused, no one was asked.
+                HeadlessApproval::Deny => ApprovalDecision::Unavailable,
             };
         }
         if self.cancelled {
@@ -609,7 +611,10 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         if self.write_msg(&req).is_err() {
             return false;
         }
-        !matches!(self.await_elicit_response(&out_id), ApprovalDecision::Deny)
+        matches!(
+            self.await_elicit_response(&out_id),
+            ApprovalDecision::Once | ApprovalDecision::Session | ApprovalDecision::Always
+        )
     }
 
     fn next_id(&mut self) -> i64 {
@@ -1171,5 +1176,27 @@ mod tests {
             text
         );
         assert_eq!(out[5]["error"]["code"], -32002);
+    }
+
+    #[test]
+    fn a_client_that_cannot_ask_gets_told_how_to_allow_the_app() {
+        // No elicitation and no headless allow: nobody is asked, and nobody
+        // is refused — the reply says how to grant access in advance.
+        let input = format!(
+            "{}{}",
+            line("initialize", 1, json!({"capabilities":{}})),
+            line(
+                "tools/call",
+                2,
+                json!({"name":"get_app_state","arguments":{"app":"TextEdit"}})
+            ),
+        );
+        let out = converse(ApprovalMode::Prompt, HeadlessApproval::Deny, &input);
+        let call = out.iter().find(|m| m["id"] == 2).unwrap();
+        assert_eq!(call["result"]["isError"], true);
+        let text = call["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("nobody could be asked"), "{text}");
+        assert!(text.contains("--allow"), "{text}");
+        assert!(!text.contains("denied access"), "{text}");
     }
 }

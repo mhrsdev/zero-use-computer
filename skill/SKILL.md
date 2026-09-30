@@ -63,6 +63,7 @@ you from re-reading and re-analysing:
 
 Use `list_apps` to find the exact app, and `launch_app` to start one that isn't
 running (then `get_app_state`).
+`launch_app(app)` takes ONE name — the app's name as the OS lists it ("Google Chrome"), a bundle id, an executable, an absolute path or a URI — never a command line; put command-line arguments in `args`.
 
 ## Helpers that save turns
 

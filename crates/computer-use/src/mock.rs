@@ -279,7 +279,7 @@ impl Backend for MockBackend {
         Ok(self.apps.iter().map(|a| a.info.clone()).collect())
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
+    fn launch_app(&mut self, query: &str, _args: &[String]) -> Result<()> {
         self.events.push(Event::Launch(query.into()));
         if let Some(app) = self.launchable.remove(&query.to_lowercase()) {
             self.apps.push(app);

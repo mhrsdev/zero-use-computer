@@ -46,6 +46,11 @@ pub enum Error {
     #[error("the user denied access to {0}. Do not retry; ask the user how to proceed.")]
     Denied(String),
 
+    #[error(
+        "{app} needs the user's approval, but this client can't show an approval prompt and no on-screen dialog is available, so nobody could be asked. Nothing was refused. To allow it, the user can start the server with `--allow \"{id}\"` (or `--approval allow-all`), or add \"{id}\" to approvals.always_allow in the settings file; then try again."
+    )]
+    ApprovalUnavailable { app: String, id: String },
+
     #[error("{0}")]
     ActionFailed(String),
 

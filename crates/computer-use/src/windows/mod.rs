@@ -574,56 +574,50 @@ impl Backend for WindowsBackend {
         Ok(by_pid.into_values().collect())
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
-        let query = query.trim();
-        if query.is_empty() {
+    fn launch_app(&mut self, app: &str, args: &[String]) -> Result<()> {
+        let app = app.trim();
+        if app.is_empty() {
             return Err(Error::InvalidArgs("empty app".into()));
         }
-        // A bare name, a URI (`ms-settings:display`) or a document/path goes
-        // through the shell, like Win+R: App Paths, .cmd/.bat shims on PATH
-        // (`code`), protocol handlers and file associations all work. A name
-        // the shell doesn't know ("Discord") or one with spaces ("Google
-        // Chrome") is looked up among the Start Menu shortcuts.
-        if !query.contains(char::is_whitespace) || std::path::Path::new(query).exists() {
-            return match shell_open(query, None) {
-                Ok(()) => Ok(()),
-                Err(e) => match crate::launch::find_shortcut(&start_menu_dirs(), query) {
-                    Some(lnk) => shell_open(&lnk.to_string_lossy(), None),
-                    None => Err(e),
-                },
+        // A program with arguments: run it directly (Rust quotes each
+        // argument), or through the shell when it isn't an .exe on PATH.
+        if !args.is_empty() {
+            // Never share our stdio: stdin/stdout carry the MCP JSON-RPC stream.
+            return match Command::new(app)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    // Reap it so no process handle lingers.
+                    let _ = std::thread::Builder::new()
+                        .name("reap-child".into())
+                        .spawn(move || child.wait());
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    shell_open(app, Some(&crate::launch::windows_command_line(args)))
+                }
+                Err(e) => Err(Error::ActionFailed(format!(
+                    "could not launch `{app}`: {e}"
+                ))),
             };
         }
-        if !crate::launch::has_arguments(query)
-            && let Some(lnk) = crate::launch::find_shortcut(&start_menu_dirs(), query)
-        {
-            return shell_open(&lnk.to_string_lossy(), None);
-        }
-        let mut parts = query.split_whitespace();
-        let program = parts.next().unwrap_or(query);
-        let args: Vec<&str> = parts.collect();
-        // Never share our stdio: stdin/stdout carry the MCP JSON-RPC stream.
-        match Command::new(program)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                // Reap it so no process handle lingers.
-                let _ = std::thread::Builder::new()
-                    .name("reap-child".into())
-                    .spawn(move || child.wait());
-                Ok(())
-            }
-            // Not an .exe on PATH: let the shell resolve it, with the rest
-            // of the string as its parameters.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                shell_open(program, Some(&args.join(" ")))
-            }
-            Err(e) => Err(Error::ActionFailed(format!(
-                "could not launch `{program}`: {e}"
-            ))),
+        // A name, a URI (`ms-settings:display`) or an absolute path goes
+        // through the shell, like Win+R: App Paths, .cmd/.bat shims on PATH
+        // (`code`), protocol handlers and file associations. What the shell
+        // doesn't know by that name ("Google Chrome", "Discord") is looked up
+        // in the Start Menu, the list of installed apps.
+        match shell_open(app, None) {
+            Ok(()) => Ok(()),
+            Err(shell_error) => match crate::launch::find_shortcut(&start_menu_dirs(), app) {
+                Some(lnk) => shell_open(&lnk.to_string_lossy(), None),
+                None => Err(Error::ActionFailed(format!(
+                    "no app named `{app}` was found (neither a program Windows knows nor a Start Menu entry): {shell_error}"
+                ))),
+            },
         }
     }
 

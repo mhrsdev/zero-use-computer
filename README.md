@@ -46,7 +46,7 @@ This project follows the same architecture and behaviour:
 | Tool | What it does |
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by name/bundle id/executable and wait for a window. |
+| `launch_app` | Start an app and wait for a window. `app` is ONE name as the OS lists it ("Google Chrome" — found via Start Menu shortcuts on Windows, `.desktop` entries on Linux, LaunchServices on macOS), a bundle id, an executable, an absolute path or a URI; command-line `args` are a separate list (starting a program with arguments asks for approval). |
 | `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
 | `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |

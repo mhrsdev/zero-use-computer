@@ -288,33 +288,30 @@ impl Backend for LinuxBackend {
         Ok(out)
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
-        let query = query.trim();
-        if query.is_empty() {
+    fn launch_app(&mut self, app: &str, args: &[String]) -> Result<()> {
+        let app = app.trim();
+        if app.is_empty() {
             return Err(Error::InvalidArgs("empty app".into()));
         }
-        // An app *name* with spaces ("Google Chrome") is found among the
-        // installed applications (.desktop files), not run as a program.
-        if query.contains(char::is_whitespace)
-            && !crate::launch::has_arguments(query)
-            && let Some(entry) = crate::launch::find_desktop_entry(&application_dirs(), query)
-        {
-            return spawn_detached(&entry.command[0], &entry.command[1..]);
+        // A program with arguments is run as given.
+        if !args.is_empty() {
+            return spawn_detached(app, args);
         }
-        let mut parts = query.split_whitespace();
-        let program = parts.next().unwrap_or(query);
-        let args: Vec<String> = parts.map(str::to_string).collect();
-        match spawn_detached(program, &args) {
-            Err(e) => {
-                // Not a program on PATH ("Firefox", "chrome"): try the
-                // installed applications by name or id.
-                match crate::launch::find_desktop_entry(&application_dirs(), query) {
-                    Some(entry) => spawn_detached(&entry.command[0], &entry.command[1..]),
-                    None => Err(e),
-                }
-            }
-            ok => ok,
+        // An app is found in the installed applications (.desktop files) by
+        // its name or id ("Google Chrome", "google-chrome"); failing that it
+        // is a program on PATH or an absolute path.
+        match crate::launch::find_desktop_entry(&application_dirs(), app) {
+            Some(entry) => spawn_detached(&entry.command[0], &entry.command[1..]),
+            None => spawn_detached(app, &[]),
         }
+    }
+
+    fn launch_target(&mut self, app: &str) -> Option<String> {
+        let app = app.trim();
+        Some(
+            crate::launch::find_desktop_entry(&application_dirs(), app)
+                .map_or_else(|| app.to_string(), |e| e.command[0].clone()),
+        )
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
@@ -590,7 +587,7 @@ fn spawn_detached(program: &str, args: &[String]) -> Result<()> {
         .spawn()
         .map_err(|e| {
             Error::ActionFailed(format!(
-                "could not launch `{program}`: {e}. Pass an executable name on PATH, or an installed app's name."
+                "could not launch `{program}`: {e}. Use an installed app's name (as in the app menu), or an executable on PATH."
             ))
         })?;
     reap(child);

@@ -135,8 +135,11 @@ impl Backend for Box<dyn Backend> {
     fn list_apps(&mut self) -> Result<Vec<types::AppInfo>> {
         (**self).list_apps()
     }
-    fn launch_app(&mut self, query: &str) -> Result<()> {
-        (**self).launch_app(query)
+    fn launch_app(&mut self, app: &str, args: &[String]) -> Result<()> {
+        (**self).launch_app(app, args)
+    }
+    fn launch_target(&mut self, app: &str) -> Option<String> {
+        (**self).launch_target(app)
     }
     fn list_windows(&mut self, app: &types::AppInfo) -> Result<Vec<types::WindowInfo>> {
         (**self).list_windows(app)

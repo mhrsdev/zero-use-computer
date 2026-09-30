@@ -322,27 +322,34 @@ impl Backend for MacBackend {
         Ok(out)
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
-        // `open -a Name` (or `-b bundle.id` when it looks like a bundle id).
-        let flag = if query.contains('.') && !query.contains(' ') {
-            "-b"
-        } else {
-            "-a"
-        };
-        // Never share our stdio: stdin/stdout carry the MCP JSON-RPC stream.
-        let mut child = Command::new("open")
-            .arg(flag)
-            .arg(query)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| Error::ActionFailed(format!("could not launch `{query}`: {e}")))?;
-        // Reap it (`open` exits promptly) so it never lingers as a zombie.
-        let _ = std::thread::Builder::new()
-            .name("reap-open".into())
-            .spawn(move || child.wait());
-        Ok(())
+    fn launch_app(&mut self, app: &str, args: &[String]) -> Result<()> {
+        let app = app.trim();
+        if app.is_empty() {
+            return Err(Error::InvalidArgs("empty app".into()));
+        }
+        // A plain executable with arguments is run as given; everything else
+        // goes through LaunchServices (`open`).
+        if !args.is_empty() && !app.ends_with(".app") {
+            let mut child = Command::new(app)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| Error::ActionFailed(format!("could not launch `{app}`: {e}")))?;
+            let _ = std::thread::Builder::new()
+                .name("reap-child".into())
+                .spawn(move || child.wait());
+            return Ok(());
+        }
+        // `open -a` resolves an app's name or path; `open -b` a bundle id.
+        // Ask LaunchServices with the name first and, only if it doesn't
+        // know it, as a bundle id.
+        let by_name = run_open("-a", app, args);
+        match by_name {
+            Ok(()) => Ok(()),
+            Err(name_error) => run_open("-b", app, args).map_err(|_| name_error),
+        }
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
@@ -582,6 +589,54 @@ fn utf16_range(hay: &str, needle: &str, nth: usize) -> Option<(usize, usize)> {
         .filter(|(_, w)| *w == needle.as_slice())
         .nth(nth.checked_sub(1)?)
         .map(|(i, _)| (i, needle.len()))
+}
+
+/// Run `open <flag> <target> [--args …]` and wait (briefly) for its verdict:
+/// `open` exits with a failure and a message when it cannot find the app.
+fn run_open(flag: &str, target: &str, args: &[String]) -> Result<()> {
+    use std::io::Read as _;
+    let mut cmd = Command::new("open");
+    cmd.arg(flag).arg(target);
+    if !args.is_empty() {
+        cmd.arg("--args").args(args);
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::ActionFailed(format!("could not launch `{target}`: {e}")))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let mut msg = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut msg);
+                }
+                return Err(Error::ActionFailed(format!(
+                    "no app `{target}` found ({})",
+                    msg.trim()
+                )));
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            // Still running after 10 s: it is starting the app.
+            Ok(None) => {
+                let _ = std::thread::Builder::new()
+                    .name("reap-open".into())
+                    .spawn(move || child.wait());
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(Error::ActionFailed(format!(
+                    "could not launch `{target}`: {e}"
+                )));
+            }
+        }
+    }
 }
 
 fn stable_id(title: &str, index: usize) -> u64 {

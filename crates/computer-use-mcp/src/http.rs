@@ -280,7 +280,8 @@ impl Approver for HttpApprover {
         if self.allow {
             ApprovalDecision::Session
         } else {
-            ApprovalDecision::Deny
+            // HTTP has no prompt channel: nobody was asked.
+            ApprovalDecision::Unavailable
         }
     }
     fn confirm_action(&mut self, _summary: &str) -> bool {
