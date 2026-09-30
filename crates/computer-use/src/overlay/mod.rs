@@ -571,4 +571,35 @@ mod tests {
             Cmd::Config { stopped: false, .. }
         ));
     }
+
+    #[test]
+    fn late_replies_do_not_pile_up() {
+        let (rtx, rx) = mpsc::channel();
+        let mut o = Overlay {
+            child: None,
+            tx: None,
+            rx,
+            backlog: Vec::new(),
+            alive: Arc::new(AtomicBool::new(true)),
+            stop: Arc::new(AtomicBool::new(false)),
+            excluded: false,
+            available: None,
+            next_id: 5,
+        };
+        for id in 0..100 {
+            rtx.send(Reply::Hidden { id, shown: true }).unwrap();
+        }
+        rtx.send(Reply::Ready {
+            excluded: true,
+            available: true,
+        })
+        .unwrap();
+        o.drain();
+        assert_eq!(o.backlog, vec![Reply::Hidden { id: 5, shown: true }]);
+        assert_eq!(o.available, Some(true));
+        // Readiness already known: no wait.
+        let t = Instant::now();
+        assert_eq!(o.wait_for(Duration::from_secs(2), None), None);
+        assert!(t.elapsed() < Duration::from_millis(500));
+    }
 }

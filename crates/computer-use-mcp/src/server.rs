@@ -179,7 +179,6 @@ pub struct Server<R: BufRead, W: Write, B: Backend> {
 impl<W: Write, B: Backend> Server<std::io::Empty, W, B> {
     /// A server reading stdin on a background thread, so that waiting for an
     /// approval answer can time out even when the client goes silent.
-    #[allow(dead_code)] // used by the binary's stdio transport
     pub fn stdio(engine: Engine<B>, writer: W, headless: HeadlessApproval) -> Self {
         let rx = spawn_line_reader(std::io::BufReader::new(std::io::stdin()), MAX_LINE_BYTES);
         Self::from_lines(engine, rx, writer, headless)

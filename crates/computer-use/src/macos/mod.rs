@@ -403,10 +403,10 @@ impl Backend for MacBackend {
             .bounds
             .filter(|b| !b.is_empty())
             .ok_or_else(|| Error::Platform("window has no bounds to capture".into()))?;
-        if let Ok(win) = self.resolve(window.handle) {
-            if let Some(id) = ffi::window_id(win.as_ref()) {
-                return cg::capture_window(id, rect);
-            }
+        if let Ok(win) = self.resolve(window.handle)
+            && let Some(id) = ffi::window_id(win.as_ref())
+        {
+            return cg::capture_window(id, rect);
         }
         cg::capture_screen(Some(rect))
     }

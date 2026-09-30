@@ -1661,6 +1661,10 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         calls: Vec<String>,
+        /// A Retina-like display (2 px per unit).
+        retina: bool,
+        /// No smooth transparency (X11 without a compositor).
+        opaque: bool,
     }
 
     impl Surface for Fake {
@@ -1671,10 +1675,13 @@ mod tests {
             Rect::new(0.0, 0.0, 1280.0, 800.0)
         }
         fn render_scale(&self) -> f32 {
-            1.0
+            if self.retina { 2.0 } else { 1.0 }
         }
         fn px_per_unit(&self) -> f32 {
-            1.0
+            self.render_scale()
+        }
+        fn translucent(&self) -> bool {
+            !self.opaque
         }
         fn show(&mut self, layer: Layer, img: &Pixmap, x: f64, y: f64) {
             self.calls.push(format!(
@@ -1763,5 +1770,127 @@ mod tests {
         ] {
             assert!(s.calls.contains(&want.to_string()), "{want}: {:?}", s.calls);
         }
+    }
+
+    #[test]
+    fn scale_is_relative_to_the_display_and_opaque_screens_get_a_line() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(
+            OverlayConfig {
+                scale: 1.0,
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        let mut s = Fake {
+            retina: true,
+            ..Fake::default()
+        };
+        Painter::default().paint(&m.scene(t0), m.config(), &Fonts::default(), &mut s);
+        // 120 units deep, drawn at 2 px per unit (not halved).
+        assert!(
+            s.calls.contains(&"show Top 2560x240 @0,0".to_string()),
+            "{:?}",
+            s.calls
+        );
+        let mut s = Fake {
+            opaque: true,
+            ..Fake::default()
+        };
+        Painter::default().paint(&m.scene(t0), m.config(), &Fonts::default(), &mut s);
+        assert!(
+            s.calls.contains(&"show Top 1280x3 @0,0".to_string()),
+            "{:?}",
+            s.calls
+        );
+    }
+
+    #[test]
+    fn stop_hint_only_when_the_key_works() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(
+            Cmd::Config {
+                config: Box::new(cfg()),
+                hotkey: "ctrl+alt+escape".into(),
+                stopped: false,
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        let key = pretty_key("ctrl+alt+escape");
+        assert!(!m.scene(t0).label.unwrap().0.contains(&key));
+        m.set_hotkey_ok(true);
+        assert!(m.scene(t0).label.unwrap().0.contains(&key));
+    }
+
+    #[test]
+    fn a_stale_target_is_forgotten() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        m.apply(
+            Cmd::Target {
+                rect: Some([10.0, 10.0, 100.0, 100.0]),
+            },
+            t0,
+        );
+        m.apply(Cmd::End { ok: true }, t0);
+        assert!(m.scene(t0).target.is_some(), "kept while thinking");
+        // The next call works on no particular window.
+        m.apply(Cmd::Begin, t0);
+        assert!(m.scene(t0).target.is_some(), "no flicker mid-call");
+        m.apply(Cmd::End { ok: true }, t0);
+        assert!(m.scene(t0).target.is_none());
+    }
+
+    #[test]
+    fn host_working_does_not_stay_forever() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(
+            Cmd::Status {
+                state: Status::Working,
+            },
+            t0,
+        );
+        m.tick(t0 + Duration::from_secs(5));
+        assert_eq!(m.phase, Phase::Working);
+        m.tick(t0 + HOST_IDLE);
+        assert_eq!(m.phase, Phase::Done);
+    }
+
+    #[test]
+    fn confirmations_are_withdrawn() {
+        let t0 = Instant::now();
+        let ask = |m: &mut Machine| {
+            m.apply(Cmd::Begin, t0);
+            m.apply(
+                Cmd::Approval {
+                    id: 1,
+                    action: "x".into(),
+                    ask: true,
+                },
+                t0,
+            );
+            assert!(m.awaiting_approval());
+        };
+        let mut m = Machine::new(cfg(), t0);
+        ask(&mut m);
+        m.apply(Cmd::ApprovalDone, t0);
+        assert!(!m.awaiting_approval());
+        ask(&mut m);
+        m.apply(Cmd::Stopped { on: true }, t0);
+        assert!(!m.awaiting_approval(), "stop key");
+        let mut m = Machine::new(cfg(), t0);
+        ask(&mut m);
+        m.apply(
+            Cmd::Status {
+                state: Status::Hidden,
+            },
+            t0,
+        );
+        assert!(!m.awaiting_approval(), "hidden");
     }
 }

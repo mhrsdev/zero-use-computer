@@ -423,9 +423,8 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         computer_use::PLATFORM
     );
-    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin.lock(), stdout.lock(), headless);
+    let mut server = Server::stdio(engine, stdout.lock(), headless);
     server.run().context("serving MCP over stdio")
 }
 
