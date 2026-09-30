@@ -612,9 +612,15 @@ impl Machine {
             Phase::Paused => (&cfg.label_paused, None),
             Phase::Stopped => (&cfg.label_stopped, None),
         };
-        template
+        let mut text = template
             .replace("{action}", &crate::tree::truncate(action.unwrap_or(""), 60))
-            .replace("{hotkey}", &pretty_key(&self.hotkey))
+            .replace("{hotkey}", &pretty_key(&self.hotkey));
+        // Like a cancel hint: tell the user how to stop while the agent acts.
+        if matches!(self.phase, Phase::Working | Phase::Thinking) && !self.hotkey.trim().is_empty()
+        {
+            text.push_str(&format!(" · {} to stop", pretty_key(&self.hotkey)));
+        }
+        text
     }
 
     /// What should be on screen now.
@@ -753,8 +759,8 @@ impl Painter {
         // Border: a glow along the screen edges fading inward, or around the
         // target window (outside it where there is room, else inside).
         let unit = f64::from(scale) / f64::from(ppu);
-        let core = (f64::from(cfg.border_width.max(1)) * unit).max(1.0);
-        let band = (f64::from(cfg.glow_size) * unit).max(core);
+        let core = f64::from(cfg.border_width) * unit;
+        let band = (f64::from(cfg.glow_size) * unit).max(core).max(1.0);
         let px = |v: f64| ((v * f64::from(ppu)).round().max(1.0)) as u32;
         let window_mode = cfg.border_target == crate::config::BorderTarget::Window;
         let area = |target: Option<Rect>| match target {
@@ -1534,9 +1540,9 @@ mod tests {
         let mut p = Painter::default();
         let fonts = Fonts::default();
         p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
-        // A 36 px glow above the window, spanning past its corners.
+        // A glow above the window (as tall as the room there is), spanning past its corners.
         assert!(
-            s.calls.contains(&"show Top 472x36 @64,64".to_string()),
+            s.calls.contains(&"show Top 620x100 @0,0".to_string()),
             "{:?}",
             s.calls
         );
@@ -1572,10 +1578,10 @@ mod tests {
         let mut s = Fake::default();
         Painter::default().paint(&m.scene(t0), m.config(), &Fonts::default(), &mut s);
         for want in [
-            "show Top 1280x36 @0,0",
-            "show Right 36x800 @1244,0",
-            "show Bottom 1280x36 @0,764",
-            "show Left 36x800 @0,0",
+            "show Top 1280x120 @0,0",
+            "show Right 120x800 @1160,0",
+            "show Bottom 1280x120 @0,680",
+            "show Left 120x800 @0,0",
         ] {
             assert!(s.calls.contains(&want.to_string()), "{want}: {:?}", s.calls);
         }

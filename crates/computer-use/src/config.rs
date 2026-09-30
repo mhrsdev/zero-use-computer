@@ -481,8 +481,8 @@ impl Default for OverlayConfig {
             show_label: true,
             click_effect: true,
             border_target: BorderTarget::Screen,
-            border_width: 3,
-            glow_size: 36,
+            border_width: 0,
+            glow_size: 120,
             scale: 0.0,
             label_working: "Zero is using the computer".into(),
             label_thinking: "Zero is thinking…".into(),
@@ -495,7 +495,7 @@ impl Default for OverlayConfig {
             label_allow: "Allow".into(),
             label_deny: "Deny".into(),
             color_thinking: "#D4A017".into(),
-            color_working: "#1E88E5".into(),
+            color_working: "#2F93FF".into(),
             color_approval: "#FFE600".into(),
             color_danger: "#000000".into(),
             color_error: "#E53935".into(),
@@ -981,7 +981,7 @@ impl Config {
         ] {
             if crate::overlay::draw::parse_color(value).is_none() {
                 return Err(format!(
-                    "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
+                    "{key} must be a colour like \"#2F93FF\" (got \"{value}\")"
                 ));
             }
         }

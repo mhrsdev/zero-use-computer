@@ -170,8 +170,8 @@ show_cursor = true
 show_label = true
 click_effect = true          # a ripple where the agent clicks
 border_target = "screen"     # glow around the whole "screen" or the "window" worked on
-border_width = 3             # bright core line
-glow_size = 36               # how far the glow fades out (0 = a plain line)
+border_width = 0             # flat full-strength line at the very edge (0 = pure glow)
+glow_size = 120              # how far the soft glow reaches in (0 = a plain line)
 scale = 0.0                  # size multiplier; 0 = follow display scaling
 # Label per state; {action} is what is pending.
 label_working = "Zero is using the computer"
@@ -186,7 +186,7 @@ label_allow = "Allow"        # buttons of the on-screen confirmation
 label_deny = "Deny"
 # Colours per state (#RRGGBB or #RRGGBBAA).
 color_thinking = "#D4A017"   # gold: the model is thinking
-color_working = "#1E88E5"    # blue: acting on the computer
+color_working = "#2F93FF"    # blue: acting on the computer
 color_approval = "#FFE600"   # yellow: waiting for your approval
 color_danger = "#000000"     # black: a sensitive action (send, delete, pay…)
 color_error = "#E53935"      # red: something failed

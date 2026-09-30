@@ -4,7 +4,7 @@
 
 use tiny_skia::{
     Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Paint, PathBuilder, Pixmap,
-    Point, RadialGradient, Rect as SkRect, SpreadMode, Stroke, Transform,
+    Point, RadialGradient, SpreadMode, Stroke, Transform,
 };
 
 use super::text::{self, Fonts};
@@ -335,52 +335,53 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     pb.finish()
 }
 
-/// One border edge: a glow in `color` that is strongest (with a bright core
-/// line `core` px thick) on side `strong` — 0 top, 1 right, 2 bottom, 3 left
-/// — and fades out across the band. A dark colour (e.g. black for a
-/// sensitive action) gets a light core so it shows on dark screens too.
+/// One border edge: a wide, soft glow in `color`, strongest on side `strong`
+/// (0 top, 1 right, 2 bottom, 3 left) and fading out smoothly (a gaussian
+/// falloff) across the band. `core` px along the edge stay at full strength
+/// (0 = none). Along the edge the glow also fades towards both ends, so the
+/// four bands meet in rounded, seamless corners. A dark colour (e.g. black
+/// for a sensitive action) gets a light line so it shows on dark screens too.
 pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pixmap {
     let (w, h) = (width.max(1), height.max(1));
-    let mut pm = Pixmap::new(w, h).expect("edge size");
+    let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("edge size");
     let (fw, fh) = (w as f32, h as f32);
-    let (from, to, depth) = match strong {
-        0 => (Point::from_xy(0.0, 0.0), Point::from_xy(0.0, fh), fh),
-        1 => (Point::from_xy(fw, 0.0), Point::from_xy(0.0, 0.0), fw),
-        2 => (Point::from_xy(0.0, fh), Point::from_xy(0.0, 0.0), fh),
-        _ => (Point::from_xy(0.0, 0.0), Point::from_xy(fw, 0.0), fw),
-    };
-    let core_t = (core / depth.max(1.0)).clamp(0.0, 0.9);
-    let stops = vec![
-        GradientStop::new(0.0, with_alpha(color, 1.0)),
-        GradientStop::new(core_t, with_alpha(color, 0.92)),
-        GradientStop::new((core_t + 0.12).min(0.95), with_alpha(color, 0.45)),
-        GradientStop::new((core_t + 0.45).min(0.97), with_alpha(color, 0.14)),
-        GradientStop::new(1.0, with_alpha(color, 0.0)),
-    ];
-    if let Some(shader) =
-        LinearGradient::new(from, to, stops, SpreadMode::Pad, Transform::identity())
-    {
-        let p = Paint {
-            shader,
-            ..Paint::default()
+    let horizontal = strong == 0 || strong == 2;
+    let depth = if horizontal { fh } else { fw };
+    let length = if horizontal { fw } else { fh };
+    let dark = luminance(color) < 0.15;
+    let core = if dark { core.max(2.0) } else { core };
+    let (r, g, b) = (color.red(), color.green(), color.blue());
+    const PEAK: f32 = 0.92;
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let width_px = w as usize;
+    for (i, px) in pm.pixels_mut().iter_mut().enumerate() {
+        let (x, y) = ((i % width_px) as f32 + 0.5, (i / width_px) as f32 + 0.5);
+        // Distance from the strong side, and position along the edge.
+        let (d, along) = match strong {
+            0 => (y, x),
+            1 => (fw - x, y),
+            2 => (fh - y, x),
+            _ => (x, y),
         };
-        if let Some(r) = SkRect::from_xywh(0.0, 0.0, fw, fh) {
-            pm.fill_rect(r, &p, Transform::identity(), None);
+        let body = if d <= core {
+            1.0
+        } else {
+            let u = ((d - core) / (depth - core).max(1.0)).clamp(0.0, 1.0);
+            // Gaussian-like falloff, forced to zero at the far side.
+            ((-(u * 2.8).powi(2)).exp() * (1.0 - smooth(u).powi(3))).clamp(0.0, 1.0)
+        };
+        let end = (along.min(length - along) / depth.min(length / 2.0)).clamp(0.0, 1.0);
+        let mut a = PEAK * body * smooth(end.max(0.0));
+        let (mut cr, mut cg, mut cb) = (r, g, b);
+        if dark && (d - core).abs() <= (core * 0.5).max(1.0) {
+            let c = contrast(color);
+            (cr, cg, cb) = (c.red(), c.green(), c.blue());
+            a = a.max(0.85 * smooth(end));
         }
-    } else {
-        pm.fill(color);
-    }
-    // A thin contrasting line along the core keeps dark colours visible.
-    if luminance(color) < 0.15 {
-        let t = (core * 0.5).max(1.0);
-        let r = match strong {
-            0 => SkRect::from_xywh(0.0, core, fw, t),
-            1 => SkRect::from_xywh(fw - core - t, 0.0, t, fh),
-            2 => SkRect::from_xywh(0.0, fh - core - t, fw, t),
-            _ => SkRect::from_xywh(core, 0.0, t, fh),
-        };
-        if let Some(r) = r {
-            pm.fill_rect(r, &paint(contrast(color)), Transform::identity(), None);
+        let a8 = (a * 255.0).round() as u8;
+        let m = |v: f32| ((v * a * 255.0).round() as u8).min(a8);
+        if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(m(cr), m(cg), m(cb), a8) {
+            *px = c;
         }
     }
     pm
@@ -546,10 +547,15 @@ mod tests {
         assert!(l.height() >= 26);
         let e = edge(100, 30, ring, 0, 3.0);
         // Strongest at the top, faded out at the bottom.
-        assert!(e.pixel(5, 0).unwrap().alpha() > 240);
-        assert!(e.pixel(5, 29).unwrap().alpha() < 20);
+        assert!(e.pixel(50, 0).unwrap().alpha() > 200);
+        assert!(e.pixel(50, 29).unwrap().alpha() < 20);
+        // Faded towards the ends, so neighbouring bands blend at the corners.
+        assert!(e.pixel(0, 0).unwrap().alpha() < e.pixel(50, 0).unwrap().alpha() / 2);
         let dark = edge(100, 30, parse_color("#000").unwrap(), 0, 3.0);
-        assert!(dark.pixel(5, 3).unwrap().red() > 120, "light core on black");
+        assert!(
+            dark.pixel(50, 2).unwrap().red() > 120,
+            "light line on black"
+        );
     }
 
     /// `OVERLAY_PREVIEW_DIR=/tmp/x cargo test -p computer-use preview -- --ignored`
