@@ -1,0 +1,43 @@
+<#
+Register computer-use-mcp with Claude Code (Windows).
+
+  .\install.ps1                        # user scope, approvals asked per app
+  .\install.ps1 -Approval allow-all    # every app not blocked by policy
+  .\install.ps1 -Scope project         # only for the current project
+  .\install.ps1 -Uninstall
+
+Run it from the folder that contains computer-use-mcp.exe
+(if scripts are blocked: powershell -ExecutionPolicy Bypass -File .\install.ps1).
+#>
+param(
+  [ValidateSet('local', 'project', 'user')] [string] $Scope = 'user',
+  [ValidateSet('', 'prompt', 'allowlist', 'allow-all')] [string] $Approval = '',
+  [string] $Name = 'computer-use',
+  [switch] $Uninstall
+)
+$ErrorActionPreference = 'Stop'
+
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+  throw 'claude (Claude Code) is not on PATH. Install it first: https://docs.claude.com/claude-code'
+}
+if ($Uninstall) {
+  claude mcp remove $Name --scope $Scope
+  Write-Host "Removed '$Name'."
+  return
+}
+
+$exe = Join-Path $PSScriptRoot 'computer-use-mcp.exe'
+if (-not (Test-Path $exe)) { throw "computer-use-mcp.exe not found next to this script ($exe)" }
+
+$serverArgs = @()
+if ($Approval) { $serverArgs += @('--approval', $Approval) }
+$serverArgs += 'serve'
+
+Write-Host '== doctor =='
+try { & $exe doctor } catch { Write-Host '(doctor reported problems; see docs\CONNECT.md)' }
+
+try { claude mcp remove $Name --scope $Scope 2>$null | Out-Null } catch {}
+claude mcp add --scope $Scope $Name -- $exe @serverArgs
+Write-Host ''
+Write-Host "Added '$Name' ($Scope scope). Check with:  claude mcp list"
+Write-Host 'Apps running as administrator cannot be controlled from a normal process.'
