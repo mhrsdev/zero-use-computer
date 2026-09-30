@@ -91,6 +91,51 @@ macro_rules! skill_set {
             ),
             skill!(
                 $os,
+                "word",
+                "Word processing: Microsoft Word (LibreOffice Writer on Linux) — styles, tracked changes, PDF."
+            ),
+            skill!(
+                $os,
+                "excel",
+                "Spreadsheets: Microsoft Excel (LibreOffice Calc on Linux) — cells, formulas, data, pasting."
+            ),
+            skill!(
+                $os,
+                "powerpoint",
+                "Presentations: PowerPoint (Impress on Linux, Keynote on Mac) — slides, outline, masters, present."
+            ),
+            skill!(
+                $os,
+                "outlook",
+                "Outlook mail and calendar (web version on Linux); drafting vs sending."
+            ),
+            skill!(
+                $os,
+                "email",
+                "Any email client: draft-don't-send rules, verifying recipients, phishing, search."
+            ),
+            skill!(
+                $os,
+                "messaging",
+                "WhatsApp/Telegram/Signal/Teams/iMessage: who you write to, newline sends, scams."
+            ),
+            skill!(
+                $os,
+                "slack",
+                "Slack: quick switcher, channels vs DMs, newline sends, pings."
+            ),
+            skill!(
+                $os,
+                "discord",
+                "Discord: servers/channels, quick switcher, pings, account rules."
+            ),
+            skill!(
+                $os,
+                "photoshop",
+                "Photoshop (GIMP on Linux): work on a copy, tools, layers, export."
+            ),
+            skill!(
+                $os,
                 "documents",
                 "Word processors, spreadsheets, presentations, PDF export."
             ),
@@ -169,6 +214,18 @@ mod tests {
         assert!(body(Os::Windows, "vscode").contains("ctrl+shift+p"));
         assert!(body(Os::MacOs, "browser-apps").contains("Safari"));
         assert!(!body(Os::Windows, "browser-apps").contains("Safari"));
+        assert!(body(Os::Windows, "excel").contains("Name Box"));
+        assert!(body(Os::Linux, "excel").contains("LibreOffice Calc"));
+        assert!(body(Os::Linux, "photoshop").contains("GIMP"));
+        assert!(body(Os::MacOs, "outlook").contains("cmd+Return"));
+        assert!(body(Os::Linux, "outlook").contains("no Outlook desktop app"));
+        for os in [Os::Windows, Os::MacOs, Os::Linux] {
+            // Messaging apps must warn that a newline sends.
+            for n in ["messaging", "slack", "discord"] {
+                assert!(body(os, n).to_lowercase().contains("newline"), "{n}");
+            }
+            assert!(body(os, "email").contains("Draft, don't send"));
+        }
         assert!(body(Os::MacOs, "text-and-dialogs").contains("cmd+"));
         assert!(!body(Os::Windows, "text-and-dialogs").contains("cmd+"));
     }

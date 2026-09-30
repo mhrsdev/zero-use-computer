@@ -97,8 +97,8 @@ running (then `get_app_state`).
 
 - `list_folder` / `read_file` — look at folders and text files directly (read-only;
   credential/key files are refused) instead of driving a file manager.
-- `skill` — built-in how-to playbooks for this OS (files, browser, browser-apps, vscode,
-  settings, windows, text/dialogs, documents, troubleshooting). Call `skill()` to list,
+- `skill` — built-in how-to playbooks for this OS (files, browser, browser-apps, vscode, word, excel,
+  powerpoint, outlook, email, messaging, slack, discord, photoshop, settings, windows, text/dialogs, documents, troubleshooting). Call `skill()` to list,
   `skill(name)` to read one before an unfamiliar task.
 - `create_folder` — make a folder (and missing parents) at an absolute path; it
   never deletes or overwrites. To name/save inside an app, use the app's own UI.
