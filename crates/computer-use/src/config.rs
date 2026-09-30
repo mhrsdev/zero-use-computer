@@ -462,7 +462,8 @@ pub struct OverlayConfig {
     pub fade_out_ms: u64,
     /// How long a change of state colour takes.
     pub transition_ms: u64,
-    /// Ask for confirmations on the screen: never, when_no_client, always.
+    /// Ask for confirmations on the screen: never, when_no_client, always
+    /// (default: a window on the screen always asks, whatever the client can do).
     pub confirm_on_screen: ScreenConfirm,
     /// Give up (deny) an on-screen confirmation after this many seconds.
     pub confirm_timeout_secs: u64,
@@ -516,7 +517,7 @@ impl Default for OverlayConfig {
             fade_in_ms: 250,
             fade_out_ms: 1200,
             transition_ms: 300,
-            confirm_on_screen: ScreenConfirm::WhenNoClient,
+            confirm_on_screen: ScreenConfirm::Always,
             confirm_timeout_secs: 120,
             capture_hide_ms: 40,
             font: String::new(),
@@ -918,6 +919,9 @@ pub struct Config {
     pub clipboard: bool,
     /// Expose the create_folder tool (makes folders; never deletes or overwrites).
     pub create_folder: bool,
+    /// Let the agent *ask* to change a few settings (the change_setting tool):
+    /// every change waits for the user's click in an on-screen window.
+    pub agent_settings: bool,
     /// Expose the read-only file tools (list_folder / read_file). Places that
     /// hold credentials or keys are always refused.
     pub read_files: bool,
@@ -962,6 +966,7 @@ impl Default for Config {
             clipboard: true,
             create_folder: true,
             read_files: true,
+            agent_settings: true,
             skills: true,
             text_only: false,
             follow_new_windows: true,
@@ -1240,6 +1245,30 @@ pub fn known_keys() -> Vec<String> {
     keys.extend(OPTIONAL_KEYS.iter().map(|k| k.to_string()));
     keys.sort();
     keys
+}
+
+/// Settings the agent may *ask* the user to change (the `change_setting`
+/// tool; the user's click in an on-screen window still decides). Everything
+/// that runs code or opens the server to others (`overlay.command`,
+/// `server.*`, `audit.*`, the stop key…) is never on this list.
+pub fn agent_may_change(key: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "approvals.",
+        "sensitive.",
+        "guard.",
+        "screenshot.",
+        "privacy.",
+    ];
+    const KEYS: &[&str] = &[
+        "overlay.confirm_on_screen",
+        "overlay.confirm_timeout_secs",
+        "clipboard",
+        "read_files",
+        "create_folder",
+        "skills",
+        "text_only",
+    ];
+    PREFIXES.iter().any(|p| key.starts_with(p)) || KEYS.contains(&key)
 }
 
 /// Keys present in `text` that computer-use doesn't recognise (typos).

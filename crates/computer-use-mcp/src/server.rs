@@ -694,7 +694,8 @@ pub(crate) fn instructions() -> String {
      window image, and get_clipboard/set_clipboard for text. list_folder/read_file \
      read files without a file manager, and skill() lists built-in how-to \
      playbooks for this OS (files, browser, settings, dialogs…): read the \
-     matching one before an unfamiliar task. Terminals, \
+     matching one before an unfamiliar task. change_setting asks the user (in a \
+     window on the screen) to change a setting, e.g. always allow an app. Terminals, \
      credential and OS-security prompts, and the agent's own app are blocked by \
      default (the user can allow them in settings); the first use of each app may \
      prompt for approval, and consequential actions may ask for confirmation."

@@ -77,6 +77,23 @@ fn de_opt_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<
     })
 }
 
+/// A setting's value: a string, number or boolean, as text.
+fn de_setting_value<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::Bool(b)) => Some(b.to_string()),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "expected a string, number or boolean, got {other}"
+            )));
+        }
+    })
+}
+
 fn de_opt_index<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
     Ok(match Option::<Value>::deserialize(d)? {
         None | Some(Value::Null) => None,
@@ -453,6 +470,20 @@ pub struct SkillArgs {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ChangeSettingArgs {
+    /// The setting (`approvals.always_allow`, `sensitive.terminals`…).
+    pub key: String,
+    /// `set` (default), `add` / `remove` (list settings) or `unset`.
+    #[serde(default)]
+    pub change: Option<String>,
+    #[serde(default, deserialize_with = "de_setting_value")]
+    pub value: Option<String>,
+    /// Why, shown to the user in the confirmation window.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// A parsed tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
@@ -477,6 +508,7 @@ pub enum ToolCall {
     ListFolder(ListFolderArgs),
     ReadFile(ReadFileArgs),
     Skill(SkillArgs),
+    ChangeSetting(ChangeSettingArgs),
     Window(WindowArgs),
     GetNotifications(NotificationsArgs),
 }
@@ -510,6 +542,7 @@ impl ToolCall {
             "list_folder" => ToolCall::ListFolder(parse_args(name, args)?),
             "read_file" => ToolCall::ReadFile(parse_args(name, args)?),
             "skill" => ToolCall::Skill(parse_args(name, args)?),
+            "change_setting" => ToolCall::ChangeSetting(parse_args(name, args)?),
             "window" => ToolCall::Window(parse_args(name, args)?),
             "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
@@ -539,6 +572,7 @@ impl ToolCall {
             ToolCall::ListFolder(_) => "list_folder",
             ToolCall::ReadFile(_) => "read_file",
             ToolCall::Skill(_) => "skill",
+            ToolCall::ChangeSetting(_) => "change_setting",
             ToolCall::Window(_) => "window",
             ToolCall::GetNotifications(_) => "get_notifications",
         }
@@ -942,6 +976,23 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             annotations: read_only("Built-in skills"),
         },
+        ToolDefinition {
+            name: "change_setting",
+            title: "Ask to change a setting",
+            description: "Ask the user to change one of computer-use's settings — for example allow an app for good (key approvals.always_allow, change add, value \"Google Chrome\"), or relax a sensitive-app category. A window on the user's screen shows the change and your `reason`; nothing changes unless the user clicks Allow. Only approvals.*, sensitive.*, guard.*, overlay.confirm_*, screenshot.*, privacy.*, clipboard, read_files, create_folder, skills and text_only can be asked for.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "The setting, e.g. approvals.always_allow."},
+                    "change": {"type": "string", "enum": ["set", "add", "remove", "unset"], "description": "set (default) replaces the value; add/remove edit a list; unset restores the default."},
+                    "value": {"type": "string", "description": "The value (a TOML literal or a bare word); an item for add/remove. Not needed for unset."},
+                    "reason": {"type": "string", "description": "Why — shown to the user in the confirmation window."}
+                },
+                "required": ["key"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Ask to change a setting"),
+        },
     ]
 }
 
@@ -981,6 +1032,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "list_folder" => "List a folder's entries at an absolute path (read-only).",
         "read_file" => "Read a text file at an absolute path (read-only; offset to continue).",
         "skill" => "Built-in per-OS how-to playbooks for desktop tasks; no name = list.",
+        "change_setting" => {
+            "Ask the user (on-screen window) to change a setting, e.g. always allow an app."
+        }
         _ => return None,
     })
 }
@@ -1046,6 +1100,7 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
             "create_folder" => config.create_folder,
             "list_folder" | "read_file" => config.read_files,
             "skill" => config.skills,
+            "change_setting" => config.agent_settings,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
             _ => true,
@@ -1078,7 +1133,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 23);
+        assert_eq!(defs.len(), 24);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1115,7 +1170,7 @@ mod tests {
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
             "steps": [{"tool": "list_apps"}], "path": "/tmp/x", "max_entries": 5, "args": ["-a"],
-            "offset": 0, "max_bytes": 100, "name": "files"
+            "offset": 0, "max_bytes": 100, "name": "files", "change": "set", "reason": "because"
             }"#,
         )
         .unwrap();
@@ -1136,7 +1191,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 23);
+        assert_eq!(compact.len(), 24);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

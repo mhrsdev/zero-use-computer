@@ -36,6 +36,13 @@ $serverArgs += 'serve'
 Write-Host '== doctor =='
 try { & $exe doctor } catch { Write-Host '(doctor reported problems; see docs\CONNECT.md)' }
 
+# Make the settings file easy to find (and edit) if it doesn't exist yet.
+try {
+  $cfg = (& $exe config path | Select-Object -First 1)
+  if ($cfg -and -not (Test-Path $cfg)) { & $exe config init | Out-Null }
+  if ($cfg) { Write-Host "Settings file: $cfg" }
+} catch {}
+
 try { claude mcp remove $Name --scope $Scope 2>$null | Out-Null } catch {}
 claude mcp add --scope $Scope $Name -- $exe @serverArgs
 Write-Host ''

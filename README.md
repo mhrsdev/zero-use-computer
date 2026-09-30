@@ -64,6 +64,7 @@ This project follows the same architecture and behaviour:
 | `get_notifications` | The user's recent desktop notifications (app, title, text), when turned on; codes and card numbers are masked. |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 | `list_folder` / `read_file` | Read-only: list a folder, read a text file (32 KB per call, `offset` to continue). Credential and key places (`.ssh`, `.aws`, `.env`, `*.pem`, browser profiles…) are always refused; `read_files = false` switches both off. |
+| `change_setting` | The agent can *ask* to change a few settings (for example always allow an app: `approvals.always_allow`). A window on your screen shows the change and the reason; **nothing changes unless you click Allow**. Only `approvals.*`, `sensitive.*`, `guard.*`, `overlay.confirm_*`, `screenshot.*`, `privacy.*`, `clipboard`, `read_files`, `create_folder`, `skills`, `text_only` can be asked for — never `overlay.command`, `server.*`, `audit.*` or the stop key. Switch off with `agent_settings = false`. |
 | `skill` | Built-in how-to playbooks for common desktop tasks (files, browser, browser-apps, VS Code, Word, Excel, PowerPoint, Outlook, email, messaging, Slack, Discord, Photoshop, settings, apps & windows, text & dialogs, documents, troubleshooting), written separately for Windows, macOS and Linux and compiled into the binary. No name lists them; `skills = false` switches it off. |
 | `create_folder` | Create a folder (and missing parents) at an absolute path. Never deletes or overwrites; switch off with `create_folder = false`. |
 
@@ -252,11 +253,12 @@ their mouse:
 | paused | grey | waiting while you use the mouse or keyboard |
 | stopped | orange | you pressed the emergency stop key |
 
-- **Approvals on screen.** A sensitive action waits for the user. When the
-  agent's client can ask (MCP elicitation) it asks there; when it can't, it
-  asks on the screen — an `NSAlert` on macOS, the overlay's own panel on
-  Windows and X11 (`overlay.confirm_on_screen`: `never` / `when_no_client` /
-  `always`). No answer in `confirm_timeout_secs` means no.
+- **Approvals on screen.** A sensitive action — and the first use of an app —
+  waits for the user, in a window on the screen (an `NSAlert` on macOS, the
+  overlay's own panel on Windows and X11). That is the default
+  (`overlay.confirm_on_screen = "always"`); `when_no_client` asks there only
+  when the agent's client can't ask (MCP elicitation), `never` leaves it to the
+  client. No answer in `confirm_timeout_secs` means no.
 - **Nothing pops.** It fades in when it appears, blends from one state colour
   to the next, and fades out slowly when the work is done (`fade_in_ms`,
   `transition_ms`, `fade_out_ms`). All of its texts are English by default

@@ -580,6 +580,19 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// Ask in the on-screen window whatever `overlay.confirm_on_screen` says
+    /// (for questions only the user at the screen may answer). `None` when no
+    /// window could be shown or nobody answered in time.
+    fn ask_on_screen_now(&mut self, text: &str) -> Option<bool> {
+        if !self.store.config.overlay.enabled {
+            return None;
+        }
+        let timeout = Duration::from_secs(self.store.config.overlay.confirm_timeout_secs.max(1));
+        let answer = self.overlay()?.ask(text, timeout);
+        self.overlay_send(OverlayCmd::ApprovalDone);
+        answer
+    }
+
     /// Show that `action` waits for the user, and ask on screen when that is
     /// the way to ask. `Some(answer)` if the screen answered.
     fn overlay_approval(&mut self, action: &str, approver: &dyn Approver) -> Option<bool> {
@@ -1505,6 +1518,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::ListFolder(a) => self.list_folder(a),
             ToolCall::ReadFile(a) => self.read_file(a),
             ToolCall::Skill(a) => self.skill(a),
+            ToolCall::ChangeSetting(a) => self.change_setting(a),
             ToolCall::Window(a) => self.window_tool(a, approver),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
         };
@@ -3144,6 +3158,107 @@ impl<B: Backend> Engine<B> {
         )?))
     }
 
+    /// Ask the user, in a window on the screen, to change a setting. The
+    /// answer must come from that window — never from the client or the
+    /// model — so without one the setting stays as it is.
+    fn change_setting(&mut self, args: ChangeSettingArgs) -> Result<ToolOutput> {
+        use crate::config::{self, Edit};
+        if !self.store.config.agent_settings {
+            return Err(Error::Blocked(
+                "change_setting".into(),
+                "asking to change settings is switched off (agent_settings = false)".into(),
+            ));
+        }
+        let key = args.key.trim().to_string();
+        if !config::agent_may_change(&key) {
+            return Err(Error::Blocked(
+                key,
+                "the agent can't ask to change this setting; the user edits it in the settings file".into(),
+            ));
+        }
+        let change = args
+            .change
+            .as_deref()
+            .map_or("set".to_string(), |c| c.trim().to_lowercase());
+        let value = args.value.map(|v| v.trim().to_string());
+        let (edit, what) = match (change.as_str(), value) {
+            ("set", Some(v)) => (Edit::Set(v.clone()), format!("set {key} to {v}")),
+            ("add", Some(v)) => (Edit::Add(v.clone()), format!("add {v} to {key}")),
+            ("remove", Some(v)) => (Edit::Remove(v.clone()), format!("remove {v} from {key}")),
+            ("unset", _) => (Edit::Unset, format!("restore the default of {key}")),
+            ("set" | "add" | "remove", None) => {
+                return Err(Error::InvalidArgs(format!(
+                    "`change: {change}` needs a `value`"
+                )));
+            }
+            _ => {
+                return Err(Error::InvalidArgs(
+                    "`change` must be set, add, remove or unset".into(),
+                ));
+            }
+        };
+        if matches!(edit, Edit::Add(_))
+            && key == "approvals.always_allow"
+            && self.store.managed.disable_always_allow
+        {
+            return Err(Error::Blocked(
+                key,
+                "your administrator's managed policy disables \"always allow\"".into(),
+            ));
+        }
+        let Some(path) = self.store.path.clone() else {
+            return Err(Error::ActionFailed(
+                "no settings file is in use, so there is nothing to change".into(),
+            ));
+        };
+        // Check the change works *before* asking, on a scratch copy.
+        let scratch = std::env::temp_dir().join(format!(
+            "cu-setting-{}-{}.toml",
+            std::process::id(),
+            (self.clock)().elapsed().as_nanos()
+        ));
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&scratch, current).map_err(|e| Error::ActionFailed(e.to_string()))?;
+        let dry = config::edit_file(&scratch, &key, edit.clone());
+        let _ = std::fs::remove_file(&scratch);
+        dry?;
+
+        let reason = args
+            .reason
+            .as_deref()
+            .map(|r| crate::tree::truncate(r.trim(), 160))
+            .filter(|r| !r.is_empty());
+        let text = match &reason {
+            Some(r) => format!("Change a setting: {what}. Reason: {r}"),
+            None => format!("Change a setting: {what}"),
+        };
+        match self.ask_on_screen_now(&text) {
+            Some(true) => {}
+            Some(false) => return Err(Error::Denied("this setting change".into())),
+            None => {
+                return Err(Error::ActionFailed(
+                    "no window could be shown on the screen to ask the user, so the setting was not changed. The user can change it in the settings file (computer-use-mcp config).".into(),
+                ));
+            }
+        }
+        config::edit_file(&path, &key, edit)?;
+        // The user approved this loosening: load it now (a later reload would
+        // otherwise hold it back until a restart).
+        let mut store = ConfigStore::load(Some(&path))?;
+        if let Some(f) = &self.overrides {
+            f(&mut store.config);
+        }
+        self.backend.configure(&store.config);
+        self.store = store;
+        self.config_mtime = file_mtime(&path);
+        self.epoch += 1;
+        self.overlay_reconfigure();
+        Ok(ToolOutput::text(format!(
+            "Done: the user allowed it on screen. {}.",
+            capitalise(&what)
+        )))
+    }
+
     fn skill(&mut self, args: SkillArgs) -> Result<ToolOutput> {
         if !self.store.config.skills {
             return Err(Error::Blocked(
@@ -3332,6 +3447,13 @@ impl<B: Backend> Engine<B> {
             Anchor::Point(_) => "the point".into(),
         }
     }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+        .unwrap_or_default()
 }
 
 /// Tools that only read; a batch shows their full output.
@@ -5743,5 +5865,107 @@ mod tests {
             &mut allow(),
         );
         assert!(out.is_error && out.text.contains("network"), "{}", out.text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_change_only_after_the_user_clicks_allow_on_screen() {
+        let dir = std::env::temp_dir().join(format!("cu-setting-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (answer, allowed) in [(true, true), (false, false)] {
+            let path = dir.join(format!("config-{answer}.toml"));
+            std::fs::write(&path, "# mine\n").unwrap();
+            let log = dir.join(format!("ask-{answer}.log"));
+            let mut backend = MockBackend::new();
+            backend.add_app(MockBackend::text_editor(60));
+            let store = ConfigStore::load(Some(&path)).unwrap();
+            let mut e = Engine::new(backend, store)
+                .with_time(Instant::now, |_| {})
+                .with_overlay(recording_helper(&log, Some(answer)));
+            let out = e.call_tool(
+                "change_setting",
+                serde_json::json!({
+                    "key": "approvals.always_allow",
+                    "change": "add",
+                    "value": "Google Chrome",
+                    "reason": "the user asked to open Google"
+                }),
+                &mut DenyApprover,
+            );
+            assert_eq!(!out.is_error, allowed, "{}", out.text);
+            let file = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(file.contains("Google Chrome"), allowed, "{file}");
+            assert!(file.contains("# mine"), "comments are kept: {file}");
+            assert_eq!(
+                e.store()
+                    .config
+                    .approvals
+                    .always_allow
+                    .iter()
+                    .any(|a| a == "Google Chrome"),
+                allowed
+            );
+            drop(e);
+            let t = read_log(&log);
+            assert!(
+                t.contains(r#""ask":true"#) && t.contains("Google Chrome"),
+                "{t}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_the_agent_may_not_ask_for_or_that_are_invalid_never_reach_the_window() {
+        let dir = std::env::temp_dir().join(format!("cu-setting-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let log = dir.join("ask.log");
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(60));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {})
+            .with_overlay(recording_helper(&log, Some(true)));
+        for args in [
+            serde_json::json!({"key": "overlay.command", "value": "C:\\evil.exe"}),
+            serde_json::json!({"key": "server.http_token", "value": "x"}),
+            serde_json::json!({"key": "sensitive.terminals", "value": "banana"}),
+            serde_json::json!({"key": "approvals.always_allow", "change": "add"}),
+            serde_json::json!({"key": "no.such.key", "value": "1"}),
+        ] {
+            let out = e.call_tool("change_setting", args.clone(), &mut DenyApprover);
+            assert!(out.is_error, "{args}: {}", out.text);
+        }
+        drop(e);
+        let t = read_log(&log);
+        assert!(!t.contains(r#""ask":true"#), "nothing was asked: {t}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn without_a_window_a_setting_is_not_changed() {
+        let dir = std::env::temp_dir().join(format!("cu-setting-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(60));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {});
+        let out = e.call_tool(
+            "change_setting",
+            serde_json::json!({"key": "sensitive.terminals", "value": "ask"}),
+            &mut allow(),
+        );
+        assert!(
+            out.is_error && out.text.contains("no window"),
+            "{}",
+            out.text
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

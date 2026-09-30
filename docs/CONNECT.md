@@ -25,7 +25,14 @@ flags before connecting a client:
 | **Windows** | Nothing to grant. Apps running as administrator can't be controlled from a normal process. |
 | **Linux** | An **X11 or XWayland** session with the AT-SPI accessibility bus running (GNOME: Settings ▸ Accessibility; `gsettings set org.gnome.desktop.interface toolkit-accessibility true`). Native Wayland input/capture isn't supported. |
 
-## 1. Approvals when no human is at the keyboard
+## 1. Approvals
+
+By default a **window on your screen** asks (Allow / Deny) the first time an app is used, whatever the
+client can do (`overlay.confirm_on_screen = "always"`). The agent can also ask to change a setting —
+for example always allow an app — with the `change_setting` tool; that opens the same kind of window and
+nothing changes unless you click Allow.
+
+### When no human is at the keyboard
 
 The first use of each app asks for approval through the client (MCP
 elicitation) or an on-screen dialog. Clients that can't show a prompt need a

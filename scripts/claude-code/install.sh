@@ -39,6 +39,13 @@ args+=(serve)
 echo "== doctor =="
 "$bin" doctor || echo "(doctor reported problems; see docs/CONNECT.md)"
 
+# Make the settings file easy to find (and edit) if it doesn't exist yet.
+cfg="$("$bin" config path 2>/dev/null | head -n1 || true)"
+if [ -n "$cfg" ]; then
+  [ -e "$cfg" ] || "$bin" config init >/dev/null 2>&1 || true
+  echo "Settings file: $cfg"
+fi
+
 claude mcp remove "$name" --scope "$scope" >/dev/null 2>&1 || true
 claude mcp add --scope "$scope" "$name" -- "$bin" "${args[@]}"
 echo

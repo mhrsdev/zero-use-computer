@@ -17,6 +17,9 @@ clipboard = true
 create_folder = true
 # Expose list_folder / read_file (read-only; credential and key files are always refused).
 read_files = true
+# Let the agent ask to change a few settings (approvals, sensitive, guard…): the change_setting
+# tool. Every change waits for your click in an on-screen window.
+agent_settings = true
 # Expose the built-in per-OS how-to skills (the `skill` tool).
 skills = true
 # Never attach screenshots anywhere (tree-only; lowest token use).
@@ -209,7 +212,7 @@ move_ms = 220                # cursor glide time
 fade_in_ms = 250             # appear gradually
 fade_out_ms = 1200           # disappear gradually, never abruptly
 transition_ms = 300          # blend from one state colour to the next
-confirm_on_screen = "when_no_client"   # never | when_no_client | always
+confirm_on_screen = "always"   # never | when_no_client | always — a window on the screen asks (Allow / Deny)
 confirm_timeout_secs = 120   # an unanswered on-screen confirmation is denied
 capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
 font = ""                    # label font file ("" = a system font)
