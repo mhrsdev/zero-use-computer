@@ -5,7 +5,7 @@ computer-use-mcp for Claude Code
    settings), e.g. ~/tools/computer-use-mcp  or  C:\Tools\computer-use-mcp.
 2. Register it:
      macOS / Linux :  ./install.sh
-     Windows       :  powershell -ExecutionPolicy Bypass -File .\install.ps1
+     Windows       :  double-click install.cmd   (or: powershell -ExecutionPolicy Bypass -File .\install.ps1)
    Options: --approval allow-all (Windows: -Approval allow-all), --scope project|user|local, --uninstall
 3. Check:  claude mcp list     (inside Claude Code: /mcp)
 4. macOS: give Accessibility + Screen Recording to the app that runs Claude Code.

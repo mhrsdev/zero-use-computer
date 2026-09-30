@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -129,7 +130,7 @@ jobs:
           cp mcp.example.json README.md README.fa.md dist/
           cp skill/SKILL.md dist/SKILL.md
           # Claude Code installers, client examples and the connection guide.
-          cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/.mcp.json dist/
+          cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/install.cmd scripts/claude-code/.mcp.json dist/
           cp scripts/claude-code/README.txt dist/README-claude-code.txt
           cp -r examples dist/examples
           mkdir -p dist/docs && cp docs/CONNECT.md dist/docs/
@@ -147,4 +148,21 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: computer-use-mcp ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            MCP server for Claude Code (and any MCP client): control desktop apps
+            through their accessibility tree plus screenshots.
+
+            **Windows:** download `computer-use-mcp-windows-x64.zip`, extract it to a
+            permanent folder (for example `C:\Tools\computer-use-mcp`), then double-click
+            `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
+            Check with `claude mcp list`.
+
+            **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
+            macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.
+
+            Every zip contains the binary, the installers, `docs/CONNECT.md` (Claude Code, Claude Desktop,
+            Codex, Cursor, VS Code, HTTP) and ready-to-copy configs in `examples/`.
+            The binaries are not code-signed, so Windows SmartScreen may ask you to confirm.
           files: computer-use-mcp-${{ matrix.name }}.zip
