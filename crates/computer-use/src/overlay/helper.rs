@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use tiny_skia::{Color, Pixmap};
 
-use super::draw;
+use super::draw::{self, EdgeEnd};
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
@@ -53,6 +53,16 @@ pub trait Surface {
     fn excluded_from_capture(&self) -> bool;
     /// The main screen, in screen units.
     fn screen(&self) -> Rect;
+    /// The screen (monitor) showing the point (x, y); the main one if the
+    /// platform can't tell.
+    fn screen_at(&self, _x: f64, _y: f64) -> Rect {
+        self.screen()
+    }
+    /// Whether images show with smooth (partial) transparency. Without it
+    /// only a thin line is drawn: a wide glow would become a solid bar.
+    fn translucent(&self) -> bool {
+        true
+    }
     /// Space taken at the top of the screen by the system (the macOS menu
     /// bar), kept clear of the label.
     fn top_inset(&self) -> f64 {
@@ -75,7 +85,10 @@ pub trait Surface {
         false
     }
     /// Ask the user to allow something; the answer comes back from `pump`.
+    /// Must not block: the helper keeps running while the user decides.
     fn confirm(&mut self, id: u64, ask: &Ask);
+    /// Take down any confirmation still on screen (no answer is sent).
+    fn dismiss(&mut self) {}
     /// Listen for the emergency stop key anywhere on the system (`None`
     /// stops listening). Only this one key combination is received, never
     /// other keys. Returns whether the system accepted it.
@@ -104,6 +117,20 @@ pub enum Phase {
 
 /// How long "stopped" stays on screen when nothing else happens.
 const STOPPED_HOLD: Duration = Duration::from_millis(5000);
+
+/// Stop key events closer together than this are key repeat.
+const HOTKEY_QUIET: Duration = Duration::from_millis(400);
+
+/// How quickly the overlay goes when told to hide.
+const HIDE_FADE: Duration = Duration::from_millis(150);
+
+/// Shown after the working/thinking label while the stop key is listened
+/// for (`{hotkey}` is the key). TODO: a config field (`label_stop_hint`).
+const STOP_HINT: &str = "{hotkey} to stop";
+
+/// A host said "working" but nothing happened for this long (e.g. the host
+/// died): treat it as done, so the border never stays forever.
+const HOST_IDLE: Duration = Duration::from_secs(60);
 
 /// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc".
 pub fn pretty_key(key: &str) -> String {
@@ -262,6 +289,10 @@ pub struct Machine {
     stopped: bool,
     /// The stop key, for the label.
     hotkey: String,
+    /// Whether the system accepted the stop key (only then is it offered).
+    hotkey_ok: bool,
+    /// A window was targeted during the current call.
+    target_fresh: bool,
 }
 
 impl Machine {
@@ -289,7 +320,19 @@ impl Machine {
             paused: false,
             stopped: false,
             hotkey: String::new(),
+            hotkey_ok: false,
+            target_fresh: false,
         }
+    }
+
+    /// Whether the system accepted the stop key.
+    pub fn set_hotkey_ok(&mut self, ok: bool) {
+        self.hotkey_ok = ok;
+    }
+
+    /// An approval is pending (a confirmation may be on screen).
+    pub fn awaiting_approval(&self) -> bool {
+        self.approval.is_some() && self.phase != Phase::Off && !self.stopped
     }
 
     /// Whether the agent is stopped (the stop key toggles this).
@@ -320,6 +363,8 @@ impl Machine {
         if phase == Phase::Off {
             self.fade = Ramp::at(0.0, now);
             self.leaving = false;
+            self.target = None;
+            self.approval = None;
         }
     }
 
@@ -416,6 +461,7 @@ impl Machine {
             Cmd::Stopped { on } => self.set_stopped(on, now),
             Cmd::Begin => {
                 self.busy = true;
+                self.target_fresh = false;
                 let p = self.active_phase();
                 self.set_phase(p, now);
             }
@@ -425,6 +471,10 @@ impl Machine {
                 self.approval = None;
                 self.paused = false;
                 self.last_end = Some(now);
+                // A call that worked on no window: forget the last one.
+                if !self.target_fresh {
+                    self.target = None;
+                }
                 let p = if self.stopped {
                     Phase::Stopped
                 } else if ok {
@@ -436,6 +486,7 @@ impl Machine {
             }
             Cmd::Target { rect } => {
                 self.target = rect.map(|r| Rect::new(r[0], r[1], r[2], r[3]));
+                self.target_fresh = true;
             }
             Cmd::Pointer { x, y, click } => {
                 let from = self.cursor_pos(now).unwrap_or((x, y));
@@ -479,15 +530,19 @@ impl Machine {
                         self.last_end = Some(now);
                         Phase::Thinking
                     }
-                    Status::Working => Phase::Working,
+                    Status::Working => {
+                        self.last_end = Some(now);
+                        Phase::Working
+                    }
                     Status::Done => Phase::Done,
                     Status::Error => {
                         self.last_end = Some(now);
                         Phase::Error
                     }
                     Status::Hidden => {
-                        let d = Duration::from_millis(self.cfg.fade_out_ms);
-                        self.leave(now, d);
+                        // Gone (almost) at once, and nothing left to answer.
+                        self.approval = None;
+                        self.leave(now, HIDE_FADE);
                         return None;
                     }
                 };
@@ -518,6 +573,14 @@ impl Machine {
             Phase::Done if since >= Duration::from_millis(self.cfg.done_linger_ms) => {
                 let d = Duration::from_millis(self.cfg.fade_out_ms);
                 self.leave(now, d);
+            }
+            Phase::Working | Phase::Danger | Phase::Paused
+                if !self.busy
+                    && self.last_end.map_or(since, |_| idle.min(since))
+                        >= Duration::from_millis(self.cfg.done_after_ms).max(HOST_IDLE) =>
+            {
+                // Nothing has happened for long: whoever showed it is gone.
+                self.advance(Phase::Done, now);
             }
             Phase::Stopped if !self.busy && since >= STOPPED_HOLD => {
                 let d = Duration::from_millis(self.cfg.fade_out_ms);
@@ -615,10 +678,15 @@ impl Machine {
         let mut text = template
             .replace("{action}", &crate::tree::truncate(action.unwrap_or(""), 60))
             .replace("{hotkey}", &pretty_key(&self.hotkey));
-        // Like a cancel hint: tell the user how to stop while the agent acts.
-        if matches!(self.phase, Phase::Working | Phase::Thinking) && !self.hotkey.trim().is_empty()
+        // Like a cancel hint: tell the user how to stop while the agent acts
+        // (only when the key really works).
+        if matches!(self.phase, Phase::Working | Phase::Thinking)
+            && self.hotkey_ok
+            && !self.hotkey.trim().is_empty()
+            && !STOP_HINT.is_empty()
         {
-            text.push_str(&format!(" · {} to stop", pretty_key(&self.hotkey)));
+            text.push_str(" · ");
+            text.push_str(&STOP_HINT.replace("{hotkey}", &pretty_key(&self.hotkey)));
         }
         text
     }
@@ -642,7 +710,10 @@ impl Machine {
         });
         Scene {
             opacity: self.fade.value(now).clamp(0.0, 1.0),
-            border: self.cfg.show_border.then_some((self.target, color)),
+            target: self.target,
+            // The border keeps still (redrawing it every frame is costly);
+            // the cursor breathes.
+            border: self.cfg.show_border.then_some((self.target, base)),
             label: self.cfg.show_label.then(|| (self.label_text(), base)),
             cursor: if self.cfg.show_cursor {
                 self.cursor_pos(now).map(|p| CursorLook {
@@ -677,10 +748,23 @@ pub struct CursorLook {
 pub struct Scene {
     /// Overall opacity, 0–1 (fading in or out).
     pub opacity: f32,
+    /// The window being worked on, if any.
+    pub target: Option<Rect>,
     /// Target rect (None = screen) and colour.
     pub border: Option<(Option<Rect>, Color)>,
     pub label: Option<(String, Color)>,
     pub cursor: Option<CursorLook>,
+}
+
+/// A band end as one number, for [`BorderKey`].
+fn end_key(e: EdgeEnd) -> i64 {
+    let (kind, n) = match e {
+        EdgeEnd::Plain => (0, 0.0),
+        EdgeEnd::Own(n) => (1, n),
+        EdgeEnd::Skip(n) => (2, n),
+        EdgeEnd::Round(n) => (3, n),
+    };
+    kind + 4 * (n.round() as i64)
 }
 
 fn color_key(c: Color) -> [u8; 4] {
@@ -689,8 +773,9 @@ fn color_key(c: Color) -> [u8; 4] {
 }
 
 /// Turns scenes into surface calls, redrawing only what changed.
-/// What the border was drawn with: band rects, colour, core width, opacity.
-type BorderKey = ([i64; 16], [u8; 4], u32, u8);
+/// What the border was drawn with: band rects and ends, colour, core
+/// width, opacity.
+type BorderKey = (Vec<i64>, [u8; 4], u32, u8);
 /// What the label was drawn with: text, colour, opacity, and its position.
 type LabelKey = (String, [u8; 4], u8, i64, i64);
 /// What the cursor image was drawn with: ring, body, ripple, pulse, opacity.
@@ -699,6 +784,8 @@ type CursorKey = ([u8; 4], [u8; 4], i32, i32, u8);
 #[derive(Default)]
 pub struct Painter {
     border: Option<BorderKey>,
+    /// Each border band's shape, kept so a new colour or fade only tints it.
+    masks: [Option<(draw::EdgeKey, draw::EdgeMask)>; 4],
     label: Option<LabelKey>,
     label_size: (f64, f64),
     cursor_img: Option<CursorKey>,
@@ -728,13 +815,18 @@ impl Painter {
         fonts: &Fonts,
         s: &mut dyn Surface,
     ) {
-        let scale = if cfg.scale > 0.0 {
-            cfg.scale as f32
+        // The configured size is relative to the display's own scaling.
+        let scale = draw::sane_scale(if cfg.scale > 0.0 {
+            cfg.scale as f32 * s.render_scale()
         } else {
             s.render_scale()
-        };
+        });
         let ppu = s.px_per_unit().max(0.1);
-        let screen = s.screen();
+        // The screen showing the target (the main one without).
+        let screen = match scene.target {
+            Some(r) => s.screen_at(r.x + r.width / 2.0, r.y + r.height / 2.0),
+            None => s.screen(),
+        };
 
         // Fading: natively where the platform can, else by redrawing.
         let o = (scene.opacity * 48.0).round() / 48.0;
@@ -758,9 +850,17 @@ impl Painter {
 
         // Border: a glow along the screen edges fading inward, or around the
         // target window (outside it where there is room, else inside).
+        // Without smooth transparency only a thin line (a wide glow would
+        // turn into a solid bar).
         let unit = f64::from(scale) / f64::from(ppu);
+        let translucent = s.translucent();
         let core = f64::from(cfg.border_width) * unit;
-        let band = (f64::from(cfg.glow_size) * unit).max(core).max(1.0);
+        let (core, band) = if translucent {
+            (core, (f64::from(cfg.glow_size) * unit).max(core).max(1.0))
+        } else {
+            let line = core.max(3.0 * unit).max(1.0);
+            (line, line)
+        };
         let px = |v: f64| ((v * f64::from(ppu)).round().max(1.0)) as u32;
         let window_mode = cfg.border_target == crate::config::BorderTarget::Window;
         let area = |target: Option<Rect>| match target {
@@ -773,6 +873,7 @@ impl Painter {
             screen.y,
             screen.y + s.top_inset() + core + 10.0,
         );
+        type Band = (f64, f64, f64, f64, u8, [EdgeEnd; 2]);
         let bands = scene.border.map(|(target, color)| {
             let r = area(target);
             let (sx, sy, sr, sb) = (
@@ -782,64 +883,114 @@ impl Painter {
                 screen.y + screen.height,
             );
             let (rr, rb) = (r.x + r.width, r.y + r.height);
-            let edges: [(f64, f64, f64, f64, u8); 4] = if r == screen {
+            let b = band as f32;
+            let edges: [Band; 4] = if r == screen {
+                // Top and bottom draw the corners, the sides leave them.
+                let own = [EdgeEnd::Own(b); 2];
+                let skip = [EdgeEnd::Skip(b); 2];
                 [
-                    (sx, sy, screen.width, band, 0),
-                    (sr - band, sy, band, screen.height, 1),
-                    (sx, sb - band, screen.width, band, 2),
-                    (sx, sy, band, screen.height, 3),
+                    (sx, sy, screen.width, band, 0, own),
+                    (sr - band, sy, band, screen.height, 1, skip),
+                    (sx, sb - band, screen.width, band, 2, own),
+                    (sx, sy, band, screen.height, 3, skip),
                 ]
             } else {
                 let room = |v: f64| v >= band / 2.0;
-                let top = if room(r.y - sy) {
+                let (top_out, bottom_out) = (room(r.y - sy), room(sb - rb));
+                let (left_out, right_out) = (room(r.x - sx), room(sr - rr));
+                let own_if = |inside: bool| {
+                    if inside {
+                        EdgeEnd::Own(b)
+                    } else {
+                        EdgeEnd::Plain
+                    }
+                };
+                let skip_if = |inside: bool| {
+                    if inside {
+                        EdgeEnd::Skip(b)
+                    } else {
+                        EdgeEnd::Plain
+                    }
+                };
+                // Outside, top and bottom reach past the window's corners
+                // and glow around them; inside, they draw the corners.
+                let across = [own_if(!left_out), own_if(!right_out)];
+                let top = if top_out {
                     let t = band.min(r.y - sy);
-                    (r.x - band, r.y - t, r.width + 2.0 * band, t, 2)
+                    let round = [EdgeEnd::Round(b); 2];
+                    (r.x - band, r.y - t, r.width + 2.0 * band, t, 2, round)
                 } else {
-                    (r.x, r.y, r.width, band, 0)
+                    (r.x, r.y, r.width, band, 0, across)
                 };
-                let bottom = if room(sb - rb) {
-                    (r.x - band, rb, r.width + 2.0 * band, band.min(sb - rb), 0)
+                let bottom = if bottom_out {
+                    let round = [EdgeEnd::Round(b); 2];
+                    let t = band.min(sb - rb);
+                    (r.x - band, rb, r.width + 2.0 * band, t, 0, round)
                 } else {
-                    (r.x, rb - band, r.width, band, 2)
+                    (r.x, rb - band, r.width, band, 2, across)
                 };
-                let left = if room(r.x - sx) {
+                let down = [skip_if(!top_out), skip_if(!bottom_out)];
+                let plain = [EdgeEnd::Plain; 2];
+                let left = if left_out {
                     let t = band.min(r.x - sx);
-                    (r.x - t, r.y, t, r.height, 1)
+                    (r.x - t, r.y, t, r.height, 1, plain)
                 } else {
-                    (r.x, r.y, band, r.height, 3)
+                    (r.x, r.y, band, r.height, 3, down)
                 };
-                let right = if room(sr - rr) {
-                    (rr, r.y, band.min(sr - rr), r.height, 3)
+                let right = if right_out {
+                    (rr, r.y, band.min(sr - rr), r.height, 3, plain)
                 } else {
-                    (rr - band, r.y, band, r.height, 1)
+                    (rr - band, r.y, band, r.height, 1, down)
                 };
                 place = (r.x + r.width / 2.0, top.1, r.y + core + 8.0);
                 [top, right, bottom, left]
             };
             // Keep every band on screen.
-            let edges = edges.map(|(x, y, w, h, strong)| {
+            let edges = edges.map(|(x, y, w, h, strong, ends)| {
                 let (x0, y0) = (x.max(sx), y.max(sy));
                 let (x1, y1) = ((x + w).min(sr), (y + h).min(sb));
-                (x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0), strong)
+                let (cut0, cut1) = if strong == 0 || strong == 2 {
+                    (x0 - x, x + w - x1)
+                } else {
+                    (y0 - y, y + h - y1)
+                };
+                let ends = [ends[0].cut(cut0 as f32), ends[1].cut(cut1 as f32)];
+                let (w, h) = ((x1 - x0).max(0.0), (y1 - y0).max(0.0));
+                (x0, y0, w, h, strong, ends)
             });
             (edges, color)
         });
         match bands {
             Some((edges, color)) => {
-                let mut key = [0i64; 16];
-                for (i, e) in edges.iter().enumerate() {
-                    key[i * 4..i * 4 + 4]
-                        .copy_from_slice(&[e.0 as i64, e.1 as i64, e.2 as i64, e.3 as i64]);
+                let mut key = Vec::with_capacity(36);
+                for e in &edges {
+                    key.extend([e.0 as i64, e.1 as i64, e.2 as i64, e.3 as i64]);
+                    for end in e.5 {
+                        key.push(end_key(end));
+                    }
                 }
                 let key = (key, color_key(color), (core * 100.0) as u32, ak);
-                if self.border != Some(key) {
+                if self.border != Some(key.clone()) {
                     let core_px = (core * f64::from(ppu)) as f32;
-                    for (layer, (x, y, w, h, strong)) in EDGES.iter().zip(edges) {
+                    let dark = draw::is_dark(color);
+                    for (i, (layer, (x, y, w, h, strong, ends))) in
+                        EDGES.iter().zip(edges).enumerate()
+                    {
                         if w < 1.0 || h < 1.0 {
                             s.hide(*layer);
                             continue;
                         }
-                        let img = faded(draw::edge(px(w), px(h), color, strong, core_px), alpha);
+                        let ends = ends.map(|e| e.scale(ppu));
+                        let (pw, ph) = (px(w), px(h));
+                        let mk = draw::EdgeMask::key(pw, ph, strong, core_px, dark, ends);
+                        let mask = match &mut self.masks[i] {
+                            Some((k, m)) if *k == mk => &*m,
+                            slot => {
+                                let m = draw::edge_mask(pw, ph, dark, strong, core_px, ends);
+                                &slot.insert((mk, m)).1
+                            }
+                        };
+                        let img = draw::tint(mask, color, alpha);
                         s.show(*layer, &img, x, y);
                     }
                     self.border = Some(key);
@@ -1019,8 +1170,9 @@ pub fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
+    let mut excluded = surface.excluded_from_capture();
     reply(&Reply::Ready {
-        excluded: surface.excluded_from_capture(),
+        excluded,
         available: true,
     });
 
@@ -1032,6 +1184,9 @@ pub fn run(args: &[String]) -> i32 {
     let mut hotkey_now = String::new();
     let mut last_hotkey: Option<Instant> = None;
     let mut last_parent_check = Instant::now();
+    // When a confirmation was put on screen (it is taken down when no
+    // longer wanted).
+    let mut asking: Option<Instant> = None;
     // Set once told to stop: fade out, then exit.
     let mut quitting: Option<Instant> = None;
     let quit_fade = |m: &Machine| Duration::from_millis(m.config().fade_out_ms.min(700));
@@ -1096,6 +1251,7 @@ pub fn run(args: &[String]) -> i32 {
                             hotkey_now = hotkey.clone();
                             let combo = crate::keys::parse_combo(hotkey.trim()).ok();
                             let ok = surface.set_hotkey(combo);
+                            machine.set_hotkey_ok(ok);
                             if !hotkey.trim().is_empty() {
                                 reply(&Reply::Hotkey {
                                     key: hotkey.clone(),
@@ -1114,7 +1270,9 @@ pub fn run(args: &[String]) -> i32 {
                             allow: cfg.label_allow.clone(),
                             deny: cfg.label_deny.clone(),
                         };
+                        surface.dismiss();
                         surface.confirm(id, &ask);
+                        asking = Some(Instant::now());
                     }
                 }
             }
@@ -1122,20 +1280,23 @@ pub fn run(args: &[String]) -> i32 {
 
         for ev in surface.pump() {
             match ev {
-                SurfaceEvent::Answer(id, ok) => reply(&Reply::Answer { id, ok }),
-                SurfaceEvent::Hotkey
-                    if quitting.is_none()
-                        && last_hotkey
-                            .is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) =>
-                {
-                    // Shown at once, whatever the engine is doing. (Presses
-                    // in quick succession are key repeat, not a second press.)
-                    last_hotkey = Some(Instant::now());
-                    let on = !machine.stopped();
-                    machine.apply(Cmd::Stopped { on }, Instant::now());
-                    reply(&Reply::Stop { on });
+                SurfaceEvent::Answer(id, ok) => {
+                    asking = None;
+                    reply(&Reply::Answer { id, ok });
                 }
-                SurfaceEvent::Hotkey => {}
+                SurfaceEvent::Hotkey => {
+                    // Presses in quick succession are key repeat (a held
+                    // key), not a second press: every one of them restarts
+                    // the quiet time.
+                    let repeat = last_hotkey.is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
+                    last_hotkey = Some(Instant::now());
+                    if quitting.is_none() && !repeat {
+                        // Shown at once, whatever the engine is doing.
+                        let on = !machine.stopped();
+                        machine.apply(Cmd::Stopped { on }, Instant::now());
+                        reply(&Reply::Stop { on });
+                    }
+                }
             }
         }
         if let Some(pid) = parent
@@ -1150,6 +1311,23 @@ pub fn run(args: &[String]) -> i32 {
         }
         let now = Instant::now();
         machine.tick(now);
+        // Take a confirmation down once it is no longer wanted: answered
+        // elsewhere, stopped, hidden, gone idle, or left too long.
+        if let Some(t) = asking {
+            let limit = Duration::from_secs(machine.config().confirm_timeout_secs.max(1) + 5);
+            if !machine.awaiting_approval() || quitting.is_some() || t.elapsed() > limit {
+                surface.dismiss();
+                asking = None;
+            }
+        }
+        // The platform may learn only now that captures can't leave us out.
+        if surface.excluded_from_capture() != excluded {
+            excluded = surface.excluded_from_capture();
+            reply(&Reply::Ready {
+                excluded,
+                available: true,
+            });
+        }
         let scene = machine.scene(now);
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
         if let Some(t) = quitting
@@ -1436,18 +1614,18 @@ mod tests {
         assert!(m.scene(t0).opacity < 0.05, "starts transparent");
         assert!((m.scene(at(150)).opacity - 1.0).abs() < 1e-3, "fully in");
 
-        // Hidden: fades out, then is gone.
+        // Hidden: gone almost at once (a short fade, not `fade_out_ms`).
         m.apply(
             Cmd::Status {
                 state: Status::Hidden,
             },
             at(200),
         );
-        m.tick(at(300));
-        let mid = m.scene(at(400)).opacity;
+        m.tick(at(250));
+        let mid = m.scene(at(275)).opacity;
         assert!(mid > 0.2 && mid < 0.8, "{mid}");
-        assert!(m.animating(at(400)));
-        m.tick(at(700));
+        assert!(m.animating(at(275)));
+        m.tick(at(200) + HIDE_FADE);
         assert_eq!(m.phase, Phase::Off);
 
         // Coming back while fading reverses the fade.

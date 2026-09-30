@@ -32,10 +32,10 @@ fn wait_for_app(e: &mut Engine<LinuxBackend>) -> String {
     loop {
         if let Ok(apps) = e.backend_mut().list_apps() {
             for app in apps {
-                if let Ok(windows) = e.backend_mut().list_windows(&app) {
-                    if windows.iter().any(|w| w.title.contains("CU Test")) {
-                        return app.id;
-                    }
+                if let Ok(windows) = e.backend_mut().list_windows(&app)
+                    && windows.iter().any(|w| w.title.contains("CU Test"))
+                {
+                    return app.id;
                 }
             }
         }
@@ -67,10 +67,10 @@ fn index_of(tree: &str, needle: &str) -> u32 {
     for line in tree.lines() {
         if line.contains(needle) {
             let trimmed = line.trim_start();
-            if let Some(tok) = trimmed.split_whitespace().next() {
-                if let Ok(n) = tok.parse::<u32>() {
-                    return n;
-                }
+            if let Some(tok) = trimmed.split_whitespace().next()
+                && let Ok(n) = tok.parse::<u32>()
+            {
+                return n;
             }
         }
     }

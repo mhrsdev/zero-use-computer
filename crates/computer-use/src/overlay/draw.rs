@@ -119,7 +119,7 @@ pub fn cursor(
     pulse: f32,
 ) -> CursorArt {
     // About the size of a system pointer, so it is easy to follow.
-    let s = scale * 1.35;
+    let s = sane_scale(scale) * 1.35;
     // Room around the tip for the glow and the ripple.
     let pad = (CURSOR_BOX / 2.0) * s;
     let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
@@ -130,7 +130,7 @@ pub fn cursor(
     });
     let w = pad + pad.max(tag_x + tag_w + 4.0 * s);
     let h = pad + pad.max(tag_y + tag_h + 4.0 * s);
-    let mut pm = Pixmap::new(w.ceil() as u32, h.ceil() as u32).expect("non-zero cursor size");
+    let mut pm = canvas(w, h);
     let (c, id) = (pad, Transform::identity());
 
     // A soft glow around the tip in the state colour.
@@ -263,6 +263,7 @@ pub fn cursor(
 /// Dark state colours (e.g. black for a sensitive action) get a light pill
 /// so they stand out.
 pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap {
+    let scale = sane_scale(scale);
     let px = 13.5 * scale;
     let t = text::layout(fonts, text_str, px);
     let pad = 12.0 * scale;
@@ -270,7 +271,8 @@ pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap
     let h = (t.height + 12.0 * scale).max(26.0 * scale).ceil();
     let gap = if t.width > 0.0 { 8.0 * scale } else { 0.0 };
     let w = (pad + dot + gap + t.width + pad).ceil();
-    let mut pm = Pixmap::new(w.max(1.0) as u32, h.max(1.0) as u32).expect("label size");
+    let mut pm = canvas(w, h);
+    let w = pm.width() as f32;
 
     let dark_accent = luminance(accent) < 0.15;
     let (bg, fg) = if dark_accent {
@@ -335,34 +337,169 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     pb.finish()
 }
 
-/// One border edge: a wide, soft glow in `color`, strongest on side `strong`
-/// (0 top, 1 right, 2 bottom, 3 left) and fading out smoothly (a gaussian
-/// falloff) across the band. `core` px along the edge stay at full strength
-/// (0 = none). Along the edge the glow also fades towards both ends, so the
-/// four bands meet in rounded, seamless corners. A dark colour (e.g. black
-/// for a sensitive action) gets a light line so it shows on dark screens too.
-pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pixmap {
-    let (w, h) = (width.max(1), height.max(1));
-    let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("edge size");
+/// A sane drawing scale: finite and within 0.1–8 (a bad setting must never
+/// make the helper fail to allocate an image).
+pub fn sane_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(0.1, 8.0)
+    } else {
+        1.0
+    }
+}
+
+/// Largest side of any overlay image, in pixels.
+const MAX_SIDE: f32 = 16_384.0;
+
+/// A blank image of about `w`×`h` pixels (clamped to a sane size).
+fn canvas(w: f32, h: f32) -> Pixmap {
+    let side = |v: f32| {
+        if v.is_finite() {
+            v.ceil().clamp(1.0, MAX_SIDE) as u32
+        } else {
+            1
+        }
+    };
+    Pixmap::new(side(w), side(h))
+        .or_else(|| Pixmap::new(1, 1))
+        .expect("1x1 pixmap")
+}
+
+/// How one end of a border band meets its neighbours.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EdgeEnd {
+    /// Nothing special: the glow runs to the end of the band.
+    Plain,
+    /// The first `n` px lie in a corner shared with the perpendicular band,
+    /// which leaves it to this one: glow from the nearer of the two sides.
+    Own(f32),
+    /// The first `n` px are drawn by the perpendicular band: leave them empty.
+    Skip(f32),
+    /// The first `n` px reach past an outer corner: glow around the corner.
+    Round(f32),
+}
+
+impl EdgeEnd {
+    fn key(self) -> (u8, i32) {
+        match self {
+            Self::Plain => (0, 0),
+            Self::Own(n) => (1, n.round() as i32),
+            Self::Skip(n) => (2, n.round() as i32),
+            Self::Round(n) => (3, n.round() as i32),
+        }
+    }
+
+    /// The same end with its length multiplied by `k` (units → pixels).
+    pub fn scale(self, k: f32) -> Self {
+        match self {
+            Self::Plain => Self::Plain,
+            Self::Own(n) => Self::Own(n * k),
+            Self::Skip(n) => Self::Skip(n * k),
+            Self::Round(n) => Self::Round(n * k),
+        }
+    }
+
+    /// Shorten by `cut` px taken off this end (clipped to the screen).
+    pub fn cut(self, cut: f32) -> Self {
+        let c = |n: f32| (n - cut.max(0.0)).max(0.0);
+        match self {
+            Self::Plain => Self::Plain,
+            Self::Own(n) => Self::Own(c(n)),
+            Self::Skip(n) => Self::Skip(c(n)),
+            Self::Round(n) => Self::Round(c(n)),
+        }
+    }
+}
+
+/// The shape of a border band (per-pixel strength, independent of the
+/// colour), so recolouring or fading it only has to tint these values.
+pub struct EdgeMask {
+    width: u32,
+    height: u32,
+    /// Strength 0–1 per pixel.
+    alpha: Vec<f32>,
+    /// Pixels on the contrast line (dark colours only).
+    line: Vec<bool>,
+}
+
+/// What an [`EdgeMask`] depends on.
+pub type EdgeKey = (u32, u32, u8, i32, bool, [(u8, i32); 2]);
+
+impl EdgeMask {
+    pub fn key(
+        width: u32,
+        height: u32,
+        strong: u8,
+        core: f32,
+        dark: bool,
+        ends: [EdgeEnd; 2],
+    ) -> EdgeKey {
+        (
+            width,
+            height,
+            strong,
+            (core * 100.0) as i32,
+            dark,
+            [ends[0].key(), ends[1].key()],
+        )
+    }
+}
+
+/// Dark colours (e.g. black for a sensitive action) get a light line.
+pub fn is_dark(color: Color) -> bool {
+    luminance(color) < 0.15
+}
+
+/// The shape of one border edge: a wide, soft glow strongest on side
+/// `strong` (0 top, 1 right, 2 bottom, 3 left) and fading out smoothly (a
+/// gaussian falloff) across the band. `core` px along the edge stay at full
+/// strength (0 = none). `ends` say how each end (start = left/top) meets the
+/// neighbouring bands, so the four bands join in continuously lit corners.
+/// A dark colour gets a light line so it shows on dark screens too.
+pub fn edge_mask(
+    width: u32,
+    height: u32,
+    dark: bool,
+    strong: u8,
+    core: f32,
+    ends: [EdgeEnd; 2],
+) -> EdgeMask {
+    let (w, h) = (
+        width.clamp(1, MAX_SIDE as u32),
+        height.clamp(1, MAX_SIDE as u32),
+    );
     let (fw, fh) = (w as f32, h as f32);
     let horizontal = strong == 0 || strong == 2;
     let depth = if horizontal { fh } else { fw };
     let length = if horizontal { fw } else { fh };
-    let dark = luminance(color) < 0.15;
+    let core = if core.is_finite() { core.max(0.0) } else { 0.0 };
     let core = if dark { core.max(2.0) } else { core };
-    let (r, g, b) = (color.red(), color.green(), color.blue());
     const PEAK: f32 = 0.92;
     let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
-    let width_px = w as usize;
-    for (i, px) in pm.pixels_mut().iter_mut().enumerate() {
-        let (x, y) = ((i % width_px) as f32 + 0.5, (i / width_px) as f32 + 0.5);
+    let n = (w * h) as usize;
+    let (mut alpha, mut line) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for i in 0..n {
+        let (x, y) = ((i % w as usize) as f32 + 0.5, (i / w as usize) as f32 + 0.5);
         // Distance from the strong side, and position along the edge.
-        let (d, along) = match strong {
+        let (mut d, along) = match strong {
             0 => (y, x),
             1 => (fw - x, y),
             2 => (fh - y, x),
             _ => (x, y),
         };
+        let mut skip = false;
+        for (end, pos) in [(ends[0], along), (ends[1], length - along)] {
+            match end {
+                EdgeEnd::Own(l) if pos < l => d = d.min(pos),
+                EdgeEnd::Skip(l) if pos < l => skip = true,
+                EdgeEnd::Round(l) if pos < l => d = d.hypot(l - pos),
+                _ => {}
+            }
+        }
+        if skip {
+            alpha.push(0.0);
+            line.push(false);
+            continue;
+        }
         let body = if d <= core {
             1.0
         } else {
@@ -370,21 +507,61 @@ pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pix
             // Gaussian-like falloff, forced to zero at the far side.
             ((-(u * 2.8).powi(2)).exp() * (1.0 - smooth(u).powi(3))).clamp(0.0, 1.0)
         };
-        let end = (along.min(length - along) / depth.min(length / 2.0)).clamp(0.0, 1.0);
-        let mut a = PEAK * body * smooth(end.max(0.0));
-        let (mut cr, mut cg, mut cb) = (r, g, b);
-        if dark && (d - core).abs() <= (core * 0.5).max(1.0) {
-            let c = contrast(color);
-            (cr, cg, cb) = (c.red(), c.green(), c.blue());
-            a = a.max(0.85 * smooth(end));
+        let mut a = PEAK * body;
+        let on_line = dark && (d - core).abs() <= (core * 0.5).max(1.0);
+        if on_line {
+            a = a.max(0.85);
         }
+        alpha.push(a);
+        line.push(on_line);
+    }
+    EdgeMask {
+        width: w,
+        height: h,
+        alpha,
+        line,
+    }
+}
+
+/// Paint `mask` in `color` at `opacity` (0–1).
+pub fn tint(mask: &EdgeMask, color: Color, opacity: f32) -> Pixmap {
+    let mut pm = canvas(mask.width as f32, mask.height as f32);
+    if pm.width() != mask.width || pm.height() != mask.height {
+        return pm;
+    }
+    let opacity = opacity.clamp(0.0, 1.0);
+    let main = (color.red(), color.green(), color.blue());
+    let c = contrast(color);
+    let light = (c.red(), c.green(), c.blue());
+    for ((px, &a), &on_line) in pm.pixels_mut().iter_mut().zip(&mask.alpha).zip(&mask.line) {
+        let a = a * opacity;
+        if a <= 0.0 {
+            continue;
+        }
+        let (r, g, b) = if on_line { light } else { main };
         let a8 = (a * 255.0).round() as u8;
         let m = |v: f32| ((v * a * 255.0).round() as u8).min(a8);
-        if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(m(cr), m(cg), m(cb), a8) {
+        if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(m(r), m(g), m(b), a8) {
             *px = c;
         }
     }
     pm
+}
+
+/// One border edge in `color` (see [`edge_mask`]).
+pub fn edge(
+    width: u32,
+    height: u32,
+    color: Color,
+    strong: u8,
+    core: f32,
+    ends: [EdgeEnd; 2],
+) -> Pixmap {
+    tint(
+        &edge_mask(width, height, is_dark(color), strong, core, ends),
+        color,
+        1.0,
+    )
 }
 
 /// Fit `text` into `max_w` pixels at `px`, cutting it with "…" if needed.
@@ -406,9 +583,71 @@ fn fit_text(fonts: &Fonts, text_str: &str, px: f32, max_w: f32) -> text::TextPat
     text::layout(fonts, "…", px)
 }
 
+/// Break `text` into at most `max_lines` lines of at most `max_w` pixels
+/// at `px`, between words where possible; only what doesn't fit even then
+/// is cut with "…" (at the end of the last line).
+fn wrap_text(
+    fonts: &Fonts,
+    text_str: &str,
+    px: f32,
+    max_w: f32,
+    max_lines: usize,
+) -> Vec<text::TextPath> {
+    let fits = |s: &str| text::layout(fonts, s, px).width <= max_w;
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text_str.split_whitespace() {
+        let candidate = if cur.is_empty() {
+            word.to_string()
+        } else {
+            format!("{cur} {word}")
+        };
+        if fits(&candidate) {
+            cur = candidate;
+            continue;
+        }
+        if !cur.is_empty() {
+            lines.push(std::mem::take(&mut cur));
+        }
+        // A word wider than a line: break it between characters.
+        let mut rest: Vec<char> = word.chars().collect();
+        while !rest.is_empty() {
+            let mut n = rest.len();
+            while n > 1 && !fits(&rest[..n].iter().collect::<String>()) {
+                n -= 1;
+            }
+            let piece: String = rest.drain(..n).collect();
+            if rest.is_empty() {
+                cur = piece;
+            } else {
+                lines.push(piece);
+            }
+        }
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    let max_lines = max_lines.max(1);
+    let cut = lines.len() > max_lines;
+    lines.truncate(max_lines);
+    let last = lines.len() - 1;
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == last && cut {
+                fit_text(fonts, &format!("{l} …"), px, max_w)
+            } else {
+                fit_text(fonts, l, px, max_w)
+            }
+        })
+        .collect()
+}
+
 /// A confirmation panel (for platforms without a native dialog): title,
-/// message and two buttons. Returns the image and the button rectangles
-/// (allow, deny) as (x, y, w, h) in image pixels.
+/// message (wrapped over several lines, so what is asked is shown in full)
+/// and two buttons. Returns the image and the button rectangles (allow,
+/// deny) as (x, y, w, h) in image pixels.
 #[allow(clippy::type_complexity)]
 pub fn panel(
     fonts: &Fonts,
@@ -419,13 +658,15 @@ pub fn panel(
     accent: Color,
     scale: f32,
 ) -> (Pixmap, [(f32, f32, f32, f32); 2]) {
-    let s = scale;
+    let s = sane_scale(scale);
     let (w, pad) = (460.0 * s, 20.0 * s);
     let title_t = fit_text(fonts, title, 16.0 * s, w - 2.0 * pad);
-    let msg_t = fit_text(fonts, message, 14.0 * s, w - 2.0 * pad);
+    let msg_lines = wrap_text(fonts, message, 14.0 * s, w - 2.0 * pad, 6);
+    let line_gap = 3.0 * s;
+    let msg_h = msg_lines.iter().map(|t| t.height + line_gap).sum::<f32>() - line_gap;
     let (bw, bh) = (120.0 * s, 34.0 * s);
-    let h = pad + title_t.height + 10.0 * s + msg_t.height + 18.0 * s + bh + pad;
-    let mut pm = Pixmap::new(w.ceil() as u32, h.ceil() as u32).expect("panel size");
+    let h = pad + title_t.height + 10.0 * s + msg_h + 18.0 * s + bh + pad;
+    let mut pm = canvas(w, h);
     let id = Transform::identity();
     if let Some(bg) = rounded_rect(s, s, w - 2.0 * s, h - 2.0 * s, 14.0 * s) {
         pm.fill_path(
@@ -449,15 +690,18 @@ pub fn panel(
             None,
         );
     }
-    let my = pad + title_t.height + 10.0 * s;
-    if let Some(p) = &msg_t.path {
-        pm.fill_path(
-            p,
-            &paint(Color::from_rgba8(225, 225, 232, 255)),
-            FillRule::Winding,
-            Transform::from_translate(x_for(&msg_t), my),
-            None,
-        );
+    let mut my = pad + title_t.height + 10.0 * s;
+    for t in &msg_lines {
+        if let Some(p) = &t.path {
+            pm.fill_path(
+                p,
+                &paint(Color::from_rgba8(225, 225, 232, 255)),
+                FillRule::Winding,
+                Transform::from_translate(x_for(t), my),
+                None,
+            );
+        }
+        my += t.height + line_gap;
     }
     let by = h - pad - bh;
     let allow_r = (w - pad - bw, by, bw, bh);
@@ -545,17 +789,98 @@ mod tests {
         assert_eq!(tagged.hotspot, art.hotspot);
         let l = label(&fonts, "Zero is using the computer", 1.0, ring);
         assert!(l.height() >= 26);
-        let e = edge(100, 30, ring, 0, 3.0);
+        let plain = [EdgeEnd::Plain; 2];
+        let e = edge(100, 30, ring, 0, 3.0, plain);
         // Strongest at the top, faded out at the bottom.
         assert!(e.pixel(50, 0).unwrap().alpha() > 200);
         assert!(e.pixel(50, 29).unwrap().alpha() < 20);
-        // Faded towards the ends, so neighbouring bands blend at the corners.
-        assert!(e.pixel(0, 0).unwrap().alpha() < e.pixel(50, 0).unwrap().alpha() / 2);
-        let dark = edge(100, 30, parse_color("#000").unwrap(), 0, 3.0);
+        let dark = edge(100, 30, parse_color("#000").unwrap(), 0, 3.0, plain);
         assert!(
             dark.pixel(50, 2).unwrap().red() > 120,
             "light line on black"
         );
+    }
+
+    /// Composite `top` over `bottom` (premultiplied alpha) at one pixel.
+    fn over(a: u8, b: u8) -> f32 {
+        let (a, b) = (f32::from(a) / 255.0, f32::from(b) / 255.0);
+        a + b * (1.0 - a)
+    }
+
+    #[test]
+    fn screen_corners_stay_lit() {
+        // The four bands of a 400x300 screen glow, 40 px deep.
+        let c = parse_color("#1E88E5").unwrap();
+        let (w, h, band) = (400, 300, 40);
+        let own = [EdgeEnd::Own(band as f32); 2];
+        let skip = [EdgeEnd::Skip(band as f32); 2];
+        let top = edge(w, band, c, 0, 0.0, own);
+        let left = edge(band, h, c, 3, 0.0, skip);
+        let at = |x: u32, y: u32| {
+            over(
+                top.pixel(x, y).map_or(0, |p| p.alpha()),
+                if x < band {
+                    left.pixel(x, y).unwrap().alpha()
+                } else {
+                    0
+                },
+            )
+        };
+        let mid = at(w / 2, 2);
+        for (x, y) in [(0, 0), (2, 2), (5, 5), (2, 20), (20, 2)] {
+            let corner = at(x, y);
+            assert!(corner >= mid * 0.8, "({x},{y}): {corner} vs {mid}");
+        }
+        // Along the left side too.
+        let side = left.pixel(2, h / 2).unwrap().alpha();
+        assert!(f32::from(side) / 255.0 >= mid * 0.8);
+    }
+
+    #[test]
+    fn window_corners_glow_around() {
+        // A band above a window reaching 30 px past its corners: past the
+        // corner the glow bends around it instead of stopping.
+        let c = parse_color("#1E88E5").unwrap();
+        let e = edge(200, 30, c, 2, 0.0, [EdgeEnd::Round(30.0); 2]);
+        let a = |x: u32, y: u32| u32::from(e.pixel(x, y).unwrap().alpha());
+        // Right at the window corner, as bright as mid-edge.
+        assert!(
+            a(30, 29) >= a(100, 29) * 8 / 10,
+            "{} {}",
+            a(30, 29),
+            a(100, 29)
+        );
+        // Fading with distance from the corner.
+        assert!(a(20, 29) > a(5, 29));
+        assert!(a(5, 5) < 30);
+    }
+
+    #[test]
+    fn silly_scales_do_not_panic() {
+        let c = parse_color("#1E88E5").unwrap();
+        let fonts = Fonts::default();
+        for s in [f32::INFINITY, f32::NAN, 1e6, -3.0, 0.0] {
+            let art = cursor(&fonts, "Zero", s, c, c, None, 0.0);
+            assert!(art.image.width() > 0);
+            assert!(label(&fonts, "x", s, c).width() > 0);
+            assert!(panel(&fonts, "t", "m", "a", "d", c, s).0.width() > 0);
+        }
+        assert!(edge(u32::MAX, 5, c, 0, f32::NAN, [EdgeEnd::Plain; 2]).width() > 0);
+    }
+
+    #[test]
+    fn panel_message_wraps_instead_of_cutting() {
+        let fonts = Fonts::load("");
+        if fonts.is_empty() {
+            return;
+        }
+        let long = "Waiting for your approval: press button \"Send\" in Some Very Long Application Name Mail Client";
+        let lines = wrap_text(&fonts, long, 14.0, 420.0, 6);
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|t| t.width <= 420.0));
+        let (tall, _) = panel(&fonts, "t", long, "Allow", "Deny", Color::WHITE, 1.0);
+        let (short, _) = panel(&fonts, "t", "ok", "Allow", "Deny", Color::WHITE, 1.0);
+        assert!(tall.height() > short.height());
     }
 
     /// `OVERLAY_PREVIEW_DIR=/tmp/x cargo test -p computer-use preview -- --ignored`
@@ -596,7 +921,7 @@ mod tests {
             label(&fonts, text_str, 2.0, c)
                 .save_png(dir.join(format!("label-{name}.png")))
                 .unwrap();
-            edge(600, 40, c, 2, 3.0)
+            edge(600, 40, c, 2, 3.0, [EdgeEnd::Round(40.0); 2])
                 .save_png(dir.join(format!("edge-{name}.png")))
                 .unwrap();
         }

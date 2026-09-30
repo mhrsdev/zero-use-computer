@@ -2,6 +2,7 @@
 //! path when the accessibility API can't do something directly.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{self, ConnectionExt as _, ImageFormat};
@@ -28,12 +29,18 @@ pub struct X11 {
     ctrl: u8,
     alt: u8,
     meta: u8,
-    /// A keycode we can rebind on the fly for characters not on the keyboard.
+    /// A keycode with no keysyms we can rebind on the fly for characters not
+    /// on the keyboard (0 when every keycode is in use).
     spare: u8,
+    /// The keysym currently bound to `spare` (never stored in `keymap`, so a
+    /// rebind can't leave a stale entry behind).
+    spare_sym: Option<u32>,
+    /// When the spare keycode was last pressed, so it isn't rebound before
+    /// the focused client has translated that press.
+    spare_pressed: Option<Instant>,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
-    bgr: bool,
     /// Put the pointer back after synthesized mouse input.
     pub restore_pointer: bool,
 }
@@ -62,7 +69,6 @@ impl X11 {
                 }
             }
         }
-        let bgr = blue_mask > red_mask;
 
         let mut x = Self {
             conn,
@@ -75,10 +81,11 @@ impl X11 {
             alt: 0,
             meta: 0,
             spare: 0,
+            spare_sym: None,
+            spare_pressed: None,
             red_mask,
             green_mask,
             blue_mask,
-            bgr,
             restore_pointer: true,
         };
         x.load_keymap()?;
@@ -96,19 +103,16 @@ impl X11 {
             .map_err(xe)?
             .reply()
             .map_err(xe)?;
-        let per = mapping.keysyms_per_keycode as usize;
-        let mut used = vec![false; count as usize];
+        let per = (mapping.keysyms_per_keycode as usize).max(1);
         for (i, chunk) in mapping.keysyms.chunks(per).enumerate() {
             let keycode = min + i as u8;
             let base = chunk.first().copied().unwrap_or(0);
             let shifted = chunk.get(1).copied().unwrap_or(0);
             if base != 0 {
                 self.keymap.entry(base).or_insert((keycode, false));
-                used[i] = true;
             }
             if shifted != 0 && shifted != base {
                 self.keymap.entry(shifted).or_insert((keycode, true));
-                used[i] = true;
             }
         }
         // Modifier keycodes by keysym.
@@ -121,12 +125,9 @@ impl X11 {
             .map(|k| k.0)
             .unwrap_or(0);
         self.meta = self.keymap.get(&0xffeb).map(|k| k.0).unwrap_or(0); // Super_L
-        // A spare keycode with no keysym, for remapping arbitrary chars.
-        self.spare = used
-            .iter()
-            .position(|u| !u)
-            .map(|i| min + i as u8)
-            .unwrap_or(max);
+        // A spare keycode with no keysym at all, for remapping arbitrary
+        // chars; never a real key (0 = none, typing such chars then fails).
+        self.spare = find_spare(&mapping.keysyms, per, min).unwrap_or(0);
         Ok(())
     }
 
@@ -205,40 +206,52 @@ impl X11 {
 
     pub fn drag(&self, from: (i32, i32), to: (i32, i32)) -> Result<()> {
         let home = self.pointer();
+        // Paced like a real drag: toolkits that start a drag on a motion
+        // threshold or a timer miss a single burst of events.
+        let pause = || -> Result<()> {
+            self.flush()?;
+            std::thread::sleep(DRAG_STEP);
+            Ok(())
+        };
         self.warp(from.0, from.1)?;
         self.fake(6, 0, from.0 as i16, from.1 as i16)?;
+        pause()?;
         self.fake(BUTTON_PRESS, 1, from.0 as i16, from.1 as i16)?;
+        pause()?;
         // A few intermediate motions so drag-aware widgets follow.
         for step in 1..=8 {
             let x = from.0 + (to.0 - from.0) * step / 8;
             let y = from.1 + (to.1 - from.1) * step / 8;
             self.warp(x, y)?;
             self.fake(6, 0, x as i16, y as i16)?;
+            pause()?;
         }
         self.fake(BUTTON_RELEASE, 1, to.0 as i16, to.1 as i16)?;
+        pause()?;
         self.put_back(home)?;
         self.flush()
     }
 
     /// Type a run of text as key events (fallback; AT-SPI insert is preferred).
     pub fn type_text(&mut self, text: &str) -> Result<()> {
-        for c in text.chars() {
-            if c == '\n' {
-                self.press(&KeyCombo {
-                    modifiers: Modifiers::default(),
-                    key: Key::Named(NamedKey::Return),
-                })?;
-                continue;
-            }
-            self.press(&KeyCombo {
+        let typed = text_keys(text).try_for_each(|key| {
+            self.press_one(&KeyCombo {
                 modifiers: Modifiers::default(),
-                key: Key::Char(c),
-            })?;
-        }
-        Ok(())
+                key,
+            })
+        });
+        // Put the spare keycode back even when a key failed.
+        let restored = self.restore_spare();
+        typed.and(restored)
     }
 
     pub fn press(&mut self, combo: &KeyCombo) -> Result<()> {
+        let pressed = self.press_one(combo);
+        let restored = self.restore_spare();
+        pressed.and(restored)
+    }
+
+    fn press_one(&mut self, combo: &KeyCombo) -> Result<()> {
         let (keycode, shift_from_key) = self.resolve_key(combo.key)?;
         let m = combo.modifiers;
         let mut down: Vec<u8> = Vec::new();
@@ -262,22 +275,43 @@ impl X11 {
         for kc in down.iter().rev() {
             self.fake(KEY_RELEASE, *kc, 0, 0)?;
         }
-        self.flush()
+        self.flush()?;
+        if keycode == self.spare {
+            self.spare_pressed = Some(Instant::now());
+        }
+        Ok(())
     }
 
     /// Returns (keycode, needs_shift), remapping the spare keycode if needed.
     fn resolve_key(&mut self, key: Key) -> Result<(u8, bool)> {
         let keysym =
             keysym_for(key).ok_or_else(|| Error::ActionFailed(format!("no keysym for {key:?}")))?;
-        if let Some((kc, sh)) = self.keymap.get(&keysym) {
-            return Ok((*kc, *sh));
-        }
-        // Remap the spare keycode to this keysym for one press.
-        if self.spare == 0 {
-            return Err(Error::ActionFailed(
+        match plan_key(&self.keymap, self.spare, self.spare_sym, keysym) {
+            KeyPlan::Mapped(kc, shift) => Ok((kc, shift)),
+            KeyPlan::Spare => Ok((self.spare, false)),
+            KeyPlan::Rebind => {
+                self.bind_spare(keysym)?;
+                Ok((self.spare, false))
+            }
+            KeyPlan::NoSpare => Err(Error::ActionFailed(
                 "no free keycode to type this character".into(),
-            ));
+            )),
         }
+    }
+
+    /// Bind the spare keycode to `keysym` (0 = unbind), letting the last
+    /// press on it be translated first and clients see the new mapping
+    /// (MappingNotify) before the next press.
+    fn bind_spare(&mut self, keysym: u32) -> Result<()> {
+        if let Some(t) = self.spare_pressed.take() {
+            let since = t.elapsed();
+            if since < REMAP_SETTLE {
+                std::thread::sleep(REMAP_SETTLE - since);
+            }
+        }
+        // Forget the old binding first: if the change fails, nothing claims
+        // the spare keycode still types the previous character.
+        self.spare_sym = None;
         let syms = [keysym, keysym];
         // .check() round-trips so the mapping is live before the fake key event.
         self.conn
@@ -285,8 +319,20 @@ impl X11 {
             .map_err(xe)?
             .check()
             .map_err(xe)?;
-        self.keymap.insert(keysym, (self.spare, false));
-        Ok((self.spare, false))
+        self.flush()?;
+        if keysym != 0 {
+            std::thread::sleep(REMAP_SETTLE);
+            self.spare_sym = Some(keysym);
+        }
+        Ok(())
+    }
+
+    /// Unbind the spare keycode after use, restoring the original mapping.
+    fn restore_spare(&mut self) -> Result<()> {
+        if self.spare_sym.is_none() {
+            return Ok(());
+        }
+        self.bind_spare(0)
     }
 
     /// Capture a screen rectangle as RGBA.
@@ -345,20 +391,31 @@ impl X11 {
         super::wm::Wm::new(&self.conn, self.root)
     }
 
+    /// The root window's current size (it changes with RandR resizes and
+    /// monitor hotplug), falling back to the size at connect time.
+    fn root_size(&self) -> (u16, u16) {
+        self.conn
+            .get_geometry(self.root)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|g| (g.width, g.height))
+            .unwrap_or((self.root_w, self.root_h))
+    }
+
     /// The full screen rectangle (the root window's size).
     pub fn root_rect(&self) -> Rect {
-        Rect::new(0.0, 0.0, f64::from(self.root_w), f64::from(self.root_h))
+        let (w, h) = self.root_size();
+        Rect::new(0.0, 0.0, f64::from(w), f64::from(h))
     }
 
     pub fn capture(&self, rect: Rect) -> Result<Capture> {
-        let x = rect.x.max(0.0) as i16;
-        let y = rect.y.max(0.0) as i16;
-        let w = (rect.width.round() as i32)
-            .clamp(1, i32::from(self.root_w) - i32::from(x))
-            .max(1) as u16;
-        let h = (rect.height.round() as i32)
-            .clamp(1, i32::from(self.root_h) - i32::from(y))
-            .max(1) as u16;
+        let (root_w, root_h) = self.root_size();
+        let (x, y, w, h) = clip_to_root(rect, root_w, root_h).ok_or_else(|| {
+            Error::ActionFailed(format!(
+                "the capture area ({:.0},{:.0} {:.0}x{:.0}) is off-screen (screen is {root_w}x{root_h})",
+                rect.x, rect.y, rect.width, rect.height
+            ))
+        })?;
         let img = self
             .conn
             .get_image(ImageFormat::Z_PIXMAP, self.root, x, y, w, h, !0)
@@ -366,37 +423,21 @@ impl X11 {
             .reply()
             .map_err(|e| Error::Platform(format!("GetImage failed: {e}")))?;
 
-        let px = img.data.len() / (w as usize * h as usize).max(1);
-        let (rs, gs, bs) = (
-            self.red_mask.trailing_zeros(),
-            self.green_mask.trailing_zeros(),
-            self.blue_mask.trailing_zeros(),
-        );
-        let rgba = if px >= 4 {
-            // 32bpp: convert in place in the reply buffer (no second copy).
-            let mut data = img.data;
-            data.truncate(w as usize * h as usize * 4);
-            for chunk in data.chunks_exact_mut(4) {
-                let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                chunk[0] = ((word & self.red_mask) >> rs) as u8;
-                chunk[1] = ((word & self.green_mask) >> gs) as u8;
-                chunk[2] = ((word & self.blue_mask) >> bs) as u8;
-                chunk[3] = 255;
-            }
-            data
-        } else {
-            // 24bpp packed (3 bytes/pixel) needs a wider buffer.
-            let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-            for chunk in img.data.chunks_exact(3) {
-                let (r, g, b) = if self.bgr {
-                    (chunk[2], chunk[1], chunk[0])
-                } else {
-                    (chunk[0], chunk[1], chunk[2])
-                };
-                rgba.extend_from_slice(&[r, g, b, 255]);
-            }
-            rgba
+        let setup = self.conn.setup();
+        let format = setup
+            .pixmap_formats
+            .iter()
+            .find(|f| f.depth == img.depth)
+            .ok_or_else(|| {
+                Error::Unsupported(format!("no pixmap format for depth {}", img.depth))
+            })?;
+        let layout = PixelLayout {
+            bits_per_pixel: format.bits_per_pixel,
+            pad: format.scanline_pad,
+            msb_first: setup.image_byte_order == xproto::ImageOrder::MSB_FIRST,
+            masks: [self.red_mask, self.green_mask, self.blue_mask],
         };
+        let rgba = to_rgba(img.data, w.into(), h.into(), &layout)?;
         Ok(Capture {
             width: w as u32,
             height: h as u32,
@@ -406,8 +447,167 @@ impl X11 {
     }
 }
 
+/// Pace of synthesized drag steps.
+const DRAG_STEP: Duration = Duration::from_millis(12);
+/// Time for clients to act on a keyboard remap (MappingNotify) and to
+/// translate a press on the spare keycode before it is rebound.
+const REMAP_SETTLE: Duration = Duration::from_millis(30);
+
+/// The keys that type `text`: line breaks and tabs are Return and Tab
+/// (a `\r\n` pair is one Return), everything else its character.
+fn text_keys(text: &str) -> impl Iterator<Item = Key> + '_ {
+    let mut chars = text.chars().peekable();
+    std::iter::from_fn(move || {
+        let c = chars.next()?;
+        Some(match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                Key::Named(NamedKey::Return)
+            }
+            '\n' => Key::Named(NamedKey::Return),
+            '\t' => Key::Named(NamedKey::Tab),
+            c => Key::Char(c),
+        })
+    })
+}
+
+/// A keycode none of whose keysyms is set.
+fn find_spare(keysyms: &[u32], per: usize, min: u8) -> Option<u8> {
+    keysyms
+        .chunks(per.max(1))
+        .position(|chunk| chunk.iter().all(|s| *s == 0))
+        .and_then(|i| u8::try_from(usize::from(min) + i).ok())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum KeyPlan {
+    /// A real key types it: (keycode, needs_shift).
+    Mapped(u8, bool),
+    /// The spare keycode is already bound to it.
+    Spare,
+    /// The spare keycode must be rebound to it.
+    Rebind,
+    /// Not on the keyboard and no spare keycode.
+    NoSpare,
+}
+
+fn plan_key(
+    keymap: &HashMap<u32, (u8, bool)>,
+    spare: u8,
+    spare_sym: Option<u32>,
+    keysym: u32,
+) -> KeyPlan {
+    if let Some((kc, sh)) = keymap.get(&keysym) {
+        KeyPlan::Mapped(*kc, *sh)
+    } else if spare == 0 {
+        KeyPlan::NoSpare
+    } else if spare_sym == Some(keysym) {
+        KeyPlan::Spare
+    } else {
+        KeyPlan::Rebind
+    }
+}
+
+/// The part of `rect` on a `root_w`×`root_h` screen, as GetImage arguments,
+/// or `None` when nothing of it is on-screen.
+fn clip_to_root(rect: Rect, root_w: u16, root_h: u16) -> Option<(i16, i16, u16, u16)> {
+    let finite = [rect.x, rect.y, rect.width, rect.height]
+        .iter()
+        .all(|v| v.is_finite());
+    if !finite {
+        return None;
+    }
+    let x0 = rect.x.round().max(0.0);
+    let y0 = rect.y.round().max(0.0);
+    let x1 = (rect.x + rect.width).round().min(f64::from(root_w));
+    let y1 = (rect.y + rect.height).round().min(f64::from(root_h));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0 as i16, y0 as i16, (x1 - x0) as u16, (y1 - y0) as u16))
+}
+
+/// How a Z-pixmap image is laid out.
+struct PixelLayout {
+    bits_per_pixel: u8,
+    /// Scanline padding in bits.
+    pad: u8,
+    msb_first: bool,
+    /// Red, green and blue masks of the visual.
+    masks: [u32; 3],
+}
+
+/// Convert a Z-pixmap image (any of 16/24/32 bits per pixel, with scanline
+/// padding) to tightly packed RGBA.
+fn to_rgba(mut data: Vec<u8>, w: usize, h: usize, l: &PixelLayout) -> Result<Vec<u8>> {
+    let bytes = match l.bits_per_pixel {
+        16 => 2,
+        24 => 3,
+        32 => 4,
+        other => {
+            return Err(Error::Unsupported(format!(
+                "screen capture needs a 16, 24 or 32 bits-per-pixel display (this one is {other})"
+            )));
+        }
+    };
+    let pad = usize::from(l.pad.max(8));
+    let stride = (w * bytes * 8).div_ceil(pad) * pad / 8;
+    if data.len() < stride * h.saturating_sub(1) + w * bytes {
+        return Err(Error::Platform("GetImage returned a short image".into()));
+    }
+    let shifts = l.masks.map(|m| m.trailing_zeros().min(31));
+    let maxes = l.masks.map(|m| (m >> m.trailing_zeros().min(31)).max(1));
+    let channel = |word: u32, i: usize| -> u8 {
+        let v = (word & l.masks[i]) >> shifts[i];
+        if maxes[i] == 0xff {
+            v as u8
+        } else {
+            (u64::from(v) * 255 / u64::from(maxes[i])) as u8
+        }
+    };
+    let read = |px: &[u8]| -> u32 {
+        if l.msb_first {
+            px.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b))
+        } else {
+            px.iter()
+                .rev()
+                .fold(0u32, |acc, b| (acc << 8) | u32::from(*b))
+        }
+    };
+    if bytes == 4 && stride == w * 4 {
+        // Common case: convert in place in the reply buffer (no second copy).
+        data.truncate(w * h * 4);
+        for px in data.chunks_exact_mut(4) {
+            let word = read(px);
+            px[0] = channel(word, 0);
+            px[1] = channel(word, 1);
+            px[2] = channel(word, 2);
+            px[3] = 255;
+        }
+        return Ok(data);
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        let line = &data[row * stride..row * stride + w * bytes];
+        for px in line.chunks_exact(bytes) {
+            let word = read(px);
+            rgba.extend_from_slice(&[channel(word, 0), channel(word, 1), channel(word, 2), 255]);
+        }
+    }
+    Ok(rgba)
+}
+
 pub(crate) fn keysym_for(key: Key) -> Option<u32> {
     Some(match key {
+        // Control characters have function-key keysyms, not Latin-1 ones.
+        Key::Char('\t') => 0xff09,
+        Key::Char('\n' | '\r') => 0xff0d,
+        Key::Char('\u{8}') => 0xff08,
+        Key::Char('\u{1b}') => 0xff1b,
+        Key::Char('\u{7f}') => 0xffff,
+        Key::Char(c) if (c as u32) < 0x20 => return None,
         Key::Char(c) => {
             let cp = c as u32;
             if cp <= 0xff {
@@ -441,4 +641,144 @@ pub(crate) fn keysym_for(key: Key) -> Option<u32> {
 
 fn xe(e: impl std::fmt::Display) -> Error {
     Error::Platform(format!("X11: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_inside_partial_and_off_screen() {
+        let r = |x, y, w, h| Rect::new(x, y, w, h);
+        assert_eq!(
+            clip_to_root(r(10.0, 20.0, 100.0, 50.0), 1920, 1080),
+            Some((10, 20, 100, 50))
+        );
+        // Hangs off the right/bottom edge and the top-left corner.
+        assert_eq!(
+            clip_to_root(r(1900.0, 1000.0, 100.0, 200.0), 1920, 1080),
+            Some((1900, 1000, 20, 80))
+        );
+        assert_eq!(
+            clip_to_root(r(-50.0, -10.0, 100.0, 30.0), 1920, 1080),
+            Some((0, 0, 50, 20))
+        );
+        // Entirely off-screen: an error, not a panic.
+        assert_eq!(
+            clip_to_root(r(2000.0, 10.0, 100.0, 100.0), 1920, 1080),
+            None
+        );
+        assert_eq!(clip_to_root(r(1920.0, 0.0, 10.0, 10.0), 1920, 1080), None);
+        assert_eq!(clip_to_root(r(-200.0, 0.0, 100.0, 10.0), 1920, 1080), None);
+        assert_eq!(clip_to_root(r(0.0, 0.0, 0.0, 10.0), 1920, 1080), None);
+        assert_eq!(clip_to_root(r(f64::NAN, 0.0, 10.0, 10.0), 1920, 1080), None);
+    }
+
+    #[test]
+    fn control_chars_type_tab_and_return() {
+        let keys: Vec<Key> = text_keys("a\tb\r\nc\nd\re").collect();
+        let ret = Key::Named(NamedKey::Return);
+        assert_eq!(
+            keys,
+            vec![
+                Key::Char('a'),
+                Key::Named(NamedKey::Tab),
+                Key::Char('b'),
+                ret,
+                Key::Char('c'),
+                ret,
+                Key::Char('d'),
+                ret,
+                Key::Char('e'),
+            ]
+        );
+        assert_eq!(keysym_for(Key::Char('\t')), Some(0xff09));
+        assert_eq!(keysym_for(Key::Char('\r')), Some(0xff0d));
+        assert_eq!(keysym_for(Key::Char('\u{1}')), None);
+        assert_eq!(keysym_for(Key::Char('é')), Some(0xe9));
+        assert_eq!(keysym_for(Key::Char('€')), Some(0x0100_20ac));
+    }
+
+    #[test]
+    fn spare_keycode_is_never_a_real_key() {
+        // 3 keycodes from 8, 4 keysyms each; only 10 is completely empty
+        // (9 has a keysym in its second group only).
+        let syms = [0x61, 0x41, 0, 0, 0, 0, 0x6c6, 0, 0, 0, 0, 0];
+        assert_eq!(find_spare(&syms, 4, 8), Some(10));
+        assert_eq!(find_spare(&syms[..8], 4, 8), None);
+    }
+
+    #[test]
+    fn rebinding_the_spare_never_reuses_a_stale_char() {
+        let mut keymap = HashMap::new();
+        keymap.insert(0x61, (38, false));
+        let (e_acute, euro) = (0xe9, 0x0100_20ac);
+        // "é€é" on a keyboard without either: every change of character
+        // rebinds, a repeat doesn't.
+        let mut bound = None;
+        let mut plans = Vec::new();
+        for sym in [e_acute, euro, e_acute, e_acute] {
+            let p = plan_key(&keymap, 200, bound, sym);
+            if p == KeyPlan::Rebind {
+                bound = Some(sym);
+            }
+            plans.push(p);
+        }
+        assert_eq!(
+            plans,
+            vec![
+                KeyPlan::Rebind,
+                KeyPlan::Rebind,
+                KeyPlan::Rebind,
+                KeyPlan::Spare
+            ]
+        );
+        assert_eq!(
+            plan_key(&keymap, 200, bound, 0x61),
+            KeyPlan::Mapped(38, false)
+        );
+        assert_eq!(plan_key(&keymap, 0, None, euro), KeyPlan::NoSpare);
+    }
+
+    fn layout(bpp: u8, pad: u8, masks: [u32; 3]) -> PixelLayout {
+        PixelLayout {
+            bits_per_pixel: bpp,
+            pad,
+            msb_first: false,
+            masks,
+        }
+    }
+
+    #[test]
+    fn converts_32bpp_in_place() {
+        // BGRX little-endian: red in bits 16..24.
+        let data = vec![0x30, 0x20, 0x10, 0, 0x03, 0x02, 0x01, 0];
+        let out = to_rgba(data, 2, 1, &layout(32, 32, [0xff0000, 0xff00, 0xff])).unwrap();
+        assert_eq!(out, vec![0x10, 0x20, 0x30, 255, 0x01, 0x02, 0x03, 255]);
+    }
+
+    #[test]
+    fn converts_24bpp_with_scanline_padding() {
+        // 1 pixel per row = 3 bytes, padded to 4.
+        let data = vec![0x30, 0x20, 0x10, 0xee, 0x03, 0x02, 0x01, 0xee];
+        let out = to_rgba(data, 1, 2, &layout(24, 32, [0xff0000, 0xff00, 0xff])).unwrap();
+        assert_eq!(out, vec![0x10, 0x20, 0x30, 255, 0x01, 0x02, 0x03, 255]);
+    }
+
+    #[test]
+    fn converts_16bpp_rgb565() {
+        // White and pure red in RGB565, little-endian.
+        let data = vec![0xff, 0xff, 0x00, 0xf8];
+        let out = to_rgba(data, 2, 1, &layout(16, 32, [0xf800, 0x07e0, 0x001f])).unwrap();
+        assert_eq!(out, vec![255, 255, 255, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn rejects_other_depths_and_short_images() {
+        assert!(matches!(
+            to_rgba(vec![0; 8], 8, 1, &layout(8, 32, [0xe0, 0x1c, 0x3])),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(to_rgba(vec![0; 4], 2, 1, &layout(32, 32, [0xff0000, 0xff00, 0xff])).is_err());
+    }
 }

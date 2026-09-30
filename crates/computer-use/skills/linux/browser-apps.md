@@ -23,7 +23,7 @@ own features and for pages that are hard to read.
 
 ## Reading a page that exposes little
 1. `find_element` by visible text or role first — it is far cheaper than the
-   whole tree. 2. `screenshot` (and `ocr: true` for text drawn on canvas or in
+   whole tree. 2. `screenshot` (and `get_app_state(ocr: true)` for text drawn on canvas or in
    images). 3. Use `ctrl+f` (`cmd+f` on Mac) to jump to a word, then read around it.
 4. Long pages: `scroll` in steps and re-read; don't assume what is below.
 

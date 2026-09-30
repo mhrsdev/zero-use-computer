@@ -85,7 +85,10 @@ fn report(name: &str, samples: &[Sample]) {
     let n = samples.len().max(1) as u32;
     let total: Duration = samples.iter().map(|s| s.time).sum();
     let min = samples.iter().map(|s| s.time).min().unwrap_or_default();
-    let last = samples.last().unwrap();
+    let Some(last) = samples.last() else {
+        println!("{name:<26} (no samples)");
+        return;
+    };
     let mut line = format!(
         "{name:<26} mean {:>7.1} ms  min {:>7.1} ms  ipc {:>5}  text {:>6} chars (~{:>5} tok)",
         (total / n).as_secs_f64() * 1000.0,
@@ -144,7 +147,16 @@ fn main() {
         std::process::exit(2);
     });
     let window = args.next().filter(|w| !w.is_empty() && w != "-");
-    let iters: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let iters: usize = match args.next() {
+        None => 5,
+        Some(s) => match s.parse() {
+            Ok(n) if n >= 1 => n,
+            _ => {
+                eprintln!("iterations must be a whole number >= 1 (got {s:?})");
+                std::process::exit(2);
+            }
+        },
+    };
 
     let config_path = std::env::var_os("BENCH_CONFIG");
     let mut store = match &config_path {

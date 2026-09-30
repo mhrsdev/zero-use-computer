@@ -10,7 +10,7 @@ mod pasteboard;
 mod wm;
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use core_graphics::geometry::CGPoint;
 use ffi::AxRef;
@@ -27,6 +27,10 @@ pub struct MacBackend {
     apps: HashMap<u32, AxRef>,
     /// handle → (pid, element).
     handles: HashMap<ElementHandle, (u32, AxRef)>,
+    /// Window handles from the latest `list_windows` of each app. Kept
+    /// apart so a snapshot (which renews the app's element handles) doesn't
+    /// invalidate a window list callers still reuse.
+    window_handles: HashMap<ElementHandle, (u32, AxRef)>,
     next_handle: ElementHandle,
     /// Read all of an element's attributes in one AX call.
     batch_attributes: bool,
@@ -80,6 +84,7 @@ impl MacBackend {
         Ok(Self {
             apps: HashMap::new(),
             handles: HashMap::new(),
+            window_handles: HashMap::new(),
             next_handle: 1,
             batch_attributes: defaults.batch_attributes,
             messaging_timeout: defaults.messaging_timeout_secs,
@@ -108,6 +113,7 @@ impl MacBackend {
     fn resolve(&self, handle: ElementHandle) -> Result<AxRef> {
         self.handles
             .get(&handle)
+            .or_else(|| self.window_handles.get(&handle))
             .map(|(_, el)| el.clone())
             .ok_or_else(|| Error::Internal(format!("stale element handle {handle}")))
     }
@@ -323,12 +329,20 @@ impl Backend for MacBackend {
         } else {
             "-a"
         };
-        Command::new("open")
+        // Never share our stdio: stdin/stdout carry the MCP JSON-RPC stream.
+        let mut child = Command::new("open")
             .arg(flag)
             .arg(query)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
-            .map(|_| ())
-            .map_err(|e| Error::ActionFailed(format!("could not launch `{query}`: {e}")))
+            .map_err(|e| Error::ActionFailed(format!("could not launch `{query}`: {e}")))?;
+        // Reap it (`open` exits promptly) so it never lingers as a zombie.
+        let _ = std::thread::Builder::new()
+            .name("reap-open".into())
+            .spawn(move || child.wait());
+        Ok(())
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
@@ -338,6 +352,8 @@ impl Backend for MacBackend {
         let focused_id = ffi::copy_single_element(app_el.as_ref(), "AXFocusedWindow")
             .and_then(|f| ffi::window_id(f.as_ref()));
 
+        // This listing replaces the app's previous window handles.
+        self.window_handles.retain(|_, (p, _)| *p != app.pid);
         let mut out = Vec::new();
         for win in ffi::copy_elements(app_el.as_ref(), "AXWindows") {
             let title = ffi::copy_string(win.as_ref(), "AXTitle").unwrap_or_default();
@@ -347,7 +363,9 @@ impl Backend for MacBackend {
             let id = cg_id
                 .map(u64::from)
                 .unwrap_or_else(|| stable_id(&title, out.len()));
-            let handle = self.handle_for(app.pid, win.clone());
+            let handle = self.next_handle;
+            self.next_handle += 1;
+            self.window_handles.insert(handle, (app.pid, win.clone()));
             out.push(WindowInfo {
                 id,
                 title: if title.is_empty() {
@@ -372,7 +390,8 @@ impl Backend for MacBackend {
         opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
         let root = self.resolve(window.handle)?;
-        // Reuse a fresh handle namespace for this app's elements.
+        // Reuse a fresh handle namespace for this app's elements (its window
+        // handles are kept).
         self.drop_pid_handles(app.pid);
         let mut out = Vec::new();
         self.walk(app.pid, &root, None, 0, opts, &mut out);
@@ -482,16 +501,12 @@ impl Backend for MacBackend {
         let el = self.resolve(element)?;
         let r = el.as_ref();
         let content = ffi::copy_string(r, "AXValue").unwrap_or_default();
-        let chars: Vec<char> = content.chars().collect();
+        // AXSelectedTextRange counts UTF-16 code units, like NSString.
         let (loc, len) = match text {
-            None => (0isize, chars.len() as isize),
-            Some(needle) => {
-                let needle: Vec<char> = needle.chars().collect();
-                let start = find_nth(&chars, &needle, occurrence.max(1)).ok_or_else(|| {
-                    Error::ActionFailed(format!("`{}` not found in the text", text.unwrap()))
-                })?;
-                (start as isize, needle.len() as isize)
-            }
+            None => (0isize, content.encode_utf16().count() as isize),
+            Some(needle) => utf16_range(&content, needle, occurrence.max(1))
+                .map(|(l, n)| (l as isize, n as isize))
+                .ok_or_else(|| Error::ActionFailed(format!("`{needle}` not found in the text")))?,
         };
         if ffi::set_range(r, "AXSelectedTextRange", loc, len) {
             Ok(())
@@ -554,20 +569,19 @@ impl Backend for MacBackend {
     }
 }
 
-fn find_nth(hay: &[char], needle: &[char], nth: usize) -> Option<usize> {
+/// The `nth` (1-based) occurrence of `needle` in `hay`, as a
+/// (location, length) range in UTF-16 code units (NSString indexing).
+fn utf16_range(hay: &str, needle: &str, nth: usize) -> Option<(usize, usize)> {
+    let hay: Vec<u16> = hay.encode_utf16().collect();
+    let needle: Vec<u16> = needle.encode_utf16().collect();
     if needle.is_empty() || needle.len() > hay.len() {
         return None;
     }
-    let mut seen = 0;
-    for i in 0..=hay.len() - needle.len() {
-        if hay[i..i + needle.len()] == *needle {
-            seen += 1;
-            if seen == nth {
-                return Some(i);
-            }
-        }
-    }
-    None
+    hay.windows(needle.len())
+        .enumerate()
+        .filter(|(_, w)| *w == needle.as_slice())
+        .nth(nth.checked_sub(1)?)
+        .map(|(i, _)| (i, needle.len()))
 }
 
 fn stable_id(title: &str, index: usize) -> u64 {
@@ -577,4 +591,20 @@ fn stable_id(title: &str, index: usize) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01B3);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utf16_range;
+
+    #[test]
+    fn selection_ranges_count_utf16_units() {
+        assert_eq!(utf16_range("abcabc", "bc", 2), Some((4, 2)));
+        assert_eq!(utf16_range("abcabc", "bc", 3), None);
+        // An emoji is 2 UTF-16 units (1 char): offsets after it shift by 2.
+        assert_eq!(utf16_range("😀 hi", "hi", 1), Some((3, 2)));
+        assert_eq!(utf16_range("a😀b", "😀", 1), Some((1, 2)));
+        assert_eq!(utf16_range("abc", "", 1), None);
+        assert_eq!(utf16_range("abc", "a", 0), None);
+    }
 }

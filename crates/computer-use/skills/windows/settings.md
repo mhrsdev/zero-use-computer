@@ -1,9 +1,10 @@
 # Windows Settings and system tasks
 
 - Open Settings: `press_key win+i`. Jump to a page with the search box at the
-  top (`type_text` the setting name) or `launch_app` with a `ms-settings:` URI
-  (for example `ms-settings:display`, `ms-settings:network`,
-  `ms-settings:bluetooth`, `ms-settings:sound`).
+  top (`type_text` the setting name) or open a page directly with a `ms-settings:`
+  URI, e.g. `launch_app("ms-settings:display")` (also `ms-settings:network`,
+  `ms-settings:bluetooth`, `ms-settings:sound`). If that fails, use `win+i` and
+  the search box.
 - Quick settings (Wi-Fi, volume, brightness): `win+a`. Notifications: `win+n`.
 - Display scaling / resolution: Settings ▸ System ▸ Display.
 - Default apps: Settings ▸ Apps ▸ Default apps. Startup apps: Settings ▸ Apps ▸ Startup.

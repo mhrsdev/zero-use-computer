@@ -77,7 +77,8 @@ pub enum SensitiveMode {
     /// Refuse, unless the specific app is in `approvals.always_allow`. Default.
     #[default]
     Block,
-    /// Ask the user each time (via approval), even in allow-all mode.
+    /// Ask the user before first use in a session (via approval), even in
+    /// allow-all mode.
     Ask,
     /// Treat like any other app (normal approval mode applies).
     Allow,
@@ -1019,13 +1020,154 @@ impl Config {
                 c.pixel_grid
             ));
         }
+        let t = self.launch_timeout_secs;
+        if !(t.is_finite() && (0.0..=3600.0).contains(&t)) {
+            return Err(format!(
+                "launch_timeout_secs must be between 0 and 3600 (got {t})"
+            ));
+        }
+        let ratio = self.tree.diff_full_ratio;
+        if !(0.0..=1.0).contains(&ratio) {
+            return Err(format!(
+                "tree.diff_full_ratio must be between 0 and 1 (got {ratio})"
+            ));
+        }
+        if !(o.scale.is_finite() && (0.0..=8.0).contains(&o.scale)) {
+            return Err(format!(
+                "overlay.scale must be between 0 and 8 (got {})",
+                o.scale
+            ));
+        }
+        for (key, value) in [
+            ("overlay.border_width", o.border_width),
+            ("overlay.glow_size", o.glow_size),
+        ] {
+            if value > 2000 {
+                return Err(format!("{key} must be at most 2000 px (got {value})"));
+            }
+        }
+        let m = self.macos.messaging_timeout_secs;
+        if !(m.is_finite() && (0.0..=120.0).contains(&m)) {
+            return Err(format!(
+                "macos.messaging_timeout_secs must be between 0 and 120 (got {m})"
+            ));
+        }
         Ok(())
+    }
+
+    /// After a hot reload: undo any change that makes the agent *less*
+    /// restricted (looser approval/sensitive/guard modes, new always-allowed
+    /// apps, removed deny lists, newly enabled file/clipboard tools). A
+    /// running agent could otherwise loosen its own rules by editing this
+    /// file; such changes take effect after a restart. Returns what was kept.
+    pub fn keep_restrictions(&mut self, old: &Config) -> Vec<&'static str> {
+        fn rank_mode(m: SensitiveMode) -> u8 {
+            match m {
+                SensitiveMode::Allow => 0,
+                SensitiveMode::Ask => 1,
+                SensitiveMode::Block => 2,
+            }
+        }
+        fn rank_approval(m: ApprovalMode) -> u8 {
+            match m {
+                ApprovalMode::AllowAll => 0,
+                ApprovalMode::Prompt => 1,
+                ApprovalMode::Allowlist => 2,
+            }
+        }
+        fn union(new: &mut Vec<String>, old: &[String]) -> bool {
+            let missing: Vec<String> = old
+                .iter()
+                .filter(|o| !new.iter().any(|n| n.eq_ignore_ascii_case(o)))
+                .cloned()
+                .collect();
+            let changed = !missing.is_empty();
+            new.extend(missing);
+            changed
+        }
+        let mut kept = Vec::new();
+        if rank_approval(self.approvals.mode) < rank_approval(old.approvals.mode) {
+            self.approvals.mode = old.approvals.mode;
+            kept.push("approvals.mode");
+        }
+        let before = self.approvals.always_allow.len();
+        self.approvals.always_allow.retain(|a| {
+            old.approvals
+                .always_allow
+                .iter()
+                .any(|o| o.eq_ignore_ascii_case(a))
+        });
+        if self.approvals.always_allow.len() != before {
+            kept.push("approvals.always_allow");
+        }
+        if union(&mut self.approvals.always_deny, &old.approvals.always_deny) {
+            kept.push("approvals.always_deny");
+        }
+        if union(&mut self.approvals.agent_apps, &old.approvals.agent_apps) {
+            kept.push("approvals.agent_apps");
+        }
+        macro_rules! mode {
+            ($($f:ident),*) => {$(
+                if rank_mode(self.sensitive.$f) < rank_mode(old.sensitive.$f) {
+                    self.sensitive.$f = old.sensitive.$f;
+                    kept.push(concat!("sensitive.", stringify!($f)));
+                }
+            )*};
+        }
+        mode!(
+            terminals,
+            credentials,
+            security_prompts,
+            agent_apps,
+            own_process
+        );
+        for (new, old, key) in [
+            (
+                &mut self.sensitive.extra_terminals,
+                &old.sensitive.extra_terminals,
+                "sensitive.extra_terminals",
+            ),
+            (
+                &mut self.sensitive.extra_credentials,
+                &old.sensitive.extra_credentials,
+                "sensitive.extra_credentials",
+            ),
+            (
+                &mut self.sensitive.extra_security_prompts,
+                &old.sensitive.extra_security_prompts,
+                "sensitive.extra_security_prompts",
+            ),
+            (
+                &mut self.guard.keywords,
+                &old.guard.keywords,
+                "guard.keywords",
+            ),
+        ] {
+            if union(new, old) {
+                kept.push(key);
+            }
+        }
+        if rank_mode(self.guard.mode) < rank_mode(old.guard.mode) {
+            self.guard.mode = old.guard.mode;
+            kept.push("guard.mode");
+        }
+        for (new, old, key) in [
+            (&mut self.read_files, old.read_files, "read_files"),
+            (&mut self.create_folder, old.create_folder, "create_folder"),
+            (&mut self.clipboard, old.clipboard, "clipboard"),
+        ] {
+            if *new && !old {
+                *new = false;
+                kept.push(key);
+            }
+        }
+        kept
     }
 }
 
 /// Admin policy. Takes precedence over the user config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ManagedConfig {
     /// Apps that can never be controlled.
     pub denied_apps: Vec<String>,
@@ -1284,7 +1426,15 @@ impl ConfigStore {
         let managed = match std::fs::read_to_string(&managed_path) {
             Ok(text) => toml::from_str(&text)
                 .map_err(|e| Error::Config(format!("{}: {e}", managed_path.display())))?,
-            Err(_) => ManagedConfig::default(),
+            // No managed policy installed: nothing to enforce. Any other
+            // failure (permission denied…) must not silently mean "no policy".
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ManagedConfig::default(),
+            Err(e) => {
+                return Err(Error::Config(format!(
+                    "{}: {e} (the managed policy could not be read, so not continuing without it)",
+                    managed_path.display()
+                )));
+            }
         };
         Ok(Self {
             config,
@@ -1512,5 +1662,49 @@ mod tests {
         std::fs::write(&path, "[cache]\npixel_grid = 1\n").unwrap();
         assert!(ConfigStore::load(Some(&path)).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_reload_cannot_loosen_the_rules_and_bad_numbers_are_rejected() {
+        let old = Config {
+            read_files: false,
+            ..Config::default()
+        };
+        let mut new = Config::default();
+        new.approvals.mode = ApprovalMode::AllowAll;
+        new.approvals.always_allow = vec!["Anything".into()];
+        new.sensitive.terminals = SensitiveMode::Allow;
+        new.guard.mode = SensitiveMode::Allow;
+        new.guard.keywords.clear();
+        new.read_files = true;
+        let kept = new.keep_restrictions(&old);
+        assert_eq!(new.approvals.mode, ApprovalMode::Prompt);
+        assert!(new.approvals.always_allow.is_empty());
+        assert_eq!(new.sensitive.terminals, SensitiveMode::Block);
+        assert_eq!(new.guard.mode, SensitiveMode::Ask);
+        assert!(!new.guard.keywords.is_empty());
+        assert!(!new.read_files);
+        assert!(kept.len() >= 6, "{kept:?}");
+
+        // Tightening (or an unrelated change) goes through.
+        let mut tighter = Config::default();
+        tighter.approvals.mode = ApprovalMode::Allowlist;
+        tighter.tree.max_nodes = 10;
+        assert!(tighter.keep_restrictions(&Config::default()).is_empty());
+        assert_eq!(tighter.approvals.mode, ApprovalMode::Allowlist);
+
+        for bad in [
+            "launch_timeout_secs = inf",
+            "launch_timeout_secs = 1e20",
+            "overlay.scale = inf",
+        ] {
+            let text = match bad.split_once('.') {
+                Some((section, rest)) => format!("[{section}]\n{rest}\n"),
+                None => format!("{bad}\n"),
+            };
+            let cfg: Config = toml::from_str(&text).unwrap();
+            assert!(cfg.validate().is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<ManagedConfig>("bogus = 1").is_err());
     }
 }

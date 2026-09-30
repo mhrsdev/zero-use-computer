@@ -28,4 +28,4 @@ apply fully.
 
 - Linux: Discord may be a deb/Flatpak/Snap or the web app; accessibility is on
   only when asked — if the tree is sparse, use `screenshot`, `find_element` and
-  `ocr: true`.
+  `get_app_state(ocr: true)`.

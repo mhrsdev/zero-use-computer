@@ -161,6 +161,9 @@ pub enum Reply {
     },
 }
 
+/// Most replies kept waiting to be picked up.
+const MAX_BACKLOG: usize = 16;
+
 /// How to start the helper process.
 #[derive(Debug, Clone)]
 pub struct Launcher {
@@ -314,27 +317,52 @@ impl Overlay {
         }
     }
 
-    fn drain(&mut self) {
-        while let Ok(r) = self.rx.try_recv() {
-            if let Reply::Ready {
+    /// File a reply from the helper. Only the answer to the latest request
+    /// is kept (one waits for at most one at a time): late answers to
+    /// requests that timed out are dropped, so nothing piles up.
+    fn take(&mut self, r: Reply) {
+        match r {
+            Reply::Ready {
                 excluded,
                 available,
-            } = r
-            {
+            } => {
                 self.excluded = excluded;
                 self.available = Some(available);
-            } else {
+            }
+            Reply::Hidden { id, .. } | Reply::Answer { id, .. } if id != self.next_id => {}
+            r => {
+                if self.backlog.len() >= MAX_BACKLOG {
+                    self.backlog.remove(0);
+                }
                 self.backlog.push(r);
             }
         }
     }
 
-    fn wait_for(&mut self, timeout: Duration, pred: impl Fn(&Reply) -> bool) -> Option<Reply> {
+    fn drain(&mut self) {
+        while let Ok(r) = self.rx.try_recv() {
+            self.take(r);
+        }
+    }
+
+    /// Wait up to `timeout` for a reply matching `pred`, or (with no
+    /// predicate) until the helper has said whether it can draw.
+    fn wait_for(
+        &mut self,
+        timeout: Duration,
+        pred: Option<&dyn Fn(&Reply) -> bool>,
+    ) -> Option<Reply> {
         let deadline = Instant::now() + timeout;
         loop {
             self.drain();
-            if let Some(i) = self.backlog.iter().position(&pred) {
-                return Some(self.backlog.remove(i));
+            match pred {
+                Some(p) => {
+                    if let Some(i) = self.backlog.iter().position(p) {
+                        return Some(self.backlog.remove(i));
+                    }
+                }
+                None if self.available.is_some() => return None,
+                None => {}
             }
             if !self.alive() {
                 return None;
@@ -344,14 +372,7 @@ impl Overlay {
                 return None;
             }
             match self.rx.recv_timeout(left.min(Duration::from_millis(50))) {
-                Ok(Reply::Ready {
-                    excluded,
-                    available,
-                }) => {
-                    self.excluded = excluded;
-                    self.available = Some(available);
-                }
-                Ok(r) => self.backlog.push(r),
+                Ok(r) => self.take(r),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
             }
@@ -372,7 +393,7 @@ impl Overlay {
         self.send(&Cmd::Hide { id });
         let r = self.wait_for(
             Duration::from_millis(150),
-            |r| matches!(r, Reply::Hidden { id: i, .. } if *i == id),
+            Some(&|r: &Reply| matches!(r, Reply::Hidden { id: i, .. } if *i == id)),
         );
         Some(matches!(r, Some(Reply::Hidden { shown: true, .. })))
     }
@@ -383,9 +404,11 @@ impl Overlay {
         if !self.alive() {
             return None;
         }
-        // Only a helper that can show things can ask.
+        // Only a helper that can show things can ask (it says so as soon
+        // as it has started).
+        self.drain();
         if self.available.is_none() {
-            let _ = self.wait_for(Duration::from_secs(2), |_| false);
+            let _ = self.wait_for(Duration::from_secs(2), None);
         }
         if self.available != Some(true) {
             return None;
@@ -410,7 +433,7 @@ impl Overlay {
             }
             if let Some(Reply::Answer { ok, .. }) = self.wait_for(
                 left.min(Duration::from_millis(100)),
-                |r| matches!(r, Reply::Answer { id: i, .. } if *i == id),
+                Some(&|r: &Reply| matches!(r, Reply::Answer { id: i, .. } if *i == id)),
             ) {
                 return Some(ok);
             }
@@ -423,16 +446,26 @@ impl Drop for Overlay {
         self.send(&Cmd::Quit);
         self.tx = None; // closes the helper's stdin
         if let Some(mut child) = self.child.take() {
-            // Give it time to fade out before it is stopped.
-            let deadline = Instant::now() + Duration::from_millis(1200);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            // Give it time to fade out before it is stopped, without holding
+            // up the engine. (If this process exits first, the helper sees
+            // its stdin close and goes by itself.)
+            let reap = move || {
+                let deadline = Instant::now() + Duration::from_millis(1200);
+                while Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            };
+            let _ = std::thread::Builder::new()
+                .name("overlay-reaper".into())
+                .spawn(reap);
         }
     }
 }

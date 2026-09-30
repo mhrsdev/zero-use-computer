@@ -5,7 +5,7 @@
   next/previous tab `ctrl+Tab` / `ctrl+shift+Tab`, back `alt+Left`.
 - Page content is often exposed poorly by browsers: if `get_app_state` shows
   few elements, use `find_element` by text, and take a `screenshot`; OCR
-  (`ocr: true`) helps for canvas-heavy pages. Chromium browsers enable full
+  (`get_app_state(ocr: true)`) helps for canvas-heavy pages. Chromium browsers enable full
   accessibility when an assistive tool is detected — the first read may be
   sparse, read again after a second.
 - Find on page: `ctrl+f`, type, `Return`. Zoom: `ctrl+plus` / `ctrl+minus` / `ctrl+0`.

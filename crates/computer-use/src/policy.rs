@@ -78,6 +78,18 @@ const TERMINALS: &[&str] = &[
     "blackbox",
     "hyper",
     "tabby",
+    "x-terminal-emulator",
+    // Shells and subsystems that run arbitrary commands (also reachable as
+    // `launch_app("sh -c …")`).
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "ksh",
+    "csh",
+    "tcsh",
+    "wsl",
 ];
 
 /// Password managers and credential stores.

@@ -1,7 +1,7 @@
 # Spreadsheets on Linux (LibreOffice Calc; Excel on the web)
 
 Microsoft Excel has no Linux desktop app. Use **LibreOffice Calc**
-(`launch_app("libreoffice --calc")` or `localc`) or Excel on the web in a
+(`launch_app("localc")`; `launch_app("libreoffice")` opens the Start Center) or Excel on the web in a
 browser.
 
 - Jump: click the Name Box (left of the formula bar), `type_text` `B2` or

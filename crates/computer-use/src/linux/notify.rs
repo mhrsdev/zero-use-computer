@@ -10,13 +10,17 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use zbus::blocking::{Connection, MessageIterator};
+use futures_util::StreamExt as _;
+use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
 use crate::error::{Error, Result};
 use crate::types::Notification;
 
 const RULE: &str = "type='method_call',interface='org.freedesktop.Notifications',member='Notify'";
+/// How often the listening thread checks whether it was stopped while no
+/// notification arrives.
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub struct Listener {
     seen: Arc<Mutex<VecDeque<Notification>>>,
@@ -143,11 +147,22 @@ fn listen(
         "BecomeMonitor",
         &(vec![RULE], 0u32),
     )?;
-    for msg in MessageIterator::from(&conn) {
+    let mut stream = zbus::MessageStream::from(conn.inner());
+    loop {
         if !running.load(Ordering::SeqCst) {
             break;
         }
-        let Ok(msg) = msg else { break };
+        // Wake up regularly so stop() ends the thread (and closes the
+        // connection) even when no notification ever arrives.
+        let next = async_io::block_on(futures_util::future::select(
+            stream.next(),
+            async_io::Timer::after(STOP_POLL),
+        ));
+        let msg = match next {
+            futures_util::future::Either::Left((Some(Ok(msg)), _)) => msg,
+            futures_util::future::Either::Left(_) => break,
+            futures_util::future::Either::Right(_) => continue,
+        };
         if msg.header().member().map(|m| m.as_str()) != Some("Notify") {
             continue;
         }
@@ -170,6 +185,12 @@ fn listen(
         }
     }
     Ok(())
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[cfg(test)]

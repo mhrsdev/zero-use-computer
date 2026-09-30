@@ -76,6 +76,21 @@ pub fn fit(width: u32, height: u32, max: u32) -> (u32, u32) {
 /// Downscale and encode a capture. Takes the capture by value so the full-size
 /// pixel buffer is reused (not copied) and freed as early as possible.
 pub fn encode(capture: Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage, CoordMap)> {
+    encode_min(capture, cfg, 64)
+}
+
+/// [`encode`] with the smallest `max_dimension` it will honour (a full image
+/// is never squeezed below 64 px; a part must follow its full image's scale).
+fn encode_min(
+    capture: Capture,
+    cfg: &ScreenshotConfig,
+    min_dimension: u32,
+) -> Result<(EncodedImage, CoordMap)> {
+    if capture.width == 0 || capture.height == 0 {
+        return Err(Error::ActionFailed(
+            "the screen capture is empty (0x0); nothing to show".into(),
+        ));
+    }
     let Capture {
         width,
         height,
@@ -84,7 +99,7 @@ pub fn encode(capture: Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage,
     } = capture;
     let img = RgbaImage::from_raw(width, height, rgba)
         .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
-    let (w, h) = fit(width, height, cfg.max_dimension.max(64));
+    let (w, h) = fit(width, height, cfg.max_dimension.max(min_dimension));
     let img = if (w, h) != (width, height) {
         match cfg.resize_filter {
             // Integer area averaging: several times faster than a filtered
@@ -174,17 +189,30 @@ fn put(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
 
 fn draw_rect_outline(cap: &mut Capture, r: Rect, rgb: [u8; 3]) {
     let (w, h) = (cap.width, cap.height);
-    let x0 = r.x as i64;
-    let y0 = r.y as i64;
-    let x1 = (r.x + r.width) as i64;
-    let y1 = (r.y + r.height) as i64;
-    for x in x0..=x1 {
-        put(&mut cap.rgba, w, h, x, y0, rgb);
-        put(&mut cap.rgba, w, h, x, y1, rgb);
+    if w == 0
+        || h == 0
+        || !(r.x.is_finite() && r.y.is_finite() && r.width.is_finite() && r.height.is_finite())
+    {
+        return;
     }
-    for y in y0..=y1 {
-        put(&mut cap.rgba, w, h, x0, y, rgb);
-        put(&mut cap.rgba, w, h, x1, y, rgb);
+    // Rectangles from accessibility trees can be absurdly large: only walk
+    // the part of each edge that is inside the image.
+    let clamp = |v: f64| v.clamp(-1.0e9, 1.0e9) as i64;
+    let (x0, y0) = (clamp(r.x), clamp(r.y));
+    let (x1, y1) = (clamp(r.x + r.width), clamp(r.y + r.height));
+    let (cx0, cx1) = (x0.max(0), x1.min(i64::from(w) - 1));
+    let (cy0, cy1) = (y0.max(0), y1.min(i64::from(h) - 1));
+    if cx0 <= cx1 {
+        for x in cx0..=cx1 {
+            put(&mut cap.rgba, w, h, x, y0, rgb);
+            put(&mut cap.rgba, w, h, x, y1, rgb);
+        }
+    }
+    if cy0 <= cy1 {
+        for y in cy0..=cy1 {
+            put(&mut cap.rgba, w, h, x0, y, rgb);
+            put(&mut cap.rgba, w, h, x1, y, rgb);
+        }
     }
 }
 
@@ -212,6 +240,15 @@ fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: 
 
 /// Cut a pixel rectangle (x, y, width, height) out of a capture.
 pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
+    if cap.width == 0 || cap.height == 0 {
+        // Nothing to cut from (encode reports the empty capture).
+        return Capture {
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+            bounds: cap.bounds,
+        };
+    }
     let x = px.0.min(cap.width.saturating_sub(1));
     let y = px.1.min(cap.height.saturating_sub(1));
     let w = px.2.clamp(1, cap.width - x);
@@ -279,7 +316,7 @@ pub fn encode_part(
         max_dimension: longest,
         ..cfg.clone()
     };
-    let (img, _) = encode(part, &cfg)?;
+    let (img, _) = encode_min(part, &cfg, 1)?;
     let offset = (
         (f64::from(px.0) * scale).round() as u32,
         (f64::from(px.1) * scale).round() as u32,
@@ -413,6 +450,37 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_captures_and_huge_outlines_do_not_panic_or_hang() {
+        let empty = Capture {
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+            bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+        };
+        assert_eq!(crop(&empty, (0, 0, 5, 5)).width, 0);
+        assert!(encode(empty, &ScreenshotConfig::default()).is_err());
+
+        let mut cap = Capture {
+            width: 20,
+            height: 10,
+            rgba: vec![0; 20 * 10 * 4],
+            bounds: Rect::new(0.0, 0.0, 20.0, 10.0),
+        };
+        let t = std::time::Instant::now();
+        draw_rect_outline(
+            &mut cap,
+            Rect::new(-2.0e9, -2.0e9, 4.0e9, 4.0e9),
+            [255, 0, 0],
+        );
+        draw_rect_outline(&mut cap, Rect::new(2.0, 2.0, f64::NAN, 5.0), [255, 0, 0]);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        // A small rectangle is still drawn.
+        draw_rect_outline(&mut cap, Rect::new(2.0, 2.0, 5.0, 4.0), [0, 255, 0]);
+        let at = (2 * 20 + 3) * 4;
+        assert_eq!(&cap.rgba[at..at + 3], &[0, 255, 0]);
+    }
+
     use super::*;
 
     #[test]

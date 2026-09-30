@@ -2,8 +2,9 @@
 
 - GNOME: `launch_app("gnome-control-center")` (Settings); search with `ctrl+f`.
   KDE: `systemsettings`. Xfce: `xfce4-settings-manager`.
-- Activities / app search (GNOME): press `super`, `type_text` the name, read the
-  first result with `get_app_state`, then `Return`.
+- Activities / app search (GNOME): click the Activities button (find it with
+  `find_element`; a lone `super` key can't be sent), `type_text` the name, read
+  the first result with `get_app_state`, then `Return`.
 - Quick settings (GNOME): top-right system menu — Wi-Fi, volume, brightness.
 - Display scale / resolution: Settings ▸ Displays. Default apps: Settings ▸
   Default Applications. Keyboard shortcuts: Settings ▸ Keyboard.

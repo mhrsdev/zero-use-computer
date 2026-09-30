@@ -1,7 +1,7 @@
 # When something doesn't work (Windows)
 
 - **`get_app_state` shows almost nothing**: the app draws its own UI. Take a
-  `screenshot`, try `ocr: true`, then click by `x`/`y` from the screenshot.
+  `screenshot`, try `get_app_state(ocr: true)`, then click by `x`/`y` from the screenshot.
 - **Element indices "unknown"**: they expire at the next `get_app_state` — read
   the state again and use the new numbers.
 - **Nothing happened after a click**: `wait_for` the expected element, then read

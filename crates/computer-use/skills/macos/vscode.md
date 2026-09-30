@@ -14,15 +14,15 @@ everything — it is one text box you can `type_text` into.
 - If `get_app_state` shows almost no elements, turn on screen-reader support:
   Command Palette ▸ "Toggle Screen Reader Accessibility Mode"
   (`shift+alt+F1` in the editor), then read again.
-- New file `cmd+n`; save `cmd+s`; save all `cmd+alt+s`; close tab `cmd+w`; next tab
+- New file `cmd+n`; save `cmd+s`; save all `alt+cmd+s`; close tab `cmd+w`; next tab
   `ctrl+Tab`; reopen closed tab `cmd+shift+t`.
 - Sidebar: Explorer `cmd+shift+e`, Search `cmd+shift+f`, Source Control `ctrl+shift+g`,
   Extensions `cmd+shift+x`; toggle sidebar `cmd+b`.
-- Editing: toggle comment `cmd+/`; move line `alt+Up/Down`; duplicate line
+- Editing: toggle comment `cmd+/`; move line `alt+Up/Down`; copy line up/down
   `shift+alt+Up/Down`; delete line `cmd+shift+k`; select next occurrence `cmd+d`;
   multi-cursor `alt+click`; format document `shift+alt+f`; rename symbol `F2`;
-  go to definition `F12`; quick fix `cmd+.`; find `cmd+f`; replace `cmd+h` (mac:
-  `cmd+alt+f`); find in files `cmd+shift+f`.
+  go to definition `F12`; quick fix `cmd+.`; find `cmd+f`; replace `cmd+alt+f` (`cmd+h`
+  hides the app); find in files `cmd+shift+f`.
 - Problems panel `cmd+shift+m`; split editor `cmd+\`; zen mode `cmd+k z`.
 - Settings `cmd+,`.
 
@@ -37,7 +37,7 @@ everything — it is one text box you can `type_text` into.
 - Verify by reading the file back with `read_file` after saving.
 
 ## The integrated terminal and running code
-- The integrated terminal (`ctrl+\``) and Run/Debug execute arbitrary commands.
+- The integrated terminal (`ctrl+grave`, the backtick key) and Run/Debug execute arbitrary commands.
   Treat them like a terminal: don't use them unless the user asked for it and
   the sensitive-app settings allow it; ask first.
 - Extensions and workspace-trust prompts ("Do you trust the authors…") are the

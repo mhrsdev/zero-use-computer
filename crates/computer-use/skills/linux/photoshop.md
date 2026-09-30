@@ -5,7 +5,7 @@ Adobe Photoshop has no Linux version. Use **GIMP** (`launch_app("gimp")`), Krita
 skills). GIMP is described here.
 
 GTK UI is mostly exposed through AT-SPI (menus, dialogs, tool options); the
-canvas is not — use `screenshot` (and `ocr: true`) to see it.
+canvas is not — use `screenshot` (and `get_app_state(ocr: true)`) to see it.
 
 - **Work on a copy.** Before editing an existing image, export to a new name
   (File ▸ Export As, `ctrl+shift+e`). Never overwrite the original

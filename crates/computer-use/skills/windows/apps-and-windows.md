@@ -1,7 +1,8 @@
 # Starting apps and switching windows (Windows)
 
 - `list_apps` shows what runs; `launch_app("<name>")` starts an app and waits for
-  its window. For something not found by name, press `win`, `type_text` the name,
+  its window. For something not found by name, open Start with `ctrl+Escape`
+  (a lone `win` key can't be sent), `type_text` the name,
   check the first result with `get_app_state`, then `Return`.
 - Switch windows: `alt+Tab`; with the `window` tool you can focus, move, resize or
   tile a window directly (no shortcuts needed).
@@ -11,6 +12,6 @@
   nothing is unsaved first).
 - UWP / Store apps expose rich accessibility trees; Electron apps need a second
   read after launch; games and custom-drawn apps expose little — use `screenshot`
-  and `ocr`.
+  and `get_app_state` with `ocr: true`.
 - A new window (dialog, menu, flyout) appears after an action: the result tells
   you; call `get_app_state` for the new window.

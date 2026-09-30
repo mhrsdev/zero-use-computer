@@ -29,4 +29,4 @@ accessibility tree (a second read after launch can show more). See the
 
 - On Linux Slack may be a Snap/Flatpak or the web app in a browser; accessibility
   is on only when asked — if the tree is sparse, use `screenshot`, `find_element`
-  and `ocr: true`.
+  and `get_app_state(ocr: true)`.

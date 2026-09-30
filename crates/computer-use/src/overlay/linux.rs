@@ -57,6 +57,13 @@ pub struct X11Surface {
     fonts: Fonts,
     /// The stop key's passive grab: keycode and modifiers.
     hotkey: Option<(u8, ModMask)>,
+    /// The stop key is held down (key repeat is not a new press), and when
+    /// it last reported a press.
+    hotkey_down: bool,
+    hotkey_pressed: u32,
+    /// When the stop key was last released (X sends release + press with
+    /// the same time for each key repeat).
+    hotkey_released: Option<u32>,
 }
 
 /// NumLock (Mod2) and CapsLock variants, so the stop key works whatever
@@ -136,6 +143,9 @@ impl X11Surface {
             last_raise: Instant::now(),
             fonts: Fonts::default(),
             hotkey: None,
+            hotkey_down: false,
+            hotkey_pressed: 0,
+            hotkey_released: None,
         })
     }
 
@@ -275,6 +285,13 @@ impl X11Surface {
         }
     }
 
+    fn destroy_panels(&mut self) {
+        for p in self.panels.drain(..) {
+            let _ = self.conn.destroy_window(p.win.id);
+        }
+        let _ = self.conn.flush();
+    }
+
     fn raise_all(&self) {
         let above = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
         for w in self.layers.values().filter(|w| w.mapped) {
@@ -307,6 +324,10 @@ impl Surface for X11Surface {
 
     fn px_per_unit(&self) -> f32 {
         1.0
+    }
+
+    fn translucent(&self) -> bool {
+        self.argb
     }
 
     fn show(&mut self, layer: Layer, img: &Pixmap, x: f64, y: f64) {
@@ -379,7 +400,14 @@ impl Surface for X11Surface {
 
     fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
-        for win in self.layers.values().filter(|w| w.mapped) {
+        // Confirmation panels too: nothing of ours may be in a screenshot.
+        let wins = || {
+            self.layers
+                .values()
+                .filter(|w| w.mapped)
+                .chain(self.panels.iter().map(|p| &p.win))
+        };
+        for win in wins() {
             if hidden {
                 let _ = self.conn.unmap_window(win.id);
             } else {
@@ -387,7 +415,7 @@ impl Surface for X11Surface {
             }
         }
         if !hidden {
-            for win in self.layers.values().filter(|w| w.mapped) {
+            for win in wins() {
                 self.put(win);
             }
             self.raise_all();
@@ -429,9 +457,11 @@ impl Surface for X11Surface {
             );
         }
         let mut win = Win { data, ..win };
-        let _ = self.conn.map_window(win.id);
+        if !self.hidden {
+            let _ = self.conn.map_window(win.id);
+            self.put(&win);
+        }
         win.mapped = true;
-        self.put(&win);
         let _ = self.conn.configure_window(
             win.id,
             &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
@@ -445,8 +475,13 @@ impl Surface for X11Surface {
         });
     }
 
+    fn dismiss(&mut self) {
+        self.destroy_panels();
+    }
+
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
         self.ungrab_hotkey();
+        self.hotkey_down = false;
         let Some(combo) = combo else {
             return false;
         };
@@ -501,7 +536,23 @@ impl Surface for X11Surface {
         while let Ok(Some(ev)) = self.conn.poll_for_event() {
             match ev {
                 Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
-                    answers.push(SurfaceEvent::Hotkey);
+                    // Holding the key repeats it: only a fresh press counts.
+                    // (A press long after the last one is new even if its
+                    // release got lost.)
+                    let repeat = (self.hotkey_down
+                        && e.time.wrapping_sub(self.hotkey_pressed) < 1000)
+                        || self
+                            .hotkey_released
+                            .is_some_and(|t| e.time.wrapping_sub(t) <= 1);
+                    self.hotkey_down = true;
+                    self.hotkey_pressed = e.time;
+                    if !repeat {
+                        answers.push(SurfaceEvent::Hotkey);
+                    }
+                }
+                Event::KeyRelease(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
+                    self.hotkey_down = false;
+                    self.hotkey_released = Some(e.time);
                 }
                 Event::Expose(e) if e.count == 0 => {
                     if let Some(w) = self.layers.values().find(|w| w.id == e.window) {
@@ -550,11 +601,7 @@ impl Surface for X11Surface {
         for w in self.layers.values() {
             let _ = self.conn.destroy_window(w.id);
         }
-        for p in &self.panels {
-            let _ = self.conn.destroy_window(p.win.id);
-        }
         self.layers.clear();
-        self.panels.clear();
-        let _ = self.conn.flush();
+        self.destroy_panels();
     }
 }

@@ -20,6 +20,9 @@ const EDITABLE_IFACE: &str = "org.a11y.atspi.EditableText";
 const VALUE_IFACE: &str = "org.a11y.atspi.Value";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
+/// How long any one app may take to answer: a frozen app times out and is
+/// treated as gone instead of hanging every listing and snapshot.
+const METHOD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Number of D-Bus round trips made so far (diagnostics / benchmarking).
 static IPC_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -119,6 +122,7 @@ impl AtspiConnection {
         let addr: String = reply.body().deserialize().map_err(bus_err)?;
         let conn = zbus::blocking::connection::Builder::address(addr.as_str())
             .map_err(bus_err)?
+            .method_timeout(METHOD_TIMEOUT)
             .build()
             .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))?;
         Ok(Self { conn })
@@ -263,10 +267,8 @@ impl AtspiConnection {
 
     pub fn set_selection(&self, r: &ObjRef, start: i32, end: i32) -> Result<bool> {
         // Selection index 0. Some toolkits require AddSelection first.
-        if let Ok(b) = self.call::<_, bool>(r, TEXT_IFACE, "SetSelection", &(0i32, start, end)) {
-            if b {
-                return Ok(true);
-            }
+        if let Ok(true) = self.call::<_, bool>(r, TEXT_IFACE, "SetSelection", &(0i32, start, end)) {
+            return Ok(true);
         }
         self.call::<_, bool>(r, TEXT_IFACE, "AddSelection", &(start, end))
     }
@@ -287,6 +289,8 @@ pub struct NodeData {
     /// Text content, for text elements.
     pub text: Option<String>,
     pub children: Vec<ObjRef>,
+    /// The element didn't answer (gone, or its app is frozen and timed out).
+    pub unreachable: bool,
 }
 
 /// An element returned by [`AtspiConnection::walk`], in pre-order.
@@ -328,6 +332,7 @@ async fn fetch_node(conn: &zbus::Connection, r: &ObjRef) -> NodeData {
         acall::<_, Vec<(String, String, String)>>(conn, r, ACTION_IFACE, "GetActions", &()),
         acall::<_, Vec<(String, OwnedObjectPath)>>(conn, r, A11Y_IFACE, "GetChildren", &()),
     );
+    let unreachable = props.is_err() && role.is_err() && state.is_err();
     let mut acc = Accessible::default();
     if let Ok(props) = props {
         acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
@@ -355,6 +360,7 @@ async fn fetch_node(conn: &zbus::Connection, r: &ObjRef) -> NodeData {
         children: kids
             .map(|k| k.into_iter().map(to_ref).filter(|c| !c.is_null()).collect())
             .unwrap_or_default(),
+        unreachable,
     }
 }
 
@@ -414,6 +420,9 @@ impl AtspiConnection {
                 }
 
                 for ((r, depth), nd) in chunk.into_iter().zip(nodes) {
+                    if nd.unreachable {
+                        continue; // left out, like an element that vanished
+                    }
                     if depth < max_depth {
                         for c in &nd.children {
                             if seen.insert(c.clone()) {

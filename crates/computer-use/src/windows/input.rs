@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::error::{Error, Result};
-use crate::keys::{Key, KeyCombo, NamedKey};
+use crate::keys::{Key, KeyCombo, Modifiers, NamedKey};
 use crate::types::{MouseButton, Point};
 
 fn send(inputs: &[INPUT]) -> Result<()> {
@@ -97,19 +97,37 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
     send(&inputs)
 }
 
+/// Pace of synthesized drag steps: apps that start a drag on a timer or a
+/// motion threshold (SM_CXDRAG) miss a single burst of events.
+const DRAG_STEP: std::time::Duration = std::time::Duration::from_millis(12);
+
 pub fn drag(from: Point, to: Point) -> Result<()> {
     let back = home();
-    let mut inputs = vec![move_to(from), mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0)];
-    for step in 1..=8 {
-        let p = Point::new(
-            from.x + (to.x - from.x) * f64::from(step) / 8.0,
-            from.y + (to.y - from.y) * f64::from(step) / 8.0,
-        );
-        inputs.push(move_to(p));
+    let step_send = |input: INPUT| -> Result<()> {
+        send(&[input])?;
+        std::thread::sleep(DRAG_STEP);
+        Ok(())
+    };
+    let dragged = (|| {
+        step_send(move_to(from))?;
+        step_send(mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0))?;
+        for step in 1..=8 {
+            let p = Point::new(
+                from.x + (to.x - from.x) * f64::from(step) / 8.0,
+                from.y + (to.y - from.y) * f64::from(step) / 8.0,
+            );
+            step_send(move_to(p))?;
+        }
+        send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)])
+    })();
+    if dragged.is_err() {
+        // Never leave the button held down.
+        let _ = send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
     }
-    inputs.push(mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0));
-    inputs.extend(back);
-    send(&inputs)
+    if let Some(b) = back {
+        let _ = send(&[b]);
+    }
+    dragged
 }
 
 pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
@@ -148,13 +166,69 @@ fn key_event(vk: VIRTUAL_KEY, scan: u16, up: bool, unicode: bool) -> INPUT {
     }
 }
 
+/// A virtual-key event with its scan code, flagged extended for the keys
+/// on the extended part of the keyboard (arrows, navigation cluster…), so
+/// apps reading scan codes or the extended bit see the right key.
+fn vk_event(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+    // SAFETY: a pure keyboard-layout lookup.
+    let sc = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC_EX) };
+    let extended = matches!(sc >> 8, 0xe0 | 0xe1) || is_extended(vk);
+    let mut input = key_event(vk, (sc & 0xff) as u16, up, false);
+    if extended {
+        // SAFETY: `ki` is the active member for INPUT_KEYBOARD.
+        unsafe { input.Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY };
+    }
+    input
+}
+
+/// Keys that live on the extended part of the keyboard.
+fn is_extended(vk: VIRTUAL_KEY) -> bool {
+    matches!(
+        vk,
+        VK_LEFT
+            | VK_RIGHT
+            | VK_UP
+            | VK_DOWN
+            | VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_INSERT
+            | VK_DELETE
+            | VK_LWIN
+            | VK_RWIN
+            | VK_APPS
+            | VK_RCONTROL
+            | VK_RMENU
+            | VK_DIVIDE
+            | VK_NUMLOCK
+            | VK_SNAPSHOT
+    )
+}
+
+fn tap(inputs: &mut Vec<INPUT>, vk: VIRTUAL_KEY) {
+    inputs.push(vk_event(vk, false));
+    inputs.push(vk_event(vk, true));
+}
+
 pub fn type_text(text: &str) -> Result<()> {
     let mut inputs = Vec::new();
-    for c in text.chars() {
-        if c == '\n' {
-            inputs.push(key_event(VK_RETURN, 0, false, false));
-            inputs.push(key_event(VK_RETURN, 0, true, false));
-            continue;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Line breaks and tabs as the keys (a `\r\n` pair is one Return).
+        match c {
+            '\r' | '\n' => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                tap(&mut inputs, VK_RETURN);
+                continue;
+            }
+            '\t' => {
+                tap(&mut inputs, VK_TAB);
+                continue;
+            }
+            _ => {}
         }
         let mut buf = [0u16; 2];
         for unit in c.encode_utf16(&mut buf) {
@@ -169,11 +243,21 @@ pub fn type_text(text: &str) -> Result<()> {
 }
 
 pub fn press(combo: &KeyCombo) -> Result<()> {
-    let (vk, needs_shift) = resolve(combo.key)?;
-    let mut mods = combo.modifiers;
-    if needs_shift {
-        mods.shift = true;
-    }
+    let (vk, needed) = match (resolve_with_mods(combo.key), combo.key) {
+        (Ok(r), _) => r,
+        // Not on this layout: a plain character still types as unicode.
+        (Err(_), Key::Char(c)) if !combo_has_command(combo.modifiers) => {
+            return type_text(&c.to_string());
+        }
+        (Err(e), _) => return Err(e),
+    };
+    let m = combo.modifiers;
+    let mods = Modifiers {
+        shift: m.shift || needed.shift,
+        ctrl: m.ctrl || needed.ctrl,
+        alt: m.alt || needed.alt,
+        meta: m.meta,
+    };
     let mut down = Vec::new();
     let mut up = Vec::new();
     for (on, key) in [
@@ -183,18 +267,39 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
         (mods.meta, VK_LWIN),
     ] {
         if on {
-            down.push(key_event(key, 0, false, false));
-            up.insert(0, key_event(key, 0, true, false));
+            down.push(vk_event(key, false));
+            up.insert(0, vk_event(key, true));
         }
     }
-    down.push(key_event(vk, 0, false, false));
-    down.push(key_event(vk, 0, true, false));
+    down.push(vk_event(vk, false));
+    down.push(vk_event(vk, true));
     down.extend(up);
     send(&down)
 }
 
+fn combo_has_command(m: Modifiers) -> bool {
+    m.ctrl || m.alt || m.meta
+}
+
+/// The modifiers a `VkKeyScanW` result needs: its high byte holds Shift (1),
+/// Ctrl (2) and Alt (4); Ctrl+Alt is AltGr (`@` on a German layout).
+fn scan_mods(res: i16) -> Modifiers {
+    let state = (res as u16) >> 8;
+    Modifiers {
+        shift: state & 1 != 0,
+        ctrl: state & 2 != 0,
+        alt: state & 4 != 0,
+        meta: false,
+    }
+}
+
 /// Virtual-key code for a key, and whether Shift is required.
 pub(crate) fn resolve(key: Key) -> Result<(VIRTUAL_KEY, bool)> {
+    resolve_with_mods(key).map(|(vk, m)| (vk, m.shift))
+}
+
+/// Virtual-key code for a key and the modifiers the layout needs for it.
+fn resolve_with_mods(key: Key) -> Result<(VIRTUAL_KEY, Modifiers)> {
     let vk = match key {
         Key::Named(n) => match n {
             NamedKey::Return => VK_RETURN,
@@ -217,15 +322,41 @@ pub(crate) fn resolve(key: Key) -> Result<(VIRTUAL_KEY, bool)> {
             NamedKey::F(n) => VIRTUAL_KEY(VK_F1.0 + u16::from(n) - 1),
         },
         Key::Char(c) => {
-            // VkKeyScanW returns the VK in the low byte and shift state in the high byte.
-            let res = unsafe { VkKeyScanW(c as u16) };
-            if res == -1 {
+            // VkKeyScanW returns the VK in the low byte and the shift state
+            // in the high byte; characters outside the BMP have no key.
+            let Ok(unit) = u16::try_from(u32::from(c)) else {
+                return Err(Error::ActionFailed(format!("no virtual key for {c:?}")));
+            };
+            let res = unsafe { VkKeyScanW(unit) };
+            if res == -1 || (res as u16) >> 8 & !7 != 0 {
                 return Err(Error::ActionFailed(format!("no virtual key for {c:?}")));
             }
             let vk = VIRTUAL_KEY((res & 0xff) as u16);
-            let shift = (res >> 8) & 0x1 != 0;
-            return Ok((vk, shift));
+            return Ok((vk, scan_mods(res)));
         }
     };
-    Ok((vk, false))
+    Ok((vk, Modifiers::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vk_scan_shift_state_bits() {
+        // German `@`: Q with Ctrl+Alt (AltGr).
+        let at = scan_mods(0x0651);
+        assert!(at.ctrl && at.alt && !at.shift);
+        let upper = scan_mods(0x0141);
+        assert!(upper.shift && !upper.ctrl && !upper.alt);
+        assert_eq!(scan_mods(0x0041), Modifiers::default());
+    }
+
+    #[test]
+    fn navigation_keys_are_extended() {
+        for vk in [VK_LEFT, VK_HOME, VK_PRIOR, VK_INSERT, VK_DELETE] {
+            assert!(is_extended(vk));
+        }
+        assert!(!is_extended(VK_RETURN));
+    }
 }

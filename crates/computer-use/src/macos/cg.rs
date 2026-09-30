@@ -2,6 +2,7 @@
 //! windows without moving the user's cursor) and window capture.
 
 use std::ffi::c_void;
+use std::time::Duration;
 
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit,
@@ -25,6 +26,14 @@ fn post(pid: u32, event: &CGEvent) {
     // Deliver to the target process only, so the user's cursor never moves.
     event.post_to_pid(pid as libc::pid_t);
 }
+
+/// Pace of synthesized drag steps: apps that start a drag on a timer or a
+/// motion threshold miss a single burst of events.
+const DRAG_STEP: Duration = Duration::from_millis(12);
+
+/// CGEventKeyboardSetUnicodeString only honours about 20 UTF-16 units per
+/// event.
+const UNICODE_CHUNK: usize = 20;
 
 fn flags(m: Modifiers) -> CGEventFlags {
     let mut f = CGEventFlags::empty();
@@ -85,9 +94,11 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
     if let Ok(e) = mk(CGEventType::MouseMoved, from) {
         post(pid, &e);
     }
+    std::thread::sleep(DRAG_STEP);
     if let Ok(e) = mk(CGEventType::LeftMouseDown, from) {
         post(pid, &e);
     }
+    std::thread::sleep(DRAG_STEP);
     for step in 1..=8 {
         let p = CGPoint {
             x: from.x + (to.x - from.x) * f64::from(step) / 8.0,
@@ -96,6 +107,7 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
         if let Ok(e) = mk(CGEventType::LeftMouseDragged, p) {
             post(pid, &e);
         }
+        std::thread::sleep(DRAG_STEP);
     }
     if let Ok(e) = mk(CGEventType::LeftMouseUp, to) {
         post(pid, &e);
@@ -122,12 +134,39 @@ pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
 
 pub fn type_text(pid: u32, text: &str) -> Result<()> {
     let src = source()?;
-    // A keyboard event carrying the unicode string types verbatim.
-    let event =
-        CGEvent::new_keyboard_event(src, 0, true).map_err(|_| Error::action("keyboard event"))?;
-    event.set_string(text);
-    post(pid, &event);
+    // Keyboard events carrying a unicode string type it verbatim, a chunk
+    // per down/up pair. Flags are cleared so a modifier the user happens to
+    // hold doesn't turn the text into shortcuts.
+    for chunk in utf16_chunks(text, UNICODE_CHUNK) {
+        for down in [true, false] {
+            let event = CGEvent::new_keyboard_event(src.clone(), 0, down)
+                .map_err(|_| Error::action("keyboard event"))?;
+            event.set_flags(CGEventFlags::empty());
+            event.set_string_from_utf16_unchecked(&chunk);
+            post(pid, &event);
+        }
+    }
     Ok(())
+}
+
+/// `text` as UTF-16 chunks of at most `max` units, never splitting a
+/// surrogate pair.
+fn utf16_chunks(text: &str, max: usize) -> Vec<Vec<u16>> {
+    let max = max.max(2);
+    let mut out = Vec::new();
+    let mut cur: Vec<u16> = Vec::with_capacity(max);
+    let mut buf = [0u16; 2];
+    for c in text.chars() {
+        let units = c.encode_utf16(&mut buf);
+        if cur.len() + units.len() > max {
+            out.push(std::mem::replace(&mut cur, Vec::with_capacity(max)));
+        }
+        cur.extend_from_slice(units);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
@@ -163,12 +202,31 @@ pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
     }
 }
 
-/// Capture the whole main display, or a screen-space rectangle of it.
+/// The union of all active displays' bounds (global coordinates), falling
+/// back to the main display.
+fn desktop_bounds() -> Rect {
+    let ids = core_graphics::display::CGDisplay::active_displays().unwrap_or_default();
+    let mut rects = ids
+        .into_iter()
+        .map(|id| unsafe { ffi::CGDisplayBounds(id) });
+    let first = rects
+        .next()
+        .unwrap_or_else(|| unsafe { ffi::CGDisplayBounds(ffi::CGMainDisplayID()) });
+    let (mut x0, mut y0) = (first.origin.x, first.origin.y);
+    let (mut x1, mut y1) = (x0 + first.size.width, y0 + first.size.height);
+    for b in rects {
+        x0 = x0.min(b.origin.x);
+        y0 = y0.min(b.origin.y);
+        x1 = x1.max(b.origin.x + b.size.width);
+        y1 = y1.max(b.origin.y + b.size.height);
+    }
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// Capture the whole desktop (every display), or a screen-space rectangle
+/// of it.
 pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
-    let rect = region.unwrap_or_else(|| {
-        let b = unsafe { ffi::CGDisplayBounds(ffi::CGMainDisplayID()) };
-        Rect::new(b.origin.x, b.origin.y, b.size.width, b.size.height)
-    });
+    let rect = region.unwrap_or_else(desktop_bounds);
     let bounds = CGRect {
         origin: CGPoint {
             x: rect.x,
@@ -351,4 +409,23 @@ fn char_keycode(c: char) -> Option<(u16, bool)> {
     };
     // Uppercase letters need Shift; other characters use their unshifted code.
     Some((base, c.is_ascii_uppercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utf16_chunks;
+
+    #[test]
+    fn unicode_chunks_keep_surrogate_pairs_whole() {
+        let text = "a".repeat(19) + "😀" + "bc";
+        let chunks = utf16_chunks(&text, 20);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 19);
+        assert_eq!(chunks[1].len(), 4);
+        assert!(chunks.iter().all(|c| c.len() <= 20));
+        let joined: Vec<u16> = chunks.concat();
+        assert_eq!(String::from_utf16(&joined).unwrap(), text);
+        assert!(utf16_chunks("", 20).is_empty());
+        assert_eq!(utf16_chunks(&"x".repeat(45), 20).len(), 3);
+    }
 }

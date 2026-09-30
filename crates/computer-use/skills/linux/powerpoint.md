@@ -1,7 +1,7 @@
 # Presentations on Linux (LibreOffice Impress; PowerPoint on the web)
 
 Microsoft PowerPoint has no Linux desktop app. Use **LibreOffice Impress**
-(`launch_app("libreoffice --impress")` or `loimpress`) or PowerPoint on the web.
+(`launch_app("loimpress")`; `launch_app("libreoffice")` opens the Start Center) or PowerPoint on the web.
 
 - New `ctrl+n`; open `ctrl+o`; save `ctrl+s` (Keep current format for .pptx);
   Save As `ctrl+shift+s`.

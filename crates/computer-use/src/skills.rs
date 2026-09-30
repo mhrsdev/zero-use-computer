@@ -178,10 +178,14 @@ pub fn lookup(os: Os, name: Option<&str>) -> Result<String, String> {
     let hits: Vec<_> = all.iter().filter(|s| s.name.starts_with(&want)).collect();
     match hits.as_slice() {
         [s] => Ok(s.body.to_string()),
-        _ => Err(format!(
+        [] => Err(format!(
             "no skill named `{name}` for {}. Available: {}.",
             os.name(),
             all.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+        )),
+        many => Err(format!(
+            "`{name}` matches several skills: {}. Use the full name.",
+            many.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
         )),
     }
 }

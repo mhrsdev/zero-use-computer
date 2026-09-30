@@ -7,7 +7,7 @@
   nearly empty, the browser may need accessibility enabled (Firefox:
   `GNOME_ACCESSIBILITY=1` / `accessibility.force_disabled`; Chromium: start with
   `--force-renderer-accessibility`) — ask the user. Meanwhile use `screenshot`,
-  `find_element` and `ocr: true`.
+  `find_element` and `get_app_state(ocr: true)`.
 - Find on page: `ctrl+f`. Zoom: `ctrl+plus` / `ctrl+minus` / `ctrl+0`.
 - Forms: `set_value` on each field; `Tab` between fields. Don't submit
   payments or anything irreversible without the user's OK.

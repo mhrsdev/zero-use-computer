@@ -2,7 +2,7 @@
 
 Photoshop draws most of its UI itself: the accessibility tree is partial (the
 menu bar and many panels are exposed; the canvas is not). Use menus and
-`find_element` for commands; `screenshot` (and `ocr: true`) to see the canvas;
+`find_element` for commands; `screenshot` (and `get_app_state(ocr: true)`) to see the canvas;
 coordinates only for canvas drawing.
 
 - **Work on a copy.** Before changing an existing file, Save As a new name

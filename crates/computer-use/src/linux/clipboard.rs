@@ -31,7 +31,8 @@ fn is_enoent(e: &std::io::Error) -> bool {
 pub fn get() -> Result<String> {
     let mut missing = true;
     for (cmd, args, _, _) in HELPERS {
-        match Command::new(cmd).args(*args).output() {
+        // Never inherit our stdin: it carries the MCP JSON-RPC stream.
+        match Command::new(cmd).args(*args).stdin(Stdio::null()).output() {
             Ok(out) if out.status.success() => {
                 return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
             }
@@ -46,7 +47,15 @@ pub fn get() -> Result<String> {
 pub fn set(text: &str) -> Result<()> {
     let mut missing = true;
     for (_, _, cmd, args) in HELPERS {
-        let mut child = match Command::new(cmd).args(*args).stdin(Stdio::piped()).spawn() {
+        // wl-copy/xclip keep running to serve the selection: they must not
+        // hold on to our stdout (the MCP JSON-RPC stream) or stderr.
+        let spawned = Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match spawned {
             Ok(c) => c,
             Err(ref e) if is_enoent(e) => continue,
             Err(e) => return Err(Error::Platform(format!("{cmd}: {e}"))),

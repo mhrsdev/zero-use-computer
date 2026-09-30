@@ -18,7 +18,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC,
     SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -136,7 +137,7 @@ impl WinSurface {
         // SAFETY: `class` is fully initialised; a repeat registration fails
         // harmlessly.
         unsafe { RegisterClassW(&class) };
-        Ok(Self {
+        let mut s = Self {
             instance,
             layers: HashMap::new(),
             excluded: true,
@@ -144,7 +145,19 @@ impl WinSurface {
             opacity: 1.0,
             fonts: Fonts::default(),
             hotkey: false,
-        })
+        };
+        // Find out now whether captures can leave us out (Windows 10 2004+),
+        // before telling the engine: a never-shown test window.
+        match s.create_window(true) {
+            Some(test) => {
+                // SAFETY: destroying the window just created.
+                unsafe {
+                    let _ = DestroyWindow(test);
+                }
+            }
+            None => s.excluded = false,
+        }
+        Ok(s)
     }
 
     /// A layered popup; `click_through` for everything but confirmation panels.
@@ -185,6 +198,19 @@ impl WinSurface {
             BlendFlags: 0,
             SourceConstantAlpha: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
             AlphaFormat: AC_SRC_ALPHA as u8,
+        }
+    }
+
+    fn show_panels(&self, show: bool) {
+        for p in PANELS.with(|p| p.borrow().iter().map(|x| x.hwnd).collect::<Vec<_>>()) {
+            let hwnd = HWND(p as *mut _);
+            // SAFETY: showing/hiding our own panel windows.
+            unsafe {
+                let _ = ShowWindow(hwnd, if show { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            }
+            if show {
+                Self::raise(hwnd);
+            }
         }
     }
 
@@ -266,6 +292,32 @@ impl Surface for WinSurface {
         // SAFETY: simple metric queries.
         let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
         Rect::new(0.0, 0.0, f64::from(w), f64::from(h))
+    }
+
+    fn screen_at(&self, x: f64, y: f64) -> Rect {
+        let pt = POINT {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: plain monitor queries into a correctly sized struct.
+        let ok = unsafe {
+            let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            GetMonitorInfoW(mon, &mut info).as_bool()
+        };
+        if !ok {
+            return self.screen();
+        }
+        let r = info.rcMonitor;
+        Rect::new(
+            f64::from(r.left),
+            f64::from(r.top),
+            f64::from(r.right - r.left),
+            f64::from(r.bottom - r.top),
+        )
     }
 
     fn render_scale(&self) -> f32 {
@@ -355,6 +407,10 @@ impl Surface for WinSurface {
                 };
             }
         }
+        // Panels too, where captures can't leave them out.
+        if !self.excluded {
+            self.show_panels(!hidden);
+        }
     }
 
     fn set_opacity(&mut self, opacity: f32) -> bool {
@@ -410,11 +466,22 @@ impl Surface for WinSurface {
                 deny,
             })
         });
-        // SAFETY: showing our own window without activating it.
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        if !self.hidden || self.excluded {
+            // SAFETY: showing our own window without activating it.
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+            Self::raise(hwnd);
         }
-        Self::raise(hwnd);
+    }
+
+    fn dismiss(&mut self) {
+        for p in PANELS.with(|p| std::mem::take(&mut *p.borrow_mut())) {
+            // SAFETY: destroying our own panels.
+            unsafe {
+                let _ = DestroyWindow(HWND(p.hwnd as *mut _));
+            }
+        }
     }
 
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
@@ -477,12 +544,7 @@ impl Surface for WinSurface {
 
     fn close(&mut self) {
         self.set_hotkey(None);
-        for p in PANELS.with(|p| std::mem::take(&mut *p.borrow_mut())) {
-            // SAFETY: destroying our own panels.
-            unsafe {
-                let _ = DestroyWindow(HWND(p.hwnd as *mut _));
-            }
-        }
+        self.dismiss();
         for (_, w) in self.layers.drain() {
             // SAFETY: destroying our own windows.
             unsafe {

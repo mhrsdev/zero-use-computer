@@ -38,7 +38,8 @@ This project follows the same architecture and behaviour:
   the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
 - **Approvals & safety.** Each app is approved before it is controlled (once /
   for the session / always), and terminals, credential & OS-security prompts,
-  and the agent's own host app can never be controlled.
+  and the agent's own host app are blocked by default (you can deliberately
+  open a category up in `[sensitive]`, or allow a single app).
 
 ## Tools
 
@@ -59,6 +60,8 @@ This project follows the same architecture and behaviour:
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
+| `window` | Arrange windows and see the screens: list, focus, move, resize, maximize/minimize, full screen, close, tile, center, move to another display or virtual desktop; `displays` lists screens and desktops. |
+| `get_notifications` | The user's recent desktop notifications (app, title, text), when turned on; codes and card numbers are masked. |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 | `list_folder` / `read_file` | Read-only: list a folder, read a text file (32 KB per call, `offset` to continue). Credential and key places (`.ssh`, `.aws`, `.env`, `*.pem`, browser profiles…) are always refused; `read_files = false` switches both off. |
 | `skill` | Built-in how-to playbooks for common desktop tasks (files, browser, browser-apps, VS Code, Word, Excel, PowerPoint, Outlook, email, messaging, Slack, Discord, Photoshop, settings, apps & windows, text & dialogs, documents, troubleshooting), written separately for Windows, macOS and Linux and compiled into the binary. No name lists them; `skills = false` switches it off. |
@@ -428,6 +431,16 @@ Any MCP client works — the server speaks JSON-RPC 2.0 over stdio and implement
 `elicitation/create` (clients that support elicitation get an approval prompt;
 others fall back to the `--headless-approve` policy).
 
+`--headless-approve allow` (`server.headless_approve = "allow"`) only answers
+**app-access** approvals. It never confirms a **guarded action**
+(`guard.mode = "ask"`: Send / Delete / Pay …): without an elicitation-capable
+client such an action is refused, unless `overlay.confirm_on_screen = "always"`
+asks on the screen instead. To let guarded actions run unattended you must set
+`guard.mode = "allow"` explicitly. An approval or confirmation question that the
+client leaves unanswered, or whose `tools/call` it cancels
+(`notifications/cancelled`), is treated as "no" after
+`overlay.confirm_timeout_secs` (default 120 s).
+
 ### CLI
 
 The same binary is a handy CLI:
@@ -535,13 +548,23 @@ Build with the `http` feature to serve MCP over HTTP for a remote agent:
 
 ```bash
 cargo build --release -p computer-use-mcp --features http
-computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN" --approval allow-all
+COMPUTER_USE_HTTP_TOKEN="$TOKEN" computer-use-mcp serve --http 127.0.0.1:8787 --approval allow-all
 # or put it in settings: server.http_addr / server.http_token
 ```
 
-Each POST body is one JSON-RPC message. There is no interactive approval
+Each POST body is one JSON-RPC message (`Content-Type: application/json`, at
+most 4 MiB); notifications get `202 Accepted`. There is no interactive approval
 channel over HTTP, so run it with a deliberate approval policy, require a bearer
-token, and bind it to localhost or a trusted network.
+token, and bind it to localhost or a trusted network. Pass the token through the
+`COMPUTER_USE_HTTP_TOKEN` environment variable (or the config file) rather than
+`--http-token`, which other local users can read in the process list.
+
+The server refuses to start on a non-loopback address without a token, answers
+`403` to any request carrying a browser `Origin` that is not
+`localhost` / `127.0.0.1` / `[::1]` (so a web page cannot drive it, even through
+DNS rebinding), and `415` to anything that is not `application/json`. Guarded
+actions (`guard.mode = "ask"`) are always refused over HTTP, since nobody can be
+asked.
 
 ## Performance
 

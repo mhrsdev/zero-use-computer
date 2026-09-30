@@ -29,6 +29,21 @@ jobs:
       - run: cargo clippy -p computer-use-mcp --all-targets --features http
       - run: cargo test --workspace
 
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Install AT-SPI / X11 build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libdbus-1-dev libxcb1-dev pkg-config
+      - run: cargo check --workspace --all-targets --locked
+      - run: cargo check -p computer-use-mcp --features http --locked
+
   cross-check:
     name: Type-check ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -70,6 +85,9 @@ jobs:
   package:
     name: Package ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # softprops/action-gh-release creates the release and uploads assets.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:

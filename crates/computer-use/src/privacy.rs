@@ -27,7 +27,7 @@ fn luhn(digits: &[u8]) -> bool {
         }
         sum += v;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// Byte ranges of payment card numbers in `s`: 13–19 digits, optionally

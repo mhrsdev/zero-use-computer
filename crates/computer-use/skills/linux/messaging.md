@@ -37,4 +37,4 @@ Messages go to real people and can't be unsent reliably. Be conservative.
 - WhatsApp has no Linux app: use WhatsApp Web in a browser (QR linking is the
   user's job).
 - Electron apps (Signal, Element, Teams) expose accessibility only when asked: if
-  `get_app_state` is sparse, use `screenshot`, `find_element` and `ocr: true`.
+  `get_app_state` is sparse, use `screenshot`, `find_element` and `get_app_state(ocr: true)`.

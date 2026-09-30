@@ -407,6 +407,8 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     if let Ok(exe) = std::env::current_exe() {
         engine = engine.with_overlay(computer_use::overlay::Launcher::helper(exe));
     }
+    // Listen for the stop key from the start, not only after the first call.
+    engine.arm();
 
     if !server_cfg.http_addr.is_empty() {
         let token = std::env::var("COMPUTER_USE_HTTP_TOKEN")

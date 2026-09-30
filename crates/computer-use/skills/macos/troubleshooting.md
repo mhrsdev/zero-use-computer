@@ -4,7 +4,7 @@
   (System Settings ▸ Privacy & Security). Ask the user to enable them for the
   host app, then retry.
 - **`get_app_state` shows almost nothing**: the app draws its own UI. Take a
-  `screenshot`, try `ocr: true`, then click by `x`/`y` from the screenshot.
+  `screenshot`, try `get_app_state(ocr: true)`, then click by `x`/`y` from the screenshot.
 - **Element indices "unknown"**: they expire at the next `get_app_state` — read
   the state again.
 - **Nothing happened after a click**: `wait_for` the expected element; the app

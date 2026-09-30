@@ -1,7 +1,7 @@
 # Word processing on Linux (LibreOffice Writer; Word on the web)
 
 Microsoft Word has no Linux desktop app. Use **LibreOffice Writer**
-(`launch_app("libreoffice --writer")` or `lowriter`) or Word on the web
+(`launch_app("lowriter")`; `launch_app("libreoffice")` opens the Start Center) or Word on the web
 (office.com in a browser — see the `browser` skills; the UI is the same as Word).
 
 - New `ctrl+n`; open `ctrl+o`; save `ctrl+s` (choose "Keep current format" for

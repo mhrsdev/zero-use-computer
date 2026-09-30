@@ -53,7 +53,7 @@ agent_apps = [
     "Claude",
 ]
 
-# Sensitive app categories: "block" (default), "ask" (confirm each time), or
+# Sensitive app categories: "block" (default), "ask" (confirm before first use in a session), or
 # "allow" (treated like any other app).
 [sensitive]
 terminals = "block"         # terminal emulators and shells
