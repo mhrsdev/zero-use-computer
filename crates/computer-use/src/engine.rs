@@ -4571,7 +4571,9 @@ mod tests {
     fn read_log(path: &std::path::Path) -> String {
         for _ in 0..100 {
             if let Ok(t) = std::fs::read_to_string(path)
-                && t.contains("\"t\":\"end\"")
+                // `Overlay::drop` sends `quit` last and no longer waits for the
+                // helper, so wait for it to have logged everything.
+                && t.contains("\"t\":\"quit\"")
             {
                 return t;
             }

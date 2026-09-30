@@ -188,6 +188,7 @@ label_error = "Zero hit an error"
 label_done = "Zero is done"
 label_paused = "Paused while you use the computer"
 label_stopped = "Zero stopped. Press {hotkey} to let it continue"
+label_stop_hint = "{hotkey} to stop"  # appended to the working/thinking label while the stop key works ("" = none)
 label_allow = "Allow"        # buttons of the on-screen confirmation
 label_deny = "Deny"
 # Colours per state (#RRGGBB or #RRGGBBAA).

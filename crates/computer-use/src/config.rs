@@ -429,6 +429,9 @@ pub struct OverlayConfig {
     pub label_paused: String,
     /// After the emergency stop key; `{hotkey}` is replaced by the key.
     pub label_stopped: String,
+    /// Hint appended to the working/thinking label while the stop key is
+    /// active; `{hotkey}` is the key ("" = no hint).
+    pub label_stop_hint: String,
     /// Buttons of the on-screen confirmation.
     pub label_allow: String,
     pub label_deny: String,
@@ -493,6 +496,7 @@ impl Default for OverlayConfig {
             label_done: "Zero is done".into(),
             label_paused: "Paused while you use the computer".into(),
             label_stopped: "Zero stopped. Press {hotkey} to let it continue".into(),
+            label_stop_hint: "{hotkey} to stop".into(),
             label_allow: "Allow".into(),
             label_deny: "Deny".into(),
             color_thinking: "#D4A017".into(),

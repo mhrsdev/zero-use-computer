@@ -502,6 +502,7 @@ server **reloads the file automatically** (`hot_reload = true`) and tells MCP
 clients when the tool list changed — no restart needed. Command-line flags
 (`--approval`, `--text-only`, `--log`, `--http`, …) override the file and keep
 applying after a reload. The agent has no tool to change settings.
+A reload never makes the agent *less* restricted while it runs: looser approval/sensitive/guard modes, new `always_allow` entries, removed deny lists and newly enabled file/clipboard tools wait for a restart (the log says which were kept), so a running agent cannot loosen its own rules by editing this file. `read_file`/`list_folder`/`create_folder` also never touch this file, the managed policy or the audit log.
 
 | Section | What you control |
 |---|---|

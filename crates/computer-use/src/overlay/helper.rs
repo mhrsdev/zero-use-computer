@@ -124,10 +124,6 @@ const HOTKEY_QUIET: Duration = Duration::from_millis(400);
 /// How quickly the overlay goes when told to hide.
 const HIDE_FADE: Duration = Duration::from_millis(150);
 
-/// Shown after the working/thinking label while the stop key is listened
-/// for (`{hotkey}` is the key). TODO: a config field (`label_stop_hint`).
-const STOP_HINT: &str = "{hotkey} to stop";
-
 /// A host said "working" but nothing happened for this long (e.g. the host
 /// died): treat it as done, so the border never stays forever.
 const HOST_IDLE: Duration = Duration::from_secs(60);
@@ -683,10 +679,13 @@ impl Machine {
         if matches!(self.phase, Phase::Working | Phase::Thinking)
             && self.hotkey_ok
             && !self.hotkey.trim().is_empty()
-            && !STOP_HINT.is_empty()
+            && !cfg.label_stop_hint.is_empty()
         {
             text.push_str(" · ");
-            text.push_str(&STOP_HINT.replace("{hotkey}", &pretty_key(&self.hotkey)));
+            text.push_str(
+                &cfg.label_stop_hint
+                    .replace("{hotkey}", &pretty_key(&self.hotkey)),
+            );
         }
         text
     }
