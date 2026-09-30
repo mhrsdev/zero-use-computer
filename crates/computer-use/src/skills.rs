@@ -81,6 +81,16 @@ macro_rules! skill_set {
             ),
             skill!(
                 $os,
+                "vscode",
+                "Visual Studio Code: command palette, files, editing, search, terminal caveats."
+            ),
+            skill!(
+                $os,
+                "browser-apps",
+                "Chrome/Edge/Firefox/Safari features, hard-to-read pages, untrusted web content."
+            ),
+            skill!(
+                $os,
                 "documents",
                 "Word processors, spreadsheets, presentations, PDF export."
             ),
@@ -103,7 +113,7 @@ pub fn skills_for(os: Os) -> &'static [Skill] {
 }
 
 /// The `skill` tool: with no `name`, list the skills for `os`; with a name
-/// (case-insensitive, unambiguous prefix allowed), return that playbook.
+/// (case-insensitive, exact, or an unambiguous prefix), return that playbook.
 pub fn lookup(os: Os, name: Option<&str>) -> Result<String, String> {
     let all = skills_for(os);
     let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
@@ -155,6 +165,10 @@ mod tests {
         assert!(body(Os::Windows, "files").contains("Explorer"));
         assert!(body(Os::MacOs, "files").contains("Finder"));
         assert!(body(Os::Linux, "files").contains("Nautilus"));
+        assert!(body(Os::MacOs, "vscode").contains("cmd+shift+p"));
+        assert!(body(Os::Windows, "vscode").contains("ctrl+shift+p"));
+        assert!(body(Os::MacOs, "browser-apps").contains("Safari"));
+        assert!(!body(Os::Windows, "browser-apps").contains("Safari"));
         assert!(body(Os::MacOs, "text-and-dialogs").contains("cmd+"));
         assert!(!body(Os::Windows, "text-and-dialogs").contains("cmd+"));
     }

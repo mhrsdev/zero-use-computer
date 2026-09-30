@@ -927,7 +927,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "skill",
             title: "Built-in skills",
-            description: "Built-in how-to playbooks for common desktop tasks (files, browser, settings, windows, text and dialogs, documents, troubleshooting), written for the OS you are running on. Call with no name to list them, or with a name to read one. Read the matching skill before starting an unfamiliar task.",
+            description: "Built-in how-to playbooks for common desktop tasks (files, browser, browser-apps, vscode, settings, windows, text and dialogs, documents, troubleshooting), written for the OS you are running on. Call with no name to list them, or with a name to read one. Read the matching skill before starting an unfamiliar task.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "Skill name; omit to list."}},
