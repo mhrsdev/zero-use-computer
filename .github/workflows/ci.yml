@@ -145,16 +145,29 @@ jobs:
           # Also a valid Claude plugin (.claude-plugin/plugin.json + .mcp.json + skills/),
           # so the same zip works with "Upload local plugin".
           bash scripts/claude-code/plugin-files.sh dist "${{ matrix.exe }}"
+          # The same plugin without the program (hosts that refuse executables
+          # in uploaded plugins): it runs the copy install.cmd / install.sh put
+          # in ~/.computer-use/bin.
+          mkdir -p plugin-only
+          bash scripts/claude-code/plugin-files.sh plugin-only "${{ matrix.exe }}" "" installed
+          cp scripts/claude-code/PLUGIN-README.txt plugin-only/README.txt
       - uses: actions/upload-artifact@v4
         with:
           name: computer-use-mcp-${{ matrix.name }}
           path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: computer-use-plugin-${{ matrix.name }}
+          include-hidden-files: true
+          path: plugin-only/
       - name: Zip for release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         shell: bash
         run: |
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-mcp-${{ matrix.name }}.zip .; else zip -r ../computer-use-mcp-${{ matrix.name }}.zip .; fi
+          cd ../plugin-only
+          if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-plugin-${{ matrix.name }}.zip .; else zip -r ../computer-use-plugin-${{ matrix.name }}.zip .; fi
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         uses: softprops/action-gh-release@v2
@@ -172,9 +185,11 @@ jobs:
             `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
             Check with `claude mcp list`.
 
-            **As a plugin:** the same zip is a valid Claude plugin (`.claude-plugin/plugin.json`,
-            `.mcp.json`, `skills/`), so it also works with *Customize ▸ Plugins ▸ Upload local plugin*
-            in apps that support local plugins, or `claude --plugin-dir <extracted folder>` in Claude Code.
+            **As a plugin** (*Customize ▸ Plugins ▸ Upload local plugin*): if the full zip is refused
+            ("Upload failed"), use the small `computer-use-plugin-<os>.zip` instead — it has no program inside.
+            First run `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
+            which copies the program to `~/.computer-use/bin`; then upload the plugin zip.
+            The full zip is also a valid plugin for `claude --plugin-dir <extracted folder>`.
 
             **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
             macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.
@@ -182,4 +197,6 @@ jobs:
             Every zip contains the binary, the installers, `docs/CONNECT.md` (Claude Code, Claude Desktop,
             Codex, Cursor, VS Code, HTTP) and ready-to-copy configs in `examples/`.
             The binaries are not code-signed, so Windows SmartScreen may ask you to confirm.
-          files: computer-use-mcp-${{ matrix.name }}.zip
+          files: |
+            computer-use-mcp-${{ matrix.name }}.zip
+            computer-use-plugin-${{ matrix.name }}.zip

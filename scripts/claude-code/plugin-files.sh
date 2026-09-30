@@ -3,11 +3,16 @@
 #   <dir>/.claude-plugin/plugin.json   manifest (what "Upload local plugin" looks for)
 #   <dir>/.mcp.json                    starts the bundled binary via ${CLAUDE_PLUGIN_ROOT}
 #   <dir>/skills/computer-use/SKILL.md the agent guide
-# Usage: plugin-files.sh <dir> <binary-file-name> [version]
+# Usage: plugin-files.sh <dir> <binary-file-name> [version] [bundled|installed]
+#   bundled   (default) the binary sits in the plugin folder (${CLAUDE_PLUGIN_ROOT})
+#   installed the plugin has no binary (some hosts refuse executables in plugin
+#             archives); it runs the one install.cmd / install.sh copied to
+#             ~/.computer-use/bin
 set -euo pipefail
 dir="${1:?folder}"; exe="${2:?binary file name}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${3:-$(grep -m1 '^version' "$root/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')}"
+mode="${4:-bundled}"
 
 mkdir -p "$dir/.claude-plugin" "$dir/skills/computer-use"
 cat > "$dir/.claude-plugin/plugin.json" <<JSON
@@ -22,17 +27,25 @@ cat > "$dir/.claude-plugin/plugin.json" <<JSON
   "keywords": ["mcp", "computer-use", "desktop", "accessibility", "automation"]
 }
 JSON
-cat > "$dir/.mcp.json" <<'JSON'
+case "$mode" in
+  bundled) command="\${CLAUDE_PLUGIN_ROOT}/$exe" ;;
+  installed)
+    case "$exe" in
+      *.exe) command="\${USERPROFILE}/.computer-use/bin/$exe" ;;
+      *) command="\${HOME}/.computer-use/bin/$exe" ;;
+    esac ;;
+  *) echo "unknown mode: $mode" >&2; exit 2 ;;
+esac
+cat > "$dir/.mcp.json" <<JSON
 {
   "mcpServers": {
     "computer-use": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/EXE_NAME",
+      "command": "$command",
       "args": ["serve"]
     }
   }
 }
 JSON
-sed -i.bak "s/EXE_NAME/$exe/" "$dir/.mcp.json" && rm -f "$dir/.mcp.json.bak"
 cp "$root/skill/SKILL.md" "$dir/skills/computer-use/SKILL.md"
 # A root SKILL.md would be read as a second, conflicting manifest.
 rm -f "$dir/SKILL.md"
