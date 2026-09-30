@@ -579,7 +579,7 @@ fn to_rgba(mut data: Vec<u8>, w: usize, h: usize, l: &PixelLayout) -> Result<Vec
     if bytes == 4 && stride == w * 4 {
         // Common case: convert in place in the reply buffer (no second copy).
         data.truncate(w * h * 4);
-        for px in data.chunks_exact_mut(4) {
+        for px in data.as_chunks_mut::<4>().0 {
             let word = read(px);
             px[0] = channel(word, 0);
             px[1] = channel(word, 1);

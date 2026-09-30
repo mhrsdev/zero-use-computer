@@ -74,7 +74,7 @@ fn with_dib(
             let n = (width * height) as usize;
             let src = std::slice::from_raw_parts(bits as *const u8, n * 4);
             rgba.reserve(n * 4);
-            for px in src.chunks_exact(4) {
+            for px in src.as_chunks::<4>().0 {
                 // DIB is BGRA; force opaque alpha.
                 rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
             }

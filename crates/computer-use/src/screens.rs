@@ -339,7 +339,7 @@ impl PixelSig {
         for y in 0..full_rows {
             let row = (y * rows / h) * cols;
             let line = &cap.rgba[y as usize * stride..(y as usize + 1) * stride];
-            for (x, px) in line.chunks_exact(4).enumerate() {
+            for (x, px) in line.as_chunks::<4>().0.iter().enumerate() {
                 // Rec. 601 luma, integer.
                 let l = (299 * u32::from(px[0]) + 587 * u32::from(px[1]) + 114 * u32::from(px[2]))
                     / 1000;
