@@ -418,7 +418,10 @@ pub(crate) fn instructions() -> String {
      which afterwards returns a diff. Prefer element_index over x/y coordinates. \
      Use find_element and wait_for to target elements without reading the whole \
      tree, batch to run several actions at once, screenshot for a full/region/\
-     window image, and get_clipboard/set_clipboard for text. Terminals, \
+     window image, and get_clipboard/set_clipboard for text. list_folder/read_file \
+     read files without a file manager, and skill() lists built-in how-to \
+     playbooks for this OS (files, browser, settings, dialogs…): read the \
+     matching one before an unfamiliar task. Terminals, \
      credential and OS-security prompts, and the agent's own app are blocked by \
      default (the user can allow them in settings); the first use of each app may \
      prompt for approval, and consequential actions may ask for confirmation."

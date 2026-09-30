@@ -1387,6 +1387,9 @@ impl<B: Backend> Engine<B> {
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
             ToolCall::CreateFolder(a) => self.create_folder(a),
+            ToolCall::ListFolder(a) => self.list_folder(a),
+            ToolCall::ReadFile(a) => self.read_file(a),
+            ToolCall::Skill(a) => self.skill(a),
             ToolCall::Window(a) => self.window_tool(a, approver),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
         };
@@ -2880,19 +2883,7 @@ impl<B: Backend> Engine<B> {
                 "creating folders is disabled in config".into(),
             ));
         }
-        let raw = args.path.trim();
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-        let path = match (raw.strip_prefix('~'), home) {
-            (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
-                std::path::PathBuf::from(h).join(rest.trim_start_matches(['/', '\\']))
-            }
-            _ => std::path::PathBuf::from(raw),
-        };
-        if raw.is_empty() || !path.is_absolute() {
-            return Err(Error::ActionFailed(
-                "create_folder needs an absolute path (or one starting with ~).".into(),
-            ));
-        }
+        let path = crate::files::expand(&args.path)?;
         if path.is_dir() {
             return Ok(ToolOutput::text(format!(
                 "The folder already exists: {}",
@@ -2906,6 +2897,50 @@ impl<B: Backend> Engine<B> {
             "Created the folder {}",
             path.display()
         )))
+    }
+
+    fn list_folder(&mut self, args: ListFolderArgs) -> Result<ToolOutput> {
+        if !self.store.config.read_files {
+            return Err(Error::Blocked(
+                "list_folder".into(),
+                "file reading is disabled in config".into(),
+            ));
+        }
+        let max = args
+            .max_entries
+            .map_or(crate::files::MAX_ENTRIES, |n| n as usize);
+        Ok(ToolOutput::text(crate::files::list_folder(
+            &args.path, max,
+        )?))
+    }
+
+    fn read_file(&mut self, args: ReadFileArgs) -> Result<ToolOutput> {
+        if !self.store.config.read_files {
+            return Err(Error::Blocked(
+                "read_file".into(),
+                "file reading is disabled in config".into(),
+            ));
+        }
+        let max = args
+            .max_bytes
+            .map_or(crate::files::DEFAULT_READ_BYTES, |n| n as usize);
+        Ok(ToolOutput::text(crate::files::read_file(
+            &args.path,
+            args.offset.unwrap_or(0),
+            max,
+        )?))
+    }
+
+    fn skill(&mut self, args: SkillArgs) -> Result<ToolOutput> {
+        if !self.store.config.skills {
+            return Err(Error::Blocked(
+                "skill".into(),
+                "built-in skills are disabled in config".into(),
+            ));
+        }
+        crate::skills::lookup(crate::skills::Os::current(), args.name.as_deref())
+            .map(ToolOutput::text)
+            .map_err(Error::ActionFailed)
     }
 
     /// The action guard: confirm/refuse a consequential press on `label`.
@@ -3625,6 +3660,51 @@ mod tests {
         );
         assert!(out.is_error);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_and_skill_tools() {
+        let mut e = engine();
+        let dir = std::env::temp_dir().join(format!("cu-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), "remember the milk").unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let out = e.call_tool("list_folder", serde_json::json!({"path": d}), &mut allow());
+        assert!(
+            !out.is_error && out.text.contains("note.txt"),
+            "{}",
+            out.text
+        );
+        let f = dir.join("note.txt").to_string_lossy().to_string();
+        let out = e.call_tool("read_file", serde_json::json!({"path": f}), &mut allow());
+        assert!(out.text.contains("remember the milk"), "{}", out.text);
+        let out = e.call_tool(
+            "read_file",
+            serde_json::json!({"path": "/home/x/.ssh/id_rsa"}),
+            &mut allow(),
+        );
+        assert!(out.is_error, "{}", out.text);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let out = e.call_tool("skill", serde_json::json!({}), &mut allow());
+        assert!(
+            !out.is_error && out.text.contains("- files:"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool("skill", serde_json::json!({"name": "files"}), &mut allow());
+        assert!(out.text.starts_with("# Files and folders"), "{}", out.text);
+        let out = e.call_tool("skill", serde_json::json!({"name": "zzz"}), &mut allow());
+        assert!(out.is_error);
+
+        e.store.config.read_files = false;
+        e.store.config.skills = false;
+        for (n, a) in [
+            ("read_file", serde_json::json!({"path": "/tmp/x"})),
+            ("skill", serde_json::json!({})),
+        ] {
+            assert!(e.call_tool(n, a, &mut allow()).is_error, "{n}");
+        }
     }
 
     #[test]

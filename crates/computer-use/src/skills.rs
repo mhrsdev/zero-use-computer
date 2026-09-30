@@ -1,0 +1,174 @@
+//! Built-in skills: short how-to playbooks for common desktop tasks, written
+//! separately for each operating system (shortcuts, app names and quirks
+//! differ). The agent lists them and reads the one it needs with the `skill`
+//! tool; they are compiled into the binary, so nothing has to be installed.
+
+/// The operating systems that have their own skill set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    MacOs,
+    Linux,
+}
+
+impl Os {
+    /// The OS this build runs on.
+    pub fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Os::Windows
+        } else if cfg!(target_os = "macos") {
+            Os::MacOs
+        } else {
+            Os::Linux
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::Windows => "Windows",
+            Os::MacOs => "macOS",
+            Os::Linux => "Linux",
+        }
+    }
+}
+
+/// One skill for one OS.
+#[derive(Debug, Clone, Copy)]
+pub struct Skill {
+    pub name: &'static str,
+    /// When to read it.
+    pub summary: &'static str,
+    pub body: &'static str,
+}
+
+macro_rules! skill {
+    ($os:literal, $name:literal, $summary:literal) => {
+        Skill {
+            name: $name,
+            summary: $summary,
+            body: include_str!(concat!("../skills/", $os, "/", $name, ".md")),
+        }
+    };
+}
+
+macro_rules! skill_set {
+    ($os:literal) => {
+        &[
+            skill!(
+                $os,
+                "files",
+                "Create, move, rename, delete, find files and folders."
+            ),
+            skill!(
+                $os,
+                "browser",
+                "Open pages, tabs, forms, downloads in a web browser."
+            ),
+            skill!(
+                $os,
+                "settings",
+                "System settings, Wi-Fi/display/sound, uninstalling, security prompts."
+            ),
+            skill!(
+                $os,
+                "apps-and-windows",
+                "Start apps, switch/snap/close windows, find menus."
+            ),
+            skill!(
+                $os,
+                "text-and-dialogs",
+                "Typing, clipboard, shortcuts, open/save dialogs, confirmations."
+            ),
+            skill!(
+                $os,
+                "documents",
+                "Word processors, spreadsheets, presentations, PDF export."
+            ),
+            skill!(
+                $os,
+                "troubleshooting",
+                "An app shows nothing, a click did nothing, something is blocked."
+            ),
+        ]
+    };
+}
+
+/// All skills for `os`.
+pub fn skills_for(os: Os) -> &'static [Skill] {
+    match os {
+        Os::Windows => skill_set!("windows"),
+        Os::MacOs => skill_set!("macos"),
+        Os::Linux => skill_set!("linux"),
+    }
+}
+
+/// The `skill` tool: with no `name`, list the skills for `os`; with a name
+/// (case-insensitive, unambiguous prefix allowed), return that playbook.
+pub fn lookup(os: Os, name: Option<&str>) -> Result<String, String> {
+    let all = skills_for(os);
+    let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+        let mut out = format!(
+            "Built-in skills for {} — read one with skill(name):\n",
+            os.name()
+        );
+        for s in all {
+            out.push_str(&format!("- {}: {}\n", s.name, s.summary));
+        }
+        return Ok(out);
+    };
+    let want = name.to_lowercase();
+    if let Some(s) = all.iter().find(|s| s.name == want) {
+        return Ok(s.body.to_string());
+    }
+    let hits: Vec<_> = all.iter().filter(|s| s.name.starts_with(&want)).collect();
+    match hits.as_slice() {
+        [s] => Ok(s.body.to_string()),
+        _ => Err(format!(
+            "no skill named `{name}` for {}. Available: {}.",
+            os.name(),
+            all.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_os_has_the_same_skills_and_real_content() {
+        let names = |os| skills_for(os).iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(names(Os::Windows), names(Os::MacOs));
+        assert_eq!(names(Os::Windows), names(Os::Linux));
+        for os in [Os::Windows, Os::MacOs, Os::Linux] {
+            for s in skills_for(os) {
+                assert!(s.body.starts_with("# "), "{} {}", os.name(), s.name);
+                assert!(s.body.len() > 300, "{} {} is too short", os.name(), s.name);
+                assert!(!s.summary.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn skills_are_specific_to_their_os() {
+        let body = |os, n| lookup(os, Some(n)).unwrap();
+        assert!(body(Os::Windows, "files").contains("Explorer"));
+        assert!(body(Os::MacOs, "files").contains("Finder"));
+        assert!(body(Os::Linux, "files").contains("Nautilus"));
+        assert!(body(Os::MacOs, "text-and-dialogs").contains("cmd+"));
+        assert!(!body(Os::Windows, "text-and-dialogs").contains("cmd+"));
+    }
+
+    #[test]
+    fn lookup_lists_matches_prefixes_and_reports_unknowns() {
+        let list = lookup(Os::Linux, None).unwrap();
+        assert!(list.contains("Linux") && list.contains("- browser:"));
+        assert!(lookup(Os::Linux, Some("FILES")).is_ok());
+        assert!(lookup(Os::Linux, Some("trouble")).is_ok());
+        assert!(
+            lookup(Os::Linux, Some("nope"))
+                .unwrap_err()
+                .contains("Available")
+        );
+    }
+}

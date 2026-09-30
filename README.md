@@ -60,6 +60,8 @@ This project follows the same architecture and behaviour:
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
+| `list_folder` / `read_file` | Read-only: list a folder, read a text file (32 KB per call, `offset` to continue). Credential and key places (`.ssh`, `.aws`, `.env`, `*.pem`, browser profiles…) are always refused; `read_files = false` switches both off. |
+| `skill` | Built-in how-to playbooks for common desktop tasks (files, browser, settings, apps & windows, text & dialogs, documents, troubleshooting), written separately for Windows, macOS and Linux and compiled into the binary. No name lists them; `skills = false` switches it off. |
 | `create_folder` | Create a folder (and missing parents) at an absolute path. Never deletes or overwrites; switch off with `create_folder = false`. |
 
 Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,

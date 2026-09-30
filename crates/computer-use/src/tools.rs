@@ -431,6 +431,24 @@ pub struct CreateFolderArgs {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ListFolderArgs {
+    pub path: String,
+    pub max_entries: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ReadFileArgs {
+    pub path: String,
+    pub offset: Option<u64>,
+    pub max_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct SkillArgs {
+    pub name: Option<String>,
+}
+
 /// A parsed tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
@@ -452,6 +470,9 @@ pub enum ToolCall {
     GetClipboard,
     SetClipboard(SetClipboardArgs),
     CreateFolder(CreateFolderArgs),
+    ListFolder(ListFolderArgs),
+    ReadFile(ReadFileArgs),
+    Skill(SkillArgs),
     Window(WindowArgs),
     GetNotifications(NotificationsArgs),
 }
@@ -482,6 +503,9 @@ impl ToolCall {
             "get_clipboard" => ToolCall::GetClipboard,
             "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
             "create_folder" => ToolCall::CreateFolder(parse_args(name, args)?),
+            "list_folder" => ToolCall::ListFolder(parse_args(name, args)?),
+            "read_file" => ToolCall::ReadFile(parse_args(name, args)?),
+            "skill" => ToolCall::Skill(parse_args(name, args)?),
             "window" => ToolCall::Window(parse_args(name, args)?),
             "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
@@ -508,6 +532,9 @@ impl ToolCall {
             ToolCall::GetClipboard => "get_clipboard",
             ToolCall::SetClipboard(_) => "set_clipboard",
             ToolCall::CreateFolder(_) => "create_folder",
+            ToolCall::ListFolder(_) => "list_folder",
+            ToolCall::ReadFile(_) => "read_file",
+            ToolCall::Skill(_) => "skill",
             ToolCall::Window(_) => "window",
             ToolCall::GetNotifications(_) => "get_notifications",
         }
@@ -866,6 +893,48 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             annotations: acting("Create folder"),
         },
+        ToolDefinition {
+            name: "list_folder",
+            title: "List folder",
+            description: "List a folder's entries (folders first, with file sizes) at an absolute path; `~` means the user's home. Read-only and much cheaper than driving a file manager. Places that hold credentials are refused.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute folder path, or starting with ~."},
+                    "max_entries": {"type": "integer", "description": "At most this many entries (default and maximum 200)."}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+            annotations: read_only("List folder"),
+        },
+        ToolDefinition {
+            name: "read_file",
+            title: "Read file",
+            description: "Read a text file at an absolute path (default first 32 KB, at most 256 KB per call; use `offset` to continue). Read-only. Binary files and files holding credentials or keys are refused.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path, or starting with ~."},
+                    "offset": {"type": "integer", "description": "Start at this byte offset (default 0)."},
+                    "max_bytes": {"type": "integer", "description": "Read at most this many bytes."}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+            annotations: read_only("Read file"),
+        },
+        ToolDefinition {
+            name: "skill",
+            title: "Built-in skills",
+            description: "Built-in how-to playbooks for common desktop tasks (files, browser, settings, windows, text and dialogs, documents, troubleshooting), written for the OS you are running on. Call with no name to list them, or with a name to read one. Read the matching skill before starting an unfamiliar task.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Skill name; omit to list."}},
+                "additionalProperties": false
+            }),
+            annotations: read_only("Built-in skills"),
+        },
     ]
 }
 
@@ -902,6 +971,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
         "create_folder" => "Create a folder (and missing parents) at an absolute path.",
+        "list_folder" => "List a folder's entries at an absolute path (read-only).",
+        "read_file" => "Read a text file at an absolute path (read-only; offset to continue).",
+        "skill" => "Built-in per-OS how-to playbooks for desktop tasks; no name = list.",
         _ => return None,
     })
 }
@@ -965,6 +1037,8 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
         .filter(|d| match d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "create_folder" => config.create_folder,
+            "list_folder" | "read_file" => config.read_files,
+            "skill" => config.skills,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
             _ => true,
@@ -997,7 +1071,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 20);
+        assert_eq!(defs.len(), 23);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1033,7 +1107,8 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}], "path": "/tmp/x"
+            "steps": [{"tool": "list_apps"}], "path": "/tmp/x", "max_entries": 5,
+            "offset": 0, "max_bytes": 100, "name": "files"
             }"#,
         )
         .unwrap();
@@ -1054,7 +1129,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 20);
+        assert_eq!(compact.len(), 23);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

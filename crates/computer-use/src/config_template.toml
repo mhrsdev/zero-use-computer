@@ -15,6 +15,10 @@
 clipboard = true
 # Expose the create_folder tool (makes folders; never deletes or overwrites).
 create_folder = true
+# Expose list_folder / read_file (read-only; credential and key files are always refused).
+read_files = true
+# Expose the built-in per-OS how-to skills (the `skill` tool).
+skills = true
 # Never attach screenshots anywhere (tree-only; lowest token use).
 text_only = false
 # When an action opens a new window (a dialog, a menu), switch to it for the

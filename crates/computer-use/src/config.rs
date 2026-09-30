@@ -913,6 +913,11 @@ pub struct Config {
     pub clipboard: bool,
     /// Expose the create_folder tool (makes folders; never deletes or overwrites).
     pub create_folder: bool,
+    /// Expose the read-only file tools (list_folder / read_file). Places that
+    /// hold credentials or keys are always refused.
+    pub read_files: bool,
+    /// Expose the built-in per-OS skills (the `skill` tool).
+    pub skills: bool,
     /// Never attach screenshots to any tool result (tree-only operation).
     pub text_only: bool,
     /// When an action opens a new window (a dialog, a menu), switch to it
@@ -951,6 +956,8 @@ impl Default for Config {
             windows: WindowsConfig::default(),
             clipboard: true,
             create_folder: true,
+            read_files: true,
+            skills: true,
             text_only: false,
             follow_new_windows: true,
             restore_pointer: true,
