@@ -1,6 +1,7 @@
 //! `computer-use-mcp` — an MCP stdio server (and small CLI) that gives any
 //! MCP-capable agent the Codex-style computer-use tools.
 
+mod catalog;
 #[cfg(feature = "http")]
 mod http;
 mod jsonrpc;

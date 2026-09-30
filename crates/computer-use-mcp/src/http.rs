@@ -24,6 +24,7 @@ use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::catalog;
 use crate::jsonrpc::{INVALID_PARAMS, METHOD_NOT_FOUND, parse_message};
 use crate::server::{call_tool_caught, instructions, is_known_tool, negotiate_protocol};
 
@@ -347,7 +348,7 @@ fn handle<B: Backend>(engine: &mut Engine<B>, body: &str, allow: bool) -> Option
                 "protocolVersion": negotiate_protocol(
                     params.get("protocolVersion").and_then(Value::as_str),
                 ),
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": catalog::capabilities(engine.store().config.skills, false),
                 "serverInfo": {"name": "computer-use", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": instructions(),
             }),
@@ -378,6 +379,17 @@ fn handle<B: Backend>(engine: &mut Engine<B>, body: &str, allow: bool) -> Option
                 reply(id, call_tool_caught(engine, name, args, &mut approver))
             }
             None => error(id, INVALID_PARAMS, "tools/call requires `name`"),
+        },
+        "prompts/list" => reply(id, catalog::prompts_list(engine.store().config.skills)),
+        "prompts/get" => match catalog::prompts_get(engine.store().config.skills, &params) {
+            Ok(v) => reply(id, v),
+            Err((code, msg)) => error(id, code, &msg),
+        },
+        "resources/list" => reply(id, catalog::resources_list(engine.store().config.skills)),
+        "resources/templates/list" => reply(id, json!({"resourceTemplates": []})),
+        "resources/read" => match catalog::resources_read(engine.store().config.skills, &params) {
+            Ok(v) => reply(id, v),
+            Err((code, msg)) => error(id, code, &msg),
         },
         other => error(id, METHOD_NOT_FOUND, &format!("method not found: {other}")),
     })
@@ -599,5 +611,36 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(status(addr, JSON, PING), 200);
         drop(stalled);
+    }
+
+    #[test]
+    fn http_serves_skills_as_prompts_and_resources() {
+        let mut e = engine();
+        let ask = |e: &mut Engine<MockBackend>, body: &str| handle(e, body, true).expect("a reply");
+        let init = ask(
+            &mut e,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        );
+        assert!(init["result"]["capabilities"]["prompts"].is_object());
+        let list = ask(
+            &mut e,
+            r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#,
+        );
+        assert!(!list["result"]["resources"].as_array().unwrap().is_empty());
+        let got = ask(
+            &mut e,
+            r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"files"}}"#,
+        );
+        assert!(
+            got["result"]["messages"][0]["content"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("# ")
+        );
+        let bad = ask(
+            &mut e,
+            r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"x"}}"#,
+        );
+        assert_eq!(bad["error"]["code"], -32002);
     }
 }

@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "computer-use": {
+      "type": "stdio",
+      "command": "/path/to/computer-use-mcp",
+      "args": ["serve"]
+    }
+  }
+}

@@ -12,6 +12,7 @@ use computer_use::tools::ToolOutput;
 use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 
+use crate::catalog;
 use crate::jsonrpc::*;
 
 /// MCP protocol versions this server speaks, newest first.
@@ -370,15 +371,29 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
                 self.shutdown = true;
                 Some(Response::ok(id, Value::Null))
             }
-            // Not implemented but harmless to answer emptily.
-            "resources/list" => Some(Response::ok(id, json!({"resources": []}))),
-            "prompts/list" => Some(Response::ok(id, json!({"prompts": []}))),
+            // The built-in skills, as prompts and resources.
+            "prompts/list" => Some(Response::ok(id, catalog::prompts_list(self.skills_on()))),
+            "prompts/get" => Some(match catalog::prompts_get(self.skills_on(), &params) {
+                Ok(v) => Response::ok(id, v),
+                Err((code, msg)) => Response::err(id, code, msg),
+            }),
+            "resources/list" => Some(Response::ok(id, catalog::resources_list(self.skills_on()))),
+            "resources/templates/list" => Some(Response::ok(id, json!({"resourceTemplates": []}))),
+            "resources/read" => Some(match catalog::resources_read(self.skills_on(), &params) {
+                Ok(v) => Response::ok(id, v),
+                Err((code, msg)) => Response::err(id, code, msg),
+            }),
             other => Some(Response::err(
                 id,
                 METHOD_NOT_FOUND,
                 format!("method not found: {other}"),
             )),
         }
+    }
+
+    /// Whether the built-in skills are offered (`skills` in the settings).
+    fn skills_on(&self) -> bool {
+        self.engine.as_ref().is_none_or(|e| e.store().config.skills)
     }
 
     fn initialize(&mut self, params: &Value) -> Value {
@@ -389,7 +404,7 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         let protocol = negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str));
         json!({
             "protocolVersion": protocol,
-            "capabilities": {"tools": {"listChanged": true}},
+            "capabilities": catalog::capabilities(self.skills_on(), true),
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": instructions(),
         })
@@ -1114,5 +1129,47 @@ mod tests {
         ));
         assert!(matches!(read_capped_line(&mut r, 4).unwrap(), RawLine::Line(l) if l == b"k"));
         assert!(matches!(read_capped_line(&mut r, 4).unwrap(), RawLine::Eof));
+    }
+
+    #[test]
+    fn skills_are_offered_as_prompts_and_resources() {
+        let input = format!(
+            "{}{}{}{}{}{}",
+            line(
+                "initialize",
+                1,
+                json!({"protocolVersion":"2025-06-18","capabilities":{}})
+            ),
+            line("prompts/list", 2, json!({})),
+            line("prompts/get", 3, json!({"name": "files"})),
+            line("resources/list", 4, json!({})),
+            line(
+                "resources/read",
+                5,
+                json!({"uri": "computer-use://skills/files"})
+            ),
+            line(
+                "resources/read",
+                6,
+                json!({"uri": "computer-use://skills/nope"})
+            ),
+        );
+        let out = converse(ApprovalMode::AllowAll, HeadlessApproval::Deny, &input);
+        let caps = &out[0]["result"]["capabilities"];
+        assert!(
+            caps["prompts"].is_object() && caps["resources"].is_object(),
+            "{caps}"
+        );
+        assert!(out[1]["result"]["prompts"].as_array().unwrap().len() >= 10);
+        let text = out[2]["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(text.starts_with("# "));
+        assert!(!out[3]["result"]["resources"].as_array().unwrap().is_empty());
+        assert_eq!(
+            out[4]["result"]["contents"][0]["text"].as_str().unwrap(),
+            text
+        );
+        assert_eq!(out[5]["error"]["code"], -32002);
     }
 }

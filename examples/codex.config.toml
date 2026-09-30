@@ -1,0 +1,4 @@
+# Add to ~/.codex/config.toml
+[mcp_servers.computer-use]
+command = "/path/to/computer-use-mcp"
+args = ["serve"]

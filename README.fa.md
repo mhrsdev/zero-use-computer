@@ -224,6 +224,8 @@ get_app_state  → … · screen #1
 
 ## اجرا به‌صورت سرور MCP
 
+**اتصال به کلاینت‌ها** (Claude Code، Claude Desktop، Codex، Cursor، VS Code و HTTP): راهنمای [docs/CONNECT.md](docs/CONNECT.md) و پیکربندی‌های آمادهٔ [`examples/`](examples). اول `computer-use-mcp doctor` را اجرا کنید. سرور اسکیل‌های داخلی را به‌صورت **prompts** و **resources** در MCP هم عرضه می‌کند (`computer-use://skills/<name>`).
+
 **دانلود فایل آماده:** با هر push، فایل `computer-use-mcp` برای ویندوز (x64)، مک (Apple silicon و Intel) و لینوکس (x64) ساخته می‌شود. در گیت‌هاب به تب **Actions** بروید، آخرین اجرای *CI* را باز کنید و از بخش **Artifacts** فایل `computer-use-mcp-<سیستم‌عامل>` را دانلود کنید (برای نسخه‌های تگ‌خورده‌ی `v*` فایل zip در **Releases** هم هست). داخلش خود برنامه، فایل [`mcp.example.json`](mcp.example.json)، راهنماها و فایل skill هست.
 
 یا خودتان بسازید:

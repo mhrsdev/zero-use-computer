@@ -391,6 +391,12 @@ screenshot pixels to screen coordinates, and enforcing the approval policy. Each
 
 ## Use it as an MCP server
 
+**Connecting a client** (Claude Code, Claude Desktop, Codex, Cursor, VS Code,
+HTTP): see [docs/CONNECT.md](docs/CONNECT.md) and the ready-to-copy configs in
+[`examples/`](examples). Run `computer-use-mcp doctor` first. The server also
+offers the built-in skills as MCP **prompts** and **resources**
+(`computer-use://skills/<name>`).
+
 **Download** a ready-made binary: every push builds `computer-use-mcp` for
 Windows (x64), macOS (Apple silicon and Intel) and Linux (x64) — open the
 repository's **Actions** tab, pick the latest *CI* run and download
