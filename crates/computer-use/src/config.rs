@@ -911,6 +911,8 @@ pub struct Config {
     pub windows: WindowsConfig,
     /// Expose the clipboard tools (get_clipboard / set_clipboard).
     pub clipboard: bool,
+    /// Expose the create_folder tool (makes folders; never deletes or overwrites).
+    pub create_folder: bool,
     /// Never attach screenshots to any tool result (tree-only operation).
     pub text_only: bool,
     /// When an action opens a new window (a dialog, a menu), switch to it
@@ -948,6 +950,7 @@ impl Default for Config {
             macos: MacosConfig::default(),
             windows: WindowsConfig::default(),
             clipboard: true,
+            create_folder: true,
             text_only: false,
             follow_new_windows: true,
             restore_pointer: true,

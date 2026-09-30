@@ -1386,6 +1386,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Batch(a) => self.batch(a, approver),
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
+            ToolCall::CreateFolder(a) => self.create_folder(a),
             ToolCall::Window(a) => self.window_tool(a, approver),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
         };
@@ -2872,6 +2873,41 @@ impl<B: Backend> Engine<B> {
         )))
     }
 
+    fn create_folder(&mut self, args: CreateFolderArgs) -> Result<ToolOutput> {
+        if !self.store.config.create_folder {
+            return Err(Error::Blocked(
+                "create_folder".into(),
+                "creating folders is disabled in config".into(),
+            ));
+        }
+        let raw = args.path.trim();
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let path = match (raw.strip_prefix('~'), home) {
+            (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                std::path::PathBuf::from(h).join(rest.trim_start_matches(['/', '\\']))
+            }
+            _ => std::path::PathBuf::from(raw),
+        };
+        if raw.is_empty() || !path.is_absolute() {
+            return Err(Error::ActionFailed(
+                "create_folder needs an absolute path (or one starting with ~).".into(),
+            ));
+        }
+        if path.is_dir() {
+            return Ok(ToolOutput::text(format!(
+                "The folder already exists: {}",
+                path.display()
+            )));
+        }
+        std::fs::create_dir_all(&path).map_err(|e| {
+            Error::ActionFailed(format!("could not create {}: {e}", path.display()))
+        })?;
+        Ok(ToolOutput::text(format!(
+            "Created the folder {}",
+            path.display()
+        )))
+    }
+
     /// The action guard: confirm/refuse a consequential press on `label`.
     /// While such an action waits for the user the overlay turns to the
     /// approval colour; once it runs, to the sensitive-action colour.
@@ -3565,6 +3601,30 @@ mod tests {
         assert!(!out.is_error);
         let out = e.call_tool("get_clipboard", serde_json::json!({}), &mut allow());
         assert!(out.text.contains("hello clip"), "{}", out.text);
+    }
+
+    #[test]
+    fn create_folder_makes_nested_folders_and_is_idempotent() {
+        let mut e = engine();
+        let dir = std::env::temp_dir().join(format!("cu-folder-{}", std::process::id()));
+        let nested = dir.join("a").join("b");
+        let args = serde_json::json!({"path": nested.to_string_lossy()});
+        let out = e.call_tool("create_folder", args.clone(), &mut allow());
+        assert!(!out.is_error, "{}", out.text);
+        assert!(nested.is_dir());
+        let out = e.call_tool("create_folder", args, &mut allow());
+        assert!(
+            !out.is_error && out.text.contains("already exists"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "create_folder",
+            serde_json::json!({"path": "relative/dir"}),
+            &mut allow(),
+        );
+        assert!(out.is_error);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

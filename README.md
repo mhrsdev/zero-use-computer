@@ -60,6 +60,7 @@ This project follows the same architecture and behaviour:
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
+| `create_folder` | Create a folder (and missing parents) at an absolute path. Never deletes or overwrites; switch off with `create_folder = false`. |
 
 Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
 region/full `screenshot`, clipboard) cut round-trips and token use, and the

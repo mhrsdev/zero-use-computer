@@ -95,6 +95,8 @@ running (then `get_app_state`).
 
 ## Rules
 
+- `create_folder` — make a folder (and missing parents) at an absolute path; it
+  never deletes or overwrites. To name/save inside an app, use the app's own UI.
 - **Prefer `element_index` over `x`/`y` coordinates.** Coordinates (in
   screenshot pixels) are a fallback for canvases and custom-drawn UI.
 - **Indices are per-turn.** If an action fails with "unknown element_index",

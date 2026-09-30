@@ -13,6 +13,8 @@
 
 # Expose the clipboard tools (get_clipboard / set_clipboard).
 clipboard = true
+# Expose the create_folder tool (makes folders; never deletes or overwrites).
+create_folder = true
 # Never attach screenshots anywhere (tree-only; lowest token use).
 text_only = false
 # When an action opens a new window (a dialog, a menu), switch to it for the

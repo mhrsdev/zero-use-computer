@@ -426,6 +426,11 @@ pub struct SetClipboardArgs {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct CreateFolderArgs {
+    pub path: String,
+}
+
 /// A parsed tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
@@ -446,6 +451,7 @@ pub enum ToolCall {
     Batch(BatchArgs),
     GetClipboard,
     SetClipboard(SetClipboardArgs),
+    CreateFolder(CreateFolderArgs),
     Window(WindowArgs),
     GetNotifications(NotificationsArgs),
 }
@@ -475,6 +481,7 @@ impl ToolCall {
             "batch" => ToolCall::Batch(parse_args(name, args)?),
             "get_clipboard" => ToolCall::GetClipboard,
             "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
+            "create_folder" => ToolCall::CreateFolder(parse_args(name, args)?),
             "window" => ToolCall::Window(parse_args(name, args)?),
             "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
@@ -500,6 +507,7 @@ impl ToolCall {
             ToolCall::Batch(_) => "batch",
             ToolCall::GetClipboard => "get_clipboard",
             ToolCall::SetClipboard(_) => "set_clipboard",
+            ToolCall::CreateFolder(_) => "create_folder",
             ToolCall::Window(_) => "window",
             ToolCall::GetNotifications(_) => "get_notifications",
         }
@@ -846,6 +854,18 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             annotations: acting("Set clipboard"),
         },
+        ToolDefinition {
+            name: "create_folder",
+            title: "Create folder",
+            description: "Create a folder (and any missing parent folders) at an absolute path; `~` means the user's home. Does nothing if it already exists. Never deletes or overwrites anything.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Absolute folder path, e.g. C:\\Users\\me\\Projects\\new or ~/Projects/new."}},
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Create folder"),
+        },
     ]
 }
 
@@ -881,6 +901,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
+        "create_folder" => "Create a folder (and missing parents) at an absolute path.",
         _ => return None,
     })
 }
@@ -943,6 +964,7 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
         .into_iter()
         .filter(|d| match d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
+            "create_folder" => config.create_folder,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
             _ => true,
@@ -975,7 +997,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 19);
+        assert_eq!(defs.len(), 20);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1011,7 +1033,7 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}]
+            "steps": [{"tool": "list_apps"}], "path": "/tmp/x"
             }"#,
         )
         .unwrap();
@@ -1032,7 +1054,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 19);
+        assert_eq!(compact.len(), 20);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,
