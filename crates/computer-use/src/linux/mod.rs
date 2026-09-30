@@ -289,25 +289,32 @@ impl Backend for LinuxBackend {
     }
 
     fn launch_app(&mut self, query: &str) -> Result<()> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(Error::InvalidArgs("empty app".into()));
+        }
+        // An app *name* with spaces ("Google Chrome") is found among the
+        // installed applications (.desktop files), not run as a program.
+        if query.contains(char::is_whitespace)
+            && !crate::launch::has_arguments(query)
+            && let Some(entry) = crate::launch::find_desktop_entry(&application_dirs(), query)
+        {
+            return spawn_detached(&entry.command[0], &entry.command[1..]);
+        }
         let mut parts = query.split_whitespace();
-        let program = parts
-            .next()
-            .ok_or_else(|| Error::InvalidArgs("empty app".into()))?;
-        let args: Vec<&str> = parts.collect();
-        // Never share our stdio: stdin/stdout carry the MCP JSON-RPC stream.
-        let child = Command::new(program)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                Error::ActionFailed(format!(
-                    "could not launch `{program}`: {e}. Pass an executable name on PATH."
-                ))
-            })?;
-        reap(child);
-        Ok(())
+        let program = parts.next().unwrap_or(query);
+        let args: Vec<String> = parts.map(str::to_string).collect();
+        match spawn_detached(program, &args) {
+            Err(e) => {
+                // Not a program on PATH ("Firefox", "chrome"): try the
+                // installed applications by name or id.
+                match crate::launch::find_desktop_entry(&application_dirs(), query) {
+                    Some(entry) => spawn_detached(&entry.command[0], &entry.command[1..]),
+                    None => Err(e),
+                }
+            }
+            ok => ok,
+        }
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
@@ -570,6 +577,53 @@ impl Backend for LinuxBackend {
     fn type_text(&mut self, _target: &InputTarget, text: &str) -> Result<()> {
         self.x11()?.type_text(text)
     }
+}
+
+/// Start a program without sharing our stdio (stdin/stdout carry the MCP
+/// JSON-RPC stream) and reap it in the background.
+fn spawn_detached(program: &str, args: &[String]) -> Result<()> {
+    let child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            Error::ActionFailed(format!(
+                "could not launch `{program}`: {e}. Pass an executable name on PATH, or an installed app's name."
+            ))
+        })?;
+    reap(child);
+    Ok(())
+}
+
+/// Where installed applications' `.desktop` files live.
+fn application_dirs() -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(d) if !d.is_empty() => bases.push(d.into()),
+        _ => bases.extend(home.iter().map(|h| h.join(".local/share"))),
+    }
+    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    let data_dirs = if data_dirs.is_empty() {
+        "/usr/local/share:/usr/share".to_string()
+    } else {
+        data_dirs
+    };
+    bases.extend(
+        data_dirs
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(Into::into),
+    );
+    bases.extend(
+        home.iter()
+            .map(|h| h.join(".local/share/flatpak/exports/share")),
+    );
+    bases.push("/var/lib/flatpak/exports/share".into());
+    bases.push("/var/lib/snapd/desktop".into());
+    bases.into_iter().map(|b| b.join("applications")).collect()
 }
 
 /// Wait for a launched child in the background so it never lingers as a

@@ -54,6 +54,7 @@ pub mod error;
 pub mod files;
 pub mod imaging;
 pub mod keys;
+pub mod launch;
 pub mod mock;
 pub mod ocr;
 pub mod overlay;

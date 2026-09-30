@@ -13,6 +13,7 @@ use crate::config::{AttachMode, ConfigStore};
 use crate::error::{Error, Result};
 use crate::imaging::{self, CoordMap, EncodedImage};
 use crate::keys::{self, Key, KeyCombo, NamedKey};
+use crate::launch;
 use crate::overlay::{Cmd as OverlayCmd, Launcher, Overlay, Status};
 use crate::policy::{self, Verdict};
 use crate::screens::{PixelSig, Screen, ScreenMemory, View};
@@ -1603,30 +1604,41 @@ impl<B: Backend> Engine<B> {
         args: LaunchAppArgs,
         approver: &mut dyn Approver,
     ) -> Result<ToolOutput> {
-        // Enforce policy against a synthetic record of the *program* (the
-        // first word), so a blocked category (terminals, shells…) can't be
-        // launched-and-driven around the block by adding arguments or spaces.
+        // Policy is judged on what would actually run. An app *name* with
+        // spaces ("Google Chrome") is checked as a whole and word by word (so
+        // `sudo xterm` can't hide a terminal); a *command line* is judged by
+        // its program, and — since arguments can turn any program into
+        // something else (`sh -c …`, `python evil.py`) — asks before it runs.
         let request = args.app.trim().to_string();
-        let (program, has_args) = split_launch(&request);
-        if program.is_empty() {
+        if request.is_empty() {
             return Err(Error::ActionFailed("launch_app needs an app name.".into()));
         }
-        let probe = AppInfo {
-            name: program.clone(),
-            id: program.clone(),
+        let (program, _) = launch::split_launch(&request);
+        let has_args = launch::has_arguments(&request);
+        let probe_of = |name: &str| AppInfo {
+            name: name.to_string(),
+            id: name.to_string(),
             pid: 0,
-            exe: Some(program.clone()),
+            exe: Some(name.to_string()),
             frontmost: false,
             hidden: false,
         };
-        match policy::evaluate(&probe, &self.store, &self.session_allowed) {
-            Verdict::Blocked(reason) => return Err(Error::Blocked(program, reason)),
-            // Arguments can turn any program into something else (`sh -c …`,
-            // `python -c …`): ask before starting it, and honour a "no".
-            Verdict::NeedsApproval if has_args => {
+        let mut candidates = vec![request.clone()];
+        candidates.extend(launch::words(&request));
+        for name in &candidates {
+            if let Verdict::Blocked(reason) =
+                policy::evaluate(&probe_of(name), &self.store, &self.session_allowed)
+            {
+                return Err(Error::Blocked(name.clone(), reason));
+            }
+        }
+        if has_args {
+            let probe = probe_of(&program);
+            if policy::evaluate(&probe, &self.store, &self.session_allowed)
+                == Verdict::NeedsApproval
+            {
                 self.approve(probe, "launch_app", approver)?;
             }
-            _ => {}
         }
 
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
@@ -1639,7 +1651,12 @@ impl<B: Backend> Engine<B> {
             15.0
         };
         let deadline = (self.clock)() + Duration::from_secs_f64(timeout);
-        let ql = program_key(&program);
+        // What to look for among the running apps.
+        let ql = if has_args {
+            launch::program_key(&program)
+        } else {
+            request.to_lowercase()
+        };
         loop {
             let apps = self.find_apps()?;
             // Prefer a newly-appeared app that matches the query.
@@ -3530,33 +3547,6 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
             })
         }
     }
-}
-
-/// The program of a launch request (its first word, or a leading quoted
-/// path) and whether arguments follow it.
-fn split_launch(request: &str) -> (String, bool) {
-    let r = request.trim();
-    if let Some(rest) = r.strip_prefix('"')
-        && let Some(end) = rest.find('"')
-    {
-        return (rest[..end].to_string(), !rest[end + 1..].trim().is_empty());
-    }
-    match r.split_once(char::is_whitespace) {
-        Some((p, tail)) => (p.to_string(), !tail.trim().is_empty()),
-        None => (r.to_string(), false),
-    }
-}
-
-/// A program name as apps are matched: lowercase file name without `.exe`.
-fn program_key(program: &str) -> String {
-    let file = program
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(program)
-        .to_lowercase();
-    file.strip_suffix(".exe")
-        .map(str::to_string)
-        .unwrap_or(file)
 }
 
 #[cfg(test)]
@@ -5566,11 +5556,33 @@ mod tests {
                 .iter()
                 .any(|ev| matches!(ev, Event::Launch(_)))
         );
-        assert_eq!(
-            super::split_launch("  \"C:\\Program Files\\x.exe\" --a "),
-            ("C:\\Program Files\\x.exe".to_string(), true)
+    }
+
+    #[test]
+    fn app_names_with_spaces_launch_like_any_other_app() {
+        // "Google Chrome" is an app name, not the program "Google" plus an
+        // argument "Chrome" (which used to ask for — and be denied — "Google").
+        let mut backend = MockBackend::new();
+        let mut chrome = MockBackend::text_editor(77);
+        chrome.info.name = "Google Chrome".into();
+        chrome.info.id = "com.google.Chrome".into();
+        backend.add_launchable("google chrome", chrome);
+        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {});
+        let out = e.call_tool(
+            "launch_app",
+            serde_json::json!({"app": "Google Chrome"}),
+            &mut allow(),
         );
-        assert_eq!(super::program_key("C:\\Apps\\Calc.EXE"), "calc");
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Launched Google Chrome"), "{}", out.text);
+        // A terminal can't hide behind a wrapper word.
+        let out = e.call_tool(
+            "launch_app",
+            serde_json::json!({"app": "sudo xterm"}),
+            &mut allow(),
+        );
+        assert!(out.is_error && out.text.contains("blocked"), "{}", out.text);
     }
 
     #[test]

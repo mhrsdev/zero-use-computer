@@ -581,9 +581,22 @@ impl Backend for WindowsBackend {
         }
         // A bare name, a URI (`ms-settings:display`) or a document/path goes
         // through the shell, like Win+R: App Paths, .cmd/.bat shims on PATH
-        // (`code`), protocol handlers and file associations all work.
+        // (`code`), protocol handlers and file associations all work. A name
+        // the shell doesn't know ("Discord") or one with spaces ("Google
+        // Chrome") is looked up among the Start Menu shortcuts.
         if !query.contains(char::is_whitespace) || std::path::Path::new(query).exists() {
-            return shell_open(query, None);
+            return match shell_open(query, None) {
+                Ok(()) => Ok(()),
+                Err(e) => match crate::launch::find_shortcut(&start_menu_dirs(), query) {
+                    Some(lnk) => shell_open(&lnk.to_string_lossy(), None),
+                    None => Err(e),
+                },
+            };
+        }
+        if !crate::launch::has_arguments(query)
+            && let Some(lnk) = crate::launch::find_shortcut(&start_menu_dirs(), query)
+        {
+            return shell_open(&lnk.to_string_lossy(), None);
         }
         let mut parts = query.split_whitespace();
         let program = parts.next().unwrap_or(query);
@@ -961,6 +974,15 @@ fn cloaked(hwnd: HWND) -> bool {
 
 /// Open a program, document or URI through the shell ("open" verb), with
 /// no error dialogs (they would block the server).
+/// The folders whose shortcuts make up the Start Menu's app list.
+fn start_menu_dirs() -> Vec<std::path::PathBuf> {
+    ["ProgramData", "APPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|base| std::path::PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs"))
+        .collect()
+}
+
 fn shell_open(file: &str, params: Option<&str>) -> Result<()> {
     use windows::Win32::UI::Shell::{
         SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
