@@ -138,10 +138,13 @@ jobs:
           cp mcp.example.json README.md README.fa.md dist/
           cp skill/SKILL.md dist/SKILL.md
           # Claude Code installers, client examples and the connection guide.
-          cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/install.cmd scripts/claude-code/.mcp.json dist/
+          cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/install.cmd dist/
           cp scripts/claude-code/README.txt dist/README-claude-code.txt
           cp -r examples dist/examples
           mkdir -p dist/docs && cp docs/CONNECT.md dist/docs/
+          # Also a valid Claude plugin (.claude-plugin/plugin.json + .mcp.json + skills/),
+          # so the same zip works with "Upload local plugin".
+          bash scripts/claude-code/plugin-files.sh dist "${{ matrix.exe }}"
       - uses: actions/upload-artifact@v4
         with:
           name: computer-use-mcp-${{ matrix.name }}
@@ -168,6 +171,10 @@ jobs:
             permanent folder (for example `C:\Tools\computer-use-mcp`), then double-click
             `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
             Check with `claude mcp list`.
+
+            **As a plugin:** the same zip is a valid Claude plugin (`.claude-plugin/plugin.json`,
+            `.mcp.json`, `skills/`), so it also works with *Customize ▸ Plugins ▸ Upload local plugin*
+            in apps that support local plugins, or `claude --plugin-dir <extracted folder>` in Claude Code.
 
             **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
             macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.

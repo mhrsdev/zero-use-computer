@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "computer-use": {
-      "command": "./computer-use-mcp",
-      "args": ["serve"]
-    }
-  }
-}
