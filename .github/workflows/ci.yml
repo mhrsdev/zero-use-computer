@@ -5,6 +5,14 @@ on:
     branches: ["**"]
     tags: ["v*"]
   pull_request:
+  # Publish a release without pushing a tag from a terminal:
+  # Actions ▸ CI ▸ Run workflow ▸ tag = v0.1.0
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (for example v0.1.0); leave empty for a plain CI run"
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -139,16 +147,18 @@ jobs:
           name: computer-use-mcp-${{ matrix.name }}
           path: dist/
       - name: Zip for release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         shell: bash
         run: |
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-mcp-${{ matrix.name }}.zip .; else zip -r ../computer-use-mcp-${{ matrix.name }}.zip .; fi
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: computer-use-mcp ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: computer-use-mcp ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           body: |
             MCP server for Claude Code (and any MCP client): control desktop apps
