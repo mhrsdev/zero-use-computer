@@ -185,11 +185,13 @@ jobs:
             `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
             Check with `claude mcp list`.
 
-            **As a plugin** (*Customize ▸ Plugins ▸ Upload local plugin*): if the full zip is refused
-            ("Upload failed"), use the small `computer-use-plugin-<os>.zip` instead — it has no program inside.
-            First run `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
+            **As a plugin** (*Customize ▸ Plugins ▸ Upload local plugin*): upload the full
+            `computer-use-mcp-<os>.zip`. If "Upload failed" appears and a `computer-use` plugin is
+            already installed, remove the old one first, then upload again.
+            Only if the full zip is refused for containing a program, use the small
+            `computer-use-plugin-<os>.zip` (about 5 KB, no program inside on purpose): first run
+            `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
             which copies the program to `~/.computer-use/bin`; then upload the plugin zip.
-            The full zip is also a valid plugin for `claude --plugin-dir <extracted folder>`.
 
             **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
             macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.

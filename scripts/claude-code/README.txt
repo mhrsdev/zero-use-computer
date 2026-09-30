@@ -12,7 +12,8 @@ computer-use-mcp for Claude Code
    Linux: needs an X11/XWayland session with the AT-SPI accessibility bus.
 
 As a plugin: this folder is also a valid Claude plugin (.claude-plugin/plugin.json + .mcp.json).
-   If "Upload local plugin" refuses it, use the small computer-use-plugin-<os>.zip from the release
+   If "Upload failed" appears and a computer-use plugin is already installed, remove the old one first.
+   Only if the app refuses the program inside, use the small computer-use-plugin-<os>.zip from the release
    (no program inside) after running  install.cmd -NoRegister  /  ./install.sh --no-register.
    Claude Code:  claude --plugin-dir <this folder>
    Apps with "Upload local plugin": upload the original .zip.
