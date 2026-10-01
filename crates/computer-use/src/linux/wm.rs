@@ -2,6 +2,8 @@
 //! implements (EWMH `_NET_*` client messages and ICCCM), with plain X
 //! requests when no window manager is running. Displays come from RandR.
 
+use std::time::{Duration, Instant};
+
 use x11rb::connection::Connection as _;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
@@ -18,9 +20,21 @@ pub struct Wm<'a> {
     root: Window,
 }
 
+/// Which top-level window has the keyboard: where synthesized keys go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Front {
+    /// This client window, and its process when it says (`_NET_WM_PID`).
+    Window { win: Window, pid: Option<u32> },
+    /// No window: keys go nowhere (the desktop has the focus).
+    Nothing,
+}
+
 fn xe(e: impl std::fmt::Display) -> Error {
     Error::Platform(format!("X11: {e}"))
 }
+
+/// How long to wait for the window manager to activate a window.
+const ACTIVATE_WAIT: Duration = Duration::from_millis(800);
 
 // _NET_WM_STATE actions.
 const REMOVE: u32 = 0;
@@ -111,22 +125,126 @@ impl<'a> Wm<'a> {
             .is_some_and(|a| a.map_state == MapState::VIEWABLE)
     }
 
-    /// The X window behind an app window: same process, then the same title,
-    /// then the closest position.
-    pub fn find(&self, pid: u32, title: &str, bounds: Option<Rect>) -> Option<Window> {
-        let clients = self
-            .prop32(self.root, "_NET_CLIENT_LIST", AtomEnum::WINDOW)
+    /// The window manager's client windows, or (without one) the top-level
+    /// windows.
+    fn clients(&self) -> Option<Vec<Window>> {
+        self.prop32(self.root, "_NET_CLIENT_LIST", AtomEnum::WINDOW)
             .filter(|v| !v.is_empty())
             .or_else(|| {
                 let tree = self.conn.query_tree(self.root).ok()?.reply().ok()?;
                 Some(tree.children)
-            })?;
-        let mine: Vec<Window> = clients
-            .into_iter()
-            .filter(|w| {
-                self.prop32(*w, "_NET_WM_PID", AtomEnum::CARDINAL)
-                    .is_some_and(|p| p.first() == Some(&pid))
             })
+    }
+
+    /// The process that owns a window, when it says (`_NET_WM_PID`).
+    pub fn pid_of(&self, win: Window) -> Option<u32> {
+        self.prop32(win, "_NET_WM_PID", AtomEnum::CARDINAL)?
+            .first()
+            .copied()
+            .filter(|p| *p != 0)
+    }
+
+    /// A window's title.
+    pub fn title(&self, win: Window) -> Option<String> {
+        self.text(win).filter(|t| !t.is_empty())
+    }
+
+    /// A window's class name (`WM_CLASS`: "XTerm", "kitty").
+    pub fn class(&self, win: Window) -> Option<String> {
+        let r = self
+            .conn
+            .get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+            .ok()?
+            .reply()
+            .ok()?;
+        let mut parts = r.value.split(|b| *b == 0).filter(|p| !p.is_empty());
+        let instance = parts.next();
+        parts
+            .next()
+            .or(instance)
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+    }
+
+    /// The child of the root window that `win` is in (itself, its frame).
+    fn toplevel(&self, mut win: Window) -> Option<Window> {
+        for _ in 0..64 {
+            let tree = self.conn.query_tree(win).ok()?.reply().ok()?;
+            if tree.parent == self.root || tree.parent == x11rb::NONE {
+                return Some(win);
+            }
+            win = tree.parent;
+        }
+        None
+    }
+
+    /// The client window inside a window manager's frame (or the frame).
+    fn client_in(&self, frame: Window) -> Window {
+        if self.pid_of(frame).is_some() {
+            return frame;
+        }
+        let mut level = vec![frame];
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            for w in level {
+                let Some(tree) = self.conn.query_tree(w).ok().and_then(|c| c.reply().ok()) else {
+                    continue;
+                };
+                if let Some(c) = tree.children.iter().find(|c| self.pid_of(**c).is_some()) {
+                    return *c;
+                }
+                next.extend(tree.children);
+            }
+            level = next;
+        }
+        frame
+    }
+
+    /// The top-level window that has the keyboard now, as the window
+    /// manager says (`_NET_ACTIVE_WINDOW`), else as the X input focus says.
+    /// `None` when that can't be told.
+    pub fn front(&self) -> Option<Front> {
+        if self.has_wm()
+            && let Some(v) = self.prop32(self.root, "_NET_ACTIVE_WINDOW", AtomEnum::WINDOW)
+        {
+            return Some(match v.first().copied().unwrap_or(0) {
+                0 => Front::Nothing,
+                win => Front::Window {
+                    win,
+                    pid: self.pid_of(win),
+                },
+            });
+        }
+        let focus = self.conn.get_input_focus().ok()?.reply().ok()?.focus;
+        let top = match focus {
+            0 => return Some(Front::Nothing), // None: keys are dropped
+            // PointerRoot: keys go to the window under the pointer.
+            1 => self.conn.query_pointer(self.root).ok()?.reply().ok()?.child,
+            w if w == self.root => x11rb::NONE,
+            w => self.toplevel(w)?,
+        };
+        if top == x11rb::NONE {
+            return Some(Front::Nothing);
+        }
+        let win = self.client_in(top);
+        Some(Front::Window {
+            win,
+            pid: self.pid_of(win),
+        })
+    }
+
+    /// Whether the process has a window on this display.
+    pub fn has_window_of(&self, pid: u32) -> bool {
+        self.clients()
+            .is_some_and(|c| c.into_iter().any(|w| self.pid_of(w) == Some(pid)))
+    }
+
+    /// The X window behind an app window: same process, then the same title,
+    /// then the closest position.
+    pub fn find(&self, pid: u32, title: &str, bounds: Option<Rect>) -> Option<Window> {
+        let mine: Vec<Window> = self
+            .clients()?
+            .into_iter()
+            .filter(|w| self.pid_of(*w) == Some(pid))
             .collect();
         let titled: Vec<Window> = mine
             .iter()
@@ -226,20 +344,48 @@ impl<'a> Wm<'a> {
         Ok(())
     }
 
+    /// Bring a window to the front with the keyboard focus, and check that
+    /// it got there: a window manager may refuse (focus stealing
+    /// prevention), and keys sent then would go to another window.
     fn activate(&self, win: Window) -> Result<()> {
         if self.supports("_NET_ACTIVE_WINDOW") {
-            return self.tell_wm(win, "_NET_ACTIVE_WINDOW", [SOURCE, 0, 0, 0, 0]);
-        }
-        self.conn.map_window(win).map_err(xe)?;
-        self.conn
-            .configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))
-            .map_err(xe)?;
-        if self.viewable(win) {
+            self.tell_wm(win, "_NET_ACTIVE_WINDOW", [SOURCE, 0, 0, 0, 0])?;
+        } else {
+            self.conn.map_window(win).map_err(xe)?;
             self.conn
-                .set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+                .configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))
                 .map_err(xe)?;
+            if self.viewable(win) {
+                self.conn
+                    .set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+                    .map_err(xe)?;
+            }
         }
-        Ok(())
+        self.conn.flush().map_err(xe)?;
+        self.await_front(win)
+    }
+
+    /// Wait until `win`, or another window of its app (a dialog it has
+    /// open, which the window manager activates instead), has the keyboard.
+    fn await_front(&self, win: Window) -> Result<()> {
+        let pid = self.pid_of(win);
+        let deadline = Instant::now() + ACTIVATE_WAIT;
+        loop {
+            match self.front() {
+                Some(Front::Window { win: w, pid: p })
+                    if w == win || (pid.is_some() && p == pid) =>
+                {
+                    return Ok(());
+                }
+                None => return Ok(()), // can't tell
+                _ if Instant::now() >= deadline => {
+                    return Err(Error::ActionFailed(
+                        "the window manager did not bring the window to the front (it may keep other programs from taking the focus)".into(),
+                    ));
+                }
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
     }
 
     /// The work area of the display showing `win`.

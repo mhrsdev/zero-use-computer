@@ -465,6 +465,169 @@ fn stop_key_and_idle_time_over_x11() {
     eprintln!("stop key live test passed (idle {idle:?}, paused {waited:?})");
 }
 
+/// Keys meant for an app never land in another window: a window in front
+/// that is no accessible app's (a terminal) is listed as frontmost, so the
+/// app is brought forward first. And they type what was asked whatever
+/// keyboard layout and Caps Lock the user has on, which are left as they
+/// were.
+#[test]
+fn keys_reach_the_app_whatever_window_and_layout_are_active() {
+    if !live() {
+        return;
+    }
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xkb::{self, ConnectionExt as _};
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, InputFocus, ModMask, PropMode,
+        WindowClass,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let mut e = engine();
+    let app = wait_for_app(&mut e);
+    let tree = state_text(&mut e, &app);
+    let entry = index_of(&tree, "text field");
+    let out = e.call_tool(
+        "type_text",
+        serde_json::json!({"app": app, "text": "x", "element_index": entry}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+
+    // A "terminal": a window of this test, which isn't on the
+    // accessibility bus, takes the keyboard.
+    let (conn, screen) = x11rb::connect(None).expect("X");
+    let root = conn.setup().roots[screen].root;
+    let win = conn.generate_id().unwrap();
+    conn.create_window(
+        0,
+        win,
+        root,
+        600,
+        500,
+        300,
+        200,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS),
+    )
+    .unwrap();
+    let wm_pid = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .unwrap()
+        .reply()
+        .unwrap()
+        .atom;
+    conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        wm_pid,
+        AtomEnum::CARDINAL,
+        &[std::process::id()],
+    )
+    .unwrap();
+    conn.change_property8(
+        PropMode::REPLACE,
+        win,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"faketerm\0FakeTerm\0",
+    )
+    .unwrap();
+    conn.map_window(win).unwrap();
+    conn.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+        .unwrap();
+    conn.get_input_focus().unwrap().reply().unwrap();
+    let out = e.call_tool("list_apps", serde_json::json!({}));
+    let front: Vec<&str> = out
+        .text
+        .lines()
+        .filter(|l| l.contains("frontmost"))
+        .collect();
+    assert!(
+        front.len() == 1 && front[0].contains("FakeTerm"),
+        "{}",
+        out.text
+    );
+
+    // The user has a second (Russian) layout on for a and b, and Caps Lock.
+    conn.xkb_use_extension(1, 0).unwrap().reply().unwrap();
+    let (min, max) = (conn.setup().min_keycode, conn.setup().max_keycode);
+    let map = conn
+        .get_keyboard_mapping(min, max - min + 1)
+        .unwrap()
+        .reply()
+        .unwrap();
+    let per = usize::from(map.keysyms_per_keycode);
+    let code_of = |sym: u32| min + map.keysyms.chunks(per).position(|c| c[0] == sym).unwrap() as u8;
+    let (a, b) = (code_of(0x61), code_of(0x62));
+    let row = |code: u8| map.keysyms[usize::from(code - min) * per..][..per].to_vec();
+    let originals = [(a, row(a)), (b, row(b))];
+    conn.change_keyboard_mapping(1, a, 4, &[0x61, 0x41, 0x6c6, 0x6e6])
+        .unwrap();
+    conn.change_keyboard_mapping(1, b, 4, &[0x62, 0x42, 0x6c9, 0x6e9])
+        .unwrap();
+    let kbd = xkb::ID::USE_CORE_KBD.into();
+    let lock = |group: xkb::Group, caps: bool| {
+        let on = if caps {
+            ModMask::LOCK
+        } else {
+            ModMask::from(0u16)
+        };
+        conn.xkb_latch_lock_state(
+            kbd,
+            ModMask::LOCK,
+            on,
+            true,
+            group,
+            ModMask::from(0u16),
+            false,
+            0,
+        )
+        .unwrap();
+        conn.get_input_focus().unwrap().reply().unwrap();
+    };
+    lock(xkb::Group::M2, true);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let out = e.call_tool("type_text", serde_json::json!({"app": app, "text": "aB"}));
+    std::thread::sleep(Duration::from_millis(200));
+    let st = conn.xkb_get_state(kbd).unwrap().reply().unwrap();
+    lock(xkb::Group::M1, false);
+    for (code, syms) in &originals {
+        conn.change_keyboard_mapping(1, *code, per as u8, syms)
+            .unwrap();
+    }
+    conn.destroy_window(win).unwrap();
+    conn.get_input_focus().unwrap().reply().unwrap();
+    assert!(!out.is_error, "{}", out.text);
+    let mut stray = 0;
+    while let Some(ev) = conn.poll_for_event().unwrap() {
+        if let Event::KeyPress(_) = ev {
+            stray += 1;
+        }
+    }
+    assert_eq!(stray, 0, "keys went to the window in front, not the app");
+    assert_eq!(st.locked_group, xkb::Group::M2, "the user's layout");
+    assert_ne!(
+        st.locked_mods & ModMask::LOCK,
+        ModMask::from(0u16),
+        "the user's Caps Lock"
+    );
+    let tree = state_text(&mut e, &app);
+    assert!(tree.contains("entry: xaB"), "typed:\n{tree}");
+    // Clear the entry for the other tests.
+    let entry = index_of(&tree, "text field");
+    e.call_tool(
+        "set_value",
+        serde_json::json!({"app": app, "element_index": entry, "value": ""}),
+    );
+    eprintln!("keys-to-the-app live test passed");
+}
+
 #[test]
 fn follow_up_screenshots_send_only_what_changed() {
     if !live() {
