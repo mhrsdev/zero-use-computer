@@ -615,7 +615,7 @@ the checks are cheap compared with reading the app:
 | **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
 | **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part. | `cache.dedupe_screenshots`, `screenshot.scope` |
 | **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
-| **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (never added or removed on the fly), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled` |
+| **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (they change only when you change the settings or a script is saved or deleted), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled`, `script.saved_as_tools` |
 | **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |
 
 Other knobs: `screenshot.max_dimension` (image tokens scale with width ×
@@ -653,10 +653,41 @@ estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
 | repeat `get_app_state` (diff), large app | 507 ms, ~1,346 tokens | **67 ms, ~66 tokens** |
 | `find_element`, large app | 473 ms | **72 ms** |
 | repeat `get_app_state`, small dialog | 19 ms, ~219 tokens | **2.4 ms, ~58 tokens** |
-| tool definitions per model request | ~3,300 tokens | **~1,360 tokens** |
-| peak memory | 19.7 MiB | **16.4 MiB** |
 | back to a screen seen before, large app | ~2,516 tokens (tree + image) | **~79 tokens, no image** |
 | `get_app_state` right after an action or `find_element` | 71 ms | **< 1 ms** (read reused) |
+
+The tool definitions, sent with every model request, are ~4,900 tokens for
+all 25 tools with compact descriptions (the default) and ~11,500 with full
+ones; the client's prompt cache serves them cheaply, and `tools.disabled`
+hides tools you never use. Peak memory of the whole server in these runs is
+about 20 MiB (v2.6.0).
+
+### Compared with Codex's behaviour
+
+`examples/compare.rs` runs one agent session twice on the real backend:
+look at the app, open another page, look, come back, look again. Once the
+way Codex's computer use behaves (a screenshot with every
+`get_app_state`, no screen memory, no picture dedupe, whole-window
+pictures, no change report after an action), once with this server's
+defaults. Same app (`gtk3-widget-factory`), same calls, v2.6.0:
+
+| 10 round trips, 61 calls | Codex-style | computer-use defaults |
+|---|---|---|
+| tokens the model receives | ~47,600 | **~7,200** (6.6x fewer, 85% saved) |
+| screenshots sent | 21 | **2** |
+| average `get_app_state` | 18-19 ms | **5.5-5.7 ms** |
+| whole session | 5.7 s | **5.3 s** |
+
+With 5 round trips the saving is 4.2x (76%): it grows with the session,
+because every screen the model has seen once comes back as "seen before"
+with only what changed, and an unchanged picture is never sent twice.
+Wall time gains less than tokens because clicking and waiting for the app
+dominate. Run it yourself:
+
+```bash
+APPS="gtk3-widget-factory" scripts/desktop-session.sh \
+  cargo run --release -p computer-use --example compare -- gtk3-widget-factory "Page 2|Page 1" 10
+```
 
 Where the gains come from: the Linux walker pipelines its AT-SPI queries (a
 batch of elements with every query in flight at once) instead of one round trip
@@ -751,5 +782,4 @@ cargo check -p computer-use --target x86_64-pc-windows-msvc
 
 ## License
 
-Dual-licensed under either of [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under the [Apache License, Version 2.0](LICENSE).

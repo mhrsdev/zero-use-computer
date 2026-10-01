@@ -61,6 +61,15 @@ else; and a saved script becomes a tool of its own
   no secrets in saved scripts or memory, and a loop of consequential
   actions still needs the user's go-ahead.
 
+### Other
+
+- **License: Apache-2.0** (it was MIT or Apache-2.0). The release zips now
+  include the license file.
+- `examples/compare.rs` measures one agent session in Codex's behaviour
+  and with this server's defaults: over 10 round trips the model gets
+  ~85% fewer tokens (6.6x) and 2 screenshots instead of 21 (README,
+  "Compared with Codex's behaviour").
+
 ### Docs
 
 - New reference: `skills/computer-use/reference/scripts.md` (also

@@ -24,7 +24,7 @@ cat > "$dir/.claude-plugin/plugin.json" <<JSON
   "author": { "name": "mhrsdev" },
   "homepage": "https://github.com/mhrsdev/zero-use-computer-",
   "repository": "https://github.com/mhrsdev/zero-use-computer-",
-  "license": "MIT OR Apache-2.0",
+  "license": "Apache-2.0",
   "keywords": ["mcp", "computer-use", "desktop", "accessibility", "automation"]
 }
 JSON
