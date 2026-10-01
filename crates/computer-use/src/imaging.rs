@@ -244,7 +244,7 @@ pub fn uniform(cap: &Capture) -> bool {
     let step = (n / 4096).max(1);
     let first = &cap.rgba[..4];
     let (mut same, mut total) = (0usize, 0usize);
-    for p in cap.rgba.chunks_exact(4).step_by(step) {
+    for p in cap.rgba.as_chunks::<4>().0.iter().step_by(step) {
         total += 1;
         if p == first {
             same += 1;
