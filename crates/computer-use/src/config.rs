@@ -1,6 +1,7 @@
-//! User configuration (`~/.computer-use/config.toml`) and admin-managed
-//! policy (`managed.toml`), mirroring how Codex keeps Computer Use approvals
-//! in `$CODEX_HOME/config.toml` and lets workspace admins restrict apps.
+//! User configuration (`~/.computer-use/config.toml`).
+//!
+//! There is no access control here: which apps and actions the agent may
+//! use is left to the agent's security skill (`skills/computer-use-security`).
 
 use std::path::{Path, PathBuf};
 
@@ -9,180 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 pub const HOME_ENV: &str = "COMPUTER_USE_HOME";
-pub const MANAGED_ENV: &str = "COMPUTER_USE_MANAGED_CONFIG";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    /// Ask the user the first time each app is used (MCP elicitation or the
-    /// embedding agent's own prompt). Default.
-    #[default]
-    Prompt,
-    /// Only apps in `always_allow` may be used; never prompt.
-    Allowlist,
-    /// Every app not blocked by policy is allowed without asking.
-    AllowAll,
-}
-
-impl std::str::FromStr for ApprovalMode {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s.replace('-', "_").as_str() {
-            "prompt" => Ok(Self::Prompt),
-            "allowlist" => Ok(Self::Allowlist),
-            "allow_all" => Ok(Self::AllowAll),
-            other => Err(Error::Config(format!(
-                "unknown approval mode `{other}` (expected prompt, allowlist or allow-all)"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ApprovalConfig {
-    pub mode: ApprovalMode,
-    /// Apps approved with "Always allow" (ids or names, case-insensitive).
-    pub always_allow: Vec<String>,
-    /// Apps the user never wants controlled.
-    pub always_deny: Vec<String>,
-    /// Apps that host agents (the agent must not operate itself).
-    pub agent_apps: Vec<String>,
-}
-
-impl Default for ApprovalConfig {
-    fn default() -> Self {
-        Self {
-            mode: ApprovalMode::Prompt,
-            always_allow: Vec::new(),
-            always_deny: Vec::new(),
-            agent_apps: [
-                "com.openai.chat",
-                "com.openai.codex",
-                "ChatGPT",
-                "Codex",
-                "com.anthropic.claudefordesktop",
-                "Claude",
-            ]
-            .map(String::from)
-            .to_vec(),
-        }
-    }
-}
-
-/// How a sensitive category (or on-screen action) is handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SensitiveMode {
-    /// Refuse, unless the specific app is in `approvals.always_allow`. Default.
-    #[default]
-    Block,
-    /// Ask the user each time (via approval), even in allow-all mode.
-    Ask,
-    /// Treat like any other app (normal approval mode applies).
-    Allow,
-}
-
-impl std::str::FromStr for SensitiveMode {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "block" | "deny" | "off" => Ok(Self::Block),
-            "ask" | "prompt" => Ok(Self::Ask),
-            "allow" | "on" => Ok(Self::Allow),
-            other => Err(Error::Config(format!(
-                "unknown sensitive mode `{other}` (expected block, ask or allow)"
-            ))),
-        }
-    }
-}
-
-/// Per-category handling of apps that are sensitive to automate. Everything
-/// defaults to `block`, but each category can be relaxed to `ask` or `allow`,
-/// and any individual app can always be permitted by adding it to
-/// `approvals.always_allow` (that per-app allowance overrides the category).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SensitiveConfig {
-    /// Terminal emulators and shells (they can run arbitrary commands).
-    pub terminals: SensitiveMode,
-    /// Password managers and credential stores.
-    pub credentials: SensitiveMode,
-    /// OS authentication / consent / login prompts.
-    pub security_prompts: SensitiveMode,
-    /// Agent host apps (controlling the agent's own UI).
-    pub agent_apps: SensitiveMode,
-    /// The agent's own process (and its parent).
-    pub own_process: SensitiveMode,
-    /// Extra app patterns to treat as terminals (id/name, `*` suffix wildcard).
-    pub extra_terminals: Vec<String>,
-    /// Extra app patterns to treat as credential stores.
-    pub extra_credentials: Vec<String>,
-    /// Extra app patterns to treat as security prompts.
-    pub extra_security_prompts: Vec<String>,
-}
-
-impl Default for SensitiveConfig {
-    fn default() -> Self {
-        Self {
-            terminals: SensitiveMode::Block,
-            credentials: SensitiveMode::Block,
-            security_prompts: SensitiveMode::Block,
-            agent_apps: SensitiveMode::Block,
-            own_process: SensitiveMode::Block,
-            extra_terminals: Vec::new(),
-            extra_credentials: Vec::new(),
-            extra_security_prompts: Vec::new(),
-        }
-    }
-}
-
-/// Confirmation guard for consequential on-screen actions (pressing a control
-/// whose label looks like Send / Delete / Pay …). Independent of app approval.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct GuardConfig {
-    /// `ask` (default): require approval before such an action. `allow`: never
-    /// confirm. `block`: refuse them outright.
-    pub mode: SensitiveMode,
-    /// Case-insensitive substrings of an element's label/role that trigger it.
-    pub keywords: Vec<String>,
-}
-
-impl Default for GuardConfig {
-    fn default() -> Self {
-        Self {
-            mode: SensitiveMode::Ask,
-            keywords: [
-                "send",
-                "delete",
-                "remove",
-                "discard",
-                "pay",
-                "buy",
-                "purchase",
-                "checkout",
-                "order",
-                "transfer",
-                "confirm",
-                "publish",
-                "post",
-                "submit",
-                "trash",
-                "erase",
-                "wipe",
-                "shut down",
-                "restart",
-                "log out",
-                "sign out",
-                "uninstall",
-                "format",
-            ]
-            .map(String::from)
-            .to_vec(),
-        }
-    }
-}
 
 /// Optional JSONL audit log of every tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -375,17 +202,6 @@ impl ToolsConfig {
     }
 }
 
-/// When to ask for a confirmation on the screen itself (overlay dialog)
-/// instead of through the agent's client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScreenConfirm {
-    Never,
-    /// Only when the client can't ask the user (no MCP elicitation).
-    WhenNoClient,
-    Always,
-}
-
 /// What the overlay border goes around.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -420,22 +236,15 @@ pub struct OverlayConfig {
     /// Label texts per state; `{action}` is replaced by what is pending.
     pub label_working: String,
     pub label_thinking: String,
-    pub label_approval: String,
-    pub label_danger: String,
     pub label_error: String,
     pub label_done: String,
     /// While the agent waits for the user to stop using the mouse/keyboard.
     pub label_paused: String,
     /// After the emergency stop key; `{hotkey}` is replaced by the key.
     pub label_stopped: String,
-    /// Buttons of the on-screen confirmation.
-    pub label_allow: String,
-    pub label_deny: String,
     /// Colours (#RRGGBB or #RRGGBBAA) per state.
     pub color_thinking: String,
     pub color_working: String,
-    pub color_approval: String,
-    pub color_danger: String,
     pub color_error: String,
     pub color_done: String,
     pub color_paused: String,
@@ -458,10 +267,6 @@ pub struct OverlayConfig {
     pub fade_out_ms: u64,
     /// How long a change of state colour takes.
     pub transition_ms: u64,
-    /// Ask for confirmations on the screen: never, when_no_client, always.
-    pub confirm_on_screen: ScreenConfirm,
-    /// Give up (deny) an on-screen confirmation after this many seconds.
-    pub confirm_timeout_secs: u64,
     /// Where the overlay can't be excluded from screenshots (X11): wait this
     /// long after hiding it before capturing.
     pub capture_hide_ms: u64,
@@ -486,18 +291,12 @@ impl Default for OverlayConfig {
             scale: 0.0,
             label_working: "Zero is using the computer".into(),
             label_thinking: "Zero is thinking…".into(),
-            label_approval: "Waiting for your approval: {action}".into(),
-            label_danger: "Sensitive action: {action}".into(),
             label_error: "Zero hit an error".into(),
             label_done: "Zero is done".into(),
             label_paused: "Paused while you use the computer".into(),
             label_stopped: "Zero stopped. Press {hotkey} to let it continue".into(),
-            label_allow: "Allow".into(),
-            label_deny: "Deny".into(),
             color_thinking: "#D4A017".into(),
             color_working: "#1E88E5".into(),
-            color_approval: "#FFE600".into(),
-            color_danger: "#000000".into(),
             color_error: "#E53935".into(),
             color_done: "#2E7D32".into(),
             color_paused: "#78909C".into(),
@@ -511,8 +310,6 @@ impl Default for OverlayConfig {
             fade_in_ms: 250,
             fade_out_ms: 1200,
             transition_ms: 300,
-            confirm_on_screen: ScreenConfirm::WhenNoClient,
-            confirm_timeout_secs: 120,
             capture_hide_ms: 40,
             font: String::new(),
             command: String::new(),
@@ -527,8 +324,7 @@ impl Default for OverlayConfig {
 pub struct NotificationsConfig {
     /// Offer the get_notifications tool (and, on Linux, listen for them).
     pub enabled: bool,
-    /// Only these apps' notifications (names, case-insensitive; [] = any app
-    /// that isn't blocked by [approvals] / [sensitive]).
+    /// Only these apps' notifications (names, case-insensitive; [] = any app).
     pub apps: Vec<String>,
     /// Mask what looks like a one-time or verification code.
     pub mask_codes: bool,
@@ -620,7 +416,7 @@ pub struct VerifyConfig {
     pub retry: bool,
     /// Also retry a press after which nothing visible changed. Off by
     /// default: some actions (pay, send…) show their effect late, and a
-    /// retry could repeat them. Guarded actions are never retried.
+    /// retry could repeat them.
     pub retry_on_no_change: bool,
 }
 
@@ -853,33 +649,22 @@ impl Default for WindowsConfig {
     }
 }
 
-/// What to do when approval is needed but no one can be asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum HeadlessPolicy {
-    #[default]
-    Deny,
-    Allow,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
-    /// Approval fallback when the MCP client can't show a prompt.
-    pub headless_approve: HeadlessPolicy,
     /// Log level: error, warn, info, debug, trace.
     pub log: String,
     /// Serve MCP over HTTP on this address instead of stdio (needs the `http`
     /// build feature). Empty = stdio.
     pub http_addr: String,
-    /// Bearer token required on the HTTP endpoint.
+    /// Bearer token required on the HTTP endpoint (the server refuses to
+    /// start over HTTP without one).
     pub http_token: String,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            headless_approve: HeadlessPolicy::Deny,
             log: "warn".into(),
             http_addr: String::new(),
             http_token: String::new(),
@@ -890,9 +675,6 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub approvals: ApprovalConfig,
-    pub sensitive: SensitiveConfig,
-    pub guard: GuardConfig,
     pub tools: ToolsConfig,
     pub screenshot: ScreenshotConfig,
     pub tree: TreeConfig,
@@ -928,9 +710,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            approvals: ApprovalConfig::default(),
-            sensitive: SensitiveConfig::default(),
-            guard: GuardConfig::default(),
             tools: ToolsConfig::default(),
             screenshot: ScreenshotConfig::default(),
             tree: TreeConfig::default(),
@@ -971,8 +750,6 @@ impl Config {
         for (key, value) in [
             ("overlay.color_thinking", &o.color_thinking),
             ("overlay.color_working", &o.color_working),
-            ("overlay.color_approval", &o.color_approval),
-            ("overlay.color_danger", &o.color_danger),
             ("overlay.color_error", &o.color_error),
             ("overlay.color_done", &o.color_done),
             ("overlay.color_paused", &o.color_paused),
@@ -1013,20 +790,6 @@ impl Config {
     }
 }
 
-/// Admin policy. Takes precedence over the user config.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ManagedConfig {
-    /// Apps that can never be controlled.
-    pub denied_apps: Vec<String>,
-    /// When set, only these apps can be controlled.
-    pub allowed_apps: Option<Vec<String>>,
-    /// Forces the approval mode.
-    pub approval_mode: Option<ApprovalMode>,
-    /// Disables persisting "Always allow" decisions.
-    pub disable_always_allow: bool,
-}
-
 pub fn home_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os(HOME_ENV) {
         return PathBuf::from(dir);
@@ -1038,20 +801,6 @@ pub fn home_dir() -> PathBuf {
 
 pub fn default_config_path() -> PathBuf {
     home_dir().join("config.toml")
-}
-
-pub fn managed_config_path() -> PathBuf {
-    if let Some(p) = std::env::var_os(MANAGED_ENV) {
-        return PathBuf::from(p);
-    }
-    if cfg!(target_os = "macos") {
-        PathBuf::from("/Library/Application Support/ComputerUse/managed.toml")
-    } else if cfg!(windows) {
-        let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-        PathBuf::from(base).join("ComputerUse").join("managed.toml")
-    } else {
-        PathBuf::from("/etc/computer-use/managed.toml")
-    }
 }
 
 /// A fully commented config file with every option at its default value.
@@ -1232,25 +981,20 @@ pub fn write_template(path: &Path, force: bool) -> Result<()> {
     std::fs::write(path, TEMPLATE).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
 }
 
-/// Configuration plus where it lives, so approvals can be persisted.
+/// Configuration plus where it lives (for hot reload).
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     pub config: Config,
-    pub managed: ManagedConfig,
     /// `None` keeps everything in memory (tests, embedders).
     pub path: Option<PathBuf>,
 }
 
 impl ConfigStore {
     pub fn in_memory(config: Config) -> Self {
-        Self {
-            config,
-            managed: ManagedConfig::default(),
-            path: None,
-        }
+        Self { config, path: None }
     }
 
-    /// Load the user config (missing file = defaults) and managed policy.
+    /// Load the user config (missing file = defaults).
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let path = path
             .map(Path::to_path_buf)
@@ -1270,66 +1014,10 @@ impl ConfigStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
         };
-        let managed_path = managed_config_path();
-        let managed = match std::fs::read_to_string(&managed_path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| Error::Config(format!("{}: {e}", managed_path.display())))?,
-            Err(_) => ManagedConfig::default(),
-        };
         Ok(Self {
             config,
-            managed,
             path: Some(path),
         })
-    }
-
-    pub fn approval_mode(&self) -> ApprovalMode {
-        self.managed
-            .approval_mode
-            .unwrap_or(self.config.approvals.mode)
-    }
-
-    /// Record an "Always allow" decision, in memory and on disk. The file is
-    /// edited in place so user comments and formatting survive.
-    pub fn add_always_allow(&mut self, app_id: &str) -> Result<()> {
-        if self.managed.disable_always_allow {
-            return Ok(());
-        }
-        let list = &mut self.config.approvals.always_allow;
-        if list.iter().any(|a| a.eq_ignore_ascii_case(app_id)) {
-            return Ok(());
-        }
-        list.push(app_id.to_string());
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
-        };
-        let mut doc: toml_edit::DocumentMut = text
-            .parse()
-            .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-        let approvals = doc
-            .entry("approvals")
-            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-            .as_table_mut()
-            .ok_or_else(|| Error::Config("`approvals` must be a table".into()))?;
-        let arr = approvals
-            .entry("always_allow")
-            .or_insert_with(|| toml_edit::value(toml_edit::Array::new()))
-            .as_array_mut()
-            .ok_or_else(|| Error::Config("`approvals.always_allow` must be an array".into()))?;
-        arr.push(app_id);
-
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
-        }
-        std::fs::write(path, doc.to_string())
-            .map_err(|e| Error::Config(format!("{}: {e}", path.display())))
     }
 }
 
@@ -1342,46 +1030,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-cfg-missing-{}", std::process::id()));
         let store = ConfigStore::load(Some(&dir.join("config.toml"))).unwrap();
         assert_eq!(store.config, Config::default());
-        assert_eq!(store.approval_mode(), ApprovalMode::Prompt);
     }
 
     #[test]
     fn parses_partial_config() {
         let cfg: Config = toml::from_str(
             r#"
-            [approvals]
-            mode = "allowlist"
-            always_allow = ["com.apple.TextEdit"]
+            [tree]
+            max_nodes = 300
             [screenshot]
             max_dimension = 1024
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.approvals.mode, ApprovalMode::Allowlist);
+        assert_eq!(cfg.tree.max_nodes, 300);
         assert_eq!(cfg.screenshot.max_dimension, 1024);
         assert!(cfg.screenshot.enabled);
-        assert!(!cfg.approvals.agent_apps.is_empty());
-    }
-
-    #[test]
-    fn always_allow_preserves_comments() {
-        let dir = std::env::temp_dir().join(format!("cu-cfg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(&path, "# my settings\n[screenshot]\nmax_dimension = 900\n").unwrap();
-        let mut store = ConfigStore::load(Some(&path)).unwrap();
-        store.add_always_allow("com.apple.TextEdit").unwrap();
-        store.add_always_allow("com.apple.textedit").unwrap(); // duplicate, ignored
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# my settings"));
-        assert!(text.contains("always_allow = [\"com.apple.TextEdit\"]"));
-        let reloaded = ConfigStore::load(Some(&path)).unwrap();
-        assert_eq!(
-            reloaded.config.approvals.always_allow,
-            vec!["com.apple.TextEdit"]
-        );
-        assert_eq!(reloaded.config.screenshot.max_dimension, 900);
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(!cfg.privacy.redact_labels.is_empty());
     }
 
     #[test]
@@ -1416,29 +1081,21 @@ mod tests {
 
         edit_file(&path, "screenshot.attach", Edit::Set("always".into())).unwrap();
         edit_file(&path, "tree.max_nodes", Edit::Set("300".into())).unwrap();
-        edit_file(&path, "sensitive.terminals", Edit::Set("ask".into())).unwrap();
-        edit_file(
-            &path,
-            "approvals.always_allow",
-            Edit::Add("com.apple.TextEdit".into()),
-        )
-        .unwrap();
-        edit_file(&path, "approvals.always_allow", Edit::Add("xterm".into())).unwrap();
-        edit_file(&path, "approvals.always_allow", Edit::Add("xterm".into())).unwrap();
-        edit_file(&path, "guard.keywords", Edit::Remove("post".into())).unwrap();
+        edit_file(&path, "verify.retry", Edit::Set("false".into())).unwrap();
+        edit_file(&path, "tools.disabled", Edit::Add("drag".into())).unwrap();
+        edit_file(&path, "tools.disabled", Edit::Add("scroll".into())).unwrap();
+        edit_file(&path, "tools.disabled", Edit::Add("scroll".into())).unwrap();
+        edit_file(&path, "privacy.redact_labels", Edit::Remove("cvc".into())).unwrap();
 
         let store = ConfigStore::load(Some(&path)).unwrap();
         let c = &store.config;
         assert_eq!(c.screenshot.attach, AttachMode::Always);
         assert_eq!(c.tree.max_nodes, 300);
-        assert_eq!(c.sensitive.terminals, SensitiveMode::Ask);
-        assert_eq!(
-            c.approvals.always_allow,
-            vec!["com.apple.TextEdit", "xterm"]
-        );
-        assert!(!c.guard.keywords.contains(&"post".to_string()));
+        assert!(!c.verify.retry);
+        assert_eq!(c.tools.disabled, vec!["drag", "scroll"]);
+        assert!(!c.privacy.redact_labels.contains(&"cvc".to_string()));
         assert!(
-            c.guard.keywords.contains(&"send".to_string()),
+            c.privacy.redact_labels.contains(&"cvv".to_string()),
             "defaults kept"
         );
         assert!(
@@ -1478,15 +1135,6 @@ mod tests {
             Some(toml::Value::Integer(40))
         );
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn approval_mode_from_str() {
-        assert_eq!(
-            "allow-all".parse::<ApprovalMode>().unwrap(),
-            ApprovalMode::AllowAll
-        );
-        assert!("yolo".parse::<ApprovalMode>().is_err());
     }
 
     #[test]

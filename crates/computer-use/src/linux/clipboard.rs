@@ -46,7 +46,15 @@ pub fn get() -> Result<String> {
 pub fn set(text: &str) -> Result<()> {
     let mut missing = true;
     for (_, _, cmd, args) in HELPERS {
-        let mut child = match Command::new(cmd).args(*args).stdin(Stdio::piped()).spawn() {
+        // Its stdout/stderr must not reach ours (the MCP stdio channel); xclip
+        // forks a daemon that would otherwise hold it open after we exit.
+        let mut child = match Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             Ok(c) => c,
             Err(ref e) if is_enoent(e) => continue,
             Err(e) => return Err(Error::Platform(format!("{cmd}: {e}"))),

@@ -3,13 +3,10 @@
 //! `HTTRANSPARENT`) and left out of screen captures
 //! (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`, Windows 10 2004+;
 //! older systems fall back to hiding for the moment of a capture). Fading
-//! uses the windows' constant alpha. Confirmations are our own panel (a
-//! layered window that does take clicks), so every text on it is the
-//! configured one. The helper keeps the same DPI awareness as the engine so
-//! both use the same coordinates. Windows destroys the windows if the helper
-//! process dies.
+//! uses the windows' constant alpha. The helper keeps the same DPI awareness
+//! as the engine so both use the same coordinates. Windows destroys the
+//! windows if the helper process dies.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use tiny_skia::Pixmap;
@@ -34,15 +31,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
     SM_CYSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
-    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_LBUTTONUP, WM_NCHITTEST,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_NCHITTEST, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
 use super::draw;
-use super::helper::{Ask, Layer, Surface, SurfaceEvent};
-use super::text::Fonts;
+use super::helper::{Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -50,56 +45,10 @@ const CLASS: PCWSTR = w!("ComputerUseOverlay");
 /// Id of the stop key registration (thread-wide, no window).
 const HOTKEY_ID: i32 = 0x5A01;
 
-type Button = (f32, f32, f32, f32);
-
-/// An on-screen confirmation: its window, request id and button rectangles.
-struct PanelInfo {
-    hwnd: isize,
-    id: u64,
-    allow: Button,
-    deny: Button,
-}
-
-thread_local! {
-    // The window procedure has no `self`; the (single-threaded) overlay
-    // keeps its confirmation panels and their answers here.
-    static PANELS: RefCell<Vec<PanelInfo>> = const { RefCell::new(Vec::new()) };
-    static ANSWERS: RefCell<Vec<(u64, bool)>> = const { RefCell::new(Vec::new()) };
-}
-
-fn is_panel(hwnd: HWND) -> bool {
-    PANELS.with(|p| p.borrow().iter().any(|x| x.hwnd == hwnd.0 as isize))
-}
-
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_NCHITTEST && !is_panel(hwnd) {
+    if msg == WM_NCHITTEST {
         // Never take the mouse: let it fall through to the window below.
         return LRESULT(HTTRANSPARENT as isize);
-    }
-    if msg == WM_LBUTTONUP && is_panel(hwnd) {
-        let x = f32::from((lparam.0 & 0xffff) as u16 as i16);
-        let y = f32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16);
-        let hit = |r: Button| x >= r.0 && x <= r.0 + r.2 && y >= r.1 && y <= r.1 + r.3;
-        let answered = PANELS.with(|p| {
-            let mut p = p.borrow_mut();
-            let i = p.iter().position(|x| x.hwnd == hwnd.0 as isize)?;
-            let ok = if hit(p[i].allow) {
-                true
-            } else if hit(p[i].deny) {
-                false
-            } else {
-                return None;
-            };
-            Some((p.remove(i).id, ok))
-        });
-        if let Some(a) = answered {
-            ANSWERS.with(|v| v.borrow_mut().push(a));
-            // SAFETY: closing the panel we created, from its own thread.
-            unsafe {
-                let _ = DestroyWindow(hwnd);
-            }
-        }
-        return LRESULT(0);
     }
     // SAFETY: forwarding a message we received to the default handler.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -117,7 +66,6 @@ pub struct WinSurface {
     hidden: bool,
     /// Current fade level (the windows' constant alpha).
     opacity: f32,
-    fonts: Fonts,
     hotkey: bool,
 }
 
@@ -142,17 +90,14 @@ impl WinSurface {
             excluded: true,
             hidden: false,
             opacity: 1.0,
-            fonts: Fonts::default(),
             hotkey: false,
         })
     }
 
-    /// A layered popup; `click_through` for everything but confirmation panels.
-    fn create_window(&mut self, click_through: bool) -> Option<HWND> {
-        let mut ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-        if click_through {
-            ex |= WS_EX_TRANSPARENT;
-        }
+    /// A click-through layered popup.
+    fn create_window(&mut self) -> Option<HWND> {
+        let ex =
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
         // SAFETY: creating a top-level popup of our registered class.
         let hwnd = unsafe {
             CreateWindowExW(
@@ -280,7 +225,7 @@ impl Surface for WinSurface {
         let hwnd = match self.layers.get(&layer) {
             Some(w) => w.hwnd,
             None => {
-                let Some(hwnd) = self.create_window(true) else {
+                let Some(hwnd) = self.create_window() else {
                     return;
                 };
                 self.layers.insert(
@@ -379,44 +324,6 @@ impl Surface for WinSurface {
         true
     }
 
-    fn confirm(&mut self, id: u64, ask: &Ask) {
-        // Our own panel (not a system dialog), so its texts and buttons are
-        // exactly the configured ones.
-        if self.fonts.is_empty() {
-            self.fonts = Fonts::load("");
-        }
-        let accent = draw::parse_color("#FFE600").unwrap_or(tiny_skia::Color::WHITE);
-        let (img, [allow, deny]) = draw::panel(
-            &self.fonts,
-            &ask.title,
-            &ask.message,
-            &ask.allow,
-            &ask.deny,
-            accent,
-            self.render_scale(),
-        );
-        let Some(hwnd) = self.create_window(false) else {
-            return;
-        };
-        let screen = self.screen();
-        let x = screen.x + (screen.width - f64::from(img.width())) / 2.0;
-        let y = screen.y + (screen.height - f64::from(img.height())) / 3.0;
-        self.update(hwnd, &img, x, y, 1.0);
-        PANELS.with(|p| {
-            p.borrow_mut().push(PanelInfo {
-                hwnd: hwnd.0 as isize,
-                id,
-                allow,
-                deny,
-            })
-        });
-        // SAFETY: showing our own window without activating it.
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        }
-        Self::raise(hwnd);
-    }
-
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
         if self.hotkey {
             // SAFETY: removing our own thread's registration.
@@ -466,23 +373,11 @@ impl Surface for WinSurface {
                 DispatchMessageW(&msg);
             }
         }
-        events.extend(
-            ANSWERS
-                .with(|a| std::mem::take(&mut *a.borrow_mut()))
-                .into_iter()
-                .map(|(id, ok)| SurfaceEvent::Answer(id, ok)),
-        );
         events
     }
 
     fn close(&mut self) {
         self.set_hotkey(None);
-        for p in PANELS.with(|p| std::mem::take(&mut *p.borrow_mut())) {
-            // SAFETY: destroying our own panels.
-            unsafe {
-                let _ = DestroyWindow(HWND(p.hwnd as *mut _));
-            }
-        }
         for (_, w) in self.layers.drain() {
             // SAFETY: destroying our own windows.
             unsafe {

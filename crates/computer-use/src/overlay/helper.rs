@@ -27,20 +27,9 @@ pub enum Layer {
 
 const EDGES: [Layer; 4] = [Layer::Top, Layer::Right, Layer::Bottom, Layer::Left];
 
-/// The texts of an on-screen confirmation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ask {
-    pub title: String,
-    pub message: String,
-    pub allow: String,
-    pub deny: String,
-}
-
 /// Something that happened on the surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceEvent {
-    /// The user answered an on-screen confirmation.
-    Answer(u64, bool),
     /// The user pressed the emergency stop key.
     Hotkey,
 }
@@ -74,15 +63,13 @@ pub trait Surface {
     fn set_opacity(&mut self, _opacity: f32) -> bool {
         false
     }
-    /// Ask the user to allow something; the answer comes back from `pump`.
-    fn confirm(&mut self, id: u64, ask: &Ask);
     /// Listen for the emergency stop key anywhere on the system (`None`
     /// stops listening). Only this one key combination is received, never
     /// other keys. Returns whether the system accepted it.
     fn set_hotkey(&mut self, _combo: Option<crate::keys::KeyCombo>) -> bool {
         false
     }
-    /// Handle native events; returns answers and stop-key presses.
+    /// Handle native events; returns stop-key presses.
     fn pump(&mut self) -> Vec<SurfaceEvent>;
     fn close(&mut self);
 }
@@ -92,8 +79,6 @@ pub enum Phase {
     Off,
     Thinking,
     Working,
-    Approval,
-    Danger,
     Error,
     Done,
     /// Waiting while the user uses the mouse/keyboard.
@@ -113,7 +98,13 @@ pub fn pretty_key(key: &str) -> String {
             match p.to_ascii_lowercase().as_str() {
                 "escape" | "esc" => "Esc".to_string(),
                 "ctrl" | "control" => "Ctrl".to_string(),
-                "cmd" | "command" => "Cmd".to_string(),
+                "cmd" | "command" => {
+                    if cfg!(target_os = "macos") {
+                        "Cmd".to_string()
+                    } else {
+                        "Ctrl".to_string()
+                    }
+                }
                 "meta" | "super" | "win" => {
                     if cfg!(target_os = "macos") {
                         "Cmd".to_string()
@@ -146,8 +137,6 @@ pub fn pretty_key(key: &str) -> String {
 struct Colors {
     thinking: Color,
     working: Color,
-    approval: Color,
-    danger: Color,
     error: Color,
     done: Color,
     paused: Color,
@@ -165,8 +154,6 @@ impl Colors {
         Self {
             thinking: c(&cfg.color_thinking, "#D4A017"),
             working: c(&cfg.color_working, "#1E88E5"),
-            approval: c(&cfg.color_approval, "#FFE600"),
-            danger: c(&cfg.color_danger, "#000000"),
             error: c(&cfg.color_error, "#E53935"),
             done: c(&cfg.color_done, "#2E7D32"),
             paused: c(&cfg.color_paused, "#78909C"),
@@ -250,8 +237,6 @@ pub struct Machine {
     color_ramp: Ramp,
     busy: bool,
     last_end: Option<Instant>,
-    danger: Option<String>,
-    approval: Option<String>,
     target: Option<Rect>,
     glide: Option<Glide>,
     click_pending: bool,
@@ -280,8 +265,6 @@ impl Machine {
             color_ramp: Ramp::at(1.0, now),
             busy: false,
             last_end: None,
-            danger: None,
-            approval: None,
             target: None,
             glide: None,
             click_pending: false,
@@ -377,19 +360,15 @@ impl Machine {
     fn active_phase(&self) -> Phase {
         if self.stopped {
             Phase::Stopped
-        } else if self.approval.is_some() {
-            Phase::Approval
         } else if self.paused {
             Phase::Paused
-        } else if self.danger.is_some() {
-            Phase::Danger
         } else {
             Phase::Working
         }
     }
 
-    /// Apply a command. Returns a confirmation to ask on screen, if any.
-    pub fn apply(&mut self, cmd: Cmd, now: Instant) -> Option<(u64, String)> {
+    /// Apply a command.
+    pub fn apply(&mut self, cmd: Cmd, now: Instant) {
         match cmd {
             Cmd::Config {
                 config,
@@ -421,8 +400,6 @@ impl Machine {
             }
             Cmd::End { ok } => {
                 self.busy = false;
-                self.danger = None;
-                self.approval = None;
                 self.paused = false;
                 self.last_end = Some(now);
                 let p = if self.stopped {
@@ -450,29 +427,6 @@ impl Machine {
                     self.set_phase(p, now);
                 }
             }
-            Cmd::Danger { action } => {
-                self.danger = action;
-                if self.busy {
-                    let p = self.active_phase();
-                    self.set_phase(p, now);
-                }
-            }
-            Cmd::Approval { id, action, ask } => {
-                self.approval = Some(action.clone());
-                self.set_phase(Phase::Approval, now);
-                if ask {
-                    return Some((id, action));
-                }
-            }
-            Cmd::ApprovalDone => {
-                self.approval = None;
-                let p = if self.busy {
-                    self.active_phase()
-                } else {
-                    Phase::Thinking
-                };
-                self.set_phase(p, now);
-            }
             Cmd::Status { state } => {
                 let p = match state {
                     Status::Thinking => {
@@ -488,14 +442,13 @@ impl Machine {
                     Status::Hidden => {
                         let d = Duration::from_millis(self.cfg.fade_out_ms);
                         self.leave(now, d);
-                        return None;
+                        return;
                     }
                 };
                 self.set_phase(p, now);
             }
             Cmd::Hide { .. } | Cmd::Show | Cmd::Quit => {}
         }
-        None
     }
 
     /// Advance timers: error → thinking, idle thinking → done → off.
@@ -576,7 +529,6 @@ impl Machine {
             && (self.glide_progress(now) < 1.0
                 || self.click_pending
                 || self.ripple_at.is_some()
-                || self.phase == Phase::Approval
                 || !self.fade.done(now)
                 || !self.color_ramp.done(now))
     }
@@ -591,8 +543,6 @@ impl Machine {
         match self.phase {
             Phase::Off | Phase::Working => c.working,
             Phase::Thinking => c.thinking,
-            Phase::Approval => c.approval,
-            Phase::Danger => c.danger,
             Phase::Error => c.error,
             Phase::Done => c.done,
             Phase::Paused => c.paused,
@@ -602,19 +552,15 @@ impl Machine {
 
     fn label_text(&self) -> String {
         let cfg = &self.cfg;
-        let (template, action) = match self.phase {
-            Phase::Off | Phase::Working => (&cfg.label_working, None),
-            Phase::Thinking => (&cfg.label_thinking, None),
-            Phase::Approval => (&cfg.label_approval, self.approval.as_deref()),
-            Phase::Danger => (&cfg.label_danger, self.danger.as_deref()),
-            Phase::Error => (&cfg.label_error, None),
-            Phase::Done => (&cfg.label_done, None),
-            Phase::Paused => (&cfg.label_paused, None),
-            Phase::Stopped => (&cfg.label_stopped, None),
+        let template = match self.phase {
+            Phase::Off | Phase::Working => &cfg.label_working,
+            Phase::Thinking => &cfg.label_thinking,
+            Phase::Error => &cfg.label_error,
+            Phase::Done => &cfg.label_done,
+            Phase::Paused => &cfg.label_paused,
+            Phase::Stopped => &cfg.label_stopped,
         };
-        template
-            .replace("{action}", &crate::tree::truncate(action.unwrap_or(""), 60))
-            .replace("{hotkey}", &pretty_key(&self.hotkey))
+        template.replace("{hotkey}", &pretty_key(&self.hotkey))
     }
 
     /// What should be on screen now.
@@ -622,29 +568,20 @@ impl Machine {
         if self.phase == Phase::Off || !self.cfg.enabled {
             return Scene::default();
         }
-        let base = self.shown_color(now);
-        let mut color = base;
-        let mut pulse = 0.0;
-        if self.phase == Phase::Approval {
-            // Breathe so a pending approval catches the eye.
-            let t = now.saturating_duration_since(self.since).as_secs_f32();
-            pulse = (0.5 - 0.5 * (t * std::f32::consts::TAU).cos()).clamp(0.0, 1.0);
-            color = draw::lighten(color, 0.45 * pulse);
-        }
+        let color = self.shown_color(now);
         let ripple = self.ripple_at.map(|t| {
             (now.saturating_duration_since(t).as_secs_f32() / RIPPLE.as_secs_f32()).min(0.999)
         });
         Scene {
             opacity: self.fade.value(now).clamp(0.0, 1.0),
             border: self.cfg.show_border.then_some((self.target, color)),
-            label: self.cfg.show_label.then(|| (self.label_text(), base)),
+            label: self.cfg.show_label.then(|| (self.label_text(), color)),
             cursor: if self.cfg.show_cursor {
                 self.cursor_pos(now).map(|p| CursorLook {
                     pos: p,
                     ring: color,
                     body: self.colors.cursor,
                     ripple,
-                    pulse,
                 })
             } else {
                 None
@@ -663,7 +600,6 @@ pub struct CursorLook {
     pub ring: Color,
     pub body: Color,
     pub ripple: Option<f32>,
-    pub pulse: f32,
 }
 
 /// What is on screen.
@@ -687,8 +623,8 @@ fn color_key(c: Color) -> [u8; 4] {
 type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 /// What the label was drawn with: text, colour, opacity, and its position.
 type LabelKey = (String, [u8; 4], u8, i64, i64);
-/// What the cursor image was drawn with: ring, body, ripple, pulse, opacity.
-type CursorKey = ([u8; 4], [u8; 4], i32, i32, u8);
+/// What the cursor image was drawn with: ring, body, ripple, opacity.
+type CursorKey = ([u8; 4], [u8; 4], i32, u8);
 
 #[derive(Default)]
 pub struct Painter {
@@ -897,21 +833,11 @@ impl Painter {
                     color_key(c.ring),
                     color_key(c.body),
                     c.ripple.map_or(-1, |r| (r * 30.0) as i32),
-                    (c.pulse * 10.0) as i32,
                     ak,
                 );
                 let redraw = self.cursor_img != Some(key);
-                let art = redraw.then(|| {
-                    draw::cursor(
-                        fonts,
-                        &cfg.cursor_tag,
-                        scale,
-                        c.body,
-                        c.ring,
-                        c.ripple,
-                        c.pulse,
-                    )
-                });
+                let art = redraw
+                    .then(|| draw::cursor(fonts, &cfg.cursor_tag, scale, c.body, c.ring, c.ripple));
                 if let Some(a) = &art {
                     self.cursor_hot = (
                         f64::from(a.hotspot.0) / f64::from(ppu),
@@ -1009,7 +935,18 @@ pub fn run(args: &[String]) -> i32 {
                 excluded: true,
                 available: false,
             });
-            while let Ok(Input::Cmd(_)) = rx.recv() {}
+            // The stop key needs the same display connection, so it can't
+            // be listened for either: say so, so the engine can tell the user.
+            while let Ok(Input::Cmd(cmd)) = rx.recv() {
+                if let Cmd::Config { hotkey, .. } = cmd
+                    && !hotkey.trim().is_empty()
+                {
+                    reply(&Reply::Hotkey {
+                        key: hotkey,
+                        ok: false,
+                    });
+                }
+            }
             return 1;
         }
     };
@@ -1100,23 +1037,13 @@ pub fn run(args: &[String]) -> i32 {
                         // Redraw everything with the new settings.
                         painter.clear(surface.as_mut());
                     }
-                    if let Some((id, action)) = machine.apply(other, Instant::now()) {
-                        let cfg = machine.config();
-                        let ask = Ask {
-                            title: cfg.label_working.clone(),
-                            message: cfg.label_approval.replace("{action}", &action),
-                            allow: cfg.label_allow.clone(),
-                            deny: cfg.label_deny.clone(),
-                        };
-                        surface.confirm(id, &ask);
-                    }
+                    machine.apply(other, Instant::now());
                 }
             }
         }
 
         for ev in surface.pump() {
             match ev {
-                SurfaceEvent::Answer(id, ok) => reply(&Reply::Answer { id, ok }),
                 SurfaceEvent::Hotkey
                     if quitting.is_none()
                         && last_hotkey
@@ -1206,16 +1133,6 @@ fn demo_script(tx: mpsc::Sender<Input>) {
     send(Cmd::End { ok: true });
     pause(1500);
     send(Cmd::Begin);
-    send(Cmd::Approval {
-        id: 1,
-        action: "press button \"Send\"".into(),
-        ask: false,
-    });
-    pause(1800);
-    send(Cmd::ApprovalDone);
-    send(Cmd::Danger {
-        action: Some("press button \"Send\"".into()),
-    });
     send(Cmd::Pointer {
         x: 600.0,
         y: 520.0,
@@ -1285,31 +1202,6 @@ mod tests {
         m.apply(Cmd::End { ok: false }, at(2010));
         assert_eq!(m.phase, Phase::Error);
         m.tick(at(2400));
-        assert_eq!(m.phase, Phase::Thinking);
-
-        // Approval, then a sensitive action.
-        m.apply(Cmd::Begin, at(3000));
-        let ask = m.apply(
-            Cmd::Approval {
-                id: 7,
-                action: "press \"Delete\"".into(),
-                ask: true,
-            },
-            at(3000),
-        );
-        assert_eq!(ask, Some((7, "press \"Delete\"".to_string())));
-        assert_eq!(m.phase, Phase::Approval);
-        let s = m.scene(at(3000));
-        assert!(s.label.unwrap().0.contains("Delete"));
-        m.apply(
-            Cmd::Danger {
-                action: Some("press \"Delete\"".into()),
-            },
-            at(3100),
-        );
-        m.apply(Cmd::ApprovalDone, at(3100));
-        assert_eq!(m.phase, Phase::Danger);
-        m.apply(Cmd::End { ok: true }, at(3200));
         assert_eq!(m.phase, Phase::Thinking);
 
         // Explicit done from the host.
@@ -1506,7 +1398,6 @@ mod tests {
             self.calls.push(format!("hide {layer:?}"));
         }
         fn set_hidden(&mut self, _: bool) {}
-        fn confirm(&mut self, _: u64, _: &Ask) {}
         fn pump(&mut self) -> Vec<SurfaceEvent> {
             Vec::new()
         }

@@ -5,11 +5,15 @@
 # change settings from the command line:
 #
 #   computer-use-mcp config set screenshot.attach always
-#   computer-use-mcp config add approvals.always_allow com.apple.TextEdit
+#   computer-use-mcp config add tools.disabled drag
 #   computer-use-mcp config show          # effective settings
 #   computer-use-mcp config check         # validate + report unknown keys
 #
 # The agent itself has no tool to change these settings.
+#
+# There is no access control in these settings: which apps and actions the
+# agent may use is decided by its security skill
+# (skills/computer-use-security/SKILL.md), not by this server.
 
 # Expose the clipboard tools (get_clipboard / set_clipboard).
 clipboard = true
@@ -25,70 +29,6 @@ restore_pointer = true
 hot_reload = true
 # Seconds launch_app waits for the new app's window.
 launch_timeout_secs = 15.0
-
-[approvals]
-# prompt    = ask the first time each app is used (default)
-# allowlist = only apps in always_allow; never ask
-# allow_all = every app not blocked below
-mode = "prompt"
-# Apps allowed without asking (name, bundle id, exe name; "*" suffix = prefix).
-# A specific app listed here is allowed even if its [sensitive] category is
-# blocked — this is how you grant sensitive apps one at a time.
-always_allow = []
-# Apps that are never controlled.
-always_deny = []
-# Apps that host agents (treated as the "agent_apps" sensitive category).
-agent_apps = [
-    "com.openai.chat",
-    "com.openai.codex",
-    "ChatGPT",
-    "Codex",
-    "com.anthropic.claudefordesktop",
-    "Claude",
-]
-
-# Sensitive app categories: "block" (default), "ask" (confirm each time), or
-# "allow" (treated like any other app).
-[sensitive]
-terminals = "block"         # terminal emulators and shells
-credentials = "block"       # password managers, keychains
-security_prompts = "block"  # OS authentication / consent / login prompts
-agent_apps = "block"        # apps listed in approvals.agent_apps
-own_process = "block"       # this server and the agent that launched it
-# Your own patterns to add to a category.
-extra_terminals = []
-extra_credentials = []
-extra_security_prompts = []
-
-# Confirmation for consequential presses (a control whose label contains one
-# of the keywords). "ask" (default), "allow" (never confirm) or "block".
-[guard]
-mode = "ask"
-keywords = [
-    "send",
-    "delete",
-    "remove",
-    "discard",
-    "pay",
-    "buy",
-    "purchase",
-    "checkout",
-    "order",
-    "transfer",
-    "confirm",
-    "publish",
-    "post",
-    "submit",
-    "trash",
-    "erase",
-    "wipe",
-    "shut down",
-    "restart",
-    "log out",
-    "sign out",
-    "uninstall",
-    "format",
-]
 
 # Which tools the model sees. The tool list is sent with every model request,
 # so fewer tools and compact descriptions save tokens on every turn.
@@ -173,22 +113,16 @@ border_target = "screen"     # glow around the whole "screen" or the "window" wo
 border_width = 3             # bright core line
 glow_size = 36               # how far the glow fades out (0 = a plain line)
 scale = 0.0                  # size multiplier; 0 = follow display scaling
-# Label per state; {action} is what is pending.
+# Label per state.
 label_working = "Zero is using the computer"
 label_thinking = "Zero is thinking…"
-label_approval = "Waiting for your approval: {action}"
-label_danger = "Sensitive action: {action}"
 label_error = "Zero hit an error"
 label_done = "Zero is done"
 label_paused = "Paused while you use the computer"
 label_stopped = "Zero stopped. Press {hotkey} to let it continue"
-label_allow = "Allow"        # buttons of the on-screen confirmation
-label_deny = "Deny"
 # Colours per state (#RRGGBB or #RRGGBBAA).
 color_thinking = "#D4A017"   # gold: the model is thinking
 color_working = "#1E88E5"    # blue: acting on the computer
-color_approval = "#FFE600"   # yellow: waiting for your approval
-color_danger = "#000000"     # black: a sensitive action (send, delete, pay…)
 color_error = "#E53935"      # red: something failed
 color_done = "#2E7D32"       # green: finished, then everything disappears
 color_paused = "#78909C"     # grey: waiting while you use the mouse/keyboard
@@ -202,8 +136,6 @@ move_ms = 220                # cursor glide time
 fade_in_ms = 250             # appear gradually
 fade_out_ms = 1200           # disappear gradually, never abruptly
 transition_ms = 300          # blend from one state colour to the next
-confirm_on_screen = "when_no_client"   # never | when_no_client | always
-confirm_timeout_secs = 120   # an unanswered on-screen confirmation is denied
 capture_hide_ms = 40         # X11 only: pause after hiding before a screenshot
 font = ""                    # label font file ("" = a system font)
 command = ""                 # helper program for library embedders
@@ -224,7 +156,7 @@ tesseract_path = "tesseract"
 # default: notifications carry other apps' messages and codes.
 [notifications]
 enabled = false
-apps = []                   # only these apps ([] = any app not blocked above)
+apps = []                   # only these apps ([] = any app)
 mask_codes = true           # mask one-time / verification codes
 keep = 50                   # how many are kept (Linux)
 
@@ -233,8 +165,7 @@ keep = 50                   # how many are kept (Linux)
 enabled = true              # check each action's result; tell the agent when it didn't work
 retry = true                # an action that clearly failed is tried once more another way
 # Also retry presses after which nothing visible changed. Off: some actions
-# (pay, send…) show their effect late and must not be repeated. Guarded
-# actions are never retried.
+# (pay, send…) show their effect late and must not be repeated.
 retry_on_no_change = false
 
 # Your controls over a running agent.
@@ -270,10 +201,9 @@ enabled = false             # append a JSONL line (metadata only) per call
 # path = "/path/to/audit.log"   # default: <COMPUTER_USE_HOME>/audit.log
 
 [server]
-headless_approve = "deny"   # when approval is needed but no one can be asked
 log = "warn"                # error, warn, info, debug, trace
 http_addr = ""              # e.g. "127.0.0.1:8787" to serve over HTTP
-http_token = ""             # bearer token required on the HTTP endpoint
+http_token = ""             # bearer token, required when http_addr is set
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

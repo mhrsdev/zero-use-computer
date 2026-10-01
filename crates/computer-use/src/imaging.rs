@@ -212,10 +212,13 @@ fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: 
 
 /// Cut a pixel rectangle (x, y, width, height) out of a capture.
 pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
-    let x = px.0.min(cap.width.saturating_sub(1));
-    let y = px.1.min(cap.height.saturating_sub(1));
-    let w = px.2.clamp(1, cap.width - x);
-    let h = px.3.clamp(1, cap.height - y);
+    if cap.width == 0 || cap.height == 0 {
+        return cap.clone();
+    }
+    let x = px.0.min(cap.width - 1);
+    let y = px.1.min(cap.height - 1);
+    let w = px.2.max(1).min(cap.width - x);
+    let h = px.3.max(1).min(cap.height - y);
     let stride = cap.width as usize * 4;
     let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
     for row in y..y + h {

@@ -1,6 +1,6 @@
 [package]
 name = "computer-use"
-description = "Codex-style computer use for any agent: accessibility-tree + screenshot desktop control with per-app approvals"
+description = "Codex-style computer use for any agent: accessibility-tree + screenshot desktop control"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -37,7 +37,7 @@ foreign-types = "0.5"
 libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSData", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace", "NSApplication", "NSPasteboard", "libc", "NSAlert", "NSButton", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSResponder", "NSScreen", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace", "NSApplication", "NSPasteboard", "libc", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageView", "NSResponder", "NSScreen", "NSView", "NSWindow", "objc2-core-foundation"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [

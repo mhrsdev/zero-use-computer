@@ -116,9 +116,13 @@ pub fn parse_combo(input: &str) -> Result<KeyCombo> {
             "shift" => modifiers.shift = true,
             "ctrl" | "control" | "ctl" => modifiers.ctrl = true,
             "alt" | "option" | "opt" => modifiers.alt = true,
-            "cmd" | "command" | "meta" | "super" | "win" | "windows" => modifiers.meta = true,
-            // The platform's primary shortcut modifier.
-            "primary" | "mod" | "cmdorctrl" => {
+            // The Windows/Super key only when named as such: models write
+            // "cmd+s" meaning "save", and on Windows Win+L locks the screen
+            // and Win+R opens Run.
+            "meta" | "super" | "win" | "windows" => modifiers.meta = true,
+            // The platform's primary shortcut modifier: Cmd on a Mac, Ctrl
+            // elsewhere.
+            "cmd" | "command" | "primary" | "mod" | "cmdorctrl" => {
                 if cfg!(target_os = "macos") {
                     modifiers.meta = true
                 } else {
@@ -195,8 +199,13 @@ mod tests {
     #[test]
     fn parses_modifiers_and_keys() {
         let c = parse_combo("cmd+shift+S").unwrap();
-        assert!(c.modifiers.meta && c.modifiers.shift && !c.modifiers.ctrl);
+        // "cmd" is the shortcut key: Cmd on a Mac, Ctrl elsewhere.
+        let mac = cfg!(target_os = "macos");
+        assert!(c.modifiers.meta == mac && c.modifiers.ctrl != mac && c.modifiers.shift);
         assert_eq!(c.key, Key::Char('s'));
+        // The Windows/Super key only when named.
+        let c = parse_combo("win+l").unwrap();
+        assert!(c.modifiers.meta && !c.modifiers.ctrl);
 
         let c = parse_combo("Return").unwrap();
         assert!(!c.modifiers.any());

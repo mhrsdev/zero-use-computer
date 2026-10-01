@@ -8,8 +8,8 @@
 //! It shows the loop a host agent runs: get_app_state first, then act on
 //! elements by their index.
 
-use computer_use::config::{ApprovalMode, Config, ConfigStore};
-use computer_use::engine::{AllowApprover, Engine};
+use computer_use::config::{Config, ConfigStore};
+use computer_use::engine::Engine;
 use computer_use::mock::MockBackend;
 use computer_use::tools::ToolCall;
 use serde_json::json;
@@ -19,8 +19,7 @@ fn main() {
     let mut backend = MockBackend::new();
     backend.add_app(MockBackend::text_editor(4242));
 
-    let mut cfg = Config::default();
-    cfg.approvals.mode = ApprovalMode::AllowAll; // no prompting in this demo
+    let cfg = Config::default();
     let mut engine = Engine::new(backend, ConfigStore::in_memory(cfg));
 
     // 1. Discover apps.
@@ -48,7 +47,7 @@ fn main() {
 
 fn run(engine: &mut Engine<MockBackend>, tool: &str, args: serde_json::Value) {
     println!("\n$ {tool} {args}");
-    let out = match ToolCall::parse(tool, args).map(|c| engine.call(c, &mut AllowApprover)) {
+    let out = match ToolCall::parse(tool, args).map(|c| engine.call(c)) {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => {
             println!("  error: {e}");

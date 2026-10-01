@@ -1,7 +1,8 @@
 //! The engine: platform-agnostic implementation of the tool contract on top
-//! of a [`Backend`]. It resolves apps/windows/elements, enforces approvals,
-//! renders app state (tree + screenshot), maintains per-app element indices
-//! and diffs, and maps screenshot coordinates to the screen.
+//! of a [`Backend`]. It resolves apps/windows/elements, renders app state
+//! (tree + screenshot), maintains per-app element indices and diffs, maps
+//! screenshot coordinates to the screen, and keeps synthesized input on the
+//! app it is meant for. It does no access control (see the security skill).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -14,72 +15,10 @@ use crate::error::{Error, Result};
 use crate::imaging::{self, CoordMap, EncodedImage};
 use crate::keys::{self, Key, KeyCombo, NamedKey};
 use crate::overlay::{Cmd as OverlayCmd, Launcher, Overlay, Status};
-use crate::policy::{self, Verdict};
 use crate::screens::{PixelSig, Screen, ScreenMemory, View};
 use crate::tools::*;
 use crate::tree::{self, IndexAllocator, Node};
 use crate::types::*;
-
-/// What the host must decide when an app needs approval.
-#[derive(Debug, Clone)]
-pub struct ApprovalRequest<'a> {
-    pub app: &'a AppInfo,
-    pub tool: &'a str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalDecision {
-    /// Allow for this call only.
-    Once,
-    /// Allow and persist to `always_allow`.
-    Always,
-    /// Allow for the rest of this session.
-    Session,
-    Deny,
-}
-
-/// Decides whether an app may be controlled when policy says to ask.
-/// Implementations prompt the user (MCP elicitation, a desktop dialog, etc.).
-pub trait Approver {
-    fn request(&mut self, req: &ApprovalRequest<'_>) -> ApprovalDecision;
-
-    /// Confirm a consequential on-screen action (the guard). `summary`
-    /// describes what is about to happen, e.g. `press button "Send"`. The
-    /// default assumes an interactive host and allows it; headless approvers
-    /// should override this.
-    fn confirm_action(&mut self, _summary: &str) -> bool {
-        true
-    }
-
-    /// Whether this approver can actually put the question to the user (or
-    /// has a policy that answers it). When it can't, the engine may ask on
-    /// the screen instead (`overlay.confirm_on_screen`).
-    fn interactive(&self) -> bool {
-        true
-    }
-}
-
-/// Approve nothing (used when no approver is wired up).
-pub struct DenyApprover;
-impl Approver for DenyApprover {
-    fn request(&mut self, _req: &ApprovalRequest<'_>) -> ApprovalDecision {
-        ApprovalDecision::Deny
-    }
-    fn confirm_action(&mut self, _summary: &str) -> bool {
-        false
-    }
-    fn interactive(&self) -> bool {
-        false
-    }
-}
-
-/// Approve everything (embedders that gate access themselves).
-pub struct AllowApprover;
-impl Approver for AllowApprover {
-    fn request(&mut self, _req: &ApprovalRequest<'_>) -> ApprovalDecision {
-        ApprovalDecision::Session
-    }
-}
 
 /// Cached state for one app between tool calls.
 #[derive(Default)]
@@ -126,7 +65,6 @@ struct PendingImage {
 pub struct Engine<B: Backend> {
     backend: B,
     store: ConfigStore,
-    session_allowed: HashSet<String>,
     states: HashMap<u32, AppState>,
     /// Screens the model has seen and moved away from.
     memory: ScreenMemory,
@@ -146,6 +84,10 @@ pub struct Engine<B: Backend> {
     /// Start attempts, so a helper that keeps failing is left alone.
     overlay_starts: u32,
     overlay_retry_at: Option<Instant>,
+    /// Why the helper (and with it the stop key) last failed to start.
+    overlay_error: Option<String>,
+    /// The user was told the stop key doesn't work (told once).
+    stop_note_shown: bool,
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
@@ -216,7 +158,6 @@ impl<B: Backend> Engine<B> {
         Self {
             backend,
             store,
-            session_allowed: HashSet::new(),
             states: HashMap::new(),
             memory: ScreenMemory::default(),
             app_cache: None,
@@ -228,6 +169,8 @@ impl<B: Backend> Engine<B> {
             overlay_launcher: None,
             overlay_starts: 0,
             overlay_retry_at: None,
+            overlay_error: None,
+            stop_note_shown: false,
             stop: Arc::new(AtomicBool::new(false)),
             last_input: None,
             settled: None,
@@ -244,8 +187,8 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    /// Re-read the config file if it changed on disk (`hot_reload`). Session
-    /// approvals and cached UI state are kept.
+    /// Re-read the config file if it changed on disk (`hot_reload`). Cached
+    /// UI state is kept.
     pub fn reload_if_changed(&mut self) {
         if !self.store.config.hot_reload {
             return;
@@ -338,9 +281,13 @@ impl<B: Backend> Engine<B> {
             }
             self.overlay_starts += 1;
             match Overlay::spawn(&launcher, cfg, &hotkey, self.stop.clone()) {
-                Ok(o) => self.overlay = Some(o),
+                Ok(o) => {
+                    self.overlay = Some(o);
+                    self.overlay_error = None;
+                }
                 Err(e) => {
                     log::warn!("overlay unavailable: {e}");
+                    self.overlay_error = Some(e.to_string());
                     self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(30));
                 }
             }
@@ -371,6 +318,53 @@ impl<B: Backend> Engine<B> {
     /// before the first tool call. Hosts call this once at start-up.
     pub fn arm(&mut self) {
         self.overlay();
+    }
+
+    /// Why the emergency stop key isn't working, if it is configured and
+    /// known not to work: the helper that listens for it couldn't start or
+    /// stopped, or the system refused the key combination.
+    pub fn stop_key_problem(&mut self) -> Option<String> {
+        let key = self.store.config.control.stop_hotkey.trim().to_string();
+        if key.is_empty() {
+            return None; // the user chose to have none
+        }
+        if self.overlay.is_none() {
+            // Try to start it (cheap if it is already known not to start).
+            self.overlay();
+        }
+        match &self.overlay {
+            Some(o) if !o.alive() => Some("the helper that listens for it stopped".into()),
+            Some(o) if o.hotkey_ok(&key) == Some(false) => Some(
+                "the system refused it (another program may use this key, or there is no display the helper can use); set control.stop_hotkey to another combination".into(),
+            ),
+            Some(_) => None,
+            None => self
+                .overlay_error
+                .as_ref()
+                .map(|e| format!("the helper that listens for it could not start ({e})")),
+        }
+    }
+
+    /// Wait up to `timeout` for the stop key to be confirmed working
+    /// (`computer-use-mcp doctor`).
+    pub fn check_stop_key(&mut self, timeout: Duration) -> std::result::Result<(), String> {
+        let key = self.store.config.control.stop_hotkey.trim().to_string();
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(problem) = self.stop_key_problem() {
+                return Err(problem);
+            }
+            if self.overlay.as_ref().and_then(|o| o.hotkey_ok(&key)) == Some(true) {
+                return Ok(());
+            }
+            if self.overlay.is_none() && self.overlay_error.is_none() {
+                return Err("no overlay helper is set up to listen for it".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("the helper didn't confirm it in time".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Shared stop flag: the stop key sets and clears it; a host may too
@@ -488,40 +482,44 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    /// Whether to ask the user on the screen rather than through `approver`.
-    fn ask_on_screen(&self, approver: &dyn Approver) -> bool {
-        use crate::config::ScreenConfirm;
-        if !self.store.config.overlay.enabled {
-            return false;
+    /// The part of `r` (screen coordinates) that is on a display, so a
+    /// region from the model can't ask for an impossible capture.
+    fn clip_to_screens(&mut self, r: Rect) -> Result<Rect> {
+        /// Largest side accepted when the displays aren't known.
+        const MAX_SIDE: f64 = 16_384.0;
+        let Ok(displays) = self.backend.displays() else {
+            return Ok(Rect::new(
+                r.x,
+                r.y,
+                r.width.min(MAX_SIDE),
+                r.height.min(MAX_SIDE),
+            ));
+        };
+        let on = |d: &Rect| {
+            let (x0, y0) = (r.x.max(d.x), r.y.max(d.y));
+            let x1 = (r.x + r.width).min(d.x + d.width);
+            let y1 = (r.y + r.height).min(d.y + d.height);
+            (x1 - x0 >= 1.0 && y1 - y0 >= 1.0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+        };
+        // The bounding box of the region's parts on every display it touches.
+        let parts: Vec<Rect> = displays.iter().filter_map(|d| on(&d.bounds)).collect();
+        if parts.is_empty() {
+            return Err(Error::InvalidArgs(format!(
+                "the area ({:.0}, {:.0}) {:.0}x{:.0} is not on any display; window(action=\"displays\") lists them",
+                r.x, r.y, r.width, r.height
+            )));
         }
-        match self.store.config.overlay.confirm_on_screen {
-            ScreenConfirm::Never => false,
-            ScreenConfirm::Always => true,
-            ScreenConfirm::WhenNoClient => !approver.interactive(),
-        }
-    }
-
-    /// Show that `action` waits for the user, and ask on screen when that is
-    /// the way to ask. `Some(answer)` if the screen answered.
-    fn overlay_approval(&mut self, action: &str, approver: &dyn Approver) -> Option<bool> {
-        if !self.store.config.overlay.enabled {
-            return None;
-        }
-        let ask = self.ask_on_screen(approver);
-        let timeout = Duration::from_secs(self.store.config.overlay.confirm_timeout_secs.max(1));
-        let o = self.overlay()?;
-        if ask {
-            if let Some(answer) = o.ask(action, timeout) {
-                return Some(answer);
-            }
-        } else {
-            o.send(&OverlayCmd::Approval {
-                id: 0,
-                action: action.to_string(),
-                ask: false,
-            });
-        }
-        None
+        let x0 = parts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let y0 = parts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+        let x1 = parts
+            .iter()
+            .map(|p| p.x + p.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let y1 = parts
+            .iter()
+            .map(|p| p.y + p.height)
+            .fold(f64::NEG_INFINITY, f64::max);
+        Ok(Rect::new(x0, y0, x1 - x0, y1 - y0))
     }
 
     /// Run a screen capture with the overlay out of the picture.
@@ -581,11 +579,6 @@ impl<B: Backend> Engine<B> {
         self.backend.permissions()
     }
 
-    /// Pre-approve an app for the session (e.g. from a host allow-list).
-    pub fn allow_for_session(&mut self, app_id: &str) {
-        self.session_allowed.insert(app_id.to_lowercase());
-    }
-
     // -- app / window / element resolution ---------------------------------
 
     /// List running apps (always fresh), refreshing the cache and dropping
@@ -611,56 +604,6 @@ impl<B: Backend> Engine<B> {
         }
         let apps = self.find_apps()?;
         resolve_app_in(&apps, query)
-    }
-
-    /// Resolve an app and confirm it may be controlled.
-    fn authorize(
-        &mut self,
-        query: &str,
-        tool: &str,
-        approver: &mut dyn Approver,
-    ) -> Result<AppInfo> {
-        let app = self.resolve_app(query)?;
-        match policy::evaluate(&app, &self.store, &self.session_allowed) {
-            Verdict::Allowed => {
-                // Acting in a sensitive app the user opened up (a terminal,
-                // a password manager…) shows as a sensitive action.
-                if MUTATING_TOOLS.contains(&tool)
-                    && self.overlay.is_some()
-                    && let Some(category) = policy::classify(&app, &self.store)
-                {
-                    self.overlay_send(OverlayCmd::Danger {
-                        action: Some(format!("{} in {} ({})", tool, app.name, category.label())),
-                    });
-                }
-                Ok(app)
-            }
-            Verdict::Blocked(reason) => Err(Error::Blocked(app.name, reason)),
-            Verdict::NeedsApproval => {
-                let what = format!("let the agent control {}", app.name);
-                let decision = match self.overlay_approval(&what, approver) {
-                    Some(true) => ApprovalDecision::Session,
-                    Some(false) => ApprovalDecision::Deny,
-                    None => approver.request(&ApprovalRequest { app: &app, tool }),
-                };
-                self.overlay_send(OverlayCmd::ApprovalDone);
-                match decision {
-                    ApprovalDecision::Deny => Err(Error::Denied(app.name)),
-                    ApprovalDecision::Once => Ok(app),
-                    ApprovalDecision::Session => {
-                        self.session_allowed.insert(app.id.to_lowercase());
-                        Ok(app)
-                    }
-                    ApprovalDecision::Always => {
-                        self.session_allowed.insert(app.id.to_lowercase());
-                        if let Err(e) = self.store.add_always_allow(&app.id) {
-                            log::warn!("could not persist approval for {}: {e}", app.id);
-                        }
-                        Ok(app)
-                    }
-                }
-            }
-        }
     }
 
     /// The app's windows, reusing a list taken within `cache.snapshot_ttl_ms`
@@ -1185,7 +1128,60 @@ impl<B: Backend> Engine<B> {
             })
     }
 
-    fn input_target(&self, app: &AppInfo) -> InputTarget {
+    /// Where synthesized keyboard/mouse input for `app` goes, after making
+    /// sure it really goes there. Such input lands in whatever window is in
+    /// front (on backends where [`Backend::input_needs_front`]), so the app's
+    /// window is brought to the front first, and nothing is sent if it can't
+    /// be: keys meant for one app must never land in another (the terminal
+    /// the agent runs in, a chat window…).
+    fn input_target(&mut self, app: &AppInfo) -> Result<InputTarget> {
+        if self.backend.input_needs_front() {
+            self.bring_to_front(app)?;
+        }
+        Ok(self.target_of(app))
+    }
+
+    fn bring_to_front(&mut self, app: &AppInfo) -> Result<()> {
+        let front = |e: &mut Self| -> Result<Option<AppInfo>> {
+            Ok(e.find_apps()?.into_iter().find(|a| a.frontmost))
+        };
+        match front(self)? {
+            // In front already, or the platform can't tell what is in front
+            // (no window manager): nothing to do.
+            None => return Ok(()),
+            Some(f) if f.pid == app.pid => return Ok(()),
+            Some(_) => {}
+        }
+        let windows = self.list_windows(app, true)?;
+        let current = self.states.get(&app.pid).and_then(|s| s.window_id);
+        let window = windows
+            .iter()
+            .find(|w| Some(w.id) == current)
+            .or_else(|| windows.first())
+            .cloned()
+            .ok_or_else(|| Error::NoWindows {
+                app: app.name.clone(),
+            })?;
+        let focus = self.backend.window_op(app, &window, &WindowOp::Focus);
+        self.epoch += 1;
+        let deadline = (self.clock)() + Duration::from_millis(1000);
+        loop {
+            match front(self)? {
+                None => return Ok(()),
+                Some(f) if f.pid == app.pid => return Ok(()),
+                Some(f) if (self.clock)() >= deadline => {
+                    let why = focus.err().map(|e| format!(" ({e})")).unwrap_or_default();
+                    return Err(Error::ActionFailed(format!(
+                        "{} could not be brought to the front{why}, so the keyboard/mouse input was not sent: it would have gone to {}, which is in front. Use element_index actions (they work in the background), or ask the user to bring {} forward.",
+                        app.name, f.name, app.name
+                    )));
+                }
+                Some(_) => (self.sleep)(Duration::from_millis(50)),
+            }
+        }
+    }
+
+    fn target_of(&self, app: &AppInfo) -> InputTarget {
         let (window_id, window_handle) = self
             .states
             .get(&app.pid)
@@ -1320,7 +1316,7 @@ impl<B: Backend> Engine<B> {
     // -- tool dispatch -----------------------------------------------------
 
     /// Run one tool call.
-    pub fn call(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
+    pub fn call(&mut self, call: ToolCall) -> Result<ToolOutput> {
         if self.is_stopped() {
             // Show it again so the user sees why nothing happens.
             if self.depth == 0 && self.overlay.is_some() {
@@ -1332,7 +1328,7 @@ impl<B: Backend> Engine<B> {
         if self.depth == 1 {
             self.overlay_send(OverlayCmd::Begin);
         }
-        let out = self.dispatch(call, approver);
+        let out = self.dispatch(call);
         if self.depth == 1 && self.overlay.is_some() {
             let ok = out.as_ref().is_ok_and(|o| !o.is_error);
             self.overlay_send(OverlayCmd::End { ok });
@@ -1349,7 +1345,7 @@ impl<B: Backend> Engine<B> {
         out
     }
 
-    fn dispatch(&mut self, call: ToolCall, approver: &mut dyn Approver) -> Result<ToolOutput> {
+    fn dispatch(&mut self, call: ToolCall) -> Result<ToolOutput> {
         if !self.store.config.tools.is_enabled(call.name()) {
             return Err(Error::Blocked(
                 call.name().into(),
@@ -1370,23 +1366,23 @@ impl<B: Backend> Engine<B> {
         let report_app = acting.filter(|_| self.store.config.tree.report_changes);
         let out = match call {
             ToolCall::ListApps => self.list_apps(),
-            ToolCall::LaunchApp(a) => self.launch_app(a, approver),
-            ToolCall::GetAppState(a) => self.get_app_state(a, approver),
-            ToolCall::Click(a) => self.click(a, approver),
-            ToolCall::PerformSecondaryAction(a) => self.perform_secondary(a, approver),
-            ToolCall::SetValue(a) => self.set_value(a, approver),
-            ToolCall::SelectText(a) => self.select_text(a, approver),
-            ToolCall::Scroll(a) => self.scroll(a, approver),
-            ToolCall::Drag(a) => self.drag(a, approver),
-            ToolCall::PressKey(a) => self.press_key(a, approver),
-            ToolCall::TypeText(a) => self.type_text(a, approver),
-            ToolCall::FindElement(a) => self.find_element(a, approver),
-            ToolCall::WaitFor(a) => self.wait_for(a, approver),
-            ToolCall::Screenshot(a) => self.screenshot(a, approver),
-            ToolCall::Batch(a) => self.batch(a, approver),
+            ToolCall::LaunchApp(a) => self.launch_app(a),
+            ToolCall::GetAppState(a) => self.get_app_state(a),
+            ToolCall::Click(a) => self.click(a),
+            ToolCall::PerformSecondaryAction(a) => self.perform_secondary(a),
+            ToolCall::SetValue(a) => self.set_value(a),
+            ToolCall::SelectText(a) => self.select_text(a),
+            ToolCall::Scroll(a) => self.scroll(a),
+            ToolCall::Drag(a) => self.drag(a),
+            ToolCall::PressKey(a) => self.press_key(a),
+            ToolCall::TypeText(a) => self.type_text(a),
+            ToolCall::FindElement(a) => self.find_element(a),
+            ToolCall::WaitFor(a) => self.wait_for(a),
+            ToolCall::Screenshot(a) => self.screenshot(a),
+            ToolCall::Batch(a) => self.batch(a),
             ToolCall::GetClipboard => self.get_clipboard(),
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
-            ToolCall::Window(a) => self.window_tool(a, approver),
+            ToolCall::Window(a) => self.window_tool(a),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
         };
         if mutating {
@@ -1400,18 +1396,44 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Parse and run a raw tool call, returning a tool result even on error.
-    pub fn call_tool(
-        &mut self,
-        name: &str,
-        args: serde_json::Value,
-        approver: &mut dyn Approver,
-    ) -> ToolOutput {
+    pub fn call_tool(&mut self, name: &str, args: serde_json::Value) -> ToolOutput {
         self.reload_if_changed();
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
-        let out = match ToolCall::parse(name, args).and_then(|c| self.call(c, approver)) {
-            Ok(out) => out,
-            Err(e) => ToolOutput::error(&e),
+        // A bug in one tool call must not take the whole server down.
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ToolCall::parse(name, args).and_then(|c| self.call(c))
+        }));
+        let mut out = match run {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => ToolOutput::error(&e),
+            Err(panic) => {
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                log::error!("{name} panicked: {what}");
+                // Undo what the interrupted call left half-done.
+                self.depth = 0;
+                self.pending_images.clear();
+                self.epoch += 1;
+                ToolOutput::error(&Error::Internal(format!(
+                    "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"
+                )))
+            }
         };
+        // The user is counting on the stop key: if it doesn't work, say so
+        // (once), so the agent can tell them.
+        if !self.stop_note_shown
+            && let Some(problem) = self.stop_key_problem()
+        {
+            self.stop_note_shown = true;
+            let key = crate::overlay::helper::pretty_key(&self.store.config.control.stop_hotkey);
+            log::warn!("the emergency stop key {key} is not working: {problem}");
+            out.text.push_str(&format!(
+                "\n\nNote: the user's emergency stop key ({key}) is not working: {problem}. Tell the user now, so they know they can't stop you with it."
+            ));
+        }
         self.audit(name, app.as_deref(), &out);
         out
     }
@@ -1465,9 +1487,6 @@ impl<B: Backend> Engine<B> {
             if a.hidden {
                 tags.push("hidden".to_string());
             }
-            if let Some(t) = policy::tag(a, &self.store, &self.session_allowed) {
-                tags.push(t);
-            }
             let tags = if tags.is_empty() {
                 String::new()
             } else {
@@ -1481,27 +1500,16 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(lines.join("\n")))
     }
 
-    fn launch_app(
-        &mut self,
-        args: LaunchAppArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
-        // Enforce policy against a synthetic app record so a blocked category
-        // (e.g. terminals) can't be launched-and-driven around the block.
-        let probe = AppInfo {
-            name: args.app.clone(),
-            id: args.app.clone(),
-            pid: 0,
-            exe: Some(args.app.clone()),
-            frontmost: false,
-            hidden: false,
-        };
-        if let Verdict::Blocked(reason) =
-            policy::evaluate(&probe, &self.store, &self.session_allowed)
-        {
-            return Err(Error::Blocked(args.app.clone(), reason));
+    fn launch_app(&mut self, mut args: LaunchAppArgs) -> Result<ToolOutput> {
+        // An app to open, not a command line: backends start exactly this
+        // program with no arguments, and nothing that could read as an option.
+        args.app = args.app.trim().to_string();
+        if args.app.is_empty() || args.app.starts_with('-') {
+            return Err(Error::InvalidArgs(
+                "`app` must be an app name, bundle id or executable (no options or arguments)"
+                    .into(),
+            ));
         }
-
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
         self.backend.launch_app(&args.app)?;
 
@@ -1522,8 +1530,6 @@ impl<B: Backend> Engine<B> {
                 });
             if let Some(app) = found {
                 let app = app.clone();
-                // Authorize now so the model can act right away.
-                let _ = self.authorize(&app.id, "launch_app", approver);
                 return Ok(ToolOutput::text(format!(
                     "Launched {} (id: {}, pid: {}). Call get_app_state to see it.",
                     app.name, app.id, app.pid
@@ -1542,12 +1548,8 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn get_app_state(
-        &mut self,
-        args: GetAppStateArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "get_app_state", approver)?;
+    fn get_app_state(&mut self, args: GetAppStateArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.force_ocr = args.ocr;
         let observed = self.observe(&app, &window, args.ocr);
@@ -1768,8 +1770,8 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn click(&mut self, args: ClickArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "click", approver)?;
+    fn click(&mut self, args: ClickArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let count = args.click_count.clamp(1, 3);
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
         // What things looked like, to tell whether the click did anything.
@@ -1779,12 +1781,6 @@ impl<B: Backend> Engine<B> {
 
         // The agent cursor goes there first, so the user sees what is next.
         self.overlay_anchor(&app, &anchor, false);
-        // Confirm consequential presses (Send / Delete / Pay …) when guarded.
-        let mut guarded = false;
-        if let Anchor::Element(h) = &anchor {
-            let label = self.describe(&app, *h);
-            guarded = self.guard_action(&label, approver)?;
-        }
         self.overlay_anchor(&app, &anchor, true);
 
         // A single left click on an element with a press action goes through
@@ -1804,11 +1800,10 @@ impl<B: Backend> Engine<B> {
                         if unchanged
                             && v.retry
                             && v.retry_on_no_change
-                            && !guarded
                             && let Some(p) = point
                         {
                             // Nothing happened: click it with the mouse.
-                            let target = self.input_target(&app);
+                            let target = self.input_target(&app)?;
                             self.backend.click(&target, p, MouseButton::Left, 1)?;
                             self.settle_on(&app);
                             let mut msg = format!(
@@ -1840,7 +1835,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend.click(&target, point, args.button, count)?;
         self.settle_on(&app);
         let verb = match (args.button, count) {
@@ -1856,12 +1851,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn perform_secondary(
-        &mut self,
-        args: SecondaryActionArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "perform_secondary_action", approver)?;
+    fn perform_secondary(&mut self, args: SecondaryActionArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "perform_secondary_action")?;
@@ -1877,7 +1868,6 @@ impl<B: Backend> Engine<B> {
         let native = action.native.clone();
         let before = self.tree_fingerprint(app.pid);
         self.overlay_point_element(&app, handle, false);
-        self.guard_action(&node.label(), approver)?;
         self.overlay_point_element(&app, handle, true);
         self.backend.perform_action(handle, &native)?;
         self.settle_on(&app);
@@ -1888,8 +1878,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn set_value(&mut self, args: SetValueArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "set_value", approver)?;
+    fn set_value(&mut self, args: SetValueArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "set_value")?;
@@ -1941,12 +1931,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn select_text(
-        &mut self,
-        args: SelectTextArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "select_text", approver)?;
+    fn select_text(&mut self, args: SelectTextArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "select_text")?;
@@ -1964,8 +1950,8 @@ impl<B: Backend> Engine<B> {
         )))
     }
 
-    fn scroll(&mut self, args: ScrollArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "scroll", approver)?;
+    fn scroll(&mut self, args: ScrollArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let pages = if args.amount.is_finite() && args.amount > 0.0 {
             args.amount
         } else {
@@ -1991,7 +1977,7 @@ impl<B: Backend> Engine<B> {
                 if self.store.config.verify.retry
                     && let Some(p) = point
                 {
-                    let target = self.input_target(&app);
+                    let target = self.input_target(&app)?;
                     self.backend
                         .scroll_wheel(&target, p, ux * lines, uy * lines)?;
                     self.settle_on(&app);
@@ -2011,7 +1997,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend
             .scroll_wheel(&target, point, ux * lines, uy * lines)?;
         self.settle_on(&app);
@@ -2025,8 +2011,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn drag(&mut self, args: DragArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "drag", approver)?;
+    fn drag(&mut self, args: DragArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let from = self.anchor(
             &app,
             args.from_element_index,
@@ -2048,7 +2034,7 @@ impl<B: Backend> Engine<B> {
         let before = self.tree_fingerprint(app.pid);
         self.overlay_point(p0, true);
         self.overlay_point(p1, false);
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
         let mut msg = format!(
@@ -2061,8 +2047,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn press_key(&mut self, args: PressKeyArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "press_key", approver)?;
+    fn press_key(&mut self, args: PressKeyArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let combos = keys::parse_sequence(&args.key)?;
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
@@ -2070,7 +2056,7 @@ impl<B: Backend> Engine<B> {
             self.overlay_point_element(&app, h, false);
             self.focus_element(&app, h, &node)?;
         }
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         for combo in &combos {
             if self.is_stopped() {
                 return Err(self.stopped_error());
@@ -2083,8 +2069,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(format!("Pressed {}.", shown.join(" "))))
     }
 
-    fn type_text(&mut self, args: TypeTextArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "type_text", approver)?;
+    fn type_text(&mut self, args: TypeTextArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         if args.text.is_empty() {
             return Err(Error::InvalidArgs("`text` must not be empty".into()));
         }
@@ -2123,7 +2109,7 @@ impl<B: Backend> Engine<B> {
                     && let Some(p) = point
                 {
                     // Click into the field and type again.
-                    let target = self.input_target(&app);
+                    let target = self.input_target(&app)?;
                     self.backend.click(&target, p, MouseButton::Left, 1)?;
                     self.settle();
                     self.type_into_focus(&app, &args.text)?;
@@ -2144,7 +2130,7 @@ impl<B: Backend> Engine<B> {
 
     /// Type `text` into the app's focused element (newlines press Return).
     fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
-        let target = self.input_target(app);
+        let target = self.input_target(app)?;
         // Split on newlines so each becomes a Return press (works everywhere).
         let mut first = true;
         for segment in text.split('\n') {
@@ -2178,7 +2164,7 @@ impl<B: Backend> Engine<B> {
             && (ocr || self.store.config.verify.retry && node.states.editable)
             && let Some(p) = node.bounds.filter(|b| !b.is_empty()).map(|b| b.center())
         {
-            let target = self.input_target(app);
+            let target = self.input_target(app)?;
             self.backend.click(&target, p, MouseButton::Left, 1)?;
         }
         Ok(())
@@ -2194,7 +2180,7 @@ impl<B: Backend> Engine<B> {
     ) -> Result<()> {
         self.focus_element(app, handle, node)?;
         if self.backend.select_text(handle, None, 1).is_err() {
-            let target = self.input_target(app);
+            let target = self.input_target(app)?;
             self.backend
                 .press_key(&target, &keys::parse_combo("primary+a")?)?;
         }
@@ -2236,12 +2222,8 @@ impl<B: Backend> Engine<B> {
 
     // -- new tools ---------------------------------------------------------
 
-    fn find_element(
-        &mut self,
-        args: FindElementArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "find_element", approver)?;
+    fn find_element(&mut self, args: FindElementArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.observe(&app, &window, false)?;
         let role = args.role.map(|r| r.to_lowercase());
@@ -2276,8 +2258,8 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(out))
     }
 
-    fn wait_for(&mut self, args: WaitForArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
-        let app = self.authorize(&args.app, "wait_for", approver)?;
+    fn wait_for(&mut self, args: WaitForArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
         let role = args.role.clone().map(|r| r.to_lowercase());
         let name = args.name.clone().map(|n| n.to_lowercase());
         let text = args.text.clone().map(|t| t.to_lowercase());
@@ -2327,11 +2309,7 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn screenshot(
-        &mut self,
-        args: ScreenshotArgs,
-        approver: &mut dyn Approver,
-    ) -> Result<ToolOutput> {
+    fn screenshot(&mut self, args: ScreenshotArgs) -> Result<ToolOutput> {
         if self.store.config.text_only || !self.store.config.screenshot.enabled {
             return Err(Error::Blocked(
                 "screenshot".into(),
@@ -2352,14 +2330,19 @@ impl<B: Backend> Engine<B> {
                 "full screen".to_string(),
             ),
             ScreenshotMode::Region => {
-                let (x, y, w, h) = match (args.x, args.y, args.width, args.height) {
-                    (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => (x, y, w, h),
+                let region = match (args.x, args.y, args.width, args.height) {
+                    (Some(x), Some(y), Some(w), Some(h))
+                        if [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0 =>
+                    {
+                        self.clip_to_screens(Rect::new(x, y, w, h))?
+                    }
                     _ => {
                         return Err(Error::InvalidArgs(
                             "region mode needs x, y, width and height".into(),
                         ));
                     }
                 };
+                let (x, y, w, h) = (region.x, region.y, region.width, region.height);
                 (
                     self.capture_clean(|b| b.capture_screen(Some(Rect::new(x, y, w, h))))?,
                     None,
@@ -2371,7 +2354,7 @@ impl<B: Backend> Engine<B> {
                     .app
                     .as_deref()
                     .ok_or_else(|| Error::InvalidArgs("window mode needs `app`".into()))?;
-                let app = self.authorize(query, "screenshot", approver)?;
+                let app = self.resolve_app(query)?;
                 let window = self.resolve_window(&app, args.window.as_deref(), false)?;
                 if crate::privacy::active(&self.store.config.privacy)
                     || args.annotate
@@ -2486,7 +2469,7 @@ impl<B: Backend> Engine<B> {
         Ok(image(img, text))
     }
 
-    fn batch(&mut self, args: BatchArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+    fn batch(&mut self, args: BatchArgs) -> Result<ToolOutput> {
         if args.steps.is_empty() {
             return Err(Error::InvalidArgs("batch needs at least one step".into()));
         }
@@ -2515,7 +2498,7 @@ impl<B: Backend> Engine<B> {
             }
             let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
             let before = self.pending_images.len();
-            let result = parsed.and_then(|c| self.call(c, approver));
+            let result = parsed.and_then(|c| self.call(c));
             match result {
                 Ok(out) => {
                     let first = out.text.lines().next().unwrap_or("");
@@ -2548,7 +2531,7 @@ impl<B: Backend> Engine<B> {
         })
     }
 
-    fn window_tool(&mut self, args: WindowArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
+    fn window_tool(&mut self, args: WindowArgs) -> Result<ToolOutput> {
         use crate::tools::WindowAction as A;
         if args.action == A::Displays {
             let displays = self.backend.displays()?;
@@ -2574,7 +2557,7 @@ impl<B: Backend> Engine<B> {
             .app
             .as_deref()
             .ok_or_else(|| Error::InvalidArgs("this window action needs `app`".into()))?;
-        let app = self.authorize(query, "window", approver)?;
+        let app = self.resolve_app(query)?;
         if args.action == A::List {
             let windows = self.list_windows(&app, true)?;
             if windows.is_empty() {
@@ -2768,23 +2751,9 @@ impl<B: Backend> Engine<B> {
             {
                 continue;
             }
-            // The user's app rules apply to what their notifications say.
-            let probe = AppInfo {
-                name: n.app.clone(),
-                id: n.app.clone(),
-                pid: 0,
-                exe: None,
-                frontmost: false,
-                hidden: false,
-            };
             let allowed_app =
                 cfg.apps.is_empty() || cfg.apps.iter().any(|a| a.eq_ignore_ascii_case(&n.app));
-            if !allowed_app
-                || matches!(
-                    policy::evaluate(&probe, &self.store, &self.session_allowed),
-                    Verdict::Blocked(_)
-                )
-            {
+            if !allowed_app {
                 hidden += 1;
                 continue;
             }
@@ -2837,7 +2806,7 @@ impl<B: Backend> Engine<B> {
         }
         if hidden > 0 {
             out.push_str(&format!(
-                "[{hidden} from apps blocked in settings not shown]\n"
+                "[{hidden} from apps not in notifications.apps not shown]\n"
             ));
         }
         Ok(ToolOutput::text(out))
@@ -2870,50 +2839,6 @@ impl<B: Backend> Engine<B> {
             "Copied {} character(s) to the clipboard.",
             args.text.chars().count()
         )))
-    }
-
-    /// The action guard: confirm/refuse a consequential press on `label`.
-    /// While such an action waits for the user the overlay turns to the
-    /// approval colour; once it runs, to the sensitive-action colour.
-    fn guard_action(&mut self, label: &str, approver: &mut dyn Approver) -> Result<bool> {
-        use crate::config::SensitiveMode;
-        let guard = &self.store.config.guard;
-        let low = label.to_lowercase();
-        if !guard
-            .keywords
-            .iter()
-            .any(|k| low.contains(&k.to_lowercase()))
-        {
-            return Ok(false);
-        }
-        let action = format!("press {label}");
-        match guard.mode {
-            SensitiveMode::Allow => {}
-            SensitiveMode::Block => {
-                return Err(Error::Blocked(
-                    label.to_string(),
-                    "this looks like a consequential action; guard.mode is \"block\". Set guard.mode = \"ask\" or \"allow\" to permit it.".into(),
-                ));
-            }
-            SensitiveMode::Ask => {
-                let approved = match self.overlay_approval(&action, approver) {
-                    Some(answer) => answer,
-                    None => approver.confirm_action(&format!("perform: {label}")),
-                };
-                self.overlay_send(OverlayCmd::ApprovalDone);
-                if !approved {
-                    return Err(Error::Denied(format!(
-                        "the user declined the action on {label}"
-                    )));
-                }
-            }
-        }
-        if self.overlay.is_some() {
-            self.overlay_send(OverlayCmd::Danger {
-                action: Some(action),
-            });
-        }
-        Ok(true)
     }
 
     /// Re-inspect an app after a mutating action and append what changed
@@ -3011,19 +2936,6 @@ fn ocr_can_only_be_clicked(handle: ElementHandle, tool: &str) -> Result<()> {
 
 /// Appended when an action changed nothing that can be seen.
 const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
-
-/// Tools that change something on screen.
-const MUTATING_TOOLS: &[&str] = &[
-    "click",
-    "perform_secondary_action",
-    "set_value",
-    "select_text",
-    "scroll",
-    "drag",
-    "press_key",
-    "type_text",
-    "window",
-];
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
 fn mutating_app(call: &ToolCall) -> Option<String> {
@@ -3185,38 +3097,30 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApprovalMode, Config};
+    use crate::config::Config;
     use crate::mock::{Event, MockBackend};
 
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
         // Deterministic, instant time.
         e = e.with_time(Instant::now, |_| {});
         e
     }
 
-    fn allow() -> AllowApprover {
-        AllowApprover
-    }
-
     #[test]
     fn list_apps_and_state() {
         let mut e = engine();
-        let out = e.call(ToolCall::ListApps, &mut allow()).unwrap();
+        let out = e.call(ToolCall::ListApps).unwrap();
         assert!(out.text.contains("TextEdit"));
 
         let out = e
-            .call(
-                ToolCall::GetAppState(GetAppStateArgs {
-                    app: "TextEdit".into(),
-                    ..Default::default()
-                }),
-                &mut allow(),
-            )
+            .call(ToolCall::GetAppState(GetAppStateArgs {
+                app: "TextEdit".into(),
+                ..Default::default()
+            }))
             .unwrap();
         assert!(out.image.is_some());
         assert!(out.text.contains("button \"Bold\""));
@@ -3229,13 +3133,10 @@ mod tests {
     #[test]
     fn click_uses_accessibility_then_falls_back_to_coords() {
         let mut e = engine();
-        e.call(
-            ToolCall::GetAppState(GetAppStateArgs {
-                app: "TextEdit".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }))
         .unwrap();
         // Find Bold's index.
         let bold = e
@@ -3246,14 +3147,11 @@ mod tests {
             .find(|n| n.name.as_deref() == Some("Bold"))
             .unwrap()
             .index;
-        e.call(
-            ToolCall::Click(ClickArgs {
-                app: "TextEdit".into(),
-                element_index: Some(bold),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::Click(ClickArgs {
+            app: "TextEdit".into(),
+            element_index: Some(bold),
+            ..Default::default()
+        }))
         .unwrap();
         assert!(matches!(
             e.backend().events.last().unwrap(),
@@ -3261,15 +3159,12 @@ mod tests {
         ));
 
         // Right click -> coordinate path.
-        e.call(
-            ToolCall::Click(ClickArgs {
-                app: "TextEdit".into(),
-                element_index: Some(bold),
-                button: MouseButton::Right,
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::Click(ClickArgs {
+            app: "TextEdit".into(),
+            element_index: Some(bold),
+            button: MouseButton::Right,
+            ..Default::default()
+        }))
         .unwrap();
         assert!(matches!(
             e.backend().events.last().unwrap(),
@@ -3280,23 +3175,17 @@ mod tests {
     #[test]
     fn coordinate_click_maps_through_screenshot() {
         let mut e = engine();
-        e.call(
-            ToolCall::GetAppState(GetAppStateArgs {
-                app: "TextEdit".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }))
         .unwrap();
-        e.call(
-            ToolCall::Click(ClickArgs {
-                app: "TextEdit".into(),
-                x: Some(400.0),
-                y: Some(300.0),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::Click(ClickArgs {
+            app: "TextEdit".into(),
+            x: Some(400.0),
+            y: Some(300.0),
+            ..Default::default()
+        }))
         .unwrap();
         // Window is 800x600; screenshot fits to 800x600 (<=1280) so 1:1.
         assert!(matches!(
@@ -3308,13 +3197,10 @@ mod tests {
     #[test]
     fn set_value_and_type_and_select() {
         let mut e = engine();
-        e.call(
-            ToolCall::GetAppState(GetAppStateArgs {
-                app: "TextEdit".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }))
         .unwrap();
         let doc = e
             .state(4242)
@@ -3324,30 +3210,24 @@ mod tests {
             .find(|n| n.role == "text area")
             .unwrap()
             .index;
-        e.call(
-            ToolCall::SetValue(SetValueArgs {
-                app: "TextEdit".into(),
-                element_index: doc,
-                value: "World".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::SetValue(SetValueArgs {
+            app: "TextEdit".into(),
+            element_index: doc,
+            value: "World".into(),
+            ..Default::default()
+        }))
         .unwrap();
         assert!(matches!(
             e.backend().events.last().unwrap(),
             Event::SetValue(5, v) if v == "World"
         ));
-        e.call(
-            ToolCall::SelectText(SelectTextArgs {
-                app: "TextEdit".into(),
-                element_index: doc,
-                text: Some("or".into()),
-                occurrence: 1,
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::SelectText(SelectTextArgs {
+            app: "TextEdit".into(),
+            element_index: doc,
+            text: Some("or".into()),
+            occurrence: 1,
+            ..Default::default()
+        }))
         .unwrap();
         assert!(matches!(
             e.backend().events.last().unwrap(),
@@ -3358,22 +3238,16 @@ mod tests {
     #[test]
     fn press_key_sequences() {
         let mut e = engine();
-        e.call(
-            ToolCall::GetAppState(GetAppStateArgs {
-                app: "TextEdit".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }))
         .unwrap();
-        e.call(
-            ToolCall::PressKey(PressKeyArgs {
-                app: "TextEdit".into(),
-                key: "cmd+a Delete".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::PressKey(PressKeyArgs {
+            app: "TextEdit".into(),
+            key: "cmd+a Delete".into(),
+            ..Default::default()
+        }))
         .unwrap();
         let keys: Vec<_> = e
             .backend()
@@ -3384,62 +3258,96 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(keys, vec!["meta+a", "Delete"]);
+        // "cmd" is the shortcut key: Cmd on a Mac, Ctrl elsewhere.
+        let select_all = if cfg!(target_os = "macos") {
+            "meta+a"
+        } else {
+            "ctrl+a"
+        };
+        assert_eq!(keys, vec![select_all, "Delete"]);
+    }
+
+    /// An engine with TextEdit (pid 4242) behind another app that is in front.
+    fn behind_engine() -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        app.info.frontmost = false;
+        backend.add_app(app);
+        let mut front = MockBackend::text_editor(77);
+        front.info.name = "Terminal".into();
+        front.info.id = "com.apple.Terminal".into();
+        backend.add_app(front);
+        Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {})
+    }
+
+    fn keys_sent(e: &Engine<MockBackend>) -> Vec<(u32, String)> {
+        e.backend()
+            .events
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::Key(pid, k) => Some((*pid, k.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keys_go_to_the_app_only_once_it_is_in_front() {
+        let mut e = behind_engine();
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "Return"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            e.backend()
+                .window_ops
+                .iter()
+                .any(|(_, op)| *op == WindowOp::Focus),
+            "brought to the front first"
+        );
+        assert_eq!(keys_sent(&e), vec![(4242, "Return".to_string())]);
+    }
+
+    #[test]
+    fn no_input_when_the_app_cannot_come_to_the_front() {
+        let mut e = behind_engine();
+        e.backend_mut().refuse_focus = true;
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "rm -rf ~\n"}),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Terminal, which is in front"),
+            "{}",
+            out.text
+        );
+        assert!(keys_sent(&e).is_empty(), "nothing typed anywhere");
+        assert!(
+            !e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Type(..))),
+            "nothing typed anywhere"
+        );
     }
 
     #[test]
     fn unknown_index_is_a_tool_error() {
         let mut e = engine();
-        e.call(
-            ToolCall::GetAppState(GetAppStateArgs {
-                app: "TextEdit".into(),
-                ..Default::default()
-            }),
-            &mut allow(),
-        )
+        e.call(ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }))
         .unwrap();
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": 999}),
-            &mut allow(),
         );
         assert!(out.is_error);
         assert!(out.text.contains("Element indices are only valid"));
-    }
-
-    #[test]
-    fn blocked_app_is_refused() {
-        let mut backend = MockBackend::new();
-        let mut term = MockBackend::text_editor(10);
-        term.info.name = "iTerm2".into();
-        term.info.id = "com.googlecode.iterm2".into();
-        backend.add_app(term);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "iTerm2"}),
-            &mut allow(),
-        );
-        assert!(out.is_error);
-        assert!(out.text.contains("terminal"));
-    }
-
-    #[test]
-    fn approval_denied_blocks() {
-        let mut backend = MockBackend::new();
-        backend.add_app(MockBackend::text_editor(7));
-        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
-            .with_time(Instant::now, |_| {});
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut DenyApprover,
-        );
-        assert!(out.is_error);
-        assert!(out.text.contains("denied"));
     }
 
     #[test]
@@ -3452,37 +3360,58 @@ mod tests {
             a.info.exe = Some("/System/Applications/Notes.app".into());
             a
         });
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         let out = e
-            .call(
-                ToolCall::LaunchApp(LaunchAppArgs {
-                    app: "Notes".into(),
-                }),
-                &mut allow(),
-            )
+            .call(ToolCall::LaunchApp(LaunchAppArgs {
+                app: "Notes".into(),
+            }))
             .unwrap();
         assert!(out.text.contains("Launched Notes"));
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Notes"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("get_app_state", serde_json::json!({"app": "Notes"}));
         assert!(!out.is_error);
     }
 
     #[test]
-    fn cannot_launch_a_terminal() {
+    fn launch_app_never_takes_a_command_line() {
         let mut e = engine();
+        // The whole string is the program; it is never split into arguments.
         let out = e.call_tool(
             "launch_app",
-            serde_json::json!({"app": "xterm"}),
-            &mut allow(),
+            serde_json::json!({"app": "xterm -e sh -c id"}),
         );
         assert!(out.is_error);
-        assert!(out.text.contains("terminal"));
+        assert!(
+            e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Launch(q) if q == "xterm -e sh -c id"))
+        );
+        // Nothing that could read as an option.
+        let out = e.call_tool("launch_app", serde_json::json!({"app": " --args x"}));
+        assert!(
+            out.is_error && out.text.contains("no options"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn screenshot_regions_off_the_screen_are_refused_not_fatal() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": 1.0e9, "y": 5, "width": 1.0e12, "height": 10}),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("not on any display"), "{}", out.text);
+        // Partly on a display: the visible part is captured.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": -50, "y": -50, "width": 100, "height": 100}),
+        );
+        assert!(!out.is_error, "{}", out.text);
     }
 
     #[test]
@@ -3520,7 +3449,6 @@ mod tests {
             .call_tool(
                 "find_element",
                 serde_json::json!({"app": "TextEdit", "role": "button"}),
-                &mut allow(),
             )
             .text;
         assert!(out.contains("Bold"), "{out}");
@@ -3529,7 +3457,6 @@ mod tests {
         let out = e.call_tool(
             "find_element",
             serde_json::json!({"app": "TextEdit", "editable": true}),
-            &mut allow(),
         );
         assert!(out.text.contains("text area"), "{}", out.text);
     }
@@ -3540,15 +3467,13 @@ mod tests {
         let out = e.call_tool(
             "wait_for",
             serde_json::json!({"app": "TextEdit", "name": "Bold", "timeout_ms": 500}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("Found after waiting"));
 
         let out = e.call_tool(
             "wait_for",
-            serde_json::json!({"app": "TextEdit", "name": "Nonexistent", "timeout_ms": 60, "poll_ms": 20}),
-            &mut allow(),
+            serde_json::json!({"app": "TextEdit", "name": "Nonexistent", "timeout_ms": 60, "poll_ms": 20})
         );
         assert!(out.is_error);
         assert!(out.text.contains("timed out"));
@@ -3557,37 +3482,24 @@ mod tests {
     #[test]
     fn clipboard_round_trips() {
         let mut e = engine();
-        let out = e.call_tool(
-            "set_clipboard",
-            serde_json::json!({"text": "hello clip"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("set_clipboard", serde_json::json!({"text": "hello clip"}));
         assert!(!out.is_error);
-        let out = e.call_tool("get_clipboard", serde_json::json!({}), &mut allow());
+        let out = e.call_tool("get_clipboard", serde_json::json!({}));
         assert!(out.text.contains("hello clip"), "{}", out.text);
     }
 
     #[test]
     fn screenshot_full_and_region() {
         let mut e = engine();
-        let out = e.call_tool(
-            "screenshot",
-            serde_json::json!({"mode": "full"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("screenshot", serde_json::json!({"mode": "full"}));
         assert!(out.image.is_some());
         let out = e.call_tool(
             "screenshot",
             serde_json::json!({"mode": "region", "x": 0, "y": 0, "width": 100, "height": 50}),
-            &mut allow(),
         );
         assert!(out.image.is_some());
         // Region without full coords is an error.
-        let out = e.call_tool(
-            "screenshot",
-            serde_json::json!({"mode": "region", "x": 0}),
-            &mut allow(),
-        );
+        let out = e.call_tool("screenshot", serde_json::json!({"mode": "region", "x": 0}));
         assert!(out.is_error);
     }
 
@@ -3597,7 +3509,6 @@ mod tests {
         let out = e.call_tool(
             "screenshot",
             serde_json::json!({"mode": "window", "app": "TextEdit", "annotate": true}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.image.is_some());
@@ -3615,7 +3526,6 @@ mod tests {
                     {"tool": "set_value", "arguments": {"element_index": 4, "value": "hi"}}
                 ]
             }),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("1. get_app_state"));
@@ -3631,7 +3541,6 @@ mod tests {
                     {"tool": "get_app_state", "arguments": {}}
                 ]
             }),
-            &mut allow(),
         );
         assert!(out.is_error);
         assert!(
@@ -3642,57 +3551,9 @@ mod tests {
     }
 
     #[test]
-    fn guard_blocks_and_confirms_sensitive_press() {
-        // A backend with a "Send" button that has a press action.
-        let mut backend = MockBackend::new();
-        let mut app = MockBackend::text_editor(50);
-        app.elements.push(
-            crate::mock::MockElement::new(9, "button", "Send", Rect::new(0.0, 0.0, 40.0, 20.0))
-                .child_of(1)
-                .with_actions(&["AXPress"]),
-        );
-        backend.add_app(app);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut allow(),
-        );
-        let send = e
-            .state(50)
-            .unwrap()
-            .nodes
-            .iter()
-            .find(|n| n.name.as_deref() == Some("Send"))
-            .unwrap()
-            .index;
-        // DenyApprover.confirm_action() returns false -> blocked.
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut DenyApprover,
-        );
-        assert!(out.is_error, "guard should block: {}", out.text);
-        // AllowApprover confirms -> allowed.
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut allow(),
-        );
-        assert!(!out.is_error, "{}", out.text);
-    }
-
-    #[test]
     fn change_report_appended_after_action() {
         let mut e = engine();
-        e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut allow(),
-        );
+        e.call_tool("get_app_state", serde_json::json!({"app": "TextEdit"}));
         let doc = e
             .state(4242)
             .unwrap()
@@ -3704,7 +3565,6 @@ mod tests {
         let out = e.call_tool(
             "set_value",
             serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "changed!"}),
-            &mut allow(),
         );
         assert!(out.text.contains("State after the action"), "{}", out.text);
         assert!(out.text.contains("changed!"), "{}", out.text);
@@ -3755,7 +3615,6 @@ mod tests {
         backend.on_press.insert(20, page_b(7));
         backend.on_press.insert(30, page_a(7));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.tree.report_changes = report;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
@@ -3775,7 +3634,7 @@ mod tests {
         if let (Some(a), Some(x)) = (args.as_object_mut(), extra.as_object()) {
             a.extend(x.clone());
         }
-        let out = e.call_tool("get_app_state", args, &mut allow());
+        let out = e.call_tool("get_app_state", args);
         assert!(!out.is_error, "{}", out.text);
         out
     }
@@ -3784,7 +3643,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": index}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         out
@@ -3835,7 +3693,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": back}),
-            &mut allow(),
         );
         assert!(out.is_error, "{}", out.text);
 
@@ -3843,7 +3700,6 @@ mod tests {
         e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "x": 100, "y": 100}),
-            &mut allow(),
         );
         assert!(matches!(
             e.backend().events.last().unwrap(),
@@ -3947,8 +3803,7 @@ mod tests {
         backend.add_app(main());
         backend.on_press.insert(20, with_dialog);
         backend.on_press.insert(41, main());
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
 
@@ -3982,7 +3837,6 @@ mod tests {
         canvas.elements.retain(|el| el.handle == 1);
         backend.add_app(canvas);
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.ocr.mode = crate::config::OcrMode::Off;
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
@@ -4021,7 +3875,6 @@ mod tests {
         e.call_tool(
             "find_element",
             serde_json::json!({"app": "TextEdit", "name": "Next"}),
-            &mut allow(),
         );
         state_of(&mut e, serde_json::json!({}));
         assert_eq!(e.backend().snapshots, snaps, "tree read reused");
@@ -4064,7 +3917,6 @@ mod tests {
         let out = e.call_tool(
             "find_element",
             serde_json::json!({"app": "TextEdit", "name": "Next"}),
-            &mut allow(),
         );
         assert!(
             out.text.contains(&format!("{next} button \"Next\"")),
@@ -4084,7 +3936,6 @@ mod tests {
                 {"tool": "get_app_state", "arguments": {}},
                 {"tool": "screenshot", "arguments": {"mode": "full"}}
             ]}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.image.is_some());
@@ -4098,7 +3949,6 @@ mod tests {
             serde_json::json!({"app": "TextEdit", "steps": [
                 {"tool": "get_app_state", "arguments": {}}
             ]}),
-            &mut allow(),
         );
         let out = state_of(&mut e, serde_json::json!({}));
         assert!(out.image.is_none(), "{}", out.text);
@@ -4107,18 +3957,43 @@ mod tests {
     // -- overlay hooks (a stand-in helper records what it is told) ---------
 
     #[cfg(unix)]
-    fn recording_helper(log: &std::path::Path, answer: Option<bool>) -> Launcher {
-        let reply = match answer {
-            Some(ok) => format!(
-                r#"echo '{{"t":"ready","excluded":true,"available":true}}'; while IFS= read -r l; do echo "$l" >> '{log}'; case "$l" in *'"ask":true'*) id=$(echo "$l" | sed 's/.*"id":\([0-9]*\).*/\1/'); echo "{{\"t\":\"answer\",\"id\":$id,\"ok\":{ok}}}";; esac; done"#,
-                log = log.display()
-            ),
-            None => format!("cat > '{}'", log.display()),
-        };
+    fn recording_helper(log: &std::path::Path) -> Launcher {
         Launcher {
             program: "sh".into(),
-            args: vec!["-c".into(), reply],
+            args: vec!["-c".into(), format!("cat > '{}'", log.display())],
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_key_that_does_not_work_is_reported_once() {
+        let dir = std::env::temp_dir().join(format!("cu-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stop.log");
+        // A helper that says the system refused the key.
+        let helper = Launcher {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    r#"echo '{{"t":"hotkey","key":"ctrl+alt+escape","ok":false}}'; cat > '{}'"#,
+                    log.display()
+                ),
+            ],
+        };
+        let mut e = engine().with_overlay(helper);
+        e.arm();
+        assert!(e.check_stop_key(Duration::from_secs(5)).is_err());
+        let first = e.call_tool("list_apps", serde_json::json!({}));
+        assert!(
+            first.text.contains("emergency stop key") && first.text.contains("not working"),
+            "{}",
+            first.text
+        );
+        let second = e.call_tool("list_apps", serde_json::json!({}));
+        assert!(!second.text.contains("emergency stop key"), "told once");
+        drop(e);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -4140,7 +4015,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-ov-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("follow.log");
-        let mut e = nav_engine(false).with_overlay(recording_helper(&log, None));
+        let mut e = nav_engine(false).with_overlay(recording_helper(&log));
         state_of(&mut e, serde_json::json!({}));
         press_named(&mut e, 7, "Next");
         drop(e); // closes the helper's stdin
@@ -4154,44 +4029,6 @@ mod tests {
             r#""t":"end","ok":true"#,
         ] {
             assert!(t.contains(want), "missing {want} in:\n{t}");
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sensitive_click_waits_for_the_screen_when_no_client_can_ask() {
-        let dir = std::env::temp_dir().join(format!("cu-ov2-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (answer, allowed) in [(true, true), (false, false)] {
-            let log = dir.join(format!("ask-{answer}.log"));
-            let mut backend = MockBackend::new();
-            let mut app = MockBackend::text_editor(60);
-            app.elements.push(button(9, "Send", 2, 200.0));
-            backend.add_app(app);
-            let mut cfg = Config::default();
-            cfg.approvals.mode = ApprovalMode::AllowAll;
-            let mut e = Engine::new(backend, ConfigStore::in_memory(cfg))
-                .with_time(Instant::now, |_| {})
-                .with_overlay(recording_helper(&log, Some(answer)));
-            state_of(&mut e, serde_json::json!({}));
-            let send = index_named(&e, 60, "Send");
-            // DenyApprover can't ask anyone: the screen is asked instead.
-            let out = e.call_tool(
-                "click",
-                serde_json::json!({"app": "TextEdit", "element_index": send}),
-                &mut DenyApprover,
-            );
-            assert_eq!(!out.is_error, allowed, "{}", out.text);
-            drop(e);
-            let t = read_log(&log);
-            assert!(t.contains(r#""ask":true"#), "{t}");
-            if allowed {
-                assert!(
-                    t.contains(r#""t":"danger","action":"press button \"Send\"""#),
-                    "{t}"
-                );
-            }
         }
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4232,7 +4069,7 @@ mod tests {
                 serde_json::json!({"app": "TextEdit", "element_index": 1}),
             ),
         ] {
-            let out = e.call_tool(tool, args, &mut allow());
+            let out = e.call_tool(tool, args);
             assert!(out.is_error, "{tool}");
             // "Ctrl+Alt+Esc" (Ctrl+Option+Esc on a Mac).
             let key = crate::overlay::helper::pretty_key("ctrl+alt+escape");
@@ -4243,15 +4080,11 @@ mod tests {
             "batch",
             serde_json::json!({"app": "TextEdit", "continue_on_error": true,
                 "steps": [{"tool": "list_apps"}, {"tool": "list_apps"}]}),
-            &mut allow(),
         );
         assert!(out.is_error);
         e.set_stopped(false);
         assert!(!e.is_stopped());
-        assert!(
-            !e.call_tool("list_apps", serde_json::json!({}), &mut allow())
-                .is_error
-        );
+        assert!(!e.call_tool("list_apps", serde_json::json!({})).is_error);
     }
 
     #[test]
@@ -4261,15 +4094,13 @@ mod tests {
         // The user is typing (input 0.1 s and 0.4 s ago), then stops.
         backend.idle_script = [100, 400].map(Duration::from_millis).into();
         backend.idle = Some(Duration::from_secs(5));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let (mut e, clock) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
         let t0 = *clock.lock().unwrap();
         let out = e.call_tool(
             "press_key",
             serde_json::json!({"app": "TextEdit", "key": "Return"}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         let waited = clock.lock().unwrap().saturating_duration_since(t0);
@@ -4282,10 +4113,7 @@ mod tests {
 
         // Reading is never held up.
         e.backend_mut().idle = Some(Duration::ZERO);
-        assert!(
-            !e.call_tool("list_apps", serde_json::json!({}), &mut allow())
-                .is_error
-        );
+        assert!(!e.call_tool("list_apps", serde_json::json!({})).is_error);
     }
 
     #[test]
@@ -4294,7 +4122,6 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         backend.idle = Some(Duration::from_millis(100));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.control.max_pause_secs = 3;
         let (mut e, _) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
@@ -4302,7 +4129,6 @@ mod tests {
         let out = e.call_tool(
             "press_key",
             serde_json::json!({"app": "TextEdit", "key": "Return"}),
-            &mut allow(),
         );
         assert!(
             out.is_error && out.text.contains("using the mouse or keyboard"),
@@ -4318,7 +4144,6 @@ mod tests {
         let out = e.call_tool(
             "press_key",
             serde_json::json!({"app": "TextEdit", "key": "Return"}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
     }
@@ -4327,15 +4152,13 @@ mod tests {
     fn own_input_is_not_taken_for_the_user() {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let (mut e, clock) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
         let press = |e: &mut Engine<MockBackend>| {
             e.call_tool(
                 "press_key",
                 serde_json::json!({"app": "TextEdit", "key": "Tab"}),
-                &mut allow(),
             )
         };
         assert!(!press(&mut e).is_error);
@@ -4380,8 +4203,7 @@ mod tests {
     fn private_data_never_reaches_the_model() {
         let mut backend = MockBackend::new();
         backend.add_app(login_app(4242));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
@@ -4401,11 +4223,7 @@ mod tests {
         assert_eq!(at(700, 500), [200, 200, 200]);
 
         // The screenshot tool too.
-        let out = e.call_tool(
-            "screenshot",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("screenshot", serde_json::json!({"app": "TextEdit"}));
         assert!(out.text.contains("blacked out"), "{}", out.text);
 
         // Settings can switch it off.
@@ -4441,7 +4259,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(e.is_stopped());
-        let out = e.call_tool("list_apps", serde_json::json!({}), &mut allow());
+        let out = e.call_tool("list_apps", serde_json::json!({}));
         assert!(
             out.is_error && out.text.contains("stop key"),
             "{}",
@@ -4474,7 +4292,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         // Read until two reads agreed (after "Done"), and the report shows it.
@@ -4494,7 +4311,6 @@ mod tests {
         e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert_eq!(e.backend().snapshots, before + 1);
     }
@@ -4508,7 +4324,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(
@@ -4532,7 +4347,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert!(out.is_error, "{}", out.text);
     }
@@ -4545,7 +4359,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert!(
             out.text.contains("Nothing on screen changed"),
@@ -4570,7 +4383,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
-            &mut allow(),
         );
         assert!(
             out.text.contains("clicked it with the mouse too"),
@@ -4578,37 +4390,6 @@ mod tests {
             out.text
         );
         assert_eq!(presses(&e), 3);
-    }
-
-    #[test]
-    fn guarded_presses_are_never_repeated() {
-        let mut backend = MockBackend::new();
-        let mut app = MockBackend::text_editor(4242);
-        app.elements.push(button(9, "Send", 2, 200.0));
-        backend.add_app(app);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        cfg.verify.retry_on_no_change = true;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        let out = state_of(&mut e, serde_json::json!({}));
-        let send = index_of_name(&out.text, "\"Send\"");
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut allow(),
-        );
-        assert!(
-            out.text.contains("Nothing on screen changed"),
-            "{}",
-            out.text
-        );
-        assert!(
-            !e.backend()
-                .events
-                .iter()
-                .any(|ev| matches!(ev, Event::Click(..)))
-        );
     }
 
     #[test]
@@ -4620,7 +4401,6 @@ mod tests {
         let out = e.call_tool(
             "set_value",
             serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "Replaced"}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("typed it instead"), "{}", out.text);
@@ -4639,7 +4419,6 @@ mod tests {
         let out = e.call_tool(
             "type_text",
             serde_json::json!({"app": "TextEdit", "element_index": doc, "text": " world"}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("didn't land"), "{}", out.text);
@@ -4653,7 +4432,6 @@ mod tests {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.screenshot.attach = AttachMode::Always;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
@@ -4689,7 +4467,6 @@ mod tests {
         let out = e.call_tool(
             "click",
             serde_json::json!({"app": "TextEdit", "x": 700, "y": 550}),
-            &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(e.backend().events.iter().any(|ev| matches!(
@@ -4718,9 +4495,8 @@ mod tests {
     #[test]
     fn the_screenshot_tool_sends_what_changed_and_zooms_into_elements() {
         let mut e = always_shot_engine();
-        let shot = |e: &mut Engine<MockBackend>, args: serde_json::Value| {
-            e.call_tool("screenshot", args, &mut allow())
-        };
+        let shot =
+            |e: &mut Engine<MockBackend>, args: serde_json::Value| e.call_tool("screenshot", args);
         let out = shot(&mut e, serde_json::json!({}));
         assert_eq!(out.image.as_ref().unwrap().width, 1280, "{}", out.text);
         // Nothing changed: said, not re-sent.
@@ -4767,9 +4543,8 @@ mod tests {
     #[test]
     fn windows_can_be_arranged() {
         let mut e = engine();
-        let win = |e: &mut Engine<MockBackend>, args: serde_json::Value| {
-            e.call_tool("window", args, &mut allow())
-        };
+        let win =
+            |e: &mut Engine<MockBackend>, args: serde_json::Value| e.call_tool("window", args);
         let out = win(&mut e, serde_json::json!({"action": "displays"}));
         assert!(
             out.text.contains("display 0 (primary): 1280x800 at 0,0"),
@@ -4883,7 +4658,6 @@ mod tests {
         backend.add_app(app);
         backend.ocr_text = lines;
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
         // Every read looks again (the tests change the picture).
         cfg.cache.snapshot_ttl_ms = 0;
@@ -4908,11 +4682,7 @@ mod tests {
                 ..line("~~noise~~", 300.0, 300.0)
             },
         ]));
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Game"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert!(out.text.contains("ocr text \"New Game\""), "{}", out.text);
         assert!(
             out.text.contains("2 line(s) of text were read"),
@@ -4926,7 +4696,6 @@ mod tests {
         let r = e.call_tool(
             "click",
             serde_json::json!({"app": "Game", "element_index": options}),
-            &mut allow(),
         );
         assert!(!r.is_error, "{}", r.text);
         assert!(e.backend().events.iter().any(|ev| matches!(
@@ -4937,23 +4706,14 @@ mod tests {
         let r = e.call_tool(
             "set_value",
             serde_json::json!({"app": "Game", "element_index": options, "value": "x"}),
-            &mut allow(),
         );
         assert!(r.is_error && r.text.contains("OCR"), "{}", r.text);
         // An unchanged picture isn't read again.
         let runs = e.backend().ocr_runs;
-        e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Game"}),
-            &mut allow(),
-        );
+        e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert_eq!(e.backend().ocr_runs, runs);
         e.backend_mut().fill = 90;
-        e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Game"}),
-            &mut allow(),
-        );
+        e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert_eq!(e.backend().ocr_runs, runs + 1);
     }
 
@@ -4976,21 +4736,13 @@ mod tests {
     #[test]
     fn missing_ocr_is_explained_once() {
         let mut e = canvas_engine(None);
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Game"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert!(
             out.text.contains("Text recognition unavailable"),
             "{}",
             out.text
         );
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "Game"}),
-            &mut allow(),
-        );
+        let out = e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert!(
             !out.text.contains("Text recognition unavailable"),
             "{}",
@@ -5025,7 +4777,7 @@ mod tests {
                 .iter()
                 .any(|d| d.name == "get_notifications")
         );
-        let out = e.call_tool("get_notifications", serde_json::json!({}), &mut allow());
+        let out = e.call_tool("get_notifications", serde_json::json!({}));
         assert!(
             out.is_error && out.text.contains("off in settings"),
             "{}",
@@ -5035,7 +4787,7 @@ mod tests {
         let mut cfg = e.store().config.clone();
         cfg.notifications.enabled = true;
         e.set_config(ConfigStore::in_memory(cfg));
-        let out = e.call_tool("get_notifications", serde_json::json!({}), &mut allow());
+        let out = e.call_tool("get_notifications", serde_json::json!({}));
         assert!(!out.is_error, "{}", out.text);
         assert!(
             out.text.contains("[10 min ago] Slack — Ada: Lunch at 1?"),
@@ -5045,20 +4797,17 @@ mod tests {
         assert!(out.text.contains("code is ••••••"), "{}", out.text);
         assert!(!out.text.contains("482913"), "{}", out.text);
         assert!(out.text.contains("•••• •••• •••• 1111"), "{}", out.text);
-        // A password manager is a blocked category.
+        assert!(out.text.contains("4 recent notification"), "{}", out.text);
+        // notifications.apps narrows it to a list.
+        let mut cfg = e.store().config.clone();
+        cfg.notifications.apps = vec!["Slack".into(), "Bank".into(), "Shop".into()];
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool("get_notifications", serde_json::json!({}));
         assert!(!out.text.contains("Vault"), "{}", out.text);
-        assert!(out.text.contains("1 from apps blocked"), "{}", out.text);
-        let out = e.call_tool(
-            "get_notifications",
-            serde_json::json!({"app": "slack"}),
-            &mut allow(),
-        );
+        assert!(out.text.contains("1 from apps not in"), "{}", out.text);
+        let out = e.call_tool("get_notifications", serde_json::json!({"app": "slack"}));
         assert!(out.text.contains("1 recent notification"), "{}", out.text);
-        let out = e.call_tool(
-            "get_notifications",
-            serde_json::json!({"limit": 1}),
-            &mut allow(),
-        );
+        let out = e.call_tool("get_notifications", serde_json::json!({"limit": 1}));
         assert!(
             out.text.contains("Receipt") && !out.text.contains("Ada"),
             "{}",

@@ -534,16 +534,13 @@ impl Backend for WindowsBackend {
     }
 
     fn launch_app(&mut self, query: &str) -> Result<()> {
-        let mut parts = query.split_whitespace();
-        let program = parts
-            .next()
-            .ok_or_else(|| Error::InvalidArgs("empty app".into()))?;
-        let args: Vec<&str> = parts.collect();
-        Command::new(program)
-            .args(&args)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| Error::ActionFailed(format!("could not launch `{program}`: {e}")))
+        // The whole query is the program: never split into arguments, so a
+        // launch can't become a command line (`cmd /c …`).
+        crate::backend::spawn_detached(Command::new(query)).map_err(|e| {
+            Error::ActionFailed(format!(
+                "could not launch `{query}`: {e}. Pass an executable name or path (no arguments)."
+            ))
+        })
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {

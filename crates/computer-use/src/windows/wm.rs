@@ -62,7 +62,7 @@ pub fn displays() -> Result<Vec<Display>> {
 }
 
 pub fn apply(hwnd: HWND, pid: u32, op: &WindowOp) -> Result<()> {
-    // Only windows of the app that was approved.
+    // Only windows of the app the call is about.
     let mut owner = 0u32;
     // SAFETY: reads the owning process of a window handle.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };

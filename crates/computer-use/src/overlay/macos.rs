@@ -1,8 +1,8 @@
 //! macOS overlay: borderless, transparent `NSWindow`s at screen-saver level
 //! that ignore mouse events, join every Space, never take focus (the helper
 //! is an accessory app with no Dock icon) and have `sharingType = none`, so
-//! screen captures leave them out. Confirmations use a native `NSAlert`. The
-//! window server removes the windows if the helper process dies.
+//! screen captures leave them out. The window server removes the windows if
+//! the helper process dies.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -11,15 +11,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSApplicationActivationPolicy,
-    NSBackingStoreType, NSColor, NSEventMask, NSImage, NSImageScaling, NSImageView, NSScreen,
-    NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowSharingType,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
+    NSImage, NSImageScaling, NSImageView, NSScreen, NSScreenSaverWindowLevel, NSWindow,
+    NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
-use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 use tiny_skia::Pixmap;
 
-use super::helper::{Ask, Layer, Surface, SurfaceEvent};
+use super::helper::{Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -93,7 +92,6 @@ pub struct MacSurface {
     hidden: bool,
     /// Current fade level, applied to every window.
     opacity: f32,
-    answers: Vec<(u64, bool)>,
     /// The registered stop key, and whether the handler is installed.
     hotkey: Option<*mut c_void>,
     handler: bool,
@@ -103,7 +101,7 @@ impl MacSurface {
     pub fn open() -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("the overlay must run on the main thread")?;
         let app = NSApplication::sharedApplication(mtm);
-        // No Dock icon, never the active app unless asking the user.
+        // No Dock icon, never the active app.
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         app.finishLaunching();
         let screens = NSScreen::screens(mtm);
@@ -127,7 +125,6 @@ impl MacSurface {
             layers: HashMap::new(),
             hidden: false,
             opacity: 1.0,
-            answers: Vec::new(),
             hotkey: None,
             handler: false,
         })
@@ -267,20 +264,6 @@ impl Surface for MacSurface {
         true
     }
 
-    fn confirm(&mut self, id: u64, ask: &Ask) {
-        let alert = NSAlert::new(self.mtm);
-        alert.setMessageText(&NSString::from_str(&ask.title));
-        alert.setInformativeText(&NSString::from_str(&ask.message));
-        alert.addButtonWithTitle(&NSString::from_str(&ask.allow));
-        alert.addButtonWithTitle(&NSString::from_str(&ask.deny));
-        alert.setAlertStyle(NSAlertStyle::Critical);
-        // Bring the question in front of the user.
-        #[allow(deprecated)]
-        self.app.activateIgnoringOtherApps(true);
-        let answer = alert.runModal() == NSAlertFirstButtonReturn;
-        self.answers.push((id, answer));
-    }
-
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
         if let Some(r) = self.hotkey.take() {
             // SAFETY: unregistering the hot key we registered.
@@ -344,10 +327,7 @@ impl Surface for MacSurface {
         ) {
             self.app.sendEvent(&event);
         }
-        let mut events: Vec<SurfaceEvent> = std::mem::take(&mut self.answers)
-            .into_iter()
-            .map(|(id, ok)| SurfaceEvent::Answer(id, ok))
-            .collect();
+        let mut events = Vec::new();
         if HOTKEY_HIT.swap(false, Ordering::SeqCst) {
             events.push(SurfaceEvent::Hotkey);
         }

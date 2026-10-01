@@ -351,14 +351,22 @@ impl X11 {
     }
 
     pub fn capture(&self, rect: Rect) -> Result<Capture> {
-        let x = rect.x.max(0.0) as i16;
-        let y = rect.y.max(0.0) as i16;
-        let w = (rect.width.round() as i32)
-            .clamp(1, i32::from(self.root_w) - i32::from(x))
-            .max(1) as u16;
-        let h = (rect.height.round() as i32)
-            .clamp(1, i32::from(self.root_h) - i32::from(y))
-            .max(1) as u16;
+        // Only the part of `rect` that is on the screen.
+        let (rw, rh) = (f64::from(self.root_w), f64::from(self.root_h));
+        let (x0, y0) = (rect.x.clamp(0.0, rw), rect.y.clamp(0.0, rh));
+        let (x1, y1) = (
+            (rect.x + rect.width).clamp(0.0, rw),
+            (rect.y + rect.height).clamp(0.0, rh),
+        );
+        if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+            return Err(Error::InvalidArgs(format!(
+                "the area ({:.0}, {:.0}) {:.0}x{:.0} is outside the screen ({}x{})",
+                rect.x, rect.y, rect.width, rect.height, self.root_w, self.root_h
+            )));
+        }
+        let (x, y) = (x0 as i16, y0 as i16);
+        let w = (x1 - x0).round().max(1.0) as u16;
+        let h = (y1 - y0).round().max(1.0) as u16;
         let img = self
             .conn
             .get_image(ImageFormat::Z_PIXMAP, self.root, x, y, w, h, !0)

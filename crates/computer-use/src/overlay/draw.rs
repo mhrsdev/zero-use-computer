@@ -116,7 +116,6 @@ pub fn cursor(
     body: Color,
     ring: Color,
     ripple: Option<f32>,
-    pulse: f32,
 ) -> CursorArt {
     // About the size of a system pointer, so it is easy to follow.
     let s = scale * 1.35;
@@ -134,7 +133,7 @@ pub fn cursor(
     let (c, id) = (pad, Transform::identity());
 
     // A soft glow around the tip in the state colour.
-    let glow_r = (16.0 + 4.0 * pulse) * s;
+    let glow_r = 16.0 * s;
     if let (Some(p), Some(shader)) = (
         PathBuilder::from_circle(c, c, glow_r),
         RadialGradient::new(
@@ -260,7 +259,7 @@ pub fn cursor(
 }
 
 /// The status label: a pill with a dot in the state colour and `text`.
-/// Dark state colours (e.g. black for a sensitive action) get a light pill
+/// Dark state colours get a light pill
 /// so they stand out.
 pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap {
     let px = 13.5 * scale;
@@ -337,8 +336,8 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
 
 /// One border edge: a glow in `color` that is strongest (with a bright core
 /// line `core` px thick) on side `strong` — 0 top, 1 right, 2 bottom, 3 left
-/// — and fades out across the band. A dark colour (e.g. black for a
-/// sensitive action) gets a light core so it shows on dark screens too.
+/// — and fades out across the band. A dark colour gets a light core so it
+/// shows on dark screens too.
 pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pixmap {
     let (w, h) = (width.max(1), height.max(1));
     let mut pm = Pixmap::new(w, h).expect("edge size");
@@ -384,102 +383,6 @@ pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pix
         }
     }
     pm
-}
-
-/// Fit `text` into `max_w` pixels at `px`, cutting it with "…" if needed.
-fn fit_text(fonts: &Fonts, text_str: &str, px: f32, max_w: f32) -> text::TextPath {
-    let t = text::layout(fonts, text_str, px);
-    if t.width <= max_w {
-        return t;
-    }
-    let chars: Vec<char> = text_str.chars().collect();
-    let mut n = chars.len();
-    while n > 1 {
-        n -= 1;
-        let s: String = chars[..n].iter().collect::<String>() + "…";
-        let t = text::layout(fonts, &s, px);
-        if t.width <= max_w {
-            return t;
-        }
-    }
-    text::layout(fonts, "…", px)
-}
-
-/// A confirmation panel (for platforms without a native dialog): title,
-/// message and two buttons. Returns the image and the button rectangles
-/// (allow, deny) as (x, y, w, h) in image pixels.
-#[allow(clippy::type_complexity)]
-pub fn panel(
-    fonts: &Fonts,
-    title: &str,
-    message: &str,
-    allow: &str,
-    deny: &str,
-    accent: Color,
-    scale: f32,
-) -> (Pixmap, [(f32, f32, f32, f32); 2]) {
-    let s = scale;
-    let (w, pad) = (460.0 * s, 20.0 * s);
-    let title_t = fit_text(fonts, title, 16.0 * s, w - 2.0 * pad);
-    let msg_t = fit_text(fonts, message, 14.0 * s, w - 2.0 * pad);
-    let (bw, bh) = (120.0 * s, 34.0 * s);
-    let h = pad + title_t.height + 10.0 * s + msg_t.height + 18.0 * s + bh + pad;
-    let mut pm = Pixmap::new(w.ceil() as u32, h.ceil() as u32).expect("panel size");
-    let id = Transform::identity();
-    if let Some(bg) = rounded_rect(s, s, w - 2.0 * s, h - 2.0 * s, 14.0 * s) {
-        pm.fill_path(
-            &bg,
-            &paint(Color::from_rgba8(24, 24, 30, 250)),
-            FillRule::Winding,
-            id,
-            None,
-        );
-        pm.stroke_path(&bg, &paint(accent), &stroke(2.5 * s), id, None);
-    }
-    let white = paint(Color::from_rgba8(255, 255, 255, 255));
-    // Right-to-left lines are aligned right.
-    let x_for = |t: &text::TextPath| if t.rtl { w - pad - t.width } else { pad };
-    if let Some(p) = &title_t.path {
-        pm.fill_path(
-            p,
-            &white,
-            FillRule::Winding,
-            Transform::from_translate(x_for(&title_t), pad),
-            None,
-        );
-    }
-    let my = pad + title_t.height + 10.0 * s;
-    if let Some(p) = &msg_t.path {
-        pm.fill_path(
-            p,
-            &paint(Color::from_rgba8(225, 225, 232, 255)),
-            FillRule::Winding,
-            Transform::from_translate(x_for(&msg_t), my),
-            None,
-        );
-    }
-    let by = h - pad - bh;
-    let allow_r = (w - pad - bw, by, bw, bh);
-    let deny_r = (w - pad - 2.0 * bw - 12.0 * s, by, bw, bh);
-    for ((x, y, bw, bh), fill, label_str) in [
-        (allow_r, Color::from_rgba8(46, 125, 50, 255), allow),
-        (deny_r, Color::from_rgba8(70, 70, 80, 255), deny),
-    ] {
-        if let Some(b) = rounded_rect(x, y, bw, bh, 8.0 * s) {
-            pm.fill_path(&b, &paint(fill), FillRule::Winding, id, None);
-        }
-        let t = fit_text(fonts, label_str, 14.0 * s, bw - 12.0 * s);
-        if let Some(p) = &t.path {
-            pm.fill_path(
-                p,
-                &white,
-                FillRule::Winding,
-                Transform::from_translate(x + (bw - t.width) / 2.0, y + (bh - t.height) / 2.0),
-                None,
-            );
-        }
-    }
-    (pm, [allow_r, deny_r])
 }
 
 /// Premultiplied RGBA → straight BGRA, for surfaces without alpha (the
@@ -528,7 +431,7 @@ mod tests {
         let body = parse_color("#8E24AA").unwrap();
         let ring = parse_color("#1E88E5").unwrap();
         let fonts = Fonts::load("");
-        let art = cursor(&Fonts::default(), "", 1.0, body, ring, Some(0.3), 0.0);
+        let art = cursor(&Fonts::default(), "", 1.0, body, ring, Some(0.3));
         let c = &art.image;
         let (hx, hy) = art.hotspot;
         assert!((hx - 43.2).abs() < 0.01 && hx == hy, "{:?}", art.hotspot);
@@ -537,7 +440,7 @@ mod tests {
         assert!(at(47, 51) > 200);
         assert_eq!(at(1, 1), 0);
         // A name tag widens the image to the right, the tip stays put.
-        let tagged = cursor(&fonts, "Zero", 1.0, body, ring, None, 0.0);
+        let tagged = cursor(&fonts, "Zero", 1.0, body, ring, None);
         if !fonts.is_empty() {
             assert!(tagged.image.width() > c.width());
         }
@@ -567,23 +470,17 @@ mod tests {
         let states = [
             ("thinking", "#D4A017", "Zero is thinking…"),
             ("working", "#1E88E5", "Zero is using the computer"),
-            (
-                "approval",
-                "#FFE600",
-                "Waiting for your approval: press \"Send\"",
-            ),
-            ("danger", "#000000", "Sensitive action: press \"Delete\""),
             ("error", "#E53935", "Zero hit an error"),
             ("done", "#2E7D32", "Zero is done"),
             ("fa", "#1E88E5", "زیرو در حال استفاده از رایانه است"),
         ];
         for (name, color, text_str) in states {
             let c = parse_color(color).unwrap();
-            cursor(&fonts, "Zero", 3.0, body, c, None, 0.0)
+            cursor(&fonts, "Zero", 3.0, body, c, None)
                 .image
                 .save_png(dir.join(format!("cursor-{name}.png")))
                 .unwrap();
-            cursor(&fonts, "Zero", 3.0, body, c, Some(0.35), 0.0)
+            cursor(&fonts, "Zero", 3.0, body, c, Some(0.35))
                 .image
                 .save_png(dir.join(format!("cursor-{name}-click.png")))
                 .unwrap();
@@ -594,29 +491,5 @@ mod tests {
                 .save_png(dir.join(format!("edge-{name}.png")))
                 .unwrap();
         }
-        panel(
-            &fonts,
-            "Zero is using the computer",
-            "Waiting for your approval: press \"Send\"",
-            "Allow",
-            "Deny",
-            parse_color("#FFE600").unwrap(),
-            2.0,
-        )
-        .0
-        .save_png(dir.join("panel.png"))
-        .unwrap();
-        panel(
-            &fonts,
-            "زیرو در حال استفاده از رایانه است",
-            "منتظر تأیید شما: فشردن دکمهٔ «ارسال»",
-            "اجازه",
-            "رد",
-            parse_color("#FFE600").unwrap(),
-            2.0,
-        )
-        .0
-        .save_png(dir.join("panel-fa.png"))
-        .unwrap();
     }
 }

@@ -21,8 +21,7 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 
 use super::draw;
-use super::helper::{Ask, Layer, Surface, SurfaceEvent};
-use super::text::Fonts;
+use super::helper::{Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -35,13 +34,6 @@ struct Win {
     mapped: bool,
 }
 
-struct Panel {
-    win: Win,
-    id: u64,
-    allow: (f32, f32, f32, f32),
-    deny: (f32, f32, f32, f32),
-}
-
 pub struct X11Surface {
     conn: RustConnection,
     root: Window,
@@ -51,10 +43,8 @@ pub struct X11Surface {
     colormap: u32,
     argb: bool,
     layers: HashMap<Layer, Win>,
-    panels: Vec<Panel>,
     hidden: bool,
     last_raise: Instant,
-    fonts: Fonts,
     /// The stop key's passive grab: keycode and modifiers.
     hotkey: Option<(u8, ModMask)>,
 }
@@ -131,10 +121,8 @@ impl X11Surface {
             colormap,
             argb,
             layers: HashMap::new(),
-            panels: Vec::new(),
             hidden: false,
             last_raise: Instant::now(),
-            fonts: Fonts::default(),
             hotkey: None,
         })
     }
@@ -167,13 +155,8 @@ impl X11Surface {
         }
     }
 
-    fn create(&self, x: i16, y: i16, w: u16, h: u16, input: bool) -> Result<Win, String> {
+    fn create(&self, x: i16, y: i16, w: u16, h: u16) -> Result<Win, String> {
         let id = self.conn.generate_id().map_err(err)?;
-        let mask = if input {
-            EventMask::EXPOSURE | EventMask::BUTTON_PRESS
-        } else {
-            EventMask::EXPOSURE
-        };
         self.conn
             .create_window(
                 self.depth,
@@ -191,23 +174,21 @@ impl X11Surface {
                     .background_pixel(0)
                     .border_pixel(0)
                     .colormap(self.colormap)
-                    .event_mask(mask),
+                    .event_mask(EventMask::EXPOSURE),
             )
             .map_err(err)?;
-        if !input {
-            // An empty input region: clicks go to whatever is underneath.
-            self.conn
-                .shape_rectangles(
-                    shape::SO::SET,
-                    shape::SK::INPUT,
-                    ClipOrdering::UNSORTED,
-                    id,
-                    0,
-                    0,
-                    &[],
-                )
-                .map_err(err)?;
-        }
+        // An empty input region: clicks go to whatever is underneath.
+        self.conn
+            .shape_rectangles(
+                shape::SO::SET,
+                shape::SK::INPUT,
+                ClipOrdering::UNSORTED,
+                id,
+                0,
+                0,
+                &[],
+            )
+            .map_err(err)?;
         let gc = self.conn.generate_id().map_err(err)?;
         self.conn
             .create_gc(gc, id, &CreateGCAux::new())
@@ -280,9 +261,6 @@ impl X11Surface {
         for w in self.layers.values().filter(|w| w.mapped) {
             let _ = self.conn.configure_window(w.id, &above);
         }
-        for p in &self.panels {
-            let _ = self.conn.configure_window(p.win.id, &above);
-        }
     }
 
     fn sync(&self) {
@@ -326,7 +304,7 @@ impl Surface for X11Surface {
                 );
                 Win { w: w.max(1), ..win }
             }
-            None => match self.create(x, y, w, h, false) {
+            None => match self.create(x, y, w, h) {
                 Ok(win) => win,
                 Err(_) => return,
             },
@@ -396,55 +374,6 @@ impl Surface for X11Surface {
         self.sync();
     }
 
-    fn confirm(&mut self, id: u64, ask: &Ask) {
-        if self.fonts.is_empty() {
-            self.fonts = Fonts::load("");
-        }
-        let accent = draw::parse_color("#FFE600").unwrap_or(tiny_skia::Color::WHITE);
-        let (img, [allow_r, deny_r]) = draw::panel(
-            &self.fonts,
-            &ask.title,
-            &ask.message,
-            &ask.allow,
-            &ask.deny,
-            accent,
-            self.render_scale(),
-        );
-        let (w, h) = (img.width() as u16, img.height() as u16);
-        let x = (self.screen.x + (self.screen.width - f64::from(w)) / 2.0) as i16;
-        let y = (self.screen.y + (self.screen.height - f64::from(h)) / 3.0) as i16;
-        let Ok(win) = self.create(x, y, w, h, true) else {
-            return;
-        };
-        let (data, shape) = self.pixels(&img);
-        if let Some(rects) = shape {
-            let _ = self.conn.shape_rectangles(
-                shape::SO::SET,
-                shape::SK::BOUNDING,
-                ClipOrdering::UNSORTED,
-                win.id,
-                0,
-                0,
-                &rects,
-            );
-        }
-        let mut win = Win { data, ..win };
-        let _ = self.conn.map_window(win.id);
-        win.mapped = true;
-        self.put(&win);
-        let _ = self.conn.configure_window(
-            win.id,
-            &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-        );
-        let _ = self.conn.flush();
-        self.panels.push(Panel {
-            win,
-            id,
-            allow: allow_r,
-            deny: deny_r,
-        });
-    }
-
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
         self.ungrab_hotkey();
         let Some(combo) = combo else {
@@ -497,40 +426,15 @@ impl Surface for X11Surface {
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
-        let mut answers = Vec::new();
+        let mut events = Vec::new();
         while let Ok(Some(ev)) = self.conn.poll_for_event() {
             match ev {
                 Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
-                    answers.push(SurfaceEvent::Hotkey);
+                    events.push(SurfaceEvent::Hotkey);
                 }
                 Event::Expose(e) if e.count == 0 => {
                     if let Some(w) = self.layers.values().find(|w| w.id == e.window) {
                         self.put(w);
-                    } else if let Some(p) = self.panels.iter().find(|p| p.win.id == e.window) {
-                        self.put(&p.win);
-                    }
-                }
-                Event::ButtonPress(e) => {
-                    let Some(i) = self.panels.iter().position(|p| p.win.id == e.event) else {
-                        continue;
-                    };
-                    let p = &self.panels[i];
-                    let (x, y) = (f32::from(e.event_x), f32::from(e.event_y));
-                    let hit = |r: (f32, f32, f32, f32)| {
-                        x >= r.0 && x <= r.0 + r.2 && y >= r.1 && y <= r.1 + r.3
-                    };
-                    let answer = if hit(p.allow) {
-                        Some(true)
-                    } else if hit(p.deny) {
-                        Some(false)
-                    } else {
-                        None
-                    };
-                    if let Some(ok) = answer {
-                        let p = self.panels.remove(i);
-                        let _ = self.conn.destroy_window(p.win.id);
-                        let _ = self.conn.flush();
-                        answers.push(SurfaceEvent::Answer(p.id, ok));
                     }
                 }
                 _ => {}
@@ -542,7 +446,7 @@ impl Surface for X11Surface {
             self.raise_all();
             let _ = self.conn.flush();
         }
-        answers
+        events
     }
 
     fn close(&mut self) {
@@ -550,11 +454,7 @@ impl Surface for X11Surface {
         for w in self.layers.values() {
             let _ = self.conn.destroy_window(w.id);
         }
-        for p in &self.panels {
-            let _ = self.conn.destroy_window(p.win.id);
-        }
         self.layers.clear();
-        self.panels.clear();
         let _ = self.conn.flush();
     }
 }

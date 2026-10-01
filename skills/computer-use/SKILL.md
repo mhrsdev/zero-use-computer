@@ -9,6 +9,10 @@ description: >-
 
 # Computer use
 
+**Also load the `computer-use-security` skill before the first computer-use
+call.** The server does not ask the user for permission or confirm actions;
+its safety rules are yours to follow.
+
 You can see and operate graphical desktop apps. Each app is described to you as
 a numbered **accessibility tree** plus a **screenshot**; you act on elements by
 their number. Prefer this over pixel-hunting — it is precise and works even when
@@ -29,7 +33,8 @@ a window is in the background.
    - `type_text` — type into the focused element (pass `element_index` to focus
      first). Newlines press Return.
    - `press_key` — a key or shortcut: `"Return"`, `"Escape"`, `"cmd+s"`,
-     `"ctrl+shift+t"`, `"Down Down Return"`.
+     `"ctrl+shift+t"`, `"Down Down Return"`. `cmd` is Cmd on a Mac and Ctrl
+     elsewhere; `win`/`super` is the Windows/Super key.
    - `perform_secondary_action` — a non-click action listed for the element in
      `actions=[…]` (e.g. `show_menu`, `increment`, `expand`, `toggle`).
    - `select_text` — select a substring (or all) inside a text element.
@@ -99,16 +104,13 @@ running (then `get_app_state`).
   screenshot pixels) are a fallback for canvases and custom-drawn UI.
 - **Indices are per-turn.** If an action fails with "unknown element_index",
   call `get_app_state` again and use the new numbers.
-- **The first use of an app may ask the user for approval.** If access is
-  denied, don't retry — ask the user how to proceed.
-- **Sensitive apps are blocked by default** — terminals, password managers,
-  OS security & login prompts, and the agent's own app. The user can allow
-  these in their settings; until they do, don't try to drive them — ask the
-  user to do that step or to enable it.
-- **Consequential actions may ask for a second confirmation** (Send, Delete,
-  Pay …), in your client or on the user's screen; the action waits until the
-  user answers. Still pause and confirm intent yourself before anything that
-  sends, purchases, deletes, or changes important data.
+- **Nothing asks the user for you.** Which apps you may use and which
+  actions need the user's OK is set by the `computer-use-security` skill:
+  follow it.
+- Keyboard input and x/y clicks go to the app's window, which is brought to
+  the front first; if it can't be, nothing is sent and you are told why.
+  Don't try another way: use `element_index` actions or ask the user.
+- `launch_app` opens an app by name; it never runs a command line.
 - The user watches you work through an on-screen indicator (your own cursor,
   a glow and a status label); their real mouse is never moved, and it is not
   in your screenshots, so ignore it.
@@ -118,7 +120,8 @@ running (then `get_app_state`).
   didn't take means check the field before going on.
 - **The user can stop you at any moment** (an emergency stop key). If a call
   fails saying the user stopped the agent, stop: don't retry or work around
-  it; ask the user what to do.
+  it; ask the user what to do. If a result says the stop key is not working,
+  tell the user right away.
 - If an action fails because the user is using the mouse or keyboard, they
   are busy — wait a little or ask; don't hammer it.
 - Password fields, card numbers and codes are masked (`••••`) and blacked

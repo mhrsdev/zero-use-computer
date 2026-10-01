@@ -5,7 +5,7 @@
 //! `list_apps`, `get_app_state`, `click`, `perform_secondary_action`,
 //! `set_value`, `select_text`, `scroll`, `drag`, `press_key`, `type_text`
 //! (plus `launch_app`) — built on each platform's native accessibility API
-//! plus screenshots, with per-app approvals.
+//! plus screenshots.
 //!
 //! The design mirrors Codex's:
 //!
@@ -26,18 +26,18 @@
 //!   the agent's own cursor, a glow and a status label in state colours;
 //!   it is click-through, left out of screenshots, and gone the moment the
 //!   work ends or the process dies. The real mouse is never taken.
-//! * **Approvals.** Each app is approved before it is controlled (once,
-//!   for the session, or always), and terminals, credential/security prompts
-//!   and the agent's own host app can never be controlled.
+//! * **No access control.** The engine does not decide which apps or actions
+//!   are allowed; that is up to the agent (see the security skill in
+//!   `skills/computer-use-security`) or the embedding host.
 //!
 //! ## Embedding
 //!
 //! ```no_run
-//! use computer_use::{Engine, AllowApprover, tools};
+//! use computer_use::{Engine, tools};
 //! # fn main() -> computer_use::Result<()> {
 //! let mut engine = computer_use::platform_engine()?;
 //! // Hand `tools::definitions()` to your model, then route its tool calls:
-//! let out = engine.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+//! let out = engine.call_tool("list_apps", serde_json::json!({}));
 //! println!("{}", out.text);
 //! # let _ = tools::definitions();
 //! # Ok(())
@@ -56,7 +56,6 @@ pub mod keys;
 pub mod mock;
 pub mod ocr;
 pub mod overlay;
-pub mod policy;
 pub mod privacy;
 pub mod roles;
 pub mod screens;
@@ -73,9 +72,7 @@ pub mod windows;
 
 pub use backend::Backend;
 pub use config::{Config, ConfigStore};
-pub use engine::{
-    AllowApprover, ApprovalDecision, ApprovalRequest, Approver, DenyApprover, Engine,
-};
+pub use engine::Engine;
 pub use error::{Error, Result};
 pub use tools::{ToolCall, ToolDefinition, ToolOutput};
 
@@ -155,6 +152,9 @@ impl Backend for Box<dyn Backend> {
     }
     fn capture_screen(&mut self, region: Option<types::Rect>) -> Result<types::Capture> {
         (**self).capture_screen(region)
+    }
+    fn input_needs_front(&self) -> bool {
+        (**self).input_needs_front()
     }
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         (**self).user_idle()

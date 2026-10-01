@@ -323,11 +323,9 @@ impl Backend for MacBackend {
         } else {
             "-a"
         };
-        Command::new("open")
-            .arg(flag)
-            .arg(query)
-            .spawn()
-            .map(|_| ())
+        let mut cmd = Command::new("open");
+        cmd.arg(flag).arg(query);
+        crate::backend::spawn_detached(cmd)
             .map_err(|e| Error::ActionFailed(format!("could not launch `{query}`: {e}")))
     }
 
@@ -411,6 +409,11 @@ impl Backend for MacBackend {
     fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
         let win = self.resolve(window.handle)?;
         wm::apply(win.as_ref(), app.pid, op)
+    }
+
+    fn input_needs_front(&self) -> bool {
+        // Events are posted to the target app's process (CGEventPostToPid).
+        false
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {

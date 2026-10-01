@@ -560,10 +560,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app",
             title: "Launch app",
-            description: "Start (or bring up) a desktop app by name, bundle id or executable, and wait until it shows a window. Then call get_app_state.",
+            description: "Start (or bring up) a desktop app by name, bundle id or executable, and wait until it shows a window. Then call get_app_state. It only opens apps: arguments and command lines are not accepted.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"app": {"type": "string", "description": "App name, bundle id or executable."}},
+                "properties": {"app": {"type": "string", "description": "App name, bundle id or executable (no arguments)."}},
                 "required": ["app"],
                 "additionalProperties": false
             }),
@@ -682,7 +682,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "press_key",
             title: "Press key",
-            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
+            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
             input_schema: schema(
                 app_props(),
                 json!({

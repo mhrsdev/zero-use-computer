@@ -10,8 +10,8 @@
 use std::time::{Duration, Instant};
 
 use computer_use::Backend;
-use computer_use::config::{ApprovalMode, Config, ConfigStore};
-use computer_use::engine::{AllowApprover, Engine};
+use computer_use::config::{Config, ConfigStore};
+use computer_use::engine::Engine;
 use computer_use::linux::LinuxBackend;
 use computer_use::tools::ToolCall;
 
@@ -21,8 +21,7 @@ fn live() -> bool {
 
 fn engine() -> Engine<LinuxBackend> {
     let backend = LinuxBackend::new().expect("connect to AT-SPI/X11");
-    let mut cfg = Config::default();
-    cfg.approvals.mode = ApprovalMode::AllowAll;
+    let cfg = Config::default();
     Engine::new(backend, ConfigStore::in_memory(cfg))
 }
 
@@ -49,15 +48,14 @@ fn wait_for_app(e: &mut Engine<LinuxBackend>) -> String {
 
 fn state_text(e: &mut Engine<LinuxBackend>, app: &str) -> String {
     let out = e
-        .call(
-            ToolCall::GetAppState(computer_use::tools::GetAppStateArgs {
+        .call(ToolCall::GetAppState(
+            computer_use::tools::GetAppStateArgs {
                 app: app.into(),
                 window: Some("CU Test".into()),
                 disable_diff: true,
                 ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+            },
+        ))
         .expect("get_app_state");
     assert!(!out.is_error, "get_app_state errored: {}", out.text);
     out.text
@@ -89,15 +87,14 @@ fn atspi_tree_actions_and_screenshot() {
 
     // 1. The tree exposes the widgets and a screenshot.
     let out = e
-        .call(
-            ToolCall::GetAppState(computer_use::tools::GetAppStateArgs {
+        .call(ToolCall::GetAppState(
+            computer_use::tools::GetAppStateArgs {
                 app: app.clone(),
                 window: Some("CU Test".into()),
                 disable_diff: true,
                 ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+            },
+        ))
         .unwrap();
     assert!(out.image.is_some(), "expected a screenshot");
     let img = out.image.unwrap();
@@ -110,14 +107,11 @@ fn atspi_tree_actions_and_screenshot() {
     // 2. Press the button via its accessibility action; the status label updates.
     let button = index_of(&tree, "Click Me");
     let out = e
-        .call(
-            ToolCall::Click(computer_use::tools::ClickArgs {
-                app: app.clone(),
-                element_index: Some(button),
-                ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+        .call(ToolCall::Click(computer_use::tools::ClickArgs {
+            app: app.clone(),
+            element_index: Some(button),
+            ..Default::default()
+        }))
         .unwrap();
     assert!(!out.is_error, "click failed: {}", out.text);
     std::thread::sleep(Duration::from_millis(150));
@@ -127,15 +121,12 @@ fn atspi_tree_actions_and_screenshot() {
     // 3. set_value into the entry; the status label echoes it.
     let entry = index_of(&tree, "text field");
     let out = e
-        .call(
-            ToolCall::SetValue(computer_use::tools::SetValueArgs {
-                app: app.clone(),
-                element_index: entry,
-                value: "hello atspi".into(),
-                ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+        .call(ToolCall::SetValue(computer_use::tools::SetValueArgs {
+            app: app.clone(),
+            element_index: entry,
+            value: "hello atspi".into(),
+            ..Default::default()
+        }))
         .unwrap();
     assert!(!out.is_error, "set_value failed: {}", out.text);
     std::thread::sleep(Duration::from_millis(150));
@@ -148,15 +139,12 @@ fn atspi_tree_actions_and_screenshot() {
     // 4. Toggle the checkbox with perform_secondary_action / set_value.
     let check = index_of(&tree, "Enable feature");
     let out = e
-        .call(
-            ToolCall::SetValue(computer_use::tools::SetValueArgs {
-                app: app.clone(),
-                element_index: check,
-                value: "true".into(),
-                ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+        .call(ToolCall::SetValue(computer_use::tools::SetValueArgs {
+            app: app.clone(),
+            element_index: check,
+            value: "true".into(),
+            ..Default::default()
+        }))
         .unwrap();
     assert!(!out.is_error, "checkbox set failed: {}", out.text);
     std::thread::sleep(Duration::from_millis(150));
@@ -171,15 +159,12 @@ fn atspi_tree_actions_and_screenshot() {
     let tree = state_text(&mut e, &app);
     let entry = index_of(&tree, "text field");
     let out = e
-        .call(
-            ToolCall::PressKey(computer_use::tools::PressKeyArgs {
-                app: app.clone(),
-                key: "ctrl+a".into(),
-                element_index: Some(entry),
-                ..Default::default()
-            }),
-            &mut AllowApprover,
-        )
+        .call(ToolCall::PressKey(computer_use::tools::PressKeyArgs {
+            app: app.clone(),
+            key: "ctrl+a".into(),
+            element_index: Some(entry),
+            ..Default::default()
+        }))
         .unwrap();
     assert!(!out.is_error, "press_key failed: {}", out.text);
 
@@ -198,7 +183,6 @@ fn new_tools_over_real_backend() {
     let out = e.call_tool(
         "find_element",
         serde_json::json!({"app": app, "role": "button"}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "find_element: {}", out.text);
     assert!(out.text.contains("Click Me"), "find_element:\n{}", out.text);
@@ -207,21 +191,15 @@ fn new_tools_over_real_backend() {
     let out = e.call_tool(
         "wait_for",
         serde_json::json!({"app": app, "role": "text field", "timeout_ms": 3000}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "wait_for: {}", out.text);
 
     // screenshot: full screen and a region (X11 GetImage path).
-    let out = e.call_tool(
-        "screenshot",
-        serde_json::json!({"mode": "full"}),
-        &mut AllowApprover,
-    );
+    let out = e.call_tool("screenshot", serde_json::json!({"mode": "full"}));
     assert!(out.image.is_some(), "full screenshot: {}", out.text);
     let out = e.call_tool(
         "screenshot",
         serde_json::json!({"mode": "region", "x": 0, "y": 0, "width": 200, "height": 120}),
-        &mut AllowApprover,
     );
     assert!(out.image.is_some(), "region screenshot: {}", out.text);
     let img = out.image.unwrap();
@@ -231,7 +209,6 @@ fn new_tools_over_real_backend() {
     let out = e.call_tool(
         "screenshot",
         serde_json::json!({"mode": "window", "app": app, "window": "CU Test", "annotate": true}),
-        &mut AllowApprover,
     );
     assert!(out.image.is_some(), "annotated screenshot: {}", out.text);
 
@@ -239,10 +216,9 @@ fn new_tools_over_real_backend() {
     let out = e.call_tool(
         "set_clipboard",
         serde_json::json!({"text": "computer-use clip"}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "set_clipboard: {}", out.text);
-    let out = e.call_tool("get_clipboard", serde_json::json!({}), &mut AllowApprover);
+    let out = e.call_tool("get_clipboard", serde_json::json!({}));
     assert!(
         out.text.contains("computer-use clip"),
         "clipboard round-trip:\n{}",
@@ -257,7 +233,6 @@ fn click_named(e: &mut Engine<LinuxBackend>, app: &str, tree: &str, name: &str) 
     let out = e.call_tool(
         "click",
         serde_json::json!({"app": app, "element_index": index}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "click {name}: {}", out.text);
     out.text
@@ -274,7 +249,6 @@ fn screen_memory_over_real_backend() {
     let first = e.call_tool(
         "get_app_state",
         serde_json::json!({"app": app, "window": "CU Test"}),
-        &mut AllowApprover,
     );
     assert!(!first.is_error, "{}", first.text);
     let tree = first.text.clone();
@@ -295,7 +269,6 @@ fn screen_memory_over_real_backend() {
     let again = e.call_tool(
         "get_app_state",
         serde_json::json!({"app": app, "window": "CU Test"}),
-        &mut AllowApprover,
     );
     eprintln!(
         "--- get_app_state after Back ({:?}) ---\n{}",
@@ -311,7 +284,6 @@ fn screen_memory_over_real_backend() {
     let found = e.call_tool(
         "find_element",
         serde_json::json!({"app": app, "name": "Click Me"}),
-        &mut AllowApprover,
     );
     assert_eq!(
         index_of(&found.text, "Click Me"),
@@ -338,7 +310,6 @@ fn screen_memory_over_real_backend() {
     let found = e.call_tool(
         "find_element",
         serde_json::json!({"app": app, "name": "Click Me"}),
-        &mut AllowApprover,
     );
     assert_eq!(
         index_of(&found.text, "Click Me"),
@@ -370,7 +341,6 @@ fn overlay_is_left_out_of_screenshots_and_the_mouse_stays_put() {
     let out = e.call_tool(
         "get_app_state",
         serde_json::json!({"app": app, "window": "CU Test", "screenshot": true}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "{}", out.text);
     std::thread::sleep(Duration::from_millis(400));
@@ -391,11 +361,7 @@ fn overlay_is_left_out_of_screenshots_and_the_mouse_stays_put() {
         (r.root_x, r.root_y)
     };
     let before = pointer(&conn);
-    let out = e.call_tool(
-        "click",
-        serde_json::json!({"app": app, "x": 200, "y": 200}),
-        &mut AllowApprover,
-    );
+    let out = e.call_tool("click", serde_json::json!({"app": app, "x": 200, "y": 200}));
     assert!(!out.is_error, "{}", out.text);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(pointer(&conn), before, "the user's mouse was moved");
@@ -464,7 +430,7 @@ fn stop_key_and_idle_time_over_x11() {
     };
     press_keys(&[CTRL, ALT, ESC]);
     assert!(wait_until(&e, true), "the stop key did not stop the agent");
-    let out = e.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+    let out = e.call_tool("list_apps", serde_json::json!({}));
     assert!(
         out.is_error && out.text.contains("Ctrl+Alt+Esc"),
         "{}",
@@ -473,7 +439,7 @@ fn stop_key_and_idle_time_over_x11() {
     std::thread::sleep(Duration::from_millis(500));
     press_keys(&[CTRL, ALT, ESC]);
     assert!(wait_until(&e, false), "pressing it again did not resume");
-    let out = e.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+    let out = e.call_tool("list_apps", serde_json::json!({}));
     assert!(!out.is_error, "{}", out.text);
 
     // The key presses count as input: the idle time is short now.
@@ -489,11 +455,7 @@ fn stop_key_and_idle_time_over_x11() {
     state_text(&mut e, &app);
     press_keys(&[0xffe1]); // Shift
     let t = Instant::now();
-    let out = e.call_tool(
-        "press_key",
-        serde_json::json!({"app": app, "key": "Tab"}),
-        &mut AllowApprover,
-    );
+    let out = e.call_tool("press_key", serde_json::json!({"app": app, "key": "Tab"}));
     assert!(!out.is_error, "{}", out.text);
     let waited = t.elapsed();
     assert!(
@@ -510,7 +472,6 @@ fn follow_up_screenshots_send_only_what_changed() {
     }
     let backend = LinuxBackend::new().expect("connect to AT-SPI/X11");
     let mut cfg = Config::default();
-    cfg.approvals.mode = ApprovalMode::AllowAll;
     cfg.screenshot.attach = computer_use::config::AttachMode::Always;
     let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
     let app = wait_for_app(&mut e);
@@ -529,7 +490,6 @@ fn follow_up_screenshots_send_only_what_changed() {
         e.call_tool(
             "get_app_state",
             serde_json::json!({"app": app, "window": "CU Test", "disable_diff": true}),
-            &mut AllowApprover,
         )
     };
     let out = state(&mut e);
@@ -545,7 +505,6 @@ fn follow_up_screenshots_send_only_what_changed() {
     let r = e.call_tool(
         "click",
         serde_json::json!({"app": app, "element_index": check}),
-        &mut AllowApprover,
     );
     assert!(!r.is_error, "{}", r.text);
     let out = state(&mut e);
@@ -565,7 +524,6 @@ fn follow_up_screenshots_send_only_what_changed() {
     e.call_tool(
         "click",
         serde_json::json!({"app": app, "element_index": check}),
-        &mut AllowApprover,
     );
     eprintln!(
         "smart screenshot live test passed ({full} px wide → {} px)",
@@ -585,15 +543,11 @@ fn window_management_over_x11() {
         for (k, v) in extra.as_object().unwrap() {
             args[k] = v.clone();
         }
-        let out = e.call_tool("window", args, &mut AllowApprover);
+        let out = e.call_tool("window", args);
         eprintln!("{}", out.text.trim_end());
         out
     };
-    let out = e.call_tool(
-        "window",
-        serde_json::json!({"action": "displays"}),
-        &mut AllowApprover,
-    );
+    let out = e.call_tool("window", serde_json::json!({"action": "displays"}));
     assert!(
         out.text.contains("display 0 (primary): 1280x1024 at 0,0"),
         "{}",
@@ -645,7 +599,6 @@ fn ocr_reads_and_clicks_custom_drawn_text() {
     let out = e.call_tool(
         "get_app_state",
         serde_json::json!({"app": app, "window": "CU Test", "ocr": true, "disable_diff": true}),
-        &mut AllowApprover,
     );
     assert!(!out.is_error, "{}", out.text);
     if let (Some(img), Ok(dir)) = (&out.image, std::env::var("CU_SHOT_DIR")) {
@@ -663,7 +616,6 @@ fn ocr_reads_and_clicks_custom_drawn_text() {
     let r = e.call_tool(
         "click",
         serde_json::json!({"app": app, "window": "CU Test", "element_index": index}),
-        &mut AllowApprover,
     );
     assert!(!r.is_error, "{}", r.text);
     let tree = state_text(&mut e, &app);
@@ -678,7 +630,6 @@ fn notifications_are_heard_on_the_session_bus() {
     }
     let backend = LinuxBackend::new().expect("connect to AT-SPI/X11");
     let mut cfg = Config::default();
-    cfg.approvals.mode = ApprovalMode::AllowAll;
     cfg.notifications.enabled = true;
     let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
     std::thread::sleep(Duration::from_millis(500));
@@ -713,11 +664,7 @@ fn notifications_are_heard_on_the_session_bus() {
     eprintln!("gdbus: {}", String::from_utf8_lossy(&sent.stderr).trim());
     let deadline = Instant::now() + Duration::from_secs(5);
     let out = loop {
-        let out = e.call_tool(
-            "get_notifications",
-            serde_json::json!({}),
-            &mut AllowApprover,
-        );
+        let out = e.call_tool("get_notifications", serde_json::json!({}));
         if out.text.contains("Hello") || Instant::now() > deadline {
             break out;
         }

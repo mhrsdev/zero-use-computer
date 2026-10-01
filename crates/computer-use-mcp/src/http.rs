@@ -1,33 +1,39 @@
 //! Optional remote transport: MCP over HTTP (JSON-RPC POST).
 //!
 //! Enabled with the `http` cargo feature. Each POST body is one JSON-RPC
-//! message; the response is the JSON-RPC reply. Approvals have no interactive
-//! channel here, so app access follows a fixed policy (`--approval allow-all`
-//! for unattended use) rather than prompting. Protect the endpoint with a
-//! bearer token and bind it to localhost or a trusted network.
+//! message; the response is the JSON-RPC reply. Whoever can reach the
+//! endpoint can control the desktop, so a bearer token is required, requests
+//! from web pages on other origins are refused, and it should be bound to
+//! localhost or a trusted network.
 
-use computer_use::engine::{AllowApprover, Approver, DenyApprover, Engine};
+use std::io::Read as _;
+use std::net::SocketAddr;
+
+use computer_use::engine::Engine;
 use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::jsonrpc::{INVALID_PARAMS, Incoming, METHOD_NOT_FOUND};
+use crate::jsonrpc::{INVALID_PARAMS, Incoming, METHOD_NOT_FOUND, PARSE_ERROR};
 use crate::server::instructions;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Largest request body accepted (a JSON-RPC message is far smaller).
+const MAX_BODY: u64 = 4 * 1024 * 1024;
 
-/// Serve MCP over HTTP until the process is stopped.
-pub fn serve(
-    mut engine: Engine<Box<dyn Backend>>,
-    addr: &str,
-    token: Option<String>,
-    allow: bool,
-) -> anyhow::Result<()> {
+/// Serve MCP over HTTP until the process is stopped. `token` is required.
+pub fn serve(mut engine: Engine<Box<dyn Backend>>, addr: &str, token: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!token.is_empty(), "serving over HTTP needs a bearer token");
     let server = Server::http(addr)
         .map_err(|e| anyhow::anyhow!("cannot bind HTTP server on {addr}: {e}"))?;
     log::info!("computer-use-mcp serving MCP over HTTP on {addr}");
-    if token.is_none() {
-        log::warn!("no --http-token set: the endpoint is unauthenticated");
+    if addr
+        .parse::<SocketAddr>()
+        .is_ok_and(|a| !a.ip().is_loopback())
+    {
+        log::warn!(
+            "{addr} is reachable from other machines: anyone there with the token can control this desktop"
+        );
     }
 
     loop {
@@ -38,36 +44,94 @@ pub fn serve(
                 continue;
             }
         };
-        if let Some(expected) = &token
-            && !authorized(&request, expected)
-        {
+        if !authorized(&request, token) {
             respond(request, 401, json!({"error": "unauthorized"}));
+            continue;
+        }
+        if !local_origin(&request) {
+            respond(
+                request,
+                403,
+                json!({"error": "requests from other origins are not allowed"}),
+            );
             continue;
         }
         if *request.method() != Method::Post {
             respond(request, 405, json!({"error": "use POST"}));
             continue;
         }
-        let mut body = String::new();
-        if request.as_reader().read_to_string(&mut body).is_err() {
-            respond(request, 400, json!({"error": "unreadable body"}));
+        if !header(&request, "Content-Type")
+            .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"))
+        {
+            respond(
+                request,
+                415,
+                json!({"error": "Content-Type must be application/json"}),
+            );
             continue;
         }
-        match handle(&mut engine, &body, allow) {
+        if request.body_length().is_some_and(|n| n as u64 > MAX_BODY) {
+            respond(request, 413, json!({"error": "request body too large"}));
+            continue;
+        }
+        let mut body = String::new();
+        let read = request
+            .as_reader()
+            .take(MAX_BODY + 1)
+            .read_to_string(&mut body);
+        if read.is_err() || body.len() as u64 > MAX_BODY {
+            respond(
+                request,
+                400,
+                json!({"error": "unreadable or too large body"}),
+            );
+            continue;
+        }
+        match handle(&mut engine, &body) {
             Some(reply) => respond(request, 200, reply),
             None => {
-                // A notification: acknowledge with no content.
-                let _ = request.respond(Response::empty(204));
+                // A notification: accepted, nothing to return.
+                let _ = request.respond(Response::empty(202));
             }
         }
     }
 }
 
-fn authorized(request: &Request, expected: &str) -> bool {
+fn header<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
     request
         .headers()
         .iter()
-        .any(|h| h.field.equiv("Authorization") && h.value.as_str() == format!("Bearer {expected}"))
+        .find(|h| h.field.equiv(name))
+        .map(|h| h.value.as_str())
+}
+
+/// The bearer token matches (compared in constant time).
+fn authorized(request: &Request, expected: &str) -> bool {
+    let Some(given) = header(request, "Authorization").and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    let (a, b) = (given.as_bytes(), expected.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// No `Origin` (not a browser), or a page on this machine. Browsers send
+/// `Origin` with cross-site requests; this stops a web page from driving the
+/// desktop (DNS rebinding included).
+fn local_origin(request: &Request) -> bool {
+    let Some(origin) = header(request, "Origin") else {
+        return true;
+    };
+    let host = origin
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 fn respond(request: Request, status: u16, body: Value) {
@@ -89,13 +153,13 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 }
 
 /// Dispatch one JSON-RPC message; `None` for a notification.
-fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str, allow: bool) -> Option<Value> {
+fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
     let msg: Incoming = match serde_json::from_str(body) {
         Ok(m) => m,
         Err(e) => {
             return Some(error(
                 Value::Null,
-                INVALID_PARAMS,
+                PARSE_ERROR,
                 &format!("parse error: {e}"),
             ));
         }
@@ -123,10 +187,6 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str, allow: bool) -> Opt
     }
     // Notifications carry no id and expect no response.
     let id = msg.id.clone()?;
-
-    let mut allow_ap = AllowApprover;
-    let mut deny_ap = DenyApprover;
-    let approver: &mut dyn Approver = if allow { &mut allow_ap } else { &mut deny_ap };
 
     Some(match method.as_str() {
         "initialize" => reply(
@@ -158,11 +218,60 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str, allow: bool) -> Opt
         "tools/call" => match params.get("name").and_then(Value::as_str) {
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                let out = engine.call_tool(name, args, approver);
+                let out = engine.call_tool(name, args);
                 reply(id, out.to_mcp_result())
             }
             None => error(id, INVALID_PARAMS, "tools/call requires `name`"),
         },
         other => error(id, METHOD_NOT_FOUND, &format!("method not found: {other}")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(headers: &[(&str, &str)]) -> Request {
+        let mut test = tiny_http::TestRequest::new().with_method(Method::Post);
+        for (k, v) in headers {
+            test = test.with_header(Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap());
+        }
+        test.into()
+    }
+
+    #[test]
+    fn token_is_required_and_exact() {
+        assert!(authorized(
+            &request(&[("Authorization", "Bearer s3cret")]),
+            "s3cret"
+        ));
+        assert!(!authorized(
+            &request(&[("Authorization", "Bearer s3cre")]),
+            "s3cret"
+        ));
+        assert!(!authorized(
+            &request(&[("Authorization", "s3cret")]),
+            "s3cret"
+        ));
+        assert!(!authorized(&request(&[]), "s3cret"));
+    }
+
+    #[test]
+    fn only_local_pages_may_call() {
+        assert!(local_origin(&request(&[])));
+        for ok in [
+            "http://localhost:3000",
+            "http://127.0.0.1",
+            "http://[::1]:8787",
+        ] {
+            assert!(local_origin(&request(&[("Origin", ok)])), "{ok}");
+        }
+        for bad in [
+            "https://evil.example",
+            "http://localhost.evil.example",
+            "null",
+        ] {
+            assert!(!local_origin(&request(&[("Origin", bad)])), "{bad}");
+        }
+    }
 }

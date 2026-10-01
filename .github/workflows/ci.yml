@@ -109,7 +109,7 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" dist/
           cp mcp.example.json README.md README.fa.md dist/
-          cp skill/SKILL.md dist/SKILL.md
+          cp -r skills dist/skills
       - uses: actions/upload-artifact@v4
         with:
           name: computer-use-mcp-${{ matrix.name }}

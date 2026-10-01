@@ -1,7 +1,7 @@
 //! The on-screen indicator shown while the agent uses the computer: the
 //! agent's own cursor (the real mouse is never touched), a border around the
 //! window it works on, a status label, a ripple where it clicks, and state
-//! colours (thinking, working, waiting for approval, sensitive, error, done).
+//! colours (thinking, working, paused, stopped, error, done).
 //!
 //! It lives in a **separate helper process** (`computer-use-mcp overlay`)
 //! that the engine feeds JSON lines over a pipe:
@@ -29,9 +29,8 @@ mod windows;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -109,18 +108,6 @@ pub enum Cmd {
         #[serde(default)]
         click: bool,
     },
-    /// A sensitive action is running (Some) or finished (None).
-    Danger {
-        action: Option<String>,
-    },
-    /// Waiting for the user's approval of `action`. With `ask`, the helper
-    /// asks on screen and answers with [`Reply::Answer`].
-    Approval {
-        id: u64,
-        action: String,
-        ask: bool,
-    },
-    ApprovalDone,
     /// An explicit status from the host agent.
     Status {
         state: Status,
@@ -144,10 +131,6 @@ pub enum Reply {
     Hidden {
         id: u64,
         shown: bool,
-    },
-    Answer {
-        id: u64,
-        ok: bool,
     },
     /// The user pressed the stop key: the agent is now stopped (on) or may
     /// continue (off).
@@ -188,9 +171,10 @@ pub struct Overlay {
     alive: Arc<AtomicBool>,
     /// Set by the stop key (shared with the engine).
     stop: Arc<AtomicBool>,
+    /// The stop key the helper last reported on, and whether the system
+    /// accepted it (`None` until the helper says).
+    hotkey: Arc<Mutex<Option<(String, bool)>>>,
     excluded: bool,
-    /// Whether the helper can draw (known once it reports ready).
-    available: Option<bool>,
     next_id: u64,
 }
 
@@ -242,6 +226,8 @@ impl Overlay {
         let (rtx, rx) = mpsc::channel::<Reply>();
         let a = alive.clone();
         let flag = stop.clone();
+        let hotkey_state = Arc::new(Mutex::new(None));
+        let hk = hotkey_state.clone();
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
@@ -261,12 +247,16 @@ impl Overlay {
                                 log::info!("the user let the agent continue");
                             }
                         }
-                        Reply::Hotkey { key, ok: false } => {
-                            log::warn!(
-                                "the stop key {key} could not be registered (another program may use it); set control.stop_hotkey to another combination"
-                            );
+                        Reply::Hotkey { key, ok } => {
+                            if !ok {
+                                log::warn!(
+                                    "the stop key {key} could not be registered (another program may use it, or there is no display); set control.stop_hotkey to another combination"
+                                );
+                            }
+                            if let Ok(mut h) = hk.lock() {
+                                *h = Some((key, ok));
+                            }
                         }
-                        Reply::Hotkey { .. } => {}
                         r => {
                             if rtx.send(r).is_err() {
                                 break;
@@ -284,8 +274,8 @@ impl Overlay {
             backlog: Vec::new(),
             alive,
             stop,
+            hotkey: hotkey_state,
             excluded: false,
-            available: None,
             next_id: 0,
         };
         o.configure(config, hotkey);
@@ -305,6 +295,15 @@ impl Overlay {
         self.alive.load(Ordering::Relaxed)
     }
 
+    /// Whether the system accepted the stop key `key` (`None` until the
+    /// helper has said, or if it last reported on another key).
+    pub fn hotkey_ok(&self, key: &str) -> Option<bool> {
+        let h = self.hotkey.lock().ok()?;
+        h.as_ref()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
+            .map(|(_, ok)| *ok)
+    }
+
     pub fn send(&self, cmd: &Cmd) {
         if !self.alive() {
             return;
@@ -316,13 +315,8 @@ impl Overlay {
 
     fn drain(&mut self) {
         while let Ok(r) = self.rx.try_recv() {
-            if let Reply::Ready {
-                excluded,
-                available,
-            } = r
-            {
+            if let Reply::Ready { excluded, .. } = r {
                 self.excluded = excluded;
-                self.available = Some(available);
             } else {
                 self.backlog.push(r);
             }
@@ -344,13 +338,7 @@ impl Overlay {
                 return None;
             }
             match self.rx.recv_timeout(left.min(Duration::from_millis(50))) {
-                Ok(Reply::Ready {
-                    excluded,
-                    available,
-                }) => {
-                    self.excluded = excluded;
-                    self.available = Some(available);
-                }
+                Ok(Reply::Ready { excluded, .. }) => self.excluded = excluded,
                 Ok(r) => self.backlog.push(r),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
@@ -375,46 +363,6 @@ impl Overlay {
             |r| matches!(r, Reply::Hidden { id: i, .. } if *i == id),
         );
         Some(matches!(r, Some(Reply::Hidden { shown: true, .. })))
-    }
-
-    /// Ask the user on screen to approve `action`; `None` if the helper can't
-    /// (not running, or no answer within `timeout`).
-    pub fn ask(&mut self, action: &str, timeout: Duration) -> Option<bool> {
-        if !self.alive() {
-            return None;
-        }
-        // Only a helper that can show things can ask.
-        if self.available.is_none() {
-            let _ = self.wait_for(Duration::from_secs(2), |_| false);
-        }
-        if self.available != Some(true) {
-            return None;
-        }
-        self.next_id += 1;
-        let id = self.next_id;
-        self.send(&Cmd::Approval {
-            id,
-            action: action.to_string(),
-            ask: true,
-        });
-        let deadline = Instant::now() + timeout;
-        loop {
-            // The stop key answers "no" to anything pending.
-            if self.stop.load(Ordering::SeqCst) {
-                self.send(&Cmd::ApprovalDone);
-                return Some(false);
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() || !self.alive() {
-                return None;
-            }
-            if let Some(Reply::Answer { ok, .. }) = self.wait_for(
-                left.min(Duration::from_millis(100)),
-                |r| matches!(r, Reply::Answer { id: i, .. } if *i == id),
-            ) {
-                return Some(ok);
-            }
-        }
     }
 }
 
@@ -501,11 +449,6 @@ mod tests {
                 x: 5.0,
                 y: 6.0,
                 click: true,
-            },
-            Cmd::Approval {
-                id: 3,
-                action: "press \"Send\"".into(),
-                ask: true,
             },
             Cmd::Status {
                 state: Status::Done,

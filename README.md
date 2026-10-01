@@ -4,7 +4,7 @@ A Codex-style **computer use** capability for agents, in Rust. It gives any
 agent the same desktop-control surface OpenAI's Codex app exposes — see and
 operate real GUI apps by clicking, typing, reading on-screen state and running
 multi-app workflows — built on each OS's native **accessibility API** plus
-**screenshots**, with **per-app approvals**.
+**screenshots**.
 
 It is a standalone building block: run it as an **MCP server** (works with
 Codex, Claude Code, or any MCP-capable agent), or embed the **library** in your
@@ -36,16 +36,21 @@ This project follows the same architecture and behaviour:
 - **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
   screen and a status label in state colours, click-through and invisible to
   the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
-- **Approvals & safety.** Each app is approved before it is controlled (once /
-  for the session / always), and terminals, credential & OS-security prompts,
-  and the agent's own host app can never be controlled.
+- **Safety lives in the agent, not the server.** The server has no
+  approvals or action confirmations. Which apps the agent may use and which
+  actions need the user's OK is set by the
+  [`computer-use-security`](skills/computer-use-security/SKILL.md) skill (also
+  summarised in the server's MCP instructions). The server keeps only what an
+  agent can't do for itself: input goes only to the app it is meant for,
+  `launch_app` never runs a command line, password fields and card numbers
+  are masked, and the user has an emergency stop key.
 
 ## Tools
 
 | Tool | What it does |
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by name/bundle id/executable and wait for a window. |
+| `launch_app` | Start an app by name/bundle id/executable (no arguments) and wait for a window. |
 | `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
 | `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
@@ -62,13 +67,17 @@ This project follows the same architecture and behaviour:
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
 Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
-region/full `screenshot`, clipboard) cut round-trips and token use, and the
-engine adds two safety layers Codex leaves to the model: an **action guard**
-that confirms consequential presses (Send / Delete / Pay …) and an optional
-**audit log**.
+region/full `screenshot`, clipboard) cut round-trips and token use, and an
+optional **audit log** records every call.
 
-The full operating contract the model should follow is in
-[`skill/SKILL.md`](skill/SKILL.md).
+The model should load two skills:
+
+- [`skills/computer-use/SKILL.md`](skills/computer-use/SKILL.md): how to use
+  the tools;
+- [`skills/computer-use-security/SKILL.md`](skills/computer-use-security/SKILL.md):
+  which apps and actions are off limits or need the user's OK, prompt
+  injection, secrets. The server enforces none of this, so this skill is not
+  optional.
 
 ## Screen memory & caching
 
@@ -158,9 +167,7 @@ title, text and how long ago. It is **off by default** because notifications
 carry other apps' content; turn it on with
 `computer-use-mcp config set notifications.enabled true`.
 
-- Notifications from apps blocked in `[approvals]` / `[sensitive]` (a
-  password manager, say) are left out, and `notifications.apps` can narrow it
-  to a list.
+- `notifications.apps` can narrow it to a list of apps.
 - Card numbers and anything that looks like a one-time or verification code
   are masked (`notifications.mask_codes`).
 
@@ -239,18 +246,11 @@ their mouse:
 |---|---|---|
 | thinking | gold | between actions, while the model works out its next step |
 | working | blue | an action is running |
-| waiting for approval | yellow (pulsing) | an app or an action needs the user's OK |
-| sensitive | black | a guarded action runs (send, delete, pay, confirm…) or the agent acts in a sensitive app the user opened up |
 | error | red | the last action failed |
 | done | green | the task is finished — then everything disappears |
 | paused | grey | waiting while you use the mouse or keyboard |
 | stopped | orange | you pressed the emergency stop key |
 
-- **Approvals on screen.** A sensitive action waits for the user. When the
-  agent's client can ask (MCP elicitation) it asks there; when it can't, it
-  asks on the screen — an `NSAlert` on macOS, the overlay's own panel on
-  Windows and X11 (`overlay.confirm_on_screen`: `never` / `when_no_client` /
-  `always`). No answer in `confirm_timeout_secs` means no.
 - **Nothing pops.** It fades in when it appears, blends from one state colour
   to the next, and fades out slowly when the work is done (`fade_in_ms`,
   `transition_ms`, `fade_out_ms`). All of its texts are English by default
@@ -344,8 +344,8 @@ task is complete) can say so with a JSON-RPC notification:
   | a field won't take focus | click it |
 
   A press that simply changed nothing is not repeated unless
-  `verify.retry_on_no_change = true`. Guarded actions (send, pay, delete…) are
-  never repeated.
+  `verify.retry_on_no_change = true` (off by default: a send or a payment can
+  show its effect late, and must not be repeated).
 
 ## Architecture
 
@@ -354,12 +354,12 @@ task is complete) can say so with a JSON-RPC notification:
                      │  tools
         ┌────────────┴─────────────┐
         │   computer-use-mcp        │  MCP stdio server + CLI
-        │   (JSON-RPC, elicitation) │
+        │   (JSON-RPC)              │
         └────────────┬─────────────┘
                      │  Engine::call_tool
         ┌────────────┴─────────────┐
         │        computer-use        │  engine: tree pruning, stable indices,
-        │      (platform-agnostic)   │  diffs, screen memory, approvals, coord map
+        │      (platform-agnostic)   │  diffs, screen memory, coord map
         └───┬───────────┬───────────┬┘
             │           │           │   Backend trait
      ┌──────┴──┐  ┌─────┴────┐  ┌───┴──────┐
@@ -374,7 +374,7 @@ task is complete) can say so with a JSON-RPC notification:
 The **engine** is platform-agnostic and holds all the behaviour that must be
 identical everywhere: pruning the raw accessibility tree into a sparse numbered
 outline, assigning stable per-turn element indices, diffing snapshots, mapping
-screenshot pixels to screen coordinates, and enforcing the approval policy. Each
+screenshot pixels to screen coordinates, and keeping input on the target app. Each
 **backend** is a thin adapter over one OS:
 
 | | macOS | Windows | Linux |
@@ -421,9 +421,8 @@ args = ["serve"]
 ```
 
 Any MCP client works — the server speaks JSON-RPC 2.0 over stdio and implements
-`initialize`, `tools/list`, `tools/call`, and per-app approval via
-`elicitation/create` (clients that support elicitation get an approval prompt;
-others fall back to the `--headless-approve` policy).
+`initialize`, `tools/list` and `tools/call`. It never asks the client to
+approve anything; give the agent the two skills above.
 
 ### CLI
 
@@ -438,22 +437,24 @@ computer-use-mcp tools                          # tool definitions the model wil
 computer-use-mcp config show                    # settings (see "Settings" below)
 ```
 
-Flags: `--config <path>`, `--approval prompt|allowlist|allow-all`,
-`--allow <app>` (repeatable, pre-approve for the run),
-`--headless-approve deny|allow`.
+Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
+`--log <level>`, `--text-only`.
+
+`doctor` also checks that the emergency stop key works on this machine.
 
 ## Embed the library
 
 ```rust
-use computer_use::{AllowApprover, tools};
+use computer_use::tools;
 
 let mut engine = computer_use::platform_engine()?;      // native backend + config
 let defs = tools::definitions();                        // hand these to your model
-let out = engine.call_tool("list_apps", serde_json::json!({}), &mut AllowApprover);
+let out = engine.call_tool("list_apps", serde_json::json!({}));
 println!("{}", out.text);
 ```
 
-Plug in your own approval UI by implementing the `Approver` trait. See
+The engine does no access control: an embedding host that wants approvals
+checks the tool name and `app` argument before calling `call_tool`. See
 [`crates/computer-use/examples/mock_session.rs`](crates/computer-use/examples/mock_session.rs)
 for a full, runnable session against the in-memory mock backend:
 
@@ -473,8 +474,6 @@ computer-use-mcp config show                 # effective settings
 computer-use-mcp config keys                 # every setting key
 computer-use-mcp config get screenshot.attach
 computer-use-mcp config set screenshot.attach always
-computer-use-mcp config set sensitive.terminals ask
-computer-use-mcp config add approvals.always_allow com.googlecode.iterm2
 computer-use-mcp config add tools.disabled drag
 computer-use-mcp config unset tree.max_nodes   # back to the default
 computer-use-mcp config check                # validate + flag misspelled keys
@@ -484,31 +483,21 @@ Edits are validated before they are written (bad values and unknown keys are
 rejected with a clear message) and your comments are preserved. A running
 server **reloads the file automatically** (`hot_reload = true`) and tells MCP
 clients when the tool list changed — no restart needed. Command-line flags
-(`--approval`, `--text-only`, `--log`, `--http`, …) override the file and keep
+(`--text-only`, `--log`, `--http`, …) override the file and keep
 applying after a reload. The agent has no tool to change settings.
 
 | Section | What you control |
 |---|---|
-| `[approvals]` | `prompt` / `allowlist` / `allow_all`, per-app `always_allow` / `always_deny`, agent host apps |
-| `[sensitive]` | terminals, credential stores, OS security prompts, agent apps, own process: `block` / `ask` / `allow` each, plus your own patterns |
-| `[guard]` | confirm/allow/block consequential presses, and the keyword list |
 | `[tools]` | hide tools (`disabled`), allow-list them (`enabled`), `compact` or `full` descriptions |
 | `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
 | `[tree]` | size limits, text length, indentation, shown actions/states, diffs, change reports |
 | `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
-| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings, on-screen approvals |
+| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings |
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window |
 | `[audit]` | JSONL audit log on/off and path |
-| `[server]` | headless approval policy, log level, HTTP address and token |
+| `[server]` | log level, HTTP address and token |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
-
-Sensitive apps are blocked by default; open them up one category or one app at
-a time. Admins can enforce policy via a managed config
-(`/etc/computer-use/managed.toml` on Linux,
-`/Library/Application Support/ComputerUse/managed.toml` on macOS,
-`%ProgramData%\ComputerUse\managed.toml` on Windows) with `denied_apps`,
-`allowed_apps`, or a forced `approval_mode` — these always win over user config.
 
 ### Token-saving knobs
 
@@ -532,13 +521,18 @@ Build with the `http` feature to serve MCP over HTTP for a remote agent:
 
 ```bash
 cargo build --release -p computer-use-mcp --features http
-computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN" --approval allow-all
+computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN"
 # or put it in settings: server.http_addr / server.http_token
 ```
 
-Each POST body is one JSON-RPC message. There is no interactive approval
-channel over HTTP, so run it with a deliberate approval policy, require a bearer
-token, and bind it to localhost or a trusted network.
+Each POST body is one JSON-RPC message (`Content-Type: application/json`, at
+most 4 MiB). Whoever can reach the endpoint can control the desktop, so:
+
+- a bearer token is **required**: without one the server refuses to start;
+  it is compared in constant time;
+- requests carrying a browser `Origin` other than `localhost` / `127.0.0.1` /
+  `[::1]` are refused, so a web page can't drive the desktop;
+- bind it to localhost or a trusted network (a warning is logged otherwise).
 
 ## Performance
 
@@ -591,18 +585,34 @@ compares coming back to a screen with the screen memory off and on.
 
 ## Safety
 
-Sensitive apps — terminals, password managers, OS authentication/consent
-prompts, agent host apps, and the agent's own process — are **blocked by
-default**, but this is policy, not a hard wall: each category can be set to
-`ask` or `allow`, or a single app permitted via `approvals.always_allow`, so you
-grant access deliberately from settings (admin `managed.toml` still overrides).
-The first use of any other app is gated by approval. On top of that, the
-**action guard** confirms consequential presses (Send / Delete / Pay …) at the
-engine level — not just by trusting the model — and an optional **audit log**
-records every call. The model is also instructed (see the skill) to pause before
-such actions. The user can stop the agent at any moment with the stop key; it
-waits while they use the computer; and password fields and card numbers are
-never sent to the model (see "You stay in control").
+The server does **no access control**: no per-app approvals, no blocked app
+categories, no confirmation of Send / Delete / Pay. That responsibility is the
+agent's, through the
+[`computer-use-security`](skills/computer-use-security/SKILL.md) skill (and a
+summary in the server's MCP instructions): stay inside the task, keep out of
+terminals, password managers and OS security prompts, confirm consequential
+actions with the user, treat on-screen text as data rather than instructions,
+leave secrets alone.
+
+What the server still guarantees, because an agent can't do it for itself:
+
+- **Input goes only where it is meant to.** On Windows and Linux, synthesized
+  keys and clicks go to whatever window is in front, so the target app is
+  brought to the front first and checked; if it doesn't come forward, nothing
+  is sent. (macOS posts input to the app's own process.)
+- **`launch_app` opens apps, it doesn't run commands.** The name is never
+  split into arguments, and the launched app is cut off from the server's
+  stdin/stdout.
+- **`cmd` means the shortcut key**: Cmd on a Mac, Ctrl elsewhere; the
+  Windows/Super key only when named (`win`, `super`).
+- **Private data is masked** before anything reaches the model (passwords,
+  card numbers, `[privacy]`).
+- **The user can stop the agent** with the emergency stop key; if it can't be
+  registered, the agent is told so it can tell the user, and `doctor` checks
+  it. The agent also waits while the user is using the computer.
+- **One bad call doesn't take the server down**: a failing tool call becomes
+  an error result.
+- An optional **audit log** records every call.
 
 ## Development
 

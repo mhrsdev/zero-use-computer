@@ -71,19 +71,9 @@ pub struct RpcError {
     pub data: Option<Value>,
 }
 
-/// A request we send to the client (e.g. elicitation/create).
-#[derive(Debug, Clone, Serialize)]
-pub struct OutgoingRequest {
-    pub jsonrpc: &'static str,
-    pub id: Value,
-    pub method: String,
-    pub params: Value,
-}
-
 // Standard JSON-RPC error codes.
 pub const PARSE_ERROR: i64 = -32700;
 #[allow(dead_code)]
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
-pub const INTERNAL_ERROR: i64 = -32603;

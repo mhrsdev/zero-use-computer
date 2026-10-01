@@ -10,13 +10,13 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use computer_use::config::{self, ApprovalMode, Config, ConfigStore, Edit, HeadlessPolicy};
-use computer_use::engine::{AllowApprover, Engine};
+use clap::{Args, Parser, Subcommand};
+use computer_use::config::{self, Config, ConfigStore, Edit};
+use computer_use::engine::Engine;
 use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 
-use server::{HeadlessApproval, Server};
+use server::Server;
 
 #[derive(Parser)]
 #[command(
@@ -39,18 +39,6 @@ struct Common {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Override approvals.mode.
-    #[arg(long, global = true, value_enum)]
-    approval: Option<ApprovalArg>,
-
-    /// Pre-approve an app for this run (repeatable): name, id or pid.
-    #[arg(long = "allow", global = true)]
-    allow: Vec<String>,
-
-    /// Override server.headless_approve.
-    #[arg(long, global = true, value_enum)]
-    headless_approve: Option<HeadlessArg>,
-
     /// Override server.http_addr: serve MCP over HTTP on this address
     /// (e.g. 127.0.0.1:8787). Requires the `http` build feature.
     #[arg(long, global = true)]
@@ -67,29 +55,6 @@ struct Common {
     /// Override text_only = true (never send screenshots).
     #[arg(long, global = true)]
     text_only: bool,
-}
-
-#[derive(Copy, Clone, ValueEnum)]
-enum ApprovalArg {
-    Prompt,
-    Allowlist,
-    AllowAll,
-}
-
-impl From<ApprovalArg> for ApprovalMode {
-    fn from(a: ApprovalArg) -> Self {
-        match a {
-            ApprovalArg::Prompt => ApprovalMode::Prompt,
-            ApprovalArg::Allowlist => ApprovalMode::Allowlist,
-            ApprovalArg::AllowAll => ApprovalMode::AllowAll,
-        }
-    }
-}
-
-#[derive(Copy, Clone, ValueEnum)]
-enum HeadlessArg {
-    Deny,
-    Allow,
 }
 
 #[derive(Subcommand)]
@@ -165,7 +130,7 @@ enum ConfigCmd {
     Set { key: String, value: String },
     /// Remove a setting from your file so it returns to its default.
     Unset { key: String },
-    /// Add an item to a list setting, e.g. `config add approvals.always_allow TextEdit`.
+    /// Add an item to a list setting, e.g. `config add tools.disabled drag`.
     Add { key: String, item: String },
     /// Remove an item from a list setting.
     Remove { key: String, item: String },
@@ -182,22 +147,11 @@ fn config_path(common: &Common) -> PathBuf {
 
 /// Apply command-line overrides on top of the file settings.
 fn apply_overrides(common: &Common) -> impl Fn(&mut Config) + Send + 'static {
-    let approval = common.approval;
-    let headless = common.headless_approve;
     let http = common.http.clone();
     let http_token = common.http_token.clone();
     let log = common.log.clone();
     let text_only = common.text_only;
     move |c: &mut Config| {
-        if let Some(mode) = approval {
-            c.approvals.mode = mode.into();
-        }
-        if let Some(h) = headless {
-            c.server.headless_approve = match h {
-                HeadlessArg::Deny => HeadlessPolicy::Deny,
-                HeadlessArg::Allow => HeadlessPolicy::Allow,
-            };
-        }
         if let Some(a) = &http {
             c.server.http_addr = a.clone();
         }
@@ -227,11 +181,7 @@ fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Ba
             computer_use::PLATFORM
         )
     })?;
-    let mut engine = Engine::new(backend, store).with_overrides(apply_overrides(common));
-    for app in &common.allow {
-        engine.allow_for_session(app);
-    }
-    Ok(engine)
+    Ok(Engine::new(backend, store).with_overrides(apply_overrides(common)))
 }
 
 fn init_logging(level: &str) {
@@ -396,24 +346,33 @@ fn print_setting(path: &std::path::Path, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// The engine with the on-screen overlay, which runs as this same program in
+/// helper mode and also listens for the user's emergency stop key.
+fn with_overlay(engine: Engine<Box<dyn Backend>>) -> Engine<Box<dyn Backend>> {
+    match std::env::current_exe() {
+        Ok(exe) => engine.with_overlay(computer_use::overlay::Launcher::helper(exe)),
+        Err(e) => {
+            log::warn!("no overlay or stop key: cannot find this program ({e})");
+            engine
+        }
+    }
+}
+
 fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     let server_cfg = store.config.server.clone();
-    let headless = match server_cfg.headless_approve {
-        HeadlessPolicy::Deny => HeadlessApproval::Deny,
-        HeadlessPolicy::Allow => HeadlessApproval::Allow,
-    };
-    let mut engine = build_engine(common, store)?;
-    // The on-screen overlay runs as this same program in helper mode.
-    if let Ok(exe) = std::env::current_exe() {
-        engine = engine.with_overlay(computer_use::overlay::Launcher::helper(exe));
-    }
+    let mut engine = with_overlay(build_engine(common, store)?);
+    // Listen for the stop key from the start, not only from the first call.
+    engine.arm();
 
     if !server_cfg.http_addr.is_empty() {
         let token = std::env::var("COMPUTER_USE_HTTP_TOKEN")
             .ok()
             .filter(|t| !t.is_empty())
-            .or_else(|| Some(server_cfg.http_token.clone()).filter(|t| !t.is_empty()));
-        return serve_http(engine, &server_cfg.http_addr, token, headless);
+            .or_else(|| Some(server_cfg.http_token.clone()).filter(|t| !t.is_empty()))
+            .context(
+                "serving over HTTP needs a bearer token: set server.http_token, --http-token or $COMPUTER_USE_HTTP_TOKEN",
+            )?;
+        return serve_http(engine, &server_cfg.http_addr, token);
     }
 
     log::info!(
@@ -423,33 +382,23 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     );
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin.lock(), stdout.lock(), headless);
+    let mut server = Server::new(engine, stdin.lock(), stdout.lock());
     server.run().context("serving MCP over stdio")
 }
 
 #[cfg(feature = "http")]
-fn serve_http(
-    engine: Engine<Box<dyn Backend>>,
-    addr: &str,
-    token: Option<String>,
-    headless: HeadlessApproval,
-) -> Result<()> {
-    http::serve(engine, addr, token, headless == HeadlessApproval::Allow)
+fn serve_http(engine: Engine<Box<dyn Backend>>, addr: &str, token: String) -> Result<()> {
+    http::serve(engine, addr, &token)
 }
 
 #[cfg(not(feature = "http"))]
-fn serve_http(
-    _engine: Engine<Box<dyn Backend>>,
-    _addr: &str,
-    _token: Option<String>,
-    _headless: HeadlessApproval,
-) -> Result<()> {
+fn serve_http(_engine: Engine<Box<dyn Backend>>, _addr: &str, _token: String) -> Result<()> {
     anyhow::bail!("this build has no HTTP support; rebuild with `--features http`")
 }
 
 fn run_and_print(common: &Common, store: ConfigStore, tool: &str, args: Value) -> Result<()> {
     let mut engine = build_engine(common, store)?;
-    let out = engine.call_tool(tool, args, &mut AllowApprover);
+    let out = engine.call_tool(tool, args);
     if let Some(img) = &out.image {
         eprintln!("[screenshot: {} {}x{}]", img.mime, img.width, img.height);
     }
@@ -477,7 +426,7 @@ fn state(
     if screenshot.is_some() {
         args.insert("screenshot".into(), json!(true));
     }
-    let out = engine.call_tool("get_app_state", Value::Object(args), &mut AllowApprover);
+    let out = engine.call_tool("get_app_state", Value::Object(args));
     println!("{}", out.text);
     if let (Some(path), Some(img)) = (screenshot, &out.image) {
         let mut f =
@@ -510,10 +459,6 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             println!("          ! unknown setting `{key}`");
         }
     }
-    println!(
-        "managed:  {}",
-        computer_use::config::managed_config_path().display()
-    );
     let c = &store.config;
     let defs = tools::definitions_from(c);
     println!(
@@ -533,20 +478,30 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         c.screenshot.max_dimension
     );
 
+    let stop_key = c.control.stop_hotkey.trim().to_string();
     match build_engine(common, store) {
-        Ok(mut engine) => {
+        Ok(engine) => {
+            let mut engine = with_overlay(engine);
             println!("backend:  ok");
             println!("permissions:");
             for p in engine.permissions() {
                 let mark = if p.granted { "✓" } else { "✗" };
                 println!("  {mark} {} — {}", p.name, p.detail);
             }
-            match engine.call_tool("list_apps", json!({}), &mut AllowApprover) {
+            match engine.call_tool("list_apps", json!({})) {
                 out if !out.is_error => {
                     let n = out.text.lines().count().saturating_sub(1);
                     println!("apps:     {n} visible");
                 }
                 out => println!("apps:     error: {}", out.text),
+            }
+            if stop_key.is_empty() {
+                println!("stop key: none (control.stop_hotkey is empty)");
+            } else {
+                match engine.check_stop_key(std::time::Duration::from_secs(3)) {
+                    Ok(()) => println!("stop key: ✓ {stop_key}"),
+                    Err(why) => println!("stop key: ✗ {stop_key} — {why}"),
+                }
             }
         }
         Err(e) => println!("backend:  ERROR: {e:#}"),
