@@ -33,7 +33,7 @@ serde_json.workspace = true
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 async-io = "2"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await-macro"] }
-x11rb = { version = "0.14", features = ["xtest", "shape", "screensaver", "randr", "xkb"] }
+x11rb = { version = "0.14", features = ["xtest", "shape", "screensaver", "randr", "xkb", "damage"] }
 libc = "0.2"
 # Wayland sessions (Hyprland, sway and other wlroots-family compositors):
 # pure-Rust client, no system library.

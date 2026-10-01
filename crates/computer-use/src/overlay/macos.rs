@@ -1,8 +1,8 @@
 //! macOS overlay: borderless, transparent `NSWindow`s at screen-saver level
 //! that ignore mouse events, join every Space, never take focus (the helper
 //! is an accessory app with no Dock icon) and have `sharingType = none`, so
-//! screen captures leave them out. The window server removes the windows if
-//! the helper process dies.
+//! screen captures leave them out. AppKit never animates them. The window
+//! server removes the windows if the helper process dies.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -14,7 +14,7 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
     NSImage, NSImageScaling, NSImageView, NSScreen, NSScreenSaverWindowLevel, NSWindow,
-    NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 use tiny_skia::Pixmap;
@@ -134,14 +134,19 @@ struct Win {
     visible: bool,
 }
 
-/// The primary screen's geometry, as the overlay draws on it.
+/// The displays' geometry, as the overlay draws on them.
 #[derive(Clone, Copy, PartialEq)]
 struct Geometry {
     /// Height of the primary screen (Cocoa's y axis points up from its bottom).
     primary_h: f64,
+    /// Every display together (top-left screen units, the primary's top-left
+    /// corner at 0,0), so a target window on any of them gets its border.
     screen: Rect,
+    /// The primary display.
+    main: Rect,
     /// Height of the menu bar (and notch) at the top of the primary screen.
     top_inset: f64,
+    /// The highest backing scale of the displays: sharp on each of them.
     scale: f64,
 }
 
@@ -154,11 +159,24 @@ impl Geometry {
         let top_inset = ((frame.origin.y + frame.size.height)
             - (visible.origin.y + visible.size.height))
             .max(0.0);
+        let primary_h = frame.size.height;
+        let (mut x0, mut y0, mut x1, mut y1) = (0.0f64, 0.0f64, frame.size.width, primary_h);
+        let mut scale = primary.backingScaleFactor();
+        for i in 0..screens.count() {
+            let s = screens.objectAtIndex(i);
+            let f = s.frame();
+            let top = primary_h - (f.origin.y + f.size.height);
+            (x0, y0) = (x0.min(f.origin.x), y0.min(top));
+            x1 = x1.max(f.origin.x + f.size.width);
+            y1 = y1.max(top + f.size.height);
+            scale = scale.max(s.backingScaleFactor());
+        }
         Some(Self {
-            primary_h: frame.size.height,
-            screen: Rect::new(0.0, 0.0, frame.size.width, frame.size.height),
+            primary_h,
+            screen: Rect::new(x0, y0, x1 - x0, y1 - y0),
+            main: Rect::new(0.0, 0.0, frame.size.width, primary_h),
             top_inset,
-            scale: primary.backingScaleFactor().max(1.0),
+            scale: scale.max(1.0),
         })
     }
 }
@@ -256,6 +274,10 @@ impl MacSurface {
         window.setOpaque(false);
         window.setBackgroundColor(Some(&NSColor::clearColor()));
         window.setHasShadow(false);
+        // Shown and hidden at once, never with AppKit's zoom or fade.
+        window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+        // Still up when another app's "Hide Others" hides this one.
+        window.setCanHide(false);
         window.setIgnoresMouseEvents(true);
         window.setLevel(NSScreenSaverWindowLevel);
         // Left out of screenshots and screen recordings.
@@ -289,6 +311,10 @@ impl Surface for MacSurface {
         self.geo.screen
     }
 
+    fn main_screen(&self) -> Rect {
+        self.geo.main
+    }
+
     fn top_inset(&self) -> f64 {
         self.geo.top_inset
     }
@@ -316,8 +342,10 @@ impl Surface for MacSurface {
             let rect = self.frame(x, y, size.0, size.1);
             match self.layers.get_mut(&layer) {
                 Some(w) => {
-                    w.window.setFrame_display(rect, true);
+                    // The image first, then the frame, displayed at once with
+                    // it: never the old image stretched to the new size.
                     w.view.setImage(Some(&image));
+                    w.window.setFrame_display(rect, true);
                     w.size = size;
                 }
                 None => {

@@ -872,19 +872,22 @@ impl Painter {
         }
     }
 
-    /// Take everything off screen and forget it (e.g. after new settings).
-    pub fn clear(&mut self, s: &mut dyn Surface) {
-        for l in [
-            Layer::Top,
-            Layer::Right,
-            Layer::Bottom,
-            Layer::Left,
-            Layer::Label,
-            Layer::Cursor,
-        ] {
-            s.hide(l);
+    /// Draw everything again on the next paint (e.g. after new settings).
+    /// What is on screen stays until then rather than being hidden first:
+    /// hiding and showing again in one go can flicker, and replays a
+    /// compositor's open/close animation.
+    pub fn redraw(&mut self) {
+        // Keys no scene matches: each part is drawn anew, or hidden if it
+        // is no longer wanted.
+        if self.border.is_some() {
+            self.border = Some(([i64::MIN; 16], [0; 4], 0, 0));
         }
-        *self = Self::default();
+        if self.label.is_some() {
+            self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN));
+        }
+        if self.cursor_img.is_some() {
+            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0));
+        }
     }
 
     /// Anything on screen?
@@ -1052,7 +1055,7 @@ pub fn run(args: &[String]) -> i32 {
                             }
                         }
                         // Redraw everything with the new settings.
-                        painter.clear(surface.as_mut());
+                        painter.redraw();
                     }
                     machine.apply(other, Instant::now());
                 }
@@ -1470,6 +1473,52 @@ mod tests {
         m.tick(gone);
         p.paint(&m.scene(gone), m.config(), &fonts, &mut s);
         assert!(!p.showing());
+    }
+
+    #[test]
+    fn new_settings_redraw_in_place_without_hiding_first() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        m.apply(
+            Cmd::Pointer {
+                x: 50.0,
+                y: 50.0,
+                click: false,
+            },
+            t0,
+        );
+        let later = t0 + Duration::from_millis(500);
+        m.tick(later);
+        let (mut s, mut p, fonts) = (Fake::default(), Painter::default(), Fonts::default());
+        p.paint(&m.scene(later), m.config(), &fonts, &mut s);
+        let n = s.calls.len();
+
+        p.redraw();
+        p.paint(&m.scene(later), m.config(), &fonts, &mut s);
+        let again = &s.calls[n..];
+        assert!(again.iter().all(|c| c.starts_with("show")), "{again:?}");
+        for part in ["Top", "Left", "Label", "Cursor"] {
+            assert!(again.iter().any(|c| c.contains(part)), "{part}: {again:?}");
+        }
+
+        // A part switched off by the new settings goes away.
+        let n = s.calls.len();
+        p.redraw();
+        let no_label = OverlayConfig {
+            show_label: false,
+            ..cfg()
+        };
+        m.apply(
+            Cmd::Config {
+                config: Box::new(no_label),
+                hotkey: String::new(),
+                stopped: false,
+            },
+            later,
+        );
+        p.paint(&m.scene(later), m.config(), &fonts, &mut s);
+        assert!(s.calls[n..].contains(&"hide Label".to_string()));
     }
 
     #[test]
