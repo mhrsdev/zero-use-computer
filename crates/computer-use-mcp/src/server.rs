@@ -5,6 +5,9 @@
 //! (`skills/computer-use-security`), summarised in [`instructions`].
 
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
 
 use computer_use::Backend;
 use computer_use::engine::Engine;
@@ -34,75 +37,180 @@ pub(crate) fn unknown_tool<B: Backend>(engine: &mut Engine<B>, name: &str) -> Op
 
 pub struct Server<R: BufRead, W: Write, B: Backend> {
     engine: Option<Engine<B>>,
-    reader: R,
+    /// Read on a thread of its own (taken by `run`), so a cancel reaches a
+    /// call while it runs.
+    reader: Option<R>,
     writer: W,
     shutdown: bool,
     /// Tool set last announced to the client, to detect settings changes.
     tools_sig: Option<String>,
 }
 
-impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
+/// What the reader thread passes on.
+enum Input {
+    Msg(Incoming),
+    /// The answer to a line that couldn't be read.
+    Reply(Response),
+}
+
+/// Requests the client cancelled (`notifications/cancelled`), shared by the
+/// reader thread and the server.
+#[derive(Default)]
+struct Cancels {
+    state: Mutex<CancelState>,
+}
+
+#[derive(Default)]
+struct CancelState {
+    /// The request being answered.
+    running: Option<Value>,
+    /// The client cancelled it.
+    running_cancelled: bool,
+    /// Cancelled before they started (most recent last).
+    early: Vec<Value>,
+}
+
+impl Cancels {
+    /// The client cancelled `id`: end it if it runs, else skip it later.
+    fn cancel(&self, id: Value, engine_cancel: &AtomicBool) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.running.as_ref() == Some(&id) {
+            st.running_cancelled = true;
+            engine_cancel.store(true, Ordering::SeqCst);
+        } else {
+            st.early.push(id);
+            if st.early.len() > 64 {
+                st.early.remove(0);
+            }
+        }
+    }
+
+    /// Start answering `id`; false when it was cancelled already.
+    fn begin(&self, id: &Value, engine_cancel: &AtomicBool) -> bool {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = st.early.iter().position(|c| c == id) {
+            st.early.remove(i);
+            return false;
+        }
+        // A cancel that came just after the previous call ended.
+        engine_cancel.store(false, Ordering::SeqCst);
+        st.running = Some(id.clone());
+        st.running_cancelled = false;
+        true
+    }
+
+    /// Done answering; true when the client cancelled it meanwhile.
+    fn end(&self) -> bool {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.running = None;
+        std::mem::take(&mut st.running_cancelled)
+    }
+}
+
+impl<R: BufRead + Send + 'static, W: Write, B: Backend> Server<R, W, B> {
     pub fn new(engine: Engine<B>, reader: R, writer: W) -> Self {
         Self {
             engine: Some(engine),
-            reader,
+            reader: Some(reader),
             writer,
             shutdown: false,
             tools_sig: None,
         }
     }
 
-    /// Read and dispatch messages until stdin closes.
+    /// Read and dispatch messages until stdin closes. Messages are read on a
+    /// thread of their own: a `notifications/cancelled` for the call that
+    /// is running ends it, as the stop key would.
     pub fn run(&mut self) -> std::io::Result<()> {
+        let Some(reader) = self.reader.take() else {
+            return Ok(());
+        };
+        let engine_cancel = self
+            .engine
+            .as_ref()
+            .expect("engine present")
+            .cancel_handle();
+        let cancels = Arc::new(Cancels::default());
+        let (tx, rx) = sync_channel(64);
+        {
+            let cancels = cancels.clone();
+            let engine_cancel = engine_cancel.clone();
+            std::thread::Builder::new()
+                .name("mcp-reader".into())
+                .spawn(move || read_loop(reader, &tx, &cancels, &engine_cancel))?;
+        }
         while !self.shutdown {
-            match self.read_message()? {
-                Some(msg) => self.dispatch(msg)?,
-                None => break,
+            match rx.recv() {
+                Ok(Ok(Input::Msg(msg))) => self.dispatch(msg, &cancels, &engine_cancel)?,
+                Ok(Ok(Input::Reply(reply))) => self.write_msg(&reply)?,
+                Ok(Err(e)) => return Err(e),
+                // The input ended.
+                Err(_) => break,
             }
         }
         Ok(())
     }
+}
 
-    /// The next message. A line that is too long, not UTF-8 or not a
-    /// JSON-RPC message is answered with an error and skipped: one bad line
-    /// never ends the session.
-    fn read_message(&mut self) -> std::io::Result<Option<Incoming>> {
-        loop {
-            let bytes = match read_capped_line(&mut self.reader, MAX_LINE_BYTES)? {
-                RawLine::Eof => return Ok(None),
-                RawLine::TooLong => {
-                    log::warn!("dropping a message over {MAX_LINE_BYTES} bytes");
-                    self.write_msg(&Response::err(
-                        Value::Null,
-                        INVALID_REQUEST,
-                        format!("message too long (over {MAX_LINE_BYTES} bytes)"),
-                    ))?;
-                    continue;
-                }
-                RawLine::Line(bytes) => bytes,
-            };
-            let Ok(line) = std::str::from_utf8(&bytes) else {
-                log::warn!("dropping a message that is not UTF-8");
-                self.write_msg(&Response::err(
+/// Read messages and pass them on until the input ends. A line that is too
+/// long, not UTF-8 or not a JSON-RPC message is answered with an error and
+/// skipped: one bad line never ends the session.
+fn read_loop<R: BufRead>(
+    mut reader: R,
+    tx: &SyncSender<std::io::Result<Input>>,
+    cancels: &Cancels,
+    engine_cancel: &AtomicBool,
+) {
+    loop {
+        let item = match read_capped_line(&mut reader, MAX_LINE_BYTES) {
+            Err(e) => Err(e),
+            Ok(RawLine::Eof) => return,
+            Ok(RawLine::TooLong) => {
+                log::warn!("dropping a message over {MAX_LINE_BYTES} bytes");
+                Ok(Input::Reply(Response::err(
                     Value::Null,
-                    PARSE_ERROR,
-                    "parse error: message is not valid UTF-8",
-                ))?;
-                continue;
-            };
-            if line.trim().is_empty() {
-                continue;
+                    INVALID_REQUEST,
+                    format!("message too long (over {MAX_LINE_BYTES} bytes)"),
+                )))
             }
-            match parse_message(line) {
-                Ok(msg) => return Ok(Some(msg)),
-                Err(reply) => {
-                    log::warn!("dropping a bad message: {:?}", reply.error);
-                    self.write_msg(&reply)?;
+            Ok(RawLine::Line(bytes)) => match std::str::from_utf8(&bytes) {
+                Err(_) => {
+                    log::warn!("dropping a message that is not UTF-8");
+                    Ok(Input::Reply(Response::err(
+                        Value::Null,
+                        PARSE_ERROR,
+                        "parse error: message is not valid UTF-8",
+                    )))
                 }
-            }
+                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) => match parse_message(line) {
+                    Ok(msg) => {
+                        if msg.method.as_deref() == Some("notifications/cancelled")
+                            && let Some(id) = msg
+                                .params
+                                .as_ref()
+                                .and_then(|p| p.get("requestId"))
+                                .cloned()
+                        {
+                            cancels.cancel(id, engine_cancel);
+                        }
+                        Ok(Input::Msg(msg))
+                    }
+                    Err(reply) => {
+                        log::warn!("dropping a bad message: {:?}", reply.error);
+                        Ok(Input::Reply(*reply))
+                    }
+                },
+            },
+        };
+        let failed = item.is_err();
+        if tx.send(item).is_err() || failed {
+            return;
         }
     }
+}
 
+impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
     fn write_msg(&mut self, value: &impl serde::Serialize) -> std::io::Result<()> {
         let s = serde_json::to_string(value).expect("serialize json-rpc");
         self.writer.write_all(s.as_bytes())?;
@@ -110,7 +218,12 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         self.writer.flush()
     }
 
-    fn dispatch(&mut self, msg: Incoming) -> std::io::Result<()> {
+    fn dispatch(
+        &mut self,
+        msg: Incoming,
+        cancels: &Cancels,
+        engine_cancel: &AtomicBool,
+    ) -> std::io::Result<()> {
         if msg.is_response() {
             // No outstanding request expects a top-level response here.
             return Ok(());
@@ -124,8 +237,14 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         }
         let id = msg.id.clone().unwrap_or(Value::Null);
         let params = msg.params.unwrap_or(Value::Null);
+        // A cancelled request gets no answer (as MCP asks).
+        if !cancels.begin(&id, engine_cancel) {
+            return Ok(());
+        }
         let response = self.handle_request(&method, params, id.clone());
-        if let Some(resp) = response {
+        if !cancels.end()
+            && let Some(resp) = response
+        {
             self.write_msg(&resp)?;
         }
         // A hot-reloaded config can change which tools exist; tell the client.
@@ -382,13 +501,34 @@ mod tests {
         let store = ConfigStore::load(Some(&path)).unwrap();
         let engine = Engine::new(backend, store).with_time(std::time::Instant::now, |_| {});
 
-        // A reader that rewrites the config between the two requests.
+        // A reader that rewrites the config between the two requests (once
+        // the first is answered: input is read ahead, on a thread).
         struct Script {
             lines: Vec<String>,
             path: std::path::PathBuf,
             step: usize,
             buf: Vec<u8>,
             at: usize,
+            answered: std::sync::mpsc::Receiver<()>,
+        }
+        // Tells the reader when the answer to request 2 is out.
+        struct Out<'a> {
+            buf: &'a mut Vec<u8>,
+            answered: Option<std::sync::mpsc::Sender<()>>,
+        }
+        impl std::io::Write for Out<'_> {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.buf.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if String::from_utf8_lossy(self.buf).contains("\"id\":2")
+                    && let Some(tx) = self.answered.take()
+                {
+                    let _ = tx.send(());
+                }
+                Ok(())
+            }
         }
         impl std::io::Read for Script {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
@@ -399,6 +539,7 @@ mod tests {
             fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
                 if self.at == self.buf.len() {
                     if self.step == 2 {
+                        let _ = self.answered.recv_timeout(Duration::from_secs(10));
                         // Disable a tool and bump the mtime so the change is seen.
                         std::fs::write(
                             &self.path,
@@ -421,6 +562,7 @@ mod tests {
                 self.at += n;
             }
         }
+        let (tx, answered) = std::sync::mpsc::channel();
         let reader = Script {
             lines: vec![
                 line("initialize", 1, json!({"capabilities":{}})),
@@ -432,10 +574,15 @@ mod tests {
             step: 0,
             buf: Vec::new(),
             at: 0,
+            answered,
         };
         let mut out: Vec<u8> = Vec::new();
         {
-            let mut server = Server::new(engine, reader, &mut out);
+            let writer = Out {
+                buf: &mut out,
+                answered: Some(tx),
+            };
+            let mut server = Server::new(engine, reader, writer);
             server.run().unwrap();
         }
         let msgs: Vec<Value> = String::from_utf8(out)
@@ -578,5 +725,61 @@ mod tests {
         assert_eq!(negotiate_protocol(Some("2025-03-26")), "2025-03-26");
         assert_eq!(negotiate_protocol(Some("1999-01-01")), "2025-06-18");
         assert_eq!(negotiate_protocol(None), "2025-06-18");
+    }
+
+    #[test]
+    fn a_request_cancelled_before_it_starts_is_never_run() {
+        let cancel =
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}});
+        let call = line(
+            "tools/call",
+            5,
+            json!({"name":"type_text","arguments":{"app":"TextEdit","text":"hi"}}),
+        );
+        let input = format!("{cancel}\n{call}{}", line("ping", 6, json!({})));
+        let msgs = converse(&input);
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert_eq!(msgs[0]["id"], 6);
+    }
+
+    #[test]
+    fn a_cancel_ends_the_call_that_is_running() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let dir = std::env::temp_dir().join(format!("cu-cancel-{}", std::process::id()));
+        let engine = engine_with_scripts(&dir);
+        let client = std::thread::spawn(move || {
+            let call = line(
+                "tools/call",
+                1,
+                json!({"name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"}}),
+            );
+            writer.write_all(call.as_bytes()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}});
+            writer.write_all(format!("{cancel}\n").as_bytes()).unwrap();
+            writer
+                .write_all(line("ping", 2, json!({})).as_bytes())
+                .unwrap();
+        });
+        let started = std::time::Instant::now();
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut server = Server::new(engine, std::io::BufReader::new(reader), &mut out);
+            server.run().unwrap();
+        }
+        client.join().unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the cancel didn't end the script"
+        );
+        let msgs: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        // No answer for the cancelled call; the next one is answered.
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert_eq!(msgs[0]["id"], 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

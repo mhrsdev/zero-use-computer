@@ -219,7 +219,8 @@ impl<B: Backend> Engine<B> {
             web: cfg.web,
             library: cfg.library(),
             max_seconds: cfg.max_seconds.max(1),
-            stop: self.stop.clone(),
+            // Raised by the engine on the stop key or a cancel.
+            stop: Arc::new(AtomicBool::new(self.halted())),
             app_tools,
         };
         let started = Instant::now();
@@ -231,21 +232,28 @@ impl<B: Backend> Engine<B> {
             env,
         })
         .map_err(|e| Error::Internal(format!("can't start the script: {e}")))?;
+        let halt = running.halt.clone();
         let seen_before = self.known_screens();
         self.in_script = true;
         let mut images: Vec<Option<ScriptImage>> = Vec::new();
         let mut shown: Option<usize> = None;
         let mut limit = running.deadline + GRACE;
         let outcome = loop {
+            if self.halted() {
+                halt.store(true, Ordering::SeqCst);
+            }
+            // Short waits, so the stop key or a cancel reaches the script
+            // (and the curl it may be running) at once.
             let wait = limit
                 .saturating_duration_since(Instant::now())
-                .max(Duration::from_millis(20));
+                .clamp(Duration::from_millis(20), Duration::from_millis(100));
             match running.rx.recv_timeout(wait) {
                 Ok(Msg::Ask(req)) => {
                     let reply = self.script_request(req, &mut images, &mut shown);
                     let _ = running.tx.send(reply);
                 }
                 Ok(Msg::Done(o)) => break o,
+                Err(RecvTimeoutError::Timeout) if Instant::now() < limit => {}
                 Err(RecvTimeoutError::Timeout) => {
                     if !running.abort.swap(true, Ordering::SeqCst) {
                         limit = Instant::now() + GRACE;
@@ -420,10 +428,12 @@ impl<B: Backend> Engine<B> {
                             .into(),
                     );
                 }
-                let size = std::fs::metadata(&path)
-                    .map_err(|e| format!("can't read {}: {e}", path.display()))?
-                    .len();
-                if size > 64 * 1024 * 1024 {
+                let meta = std::fs::metadata(&path)
+                    .map_err(|e| format!("can't read {}: {e}", path.display()))?;
+                if !meta.is_file() {
+                    return Err(format!("{} is not a regular file", path.display()));
+                }
+                if meta.len() > 64 * 1024 * 1024 {
                     return Err(format!("{} is over 64 MB", path.display()));
                 }
                 // A small file can still unpack to a huge picture.

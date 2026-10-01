@@ -32,6 +32,30 @@ pub fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Keep this process's stdin, stdout and stderr to itself. On Windows every
+/// program started (apps, the helper, curl) would otherwise inherit them:
+/// an app left running then holds the client's pipe open, and the client
+/// never sees the server end. (Elsewhere they are never passed on: children
+/// get their own or none.)
+pub fn keep_stdio_private() {
+    #[cfg(windows)]
+    // SAFETY: plain Win32 calls on this process's own standard handles.
+    unsafe {
+        use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+        use windows::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            if let Ok(h) = GetStdHandle(which)
+                && !h.is_invalid()
+                && !h.0.is_null()
+            {
+                let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0));
+            }
+        }
+    }
+}
+
 /// Result of an attempt to handle an element-level operation natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Native {

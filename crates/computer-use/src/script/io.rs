@@ -80,6 +80,11 @@ fn read_bytes(p: &Path) -> Result<Vec<u8>, String> {
     if meta.is_dir() {
         return Err(format!("{} is a folder: list_files lists it", p.display()));
     }
+    // Devices and pipes (/dev/zero, a FIFO, the server's own input) never
+    // end or never answer.
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", p.display()));
+    }
     if meta.len() > MAX_READ {
         return Err(format!(
             "{} is {} MB; scripts read files up to {} MB",
@@ -88,7 +93,21 @@ fn read_bytes(p: &Path) -> Result<Vec<u8>, String> {
             MAX_READ / (1024 * 1024)
         ));
     }
-    std::fs::read(p).map_err(|e| format!("can't read {}: {e}", p.display()))
+    let mut out = Vec::with_capacity(meta.len() as usize);
+    std::fs::File::open(p)
+        .and_then(|f| f.take(MAX_READ).read_to_end(&mut out))
+        .map_err(|e| format!("can't read {}: {e}", p.display()))?;
+    Ok(out)
+}
+
+/// Refuse to write over something that isn't a regular file: opening a
+/// pipe waits for a reader, and a device is no place for a script's text.
+fn writable(p: &Path) -> Result<(), String> {
+    match std::fs::metadata(p) {
+        Ok(meta) if meta.is_dir() => Err(format!("{} is a folder", p.display())),
+        Ok(meta) if !meta.is_file() => Err(format!("{} is not a regular file", p.display())),
+        _ => Ok(()),
+    }
 }
 
 /// Write (or with `append`, add to) a file. Returns where it went.
@@ -100,6 +119,7 @@ pub fn write_text(env: &Env, path: &str, text: &str, append: bool) -> Result<Pat
         ));
     }
     let p = resolve(env, path, true)?;
+    writable(&p)?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
     }
@@ -218,8 +238,9 @@ fn curl(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<Command,
     Ok(cmd)
 }
 
-/// Run curl; its stdout (capped) and the HTTP status it printed last.
-fn run_curl(mut cmd: Command, body: Option<&str>) -> Result<(Vec<u8>, u16), String> {
+/// Run curl; its stdout (capped) and the HTTP status it printed last. The
+/// stop key ends it at once.
+fn run_curl(env: &Env, mut cmd: Command, body: Option<&str>) -> Result<(Vec<u8>, u16), String> {
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "fetch needs curl (part of Windows 10 and later, macOS and most Linux systems), and it isn't installed here".to_string()
@@ -234,15 +255,40 @@ fn run_curl(mut cmd: Command, body: Option<&str>) -> Result<(Vec<u8>, u16), Stri
             let _ = stdin.write_all(&data);
         });
     }
-    let mut out = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        let _ = stdout.take(MAX_FETCH + 64).read_to_end(&mut out);
-    }
-    let mut err = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut err);
-    }
-    let status = child.wait().map_err(|e| format!("curl failed: {e}"))?;
+    // Both pipes drain on threads of their own, so neither can fill up and
+    // stall curl while we wait for it.
+    let stdout = child.stdout.take().map(|stdout| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stdout.take(MAX_FETCH + 64).read_to_end(&mut out);
+            out
+        })
+    });
+    let stderr = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut err = String::new();
+            let _ = stderr.take(64 * 1024).read_to_string(&mut err);
+            err
+        })
+    });
+    let status = loop {
+        if env.stop.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("stopped by the user".into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("curl failed: {e}"));
+            }
+        }
+    };
+    let mut out = stdout.and_then(|t| t.join().ok()).unwrap_or_default();
+    let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
     // The status line `-w` adds after the body.
     let cut = out.iter().rposition(|b| *b == b'\n').unwrap_or(0);
     let code: u16 = String::from_utf8_lossy(&out[cut..])
@@ -268,7 +314,7 @@ fn run_curl(mut cmd: Command, body: Option<&str>) -> Result<(Vec<u8>, u16), Stri
 pub fn fetch(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<String, String> {
     let mut cmd = curl(env, url, req, deadline)?;
     cmd.args(["-w", "\n%{http_code}"]).arg(url.trim());
-    let (body, code) = run_curl(cmd, req.body.as_deref())?;
+    let (body, code) = run_curl(env, cmd, req.body.as_deref())?;
     let text = String::from_utf8(body)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     if code >= 400 {
@@ -281,6 +327,7 @@ pub fn fetch(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<Str
 /// Save what a URL returns to a file; its path.
 pub fn download(env: &Env, url: &str, path: &str, deadline: Instant) -> Result<PathBuf, String> {
     let p = resolve(env, path, true)?;
+    writable(&p)?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
     }
@@ -289,7 +336,7 @@ pub fn download(env: &Env, url: &str, path: &str, deadline: Instant) -> Result<P
         .arg(&p)
         .args(["-w", "\n%{http_code}"])
         .arg(url.trim());
-    let (_, code) = run_curl(cmd, None).inspect_err(|_| {
+    let (_, code) = run_curl(env, cmd, None).inspect_err(|_| {
         let _ = std::fs::remove_file(&p);
     })?;
     if code >= 400 {
@@ -307,9 +354,9 @@ fn memory_path(env: &Env) -> PathBuf {
 
 /// Everything remembered.
 pub fn memory(env: &Env) -> Map<String, Value> {
-    std::fs::read_to_string(memory_path(env))
+    read_bytes(&memory_path(env))
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+        .and_then(|t| serde_json::from_slice(&t).ok())
         .unwrap_or_default()
 }
 
@@ -331,9 +378,15 @@ pub fn remember(env: &Env, key: &str, value: Value) -> Result<(), String> {
     let path = memory_path(env);
     std::fs::create_dir_all(&env.library)
         .map_err(|e| format!("can't make {}: {e}", env.library.display()))?;
-    let tmp = env.library.join(".memory.json.tmp");
+    // A name of its own per process: two servers may share the folder.
+    let tmp = env
+        .library
+        .join(format!(".memory.json.{}.tmp", std::process::id()));
     std::fs::write(&tmp, text).map_err(|e| format!("can't keep it: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("can't keep it: {e}"))
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("can't keep it: {e}")
+    })
 }
 
 // -- CSV -----------------------------------------------------------------

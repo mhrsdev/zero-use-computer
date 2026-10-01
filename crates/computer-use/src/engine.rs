@@ -83,6 +83,16 @@ const DRAW_MAX_STROKES: usize = 1000;
 const DRAW_SPEED: f64 = 800.0;
 /// `draw`: longest drawing in one call.
 const DRAW_MAX_SECS: f64 = 120.0;
+/// `scroll`: most pages in one call.
+const MAX_SCROLL_PAGES: f64 = 50.0;
+/// `type_text`: most characters in one call.
+const MAX_TYPED_CHARS: usize = 100_000;
+/// `type_text`: characters sent at once, so the stop key works mid-text.
+const TYPE_CHUNK: usize = 200;
+/// `press_key`: most key presses in one call.
+const MAX_KEY_PRESSES: usize = 500;
+/// `get_clipboard`: most characters returned.
+const MAX_CLIPBOARD_CHARS: usize = 30_000;
 
 pub struct Engine<B: Backend> {
     backend: B,
@@ -116,6 +126,9 @@ pub struct Engine<B: Backend> {
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
+    /// Set when the client cancels the call in progress (or goes away): it
+    /// ends as the stop key would end it, and is cleared when the call ends.
+    cancel: Arc<AtomicBool>,
     /// When the engine's own synthesized input last ended, so the system
     /// idle time isn't mistaken for the user's input.
     last_input: Option<Instant>,
@@ -232,6 +245,7 @@ impl<B: Backend> Engine<B> {
             stop_note_shown: false,
             hints: Hints::default(),
             stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
             last_input: None,
             settled: None,
             screen_shot: None,
@@ -484,6 +498,19 @@ impl<B: Backend> Engine<B> {
         self.stop.load(Ordering::SeqCst)
     }
 
+    /// Cancels the call in progress when set (from another thread, e.g. the
+    /// server's reader when the client sends `notifications/cancelled`).
+    /// Cleared when the call ends.
+    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
+    /// Whether the call in progress must end now: the user stopped the
+    /// agent, or the client cancelled the call.
+    fn halted(&self) -> bool {
+        self.is_stopped() || self.cancel.load(Ordering::SeqCst)
+    }
+
     /// Stop the agent (or let it continue), as the stop key does.
     pub fn set_stopped(&mut self, on: bool) {
         self.stop.store(on, Ordering::SeqCst);
@@ -493,6 +520,9 @@ impl<B: Backend> Engine<B> {
     }
 
     fn stopped_error(&self) -> Error {
+        if !self.is_stopped() && self.cancel.load(Ordering::SeqCst) {
+            return Error::Cancelled;
+        }
         Error::Stopped(self.stop_control_name())
     }
 
@@ -520,7 +550,7 @@ impl<B: Backend> Engine<B> {
         let start = (self.clock)();
         let mut paused = false;
         let result = loop {
-            if self.is_stopped() {
+            if self.halted() {
                 break Err(self.stopped_error());
             }
             let Some(idle) = self.backend.user_idle() else {
@@ -1471,7 +1501,7 @@ impl<B: Backend> Engine<B> {
                 break;
             }
             last = now;
-            if self.is_stopped() || (self.clock)() >= deadline || waited >= max {
+            if self.halted() || (self.clock)() >= deadline || waited >= max {
                 break;
             }
             (self.sleep)(poll);
@@ -1519,12 +1549,17 @@ impl<B: Backend> Engine<B> {
 
     /// Run one tool call.
     pub fn call(&mut self, call: ToolCall) -> Result<ToolOutput> {
-        if self.is_stopped() {
+        if self.halted() {
             // Show it again so the user sees why nothing happens.
-            if self.depth == 0 && self.overlay.is_some() {
+            if self.depth == 0 && self.is_stopped() && self.overlay.is_some() {
                 self.overlay_send(OverlayCmd::Stopped { on: true });
             }
-            return Err(self.stopped_error());
+            let err = self.stopped_error();
+            if self.depth == 0 {
+                // A cancel is for this call only.
+                self.cancel.store(false, Ordering::SeqCst);
+            }
+            return Err(err);
         }
         // Calls inside calls (batch steps, a script's tools) stay shallow.
         if self.depth >= MAX_DEPTH {
@@ -1559,6 +1594,7 @@ impl<B: Backend> Engine<B> {
         }
         self.depth -= 1;
         if self.depth == 0 {
+            self.cancel.store(false, Ordering::SeqCst);
             // Only the image in the final result reaches the model.
             let imaged = out.as_ref().is_ok_and(|o| o.image.is_some());
             if imaged {
@@ -1714,6 +1750,13 @@ impl<B: Backend> Engine<B> {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // The log never grows without end: past 10 MB it starts again, and
+        // the previous one is kept beside it.
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 10 * 1024 * 1024) {
+            let mut old = path.clone().into_os_string();
+            old.push(".1");
+            let _ = std::fs::rename(&path, old);
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1789,7 +1832,7 @@ impl<B: Backend> Engine<B> {
                     app.name, app.id, app.pid
                 )));
             }
-            if self.is_stopped() {
+            if self.halted() {
                 return Err(self.stopped_error());
             }
             if (self.clock)() >= deadline {
@@ -2197,13 +2240,17 @@ impl<B: Backend> Engine<B> {
         let before = self.tree_fingerprint(app.pid);
         self.overlay_point_element(&app, handle, false);
         self.overlay_point_element(&app, handle, true);
-        if let Err(e @ Error::Unanswered(_)) = self.backend.perform_action(handle, &native) {
-            self.settle_on(&app);
-            return Ok(ToolOutput::text(format!(
-                "Performed `{}` on {}, but {e}",
-                args.action,
-                node.label()
-            )));
+        match self.backend.perform_action(handle, &native) {
+            Ok(()) => {}
+            Err(e @ Error::Unanswered(_)) => {
+                self.settle_on(&app);
+                return Ok(ToolOutput::text(format!(
+                    "Performed `{}` on {}, but {e}",
+                    args.action,
+                    node.label()
+                )));
+            }
+            Err(e) => return Err(e),
         }
         self.settle_on(&app);
         let mut msg = format!("Performed `{}` on {}.", args.action, node.label());
@@ -2225,6 +2272,15 @@ impl<B: Backend> Engine<B> {
         let retry = self.store.config.verify.retry && typable;
         let mut how = String::new();
         if let Err(e) = self.backend.set_value(handle, &args.value) {
+            // It may have been set: typing it as well could enter it twice,
+            // into whatever the busy app shows next.
+            if let Error::Unanswered(_) = e {
+                self.settle_on(&app);
+                return Ok(ToolOutput::text(format!(
+                    "Sent the new value to {}, but {e}",
+                    node.label()
+                )));
+            }
             if !retry {
                 return Err(e);
             }
@@ -2290,8 +2346,10 @@ impl<B: Backend> Engine<B> {
     fn scroll(&mut self, args: ScrollArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
+        // A wheel turn per line: an amount in the millions would keep the
+        // backend busy for hours.
         let pages = if args.amount.is_finite() && args.amount > 0.0 {
-            args.amount
+            args.amount.min(MAX_SCROLL_PAGES)
         } else {
             1.0
         };
@@ -2642,13 +2700,16 @@ impl<B: Backend> Engine<B> {
         let target = self.input_target(&app)?;
         // Paced to `speed`, and stoppable between any two moves: the stop
         // key ends the drawing (the backend lets go of the button).
-        let stop = self.stop.clone();
+        let (stop, cancel) = (self.stop.clone(), self.cancel.clone());
         let stop_name = self.stop_control_name();
         let sleep = &self.sleep;
         let mut owed = 0.0f64;
         let mut pace = |d: f64| -> Result<()> {
             if stop.load(Ordering::SeqCst) {
                 return Err(Error::Stopped(stop_name.clone()));
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err(Error::Cancelled);
             }
             owed += d / speed;
             if owed >= 0.004 {
@@ -3178,13 +3239,27 @@ impl<B: Backend> Engine<B> {
             }
             (Some(path), None) => {
                 let p = std::path::Path::new(path.trim());
-                let size = std::fs::metadata(p)
-                    .map_err(|e| Error::InvalidArgs(format!("can't read {path}: {e}")))?
-                    .len();
+                let meta = std::fs::metadata(p)
+                    .map_err(|e| Error::InvalidArgs(format!("can't read {path}: {e}")))?;
+                if !meta.is_file() {
+                    return Err(Error::InvalidArgs(format!("{path} is not a regular file")));
+                }
+                let size = meta.len();
                 if size > 64 * 1024 * 1024 {
                     return Err(Error::InvalidArgs(format!(
                         "{path} is {} MB; give an image under 64 MB",
                         size / (1024 * 1024)
+                    )));
+                }
+                // A small file can still unpack to a huge picture.
+                let (w, h) = image::image_dimensions(p).map_err(|e| {
+                    Error::InvalidArgs(format!(
+                        "{path} isn't a picture I can read (PNG or JPEG): {e}"
+                    ))
+                })?;
+                if u64::from(w) * u64::from(h) > 50_000_000 {
+                    return Err(Error::InvalidArgs(format!(
+                        "{path} is {w} x {h} pixels; trace pictures up to 50 megapixels"
                     )));
                 }
                 let img = image::open(p)
@@ -3883,7 +3958,7 @@ impl<B: Backend> Engine<B> {
     fn press_combos(&mut self, app: &AppInfo, combos: &[KeyCombo]) -> Result<()> {
         let target = self.input_target(app)?;
         for combo in combos {
-            if self.is_stopped() {
+            if self.halted() {
                 return Err(self.stopped_error());
             }
             self.backend.press_key(&target, combo)?;
@@ -3896,6 +3971,12 @@ impl<B: Backend> Engine<B> {
         let app = self.resolve_app(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let combos = keys::parse_sequence(&args.key)?;
+        if combos.len() > MAX_KEY_PRESSES {
+            return Err(Error::InvalidArgs(format!(
+                "`key` has {} presses; at most {MAX_KEY_PRESSES} per call (type text with type_text)",
+                combos.len()
+            )));
+        }
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
             let node = self.node_by_index(&app, i)?.clone();
@@ -3916,6 +3997,12 @@ impl<B: Backend> Engine<B> {
         self.check_window(&app, args.window.as_deref())?;
         if args.text.is_empty() {
             return Err(Error::InvalidArgs("`text` must not be empty".into()));
+        }
+        let count = args.text.chars().count();
+        if count > MAX_TYPED_CHARS {
+            return Err(Error::InvalidArgs(format!(
+                "`text` has {count} characters; at most {MAX_TYPED_CHARS} per call (paste long text: set_clipboard, then press_key ctrl+v / cmd+v)"
+            )));
         }
         let mut field = None;
         if let Some(i) = args.element_index {
@@ -3962,10 +4049,10 @@ impl<B: Backend> Engine<B> {
         // Split on newlines so each becomes a Return press (works everywhere).
         let mut first = true;
         for segment in text.split('\n') {
-            if self.is_stopped() {
-                return Err(self.stopped_error());
-            }
             if !first {
+                if self.halted() {
+                    return Err(self.stopped_error());
+                }
                 self.backend.press_key(
                     &target,
                     &KeyCombo {
@@ -3974,8 +4061,19 @@ impl<B: Backend> Engine<B> {
                     },
                 )?;
             }
-            if !segment.is_empty() {
-                self.backend.type_text(&target, segment)?;
+            // Long text goes in pieces, checking the stop key between them.
+            let mut rest = segment;
+            while !rest.is_empty() {
+                let cut = rest
+                    .char_indices()
+                    .nth(TYPE_CHUNK)
+                    .map_or(rest.len(), |(i, _)| i);
+                let (piece, after) = rest.split_at(cut);
+                if self.halted() {
+                    return Err(self.stopped_error());
+                }
+                self.backend.type_text(&target, piece)?;
+                rest = after;
             }
             first = false;
         }
@@ -4127,7 +4225,7 @@ impl<B: Backend> Engine<B> {
                     )));
                 }
             }
-            if self.is_stopped() {
+            if self.halted() {
                 return Err(self.stopped_error());
             }
             if (self.clock)() >= deadline {
@@ -4517,7 +4615,8 @@ impl<B: Backend> Engine<B> {
                 Err(e) => {
                     report.push_str(&format!("{}. {} — ERROR: {e}\n", i + 1, step.tool));
                     any_error = true;
-                    if !args.continue_on_error || matches!(e, Error::Stopped(_)) {
+                    if !args.continue_on_error || matches!(e, Error::Stopped(_) | Error::Cancelled)
+                    {
                         break;
                     }
                 }
@@ -4850,8 +4949,14 @@ impl<B: Backend> Engine<B> {
             ));
         }
         let text = self.backend.clipboard_get()?;
-        Ok(ToolOutput::text(if text.is_empty() {
-            "The clipboard is empty.".into()
+        if text.is_empty() {
+            return Ok(ToolOutput::text("The clipboard is empty."));
+        }
+        // Someone may have copied a whole book.
+        let count = text.chars().count();
+        Ok(ToolOutput::text(if count > MAX_CLIPBOARD_CHARS {
+            let head: String = text.chars().take(MAX_CLIPBOARD_CHARS).collect();
+            format!("Clipboard (first {MAX_CLIPBOARD_CHARS} of {count} characters):\n{head}")
         } else {
             format!("Clipboard:\n{text}")
         }))
@@ -8261,6 +8366,85 @@ mod tests {
         // And the engine is fine afterwards.
         assert!(!e.call_tool("list_apps", serde_json::json!({})).is_error);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn long_text_is_typed_in_pieces_and_too_much_is_refused() {
+        let mut e = engine();
+        let text: String = "ab€d".repeat(150);
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": text}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let pieces: Vec<&String> = e
+            .backend()
+            .events
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::Type(_, t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pieces.len(), 3, "{pieces:?}");
+        assert!(pieces.iter().all(|p| p.chars().count() <= TYPE_CHUNK));
+        assert_eq!(pieces.iter().map(|p| p.as_str()).collect::<String>(), text);
+
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "x".repeat(MAX_TYPED_CHARS + 1)}),
+        );
+        assert!(
+            out.is_error && out.text.contains("set_clipboard"),
+            "{}",
+            out.text
+        );
+        let keys = vec!["a"; MAX_KEY_PRESSES + 1].join(" ");
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": keys}),
+        );
+        assert!(out.is_error && out.text.contains("at most"), "{}", out.text);
+    }
+
+    #[test]
+    fn a_cancelled_call_ends_and_the_next_one_runs() {
+        let mut e = engine();
+        e.cancel_handle().store(true, Ordering::SeqCst);
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "hello"}),
+        );
+        assert!(
+            out.is_error && out.text.contains("cancelled"),
+            "{}",
+            out.text
+        );
+        assert!(
+            !e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Type(..))),
+        );
+        // The cancel was for that call only.
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "hello"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn a_secondary_action_that_fails_is_an_error() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let style = index_of_name(&out.text, "\"Style\"");
+        e.backend_mut().fail_actions.insert(4);
+        let out = e.call_tool(
+            "perform_secondary_action",
+            serde_json::json!({"app": "TextEdit", "element_index": style, "action": "show_menu"}),
+        );
+        assert!(out.is_error, "{}", out.text);
     }
 
     #[test]

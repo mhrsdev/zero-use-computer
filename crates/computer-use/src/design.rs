@@ -17,6 +17,8 @@ pub type Rgb = [u8; 3];
 
 /// Most cells across a page (when the cell size is given).
 pub const MAX_CELLS: f64 = 200.0;
+/// Most layers on one page (checks compare every pair).
+pub const MAX_LAYERS: usize = 500;
 
 /// "#RRGGBB" (or "#RGB"); "none" is no colour.
 pub fn parse_colour(s: &str) -> Result<Option<Rgb>, String> {
@@ -407,6 +409,11 @@ impl Design {
             self.layers.remove(i);
         }
         for spec in args.add.iter().flatten() {
+            if self.layers.len() >= MAX_LAYERS {
+                return Err(format!(
+                    "a page holds at most {MAX_LAYERS} layers: remove some, or start another design"
+                ));
+            }
             let id = match &spec.id {
                 Some(id) => {
                     let id = id.trim().to_string();

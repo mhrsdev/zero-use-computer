@@ -62,6 +62,9 @@ pub enum Error {
     )]
     Stopped(String),
 
+    #[error("cancelled by the client")]
+    Cancelled,
+
     #[error(
         "paused: the user has been using the mouse or keyboard for {0}s, so the action was not run. Try again later, or ask the user."
     )]

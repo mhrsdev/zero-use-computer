@@ -8,6 +8,7 @@
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 use crate::types::{ActionDesc, Capture, ElementHandle, NodeStates, OcrLine, RawNode, Rect};
@@ -145,30 +146,74 @@ pub fn tesseract(cap: &Capture, languages: &[String], program: &str) -> Result<V
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = cmd.spawn().map_err(|e| {
         Error::Unsupported(format!(
             "no OCR: `{program}` could not be started ({e}); install Tesseract or set ocr.tesseract_path"
         ))
     })?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&png)
-            .map_err(|e| Error::Platform(format!("tesseract: {e}")))?;
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Error::Platform(format!("tesseract: {e}")))?;
-    if !out.status.success() {
+    let (status, stdout) = finish(child, png, TESSERACT_TIMEOUT)?;
+    if !status.success() {
         return Err(Error::Platform(format!(
-            "tesseract failed ({}); are the language data files installed for {:?}?",
-            out.status, langs
+            "tesseract failed ({status}); are the language data files installed for {langs:?}?"
         )));
     }
     Ok(parse_tsv(
-        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&stdout),
         cap,
         f64::from(scale),
     ))
+}
+
+/// Longest Tesseract may take on one picture.
+const TESSERACT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Feed `input` to `child` and collect what it writes, within `limit`: a
+/// stuck child is killed, and every child is waited for (no zombies).
+fn finish(
+    mut child: std::process::Child,
+    input: Vec<u8>,
+    limit: Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    let fail = |e: std::io::Error| Error::Platform(format!("tesseract: {e}"));
+    // Writing and reading on threads of their own: a child that answers
+    // before it has read everything can't block us.
+    let writer = child.stdin.take().map(|mut stdin| {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+    let reader = child.stdout.take().map(|mut stdout| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+            out
+        })
+    });
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Platform(format!(
+                    "tesseract took longer than {} s and was stopped",
+                    limit.as_secs()
+                )));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(fail(e));
+            }
+        }
+    };
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+    let stdout = reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    Ok((status, stdout))
 }
 
 /// Words from Tesseract's TSV output, grouped into lines.

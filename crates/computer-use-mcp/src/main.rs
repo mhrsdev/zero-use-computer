@@ -362,6 +362,8 @@ fn with_overlay(engine: Engine<Box<dyn Backend>>) -> Engine<Box<dyn Backend>> {
 
 fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     let server_cfg = store.config.server.clone();
+    // Before anything is started: no child may hold the client's pipes.
+    computer_use::backend::keep_stdio_private();
     let mut engine = with_overlay(build_engine(common, store)?);
     // Listen for the stop key from the start, not only from the first call.
     engine.arm();
@@ -382,9 +384,11 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         computer_use::PLATFORM
     );
-    let stdin = std::io::stdin();
+    // Read on a thread of the server's own (so the client can cancel a
+    // call while it runs).
+    let stdin = std::io::BufReader::new(std::io::stdin());
     let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin.lock(), stdout.lock());
+    let mut server = Server::new(engine, stdin, stdout.lock());
     server.run().context("serving MCP over stdio")
 }
 

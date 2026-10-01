@@ -336,11 +336,21 @@ pub fn colour_blobs(cap: &Capture, area: Rect, colour: [u8; 3], tol: i32) -> Vec
                 ),
                 pixels: n,
             });
+            // Noise (a dithered picture) makes millions of specks: only the
+            // biggest are kept.
+            if out.len() >= 2 * MAX_BLOBS {
+                out.sort_by_key(|b| std::cmp::Reverse(b.pixels));
+                out.truncate(MAX_BLOBS);
+            }
         }
     }
     out.sort_by_key(|b| std::cmp::Reverse(b.pixels));
+    out.truncate(MAX_BLOBS);
     out
 }
+
+/// Most areas `colour_blobs` returns.
+const MAX_BLOBS: usize = 10_000;
 
 /// A place that looks like the template.
 #[derive(Debug, Clone, PartialEq)]
@@ -433,6 +443,12 @@ pub fn look_alikes(
             let score = dot / (var.sqrt() * tn);
             if score >= min {
                 hits.push((score, x, y));
+                // A low `min` on a busy picture matches almost everywhere:
+                // only the best are kept.
+                if hits.len() >= 200_000 {
+                    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+                    hits.truncate(100_000);
+                }
             }
         }
     }

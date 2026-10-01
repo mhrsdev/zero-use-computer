@@ -124,6 +124,9 @@ pub struct Running {
     pub tx: Sender<Reply>,
     /// Set by the engine when the script is out of time.
     pub abort: Arc<AtomicBool>,
+    /// The script's stop flag (`Env::stop`): set by the engine on the stop
+    /// key or a cancel.
+    pub halt: Arc<AtomicBool>,
     pub deadline: Instant,
 }
 
@@ -134,6 +137,7 @@ pub fn start(job: Job) -> std::io::Result<Running> {
     let abort = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + Duration::from_secs(job.env.max_seconds.max(1));
     let flag = abort.clone();
+    let halt = job.env.stop.clone();
     std::thread::Builder::new()
         .name("script".into())
         // Deeply nested script calls recurse in the interpreter.
@@ -160,6 +164,7 @@ pub fn start(job: Job) -> std::io::Result<Running> {
         rx,
         tx,
         abort,
+        halt,
         deadline,
     })
 }
