@@ -5,7 +5,8 @@
 //! every accessible is addressed by `(bus_name, object_path)`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use zbus::blocking::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
@@ -20,9 +21,18 @@ const EDITABLE_IFACE: &str = "org.a11y.atspi.EditableText";
 const VALUE_IFACE: &str = "org.a11y.atspi.Value";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
-/// How long any one app may take to answer: a frozen app times out and is
-/// treated as gone instead of hanging every listing and snapshot.
-const METHOD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long any one app may take to answer: a frozen app times out instead
+/// of hanging every listing and snapshot.
+const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+/// A snapshot gives up after this long and returns the part of the tree it
+/// has read (a slow app with a huge tree).
+const WALK_DEADLINE: Duration = Duration::from_secs(8);
+/// A container with more children than this is not asked for all of them at
+/// once (the app would build an accessible for each: a 100 000-row table).
+const HUGE_CHILD_COUNT: i32 = 2000;
+/// How many children of such a container (or of one that manages its
+/// descendants) are read, one by one.
+const CHILD_CAP: i32 = 256;
 
 /// Number of D-Bus round trips made so far (diagnostics / benchmarking).
 static IPC_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -59,6 +69,7 @@ pub mod state {
     pub const SENSITIVE: u32 = 24;
     pub const SHOWING: u32 = 25;
     pub const VISIBLE: u32 = 30;
+    pub const MANAGES_DESCENDANTS: u32 = 31;
     pub const CHECKED: u32 = 4;
     pub const CHECKABLE: u32 = 41;
     pub const PRESSED: u32 = 20;
@@ -98,13 +109,116 @@ impl Accessible {
     }
 }
 
+/// Why a call failed, as far as callers need to tell failures apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fail {
+    /// No answer in time: the app is busy or frozen. A request that does
+    /// something (DoAction) may still take effect.
+    Timeout,
+    /// The element or its app is gone (`UnknownObject`, `ServiceUnknown`).
+    Gone,
+    /// The connection to the accessibility bus broke (the bus restarted).
+    Disconnected,
+    /// Anything else: no such interface or method, an unexpected reply.
+    Other,
+}
+
+impl Fail {
+    fn of(e: &zbus::Error) -> Fail {
+        let by_name = |name: &str| match name {
+            "org.freedesktop.DBus.Error.NoReply"
+            | "org.freedesktop.DBus.Error.Timeout"
+            | "org.freedesktop.DBus.Error.TimedOut" => Fail::Timeout,
+            "org.freedesktop.DBus.Error.UnknownObject"
+            | "org.freedesktop.DBus.Error.ServiceUnknown"
+            | "org.freedesktop.DBus.Error.NameHasNoOwner" => Fail::Gone,
+            _ => Fail::Other,
+        };
+        match e {
+            // zbus reports its own method timeout as a timed-out I/O error,
+            // and a broken socket as any other I/O error.
+            zbus::Error::InputOutput(io) if io.kind() == std::io::ErrorKind::TimedOut => {
+                Fail::Timeout
+            }
+            zbus::Error::InputOutput(_) => Fail::Disconnected,
+            zbus::Error::MethodError(name, _, _) => by_name(name.as_str()),
+            zbus::Error::FDO(e) => match &**e {
+                zbus::fdo::Error::ZBus(e) => Fail::of(e),
+                e => by_name(zbus::DBusError::name(e).as_str()),
+            },
+            _ => Fail::Other,
+        }
+    }
+
+    /// The most telling of several failures of one element's queries.
+    fn worst(fails: &[Fail]) -> Fail {
+        [Fail::Disconnected, Fail::Timeout, Fail::Gone]
+            .into_iter()
+            .find(|f| fails.contains(f))
+            .unwrap_or(Fail::Other)
+    }
+}
+
+/// A failed AT-SPI call: what failed, and how.
+#[derive(Debug, Clone)]
+pub struct CallError {
+    pub fail: Fail,
+    msg: String,
+}
+
+impl CallError {
+    fn new(what: &str, e: &zbus::Error) -> Self {
+        let fail = Fail::of(e);
+        let msg = match fail {
+            Fail::Timeout => format!(
+                "{what}: no answer within {} s (the app is busy or not responding)",
+                METHOD_TIMEOUT.as_secs()
+            ),
+            Fail::Disconnected => format!("{what}: the accessibility bus connection broke ({e})"),
+            _ => format!("{what}: {e}"),
+        };
+        Self { fail, msg }
+    }
+
+    fn other(e: impl std::fmt::Display) -> Self {
+        Self {
+            fail: Fail::Other,
+            msg: format!("AT-SPI: {e}"),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn of(fail: Fail) -> Self {
+        Self {
+            fail,
+            msg: format!("{fail:?}"),
+        }
+    }
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.msg)
+    }
+}
+
+impl From<CallError> for Error {
+    fn from(e: CallError) -> Self {
+        Error::Platform(e.msg)
+    }
+}
+
+type CallResult<T> = std::result::Result<T, CallError>;
+
 pub struct AtspiConnection {
     conn: Connection,
+    /// Set once a call found the connection broken: the owner reconnects.
+    lost: AtomicBool,
 }
 
 impl AtspiConnection {
-    /// Connect to the accessibility bus (starting from the session bus).
-    pub fn connect() -> Result<Self> {
+    /// The accessibility bus's address (asked on the session bus).
+    fn address() -> Result<String> {
         let session = Connection::session().map_err(bus_err)?;
         let reply = session
             .call_method(
@@ -119,7 +233,12 @@ impl AtspiConnection {
                     "AT-SPI accessibility bus is not available ({e}). Is at-spi2 running and accessibility enabled?"
                 ))
             })?;
-        let addr: String = reply.body().deserialize().map_err(bus_err)?;
+        reply.body().deserialize().map_err(bus_err)
+    }
+
+    /// Connect to the accessibility bus (starting from the session bus).
+    pub fn connect() -> Result<Self> {
+        let addr = Self::address()?;
         // The timeout covers every call on this connection, blocking and
         // async (`fetch_many`, `walk`, `pids_of`) alike.
         let conn = zbus::blocking::connection::Builder::address(addr.as_str())
@@ -127,7 +246,22 @@ impl AtspiConnection {
             .method_timeout(METHOD_TIMEOUT)
             .build()
             .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            lost: AtomicBool::new(false),
+        })
+    }
+
+    /// Whether the connection broke (the bus went away): reconnect.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
+    }
+
+    fn note(&self, e: CallError) -> CallError {
+        if e.fail == Fail::Disconnected {
+            self.lost.store(true, Ordering::Relaxed);
+        }
+        e
     }
 
     pub fn root(&self) -> ObjRef {
@@ -137,21 +271,31 @@ impl AtspiConnection {
         }
     }
 
-    fn call<B, R>(&self, r: &ObjRef, iface: &str, method: &str, body: &B) -> Result<R>
+    async fn acall<B, R>(&self, r: &ObjRef, iface: &str, method: &str, body: &B) -> CallResult<R>
     where
         B: serde::Serialize + zbus::zvariant::DynamicType,
         R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
     {
         count();
-        let path = ObjectPath::try_from(r.path.as_str()).map_err(bus_err)?;
+        let path = ObjectPath::try_from(r.path.as_str()).map_err(CallError::other)?;
         let reply = self
             .conn
+            .inner()
             .call_method(Some(r.bus.as_str()), &path, Some(iface), method, body)
-            .map_err(|e| Error::Platform(format!("{iface}.{method}: {e}")))?;
-        reply.body().deserialize().map_err(bus_err)
+            .await
+            .map_err(|e| self.note(CallError::new(&format!("{iface}.{method}"), &e)))?;
+        reply.body().deserialize().map_err(CallError::other)
     }
 
-    pub fn children(&self, r: &ObjRef) -> Result<Vec<ObjRef>> {
+    fn call<B, R>(&self, r: &ObjRef, iface: &str, method: &str, body: &B) -> CallResult<R>
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+        R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+    {
+        async_io::block_on(self.acall(r, iface, method, body))
+    }
+
+    pub fn children(&self, r: &ObjRef) -> CallResult<Vec<ObjRef>> {
         // GetChildren -> a(so). Present on modern AT-SPI.
         match self.call::<_, Vec<(String, OwnedObjectPath)>>(r, A11Y_IFACE, "GetChildren", &()) {
             Ok(list) => Ok(list
@@ -159,99 +303,103 @@ impl AtspiConnection {
                 .map(to_ref)
                 .filter(|c| !c.is_null())
                 .collect()),
-            Err(_) => self.children_by_index(r),
+            // Old AT-SPI without GetChildren; a busy, gone or disconnected
+            // app would only fail the same way again, more slowly.
+            Err(e) if e.fail == Fail::Other => self.children_by_index(r),
+            Err(e) => Err(e),
         }
     }
 
-    fn children_by_index(&self, r: &ObjRef) -> Result<Vec<ObjRef>> {
-        let count = self.child_count(r).unwrap_or(0).clamp(0, 5000);
+    fn children_by_index(&self, r: &ObjRef) -> CallResult<Vec<ObjRef>> {
+        let count = self.get_prop::<i32>(r, A11Y_IFACE, "ChildCount")?;
+        let count = count.clamp(0, HUGE_CHILD_COUNT);
+        Ok(async_io::block_on(self.children_at(r, count)).0)
+    }
+
+    /// Children `0..n` by index, concurrently, and the first timeout.
+    async fn children_at(&self, r: &ObjRef, n: i32) -> (Vec<ObjRef>, Option<CallError>) {
+        let got = futures_util::future::join_all((0..n).map(|i| async move {
+            self.acall::<_, (String, OwnedObjectPath)>(r, A11Y_IFACE, "GetChildAtIndex", &(i,))
+                .await
+        }))
+        .await;
         let mut out = Vec::new();
-        for i in 0..count {
-            if let Ok((s, p)) =
-                self.call::<_, (String, OwnedObjectPath)>(r, A11Y_IFACE, "GetChildAtIndex", &(i,))
-            {
-                let c = to_ref((s, p));
-                if !c.is_null() {
-                    out.push(c);
+        let mut timeout = None;
+        for g in got {
+            match g {
+                Ok(c) => {
+                    let c = to_ref(c);
+                    if !c.is_null() {
+                        out.push(c);
+                    }
                 }
+                Err(e) if e.fail == Fail::Timeout => timeout = Some(e),
+                Err(_) => {}
             }
         }
-        Ok(out)
+        (out, timeout)
     }
 
-    fn child_count(&self, r: &ObjRef) -> Option<i32> {
-        self.get_prop::<i32>(r, A11Y_IFACE, "ChildCount").ok()
-    }
-
-    fn get_prop<T>(&self, r: &ObjRef, iface: &str, name: &str) -> Result<T>
+    fn get_prop<T>(&self, r: &ObjRef, iface: &str, name: &str) -> CallResult<T>
     where
         T: TryFrom<OwnedValue>,
     {
         let v: OwnedValue = self.call(r, PROPS_IFACE, "Get", &(iface, name))?;
-        T::try_from(v).map_err(|_| Error::Platform(format!("unexpected type for {iface}.{name}")))
+        T::try_from(v).map_err(|_| CallError::other(format!("unexpected type for {iface}.{name}")))
     }
 
-    /// Read the common accessible properties in as few calls as possible.
-    pub fn describe(&self, r: &ObjRef) -> Result<Accessible> {
-        let mut a = Accessible::default();
-        if let Ok(props) =
-            self.call::<_, HashMap<String, OwnedValue>>(r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,))
-        {
-            a.name = props.get("Name").and_then(owned_string).unwrap_or_default();
-            a.description = props
-                .get("Description")
-                .and_then(owned_string)
-                .unwrap_or_default();
-            a.child_count = props
-                .get("ChildCount")
-                .and_then(|v| i32::try_from(v.clone()).ok())
-                .unwrap_or(0);
+    /// Read the common accessible properties (all queries at once); an
+    /// error when the element answers none of them.
+    pub fn describe(&self, r: &ObjRef) -> CallResult<Accessible> {
+        let (nd, err) = async_io::block_on(self.fetch_props(r));
+        match err {
+            Some(e) => Err(e),
+            None => Ok(nd.acc),
         }
-        a.role_name = self
-            .call::<_, String>(r, A11Y_IFACE, "GetRoleName", &())
-            .unwrap_or_default();
-        if let Ok(v) = self.call::<_, Vec<u32>>(r, A11Y_IFACE, "GetState", &()) {
-            a.states = States::from_pair(&v);
-        }
-        a.interfaces = self
-            .call::<_, Vec<String>>(r, A11Y_IFACE, "GetInterfaces", &())
-            .unwrap_or_default();
-        Ok(a)
     }
 
     /// (name, description, keybinding) for each action.
-    pub fn actions(&self, r: &ObjRef) -> Vec<(String, String, String)> {
+    pub fn actions(&self, r: &ObjRef) -> CallResult<Vec<(String, String, String)>> {
         self.call::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &())
-            .unwrap_or_default()
     }
 
-    pub fn do_action(&self, r: &ObjRef, index: i32) -> Result<bool> {
+    /// Run an action. A timeout ([`Fail::Timeout`]) means it was sent but
+    /// not answered: GTK runs a button's handler inside the call, so a
+    /// handler that opens a modal dialog or takes long holds the reply,
+    /// and the action may well have happened.
+    pub fn do_action(&self, r: &ObjRef, index: i32) -> CallResult<bool> {
         self.call::<_, bool>(r, ACTION_IFACE, "DoAction", &(index,))
     }
 
     /// Index of the named action (case-insensitive), if the element has it.
-    pub fn action_index(&self, r: &ObjRef, name: &str) -> Option<i32> {
-        self.actions(r)
+    pub fn action_index(&self, r: &ObjRef, name: &str) -> CallResult<Option<i32>> {
+        let actions = match self.actions(r) {
+            Ok(a) => a,
+            // No Action interface at all: no such action.
+            Err(e) if e.fail == Fail::Other => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        Ok(actions
             .into_iter()
             .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
-            .map(|i| i as i32)
+            .map(|i| i as i32))
     }
 
-    pub fn grab_focus(&self, r: &ObjRef) -> Result<bool> {
+    pub fn grab_focus(&self, r: &ObjRef) -> CallResult<bool> {
         self.call::<_, bool>(r, COMPONENT_IFACE, "GrabFocus", &())
     }
 
-    pub fn set_text(&self, r: &ObjRef, text: &str) -> Result<bool> {
+    pub fn set_text(&self, r: &ObjRef, text: &str) -> CallResult<bool> {
         self.call::<_, bool>(r, EDITABLE_IFACE, "SetTextContents", &(text,))
     }
 
     #[allow(dead_code)]
-    pub fn insert_text(&self, r: &ObjRef, offset: i32, text: &str) -> Result<()> {
+    pub fn insert_text(&self, r: &ObjRef, offset: i32, text: &str) -> CallResult<()> {
         let len = text.chars().count() as i32;
         self.call::<_, ()>(r, EDITABLE_IFACE, "InsertText", &(offset, text, len))
     }
 
-    pub fn set_value(&self, r: &ObjRef, value: f64) -> Result<bool> {
+    pub fn set_value(&self, r: &ObjRef, value: f64) -> CallResult<bool> {
         // CurrentValue is a read/write property of type double.
         let v = zbus::zvariant::Value::from(value);
         self.call::<_, ()>(r, PROPS_IFACE, "Set", &(VALUE_IFACE, "CurrentValue", v))
@@ -263,11 +411,11 @@ impl AtspiConnection {
             .unwrap_or(0)
     }
 
-    pub fn get_text(&self, r: &ObjRef, start: i32, end: i32) -> Result<String> {
+    pub fn get_text(&self, r: &ObjRef, start: i32, end: i32) -> CallResult<String> {
         self.call::<_, String>(r, TEXT_IFACE, "GetText", &(start, end))
     }
 
-    pub fn set_selection(&self, r: &ObjRef, start: i32, end: i32) -> Result<bool> {
+    pub fn set_selection(&self, r: &ObjRef, start: i32, end: i32) -> CallResult<bool> {
         // Selection index 0. Some toolkits require AddSelection first.
         if let Ok(true) = self.call::<_, bool>(r, TEXT_IFACE, "SetSelection", &(0i32, start, end)) {
             return Ok(true);
@@ -275,7 +423,7 @@ impl AtspiConnection {
         self.call::<_, bool>(r, TEXT_IFACE, "AddSelection", &(start, end))
     }
 
-    pub fn set_caret(&self, r: &ObjRef, offset: i32) -> Result<bool> {
+    pub fn set_caret(&self, r: &ObjRef, offset: i32) -> CallResult<bool> {
         self.call::<_, bool>(r, TEXT_IFACE, "SetCaretOffset", &(offset,))
     }
 }
@@ -291,8 +439,11 @@ pub struct NodeData {
     /// Text content, for text elements.
     pub text: Option<String>,
     pub children: Vec<ObjRef>,
-    /// The element didn't answer (gone, or its app is frozen and timed out).
-    pub unreachable: bool,
+    /// The element answered none of the basic queries (name, role, state),
+    /// and why: gone, or its app is frozen (timed out).
+    pub fail: Option<Fail>,
+    /// Some query timed out: what is here may be incomplete.
+    pub timed_out: bool,
 }
 
 /// An element returned by [`AtspiConnection::walk`], in pre-order.
@@ -300,70 +451,6 @@ pub struct Walked {
     pub r: ObjRef,
     pub data: NodeData,
     pub parent: Option<usize>,
-}
-
-async fn acall<B, R>(
-    conn: &zbus::Connection,
-    r: &ObjRef,
-    iface: &str,
-    method: &str,
-    body: &B,
-) -> Result<R>
-where
-    B: serde::Serialize + zbus::zvariant::DynamicType,
-    R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
-{
-    count();
-    let path = ObjectPath::try_from(r.path.as_str()).map_err(bus_err)?;
-    let reply = conn
-        .call_method(Some(r.bus.as_str()), &path, Some(iface), method, body)
-        .await
-        .map_err(|e| Error::Platform(format!("{iface}.{method}: {e}")))?;
-    reply.body().deserialize().map_err(bus_err)
-}
-
-/// Fetch one element's properties, state, interfaces, extents, actions and
-/// children — all seven queries in flight at once.
-async fn fetch_node(conn: &zbus::Connection, r: &ObjRef) -> NodeData {
-    let (props, role, state, ifaces, ext, acts, kids) = futures_util::join!(
-        acall::<_, HashMap<String, OwnedValue>>(conn, r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,)),
-        acall::<_, String>(conn, r, A11Y_IFACE, "GetRoleName", &()),
-        acall::<_, Vec<u32>>(conn, r, A11Y_IFACE, "GetState", &()),
-        acall::<_, Vec<String>>(conn, r, A11Y_IFACE, "GetInterfaces", &()),
-        acall::<_, (i32, i32, i32, i32)>(conn, r, COMPONENT_IFACE, "GetExtents", &(0u32,)),
-        acall::<_, Vec<(String, String, String)>>(conn, r, ACTION_IFACE, "GetActions", &()),
-        acall::<_, Vec<(String, OwnedObjectPath)>>(conn, r, A11Y_IFACE, "GetChildren", &()),
-    );
-    let unreachable = props.is_err() && role.is_err() && state.is_err();
-    let mut acc = Accessible::default();
-    if let Ok(props) = props {
-        acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
-        acc.description = props
-            .get("Description")
-            .and_then(owned_string)
-            .unwrap_or_default();
-        acc.child_count = props
-            .get("ChildCount")
-            .and_then(|v| i32::try_from(v.clone()).ok())
-            .unwrap_or(0);
-    }
-    acc.role_name = role.unwrap_or_default();
-    if let Ok(v) = state {
-        acc.states = States::from_pair(&v);
-    }
-    acc.interfaces = ifaces.unwrap_or_default();
-    NodeData {
-        acc,
-        extents: ext.ok(),
-        actions: acts
-            .map(|a| a.into_iter().map(|(n, _, _)| n).collect())
-            .unwrap_or_default(),
-        text: None,
-        children: kids
-            .map(|k| k.into_iter().map(to_ref).filter(|c| !c.is_null()).collect())
-            .unwrap_or_default(),
-        unreachable,
-    }
 }
 
 /// Whether an element's text content is worth reading (never passwords).
@@ -378,9 +465,164 @@ fn wants_text(acc: &Accessible) -> bool {
         )
 }
 
+/// One element waiting to be read by [`AtspiConnection::walk`].
+struct Pending {
+    r: ObjRef,
+    depth: usize,
+    /// Already read once, and timed out.
+    retried: bool,
+}
+
 impl AtspiConnection {
+    /// Fetch one element's properties, role, state, interfaces, extents and
+    /// actions, all six queries in flight at once; with the error when it
+    /// answered none of the basic ones.
+    async fn fetch_props(&self, r: &ObjRef) -> (NodeData, Option<CallError>) {
+        let (props, role, state, ifaces, ext, acts) = futures_util::join!(
+            self.acall::<_, HashMap<String, OwnedValue>>(r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,)),
+            self.acall::<_, String>(r, A11Y_IFACE, "GetRoleName", &()),
+            self.acall::<_, Vec<u32>>(r, A11Y_IFACE, "GetState", &()),
+            self.acall::<_, Vec<String>>(r, A11Y_IFACE, "GetInterfaces", &()),
+            self.acall::<_, (i32, i32, i32, i32)>(r, COMPONENT_IFACE, "GetExtents", &(0u32,)),
+            self.acall::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &()),
+        );
+        let fails: Vec<Fail> = [
+            props.as_ref().err(),
+            role.as_ref().err(),
+            state.as_ref().err(),
+            ifaces.as_ref().err(),
+            ext.as_ref().err(),
+            acts.as_ref().err(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|e| e.fail)
+        .collect();
+        let err = match (&props, &role, &state) {
+            (Err(a), Err(b), Err(c)) => {
+                let worst = Fail::worst(&[a.fail, b.fail, c.fail]);
+                Some(
+                    [a, b, c]
+                        .into_iter()
+                        .find(|e| e.fail == worst)
+                        .unwrap_or(a)
+                        .clone(),
+                )
+            }
+            _ => None,
+        };
+        let mut acc = Accessible::default();
+        if let Ok(props) = props {
+            acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
+            acc.description = props
+                .get("Description")
+                .and_then(owned_string)
+                .unwrap_or_default();
+            acc.child_count = props
+                .get("ChildCount")
+                .and_then(|v| i32::try_from(v.clone()).ok())
+                .unwrap_or(0);
+        }
+        acc.role_name = role.unwrap_or_default();
+        if let Ok(v) = state {
+            acc.states = States::from_pair(&v);
+        }
+        acc.interfaces = ifaces.unwrap_or_default();
+        let nd = NodeData {
+            acc,
+            extents: ext.ok(),
+            actions: acts
+                .map(|a| a.into_iter().map(|(n, _, _)| n).collect())
+                .unwrap_or_default(),
+            text: None,
+            children: Vec::new(),
+            fail: err.as_ref().map(|e| e.fail),
+            timed_out: fails.contains(&Fail::Timeout),
+        };
+        (nd, err)
+    }
+
+    /// An element's children (when wanted) and text content (when worth
+    /// reading); whether either timed out.
+    async fn fetch_rest(
+        &self,
+        r: &ObjRef,
+        nd: &NodeData,
+        kids: bool,
+        text_end: i32,
+    ) -> (Vec<ObjRef>, Option<String>, bool) {
+        if nd.fail.is_some() {
+            return (Vec::new(), None, false);
+        }
+        let children = async {
+            if !kids {
+                return (Vec::new(), false);
+            }
+            let n = nd.acc.child_count;
+            if nd.acc.states.has(state::MANAGES_DESCENDANTS) || n > HUGE_CHILD_COUNT {
+                // Its children are made on demand (a table or tree view):
+                // only the first ones, never all of them at once.
+                let (kids, timeout) = self.children_at(r, n.clamp(0, CHILD_CAP)).await;
+                return (kids, timeout.is_some());
+            }
+            match self
+                .acall::<_, Vec<(String, OwnedObjectPath)>>(r, A11Y_IFACE, "GetChildren", &())
+                .await
+            {
+                Ok(k) => (
+                    k.into_iter().map(to_ref).filter(|c| !c.is_null()).collect(),
+                    false,
+                ),
+                Err(e) => (Vec::new(), e.fail == Fail::Timeout),
+            }
+        };
+        let text = async {
+            if !wants_text(&nd.acc) {
+                return (None, false);
+            }
+            match self
+                .acall::<_, String>(r, TEXT_IFACE, "GetText", &(0i32, text_end))
+                .await
+            {
+                Ok(t) => (Some(t).filter(|s| !s.is_empty()), false),
+                Err(e) => (None, e.fail == Fail::Timeout),
+            }
+        };
+        let ((children, t1), (text, t2)) = futures_util::join!(children, text);
+        (children, text, t1 || t2)
+    }
+
+    /// Read a batch of elements: first their properties, then (knowing
+    /// which are text and which are huge containers) children and text.
+    async fn fetch_batch(&self, refs: &[(ObjRef, bool)], text_end: i32) -> Vec<NodeData> {
+        let mut nodes: Vec<NodeData> =
+            futures_util::future::join_all(refs.iter().map(|(r, _)| self.fetch_props(r)))
+                .await
+                .into_iter()
+                .map(|(nd, _)| nd)
+                .collect();
+        let rest = futures_util::future::join_all(
+            refs.iter()
+                .zip(&nodes)
+                .map(|((r, kids), nd)| self.fetch_rest(r, nd, *kids, text_end)),
+        )
+        .await;
+        for (nd, (children, text, timed_out)) in nodes.iter_mut().zip(rest) {
+            nd.children = children;
+            nd.text = text;
+            nd.timed_out |= timed_out;
+        }
+        nodes
+    }
+
     /// Walk the subtree under `root` breadth-first, `batch` elements at a time
     /// with all their queries pipelined, then return it in pre-order.
+    ///
+    /// Elements that time out are read again once, in smaller batches (a
+    /// slow app answers a few queries in time, not hundreds); only elements
+    /// that are gone are left out. When nothing answers at all (the app is
+    /// frozen), or after [`WALK_DEADLINE`], the part read so far is
+    /// returned.
     pub fn walk(
         &self,
         root: &ObjRef,
@@ -389,53 +631,87 @@ impl AtspiConnection {
         batch: usize,
         text_max: usize,
     ) -> Vec<Walked> {
+        use futures_util::future::{Either, select};
         use std::collections::{HashSet, VecDeque};
 
-        let conn = self.conn.inner();
-        let batch = batch.max(1);
+        let deadline = Instant::now() + WALK_DEADLINE;
+        let mut batch = batch.max(1);
         let text_end = i32::try_from(text_max.max(1)).unwrap_or(i32::MAX);
         let mut data: HashMap<ObjRef, NodeData> = HashMap::new();
+        let mut cut_short = None;
 
         async_io::block_on(async {
-            let mut queue: VecDeque<(ObjRef, usize)> = VecDeque::new();
+            let mut queue: VecDeque<Pending> = VecDeque::new();
             let mut seen: HashSet<ObjRef> = HashSet::new();
-            queue.push_back((root.clone(), 0));
+            queue.push_back(Pending {
+                r: root.clone(),
+                depth: 0,
+                retried: false,
+            });
             seen.insert(root.clone());
             while !queue.is_empty() && data.len() < max_nodes {
                 let n = queue.len().min(batch).min(max_nodes - data.len());
-                let chunk: Vec<(ObjRef, usize)> = queue.drain(..n).collect();
-                let mut nodes =
-                    futures_util::future::join_all(chunk.iter().map(|(r, _)| fetch_node(conn, r)))
-                        .await;
-
-                // Second, smaller round: text content where it matters.
-                let need: Vec<usize> = (0..nodes.len())
-                    .filter(|&i| wants_text(&nodes[i].acc))
+                let chunk: Vec<Pending> = queue.drain(..n).collect();
+                let refs: Vec<(ObjRef, bool)> = chunk
+                    .iter()
+                    .map(|p| (p.r.clone(), p.depth < max_depth))
                     .collect();
-                let text_args = (0i32, text_end);
-                let texts = futures_util::future::join_all(need.iter().map(|&i| {
-                    acall::<_, String>(conn, &chunk[i].0, TEXT_IFACE, "GetText", &text_args)
-                }))
-                .await;
-                for (i, t) in need.into_iter().zip(texts) {
-                    nodes[i].text = t.ok().filter(|s| !s.is_empty());
-                }
-
-                for ((r, depth), nd) in chunk.into_iter().zip(nodes) {
-                    if nd.unreachable {
-                        continue; // left out, like an element that vanished
+                let fetch = Box::pin(self.fetch_batch(&refs, text_end));
+                let timer = Box::pin(async_io::Timer::at(deadline));
+                let nodes = match select(fetch, timer).await {
+                    Either::Left((nodes, _)) => nodes,
+                    Either::Right(_) => {
+                        cut_short = Some("it took too long");
+                        break;
                     }
-                    if depth < max_depth {
+                };
+                // Not a slow app but a frozen one (or one whose modal dialog
+                // holds its accessibility): asking again would only wait again.
+                if nodes.iter().all(|n| n.fail == Some(Fail::Timeout)) {
+                    cut_short = Some("the app is not responding");
+                    break;
+                }
+                let mut again = Vec::new();
+                for (p, nd) in chunk.into_iter().zip(nodes) {
+                    if nd.timed_out && !p.retried {
+                        again.push(Pending { retried: true, ..p });
+                        continue;
+                    }
+                    if nd.fail.is_some() {
+                        continue; // gone, or still no answer at all
+                    }
+                    if p.depth < max_depth {
                         for c in &nd.children {
                             if seen.insert(c.clone()) {
-                                queue.push_back((c.clone(), depth + 1));
+                                queue.push_back(Pending {
+                                    r: c.clone(),
+                                    depth: p.depth + 1,
+                                    retried: false,
+                                });
                             }
                         }
                     }
-                    data.insert(r, nd);
+                    data.insert(p.r, nd);
+                }
+                if self.lost() {
+                    cut_short = Some("the accessibility bus connection broke");
+                    break;
+                }
+                if !again.is_empty() {
+                    // The app can't keep up: ask it for less at a time.
+                    batch = (batch / 4).max(1);
+                    for p in again.into_iter().rev() {
+                        queue.push_front(p);
+                    }
                 }
             }
         });
+        if let Some(why) = cut_short {
+            log::warn!(
+                "read only part of the accessibility tree ({} elements): {why}",
+                data.len()
+            );
+        }
 
         // Re-assemble in pre-order (document order).
         let mut out = Vec::with_capacity(data.len());
@@ -457,33 +733,67 @@ impl AtspiConnection {
         out
     }
 
-    /// Fetch several elements concurrently (no text content).
+    /// Fetch several elements' properties concurrently (no children or text).
     pub fn fetch_many(&self, refs: &[ObjRef]) -> Vec<NodeData> {
-        let conn = self.conn.inner();
         async_io::block_on(futures_util::future::join_all(
-            refs.iter().map(|r| fetch_node(conn, r)),
+            refs.iter().map(|r| self.fetch_props(r)),
         ))
+        .into_iter()
+        .map(|(nd, _)| nd)
+        .collect()
+    }
+
+    /// Several elements' children, concurrently.
+    pub fn children_many(&self, refs: &[ObjRef]) -> Vec<CallResult<Vec<ObjRef>>> {
+        async_io::block_on(futures_util::future::join_all(refs.iter().map(
+            |r| async move {
+                self.acall::<_, Vec<(String, OwnedObjectPath)>>(r, A11Y_IFACE, "GetChildren", &())
+                    .await
+                    .map(|k| k.into_iter().map(to_ref).filter(|c| !c.is_null()).collect())
+            },
+        )))
+    }
+
+    /// For each of several windows, its name if it is the active one (has
+    /// the focus): only states are read, then the active ones' names.
+    pub fn active_names(&self, refs: &[ObjRef]) -> Vec<Option<String>> {
+        async_io::block_on(futures_util::future::join_all(refs.iter().map(
+            |r| async move {
+                let st = self
+                    .acall::<_, Vec<u32>>(r, A11Y_IFACE, "GetState", &())
+                    .await
+                    .ok()?;
+                if !States::from_pair(&st).has(state::ACTIVE) {
+                    return None;
+                }
+                let name: OwnedValue = self
+                    .acall(r, PROPS_IFACE, "Get", &(A11Y_IFACE, "Name"))
+                    .await
+                    .ok()?;
+                owned_string(&name)
+            },
+        )))
     }
 
     /// Unix pids behind several accessibles' bus connections, concurrently.
     pub fn pids_of(&self, refs: &[ObjRef]) -> Vec<Option<u32>> {
-        let conn = self.conn.inner();
-        async_io::block_on(futures_util::future::join_all(refs.iter().map(
-            |r| async move {
-                count();
-                let reply = conn
-                    .call_method(
-                        Some("org.freedesktop.DBus"),
-                        "/org/freedesktop/DBus",
-                        Some("org.freedesktop.DBus"),
-                        "GetConnectionUnixProcessID",
-                        &(r.bus.as_str(),),
-                    )
-                    .await
-                    .ok()?;
-                reply.body().deserialize::<u32>().ok()
-            },
-        )))
+        let bus = ObjRef {
+            bus: "org.freedesktop.DBus".into(),
+            path: "/org/freedesktop/DBus".into(),
+        };
+        async_io::block_on(futures_util::future::join_all(refs.iter().map(|r| {
+            let bus = &bus;
+            async move {
+                self.acall::<_, u32>(
+                    bus,
+                    "org.freedesktop.DBus",
+                    "GetConnectionUnixProcessID",
+                    &(r.bus.as_str(),),
+                )
+                .await
+                .ok()
+            }
+        })))
     }
 }
 
@@ -500,4 +810,83 @@ fn owned_string(v: &OwnedValue) -> Option<String> {
 
 fn bus_err(e: impl std::fmt::Display) -> Error {
     Error::Platform(format!("AT-SPI: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn timeouts_and_gone_elements_are_told_apart() {
+        let io = |k| zbus::Error::InputOutput(Arc::new(std::io::Error::new(k, "x")));
+        assert_eq!(Fail::of(&io(std::io::ErrorKind::TimedOut)), Fail::Timeout);
+        assert_eq!(
+            Fail::of(&io(std::io::ErrorKind::BrokenPipe)),
+            Fail::Disconnected
+        );
+        let fdo = |e| zbus::Error::FDO(Box::new(e));
+        assert_eq!(
+            Fail::of(&fdo(zbus::fdo::Error::UnknownObject("x".into()))),
+            Fail::Gone
+        );
+        assert_eq!(
+            Fail::of(&fdo(zbus::fdo::Error::ServiceUnknown("x".into()))),
+            Fail::Gone
+        );
+        assert_eq!(
+            Fail::of(&fdo(zbus::fdo::Error::NoReply("x".into()))),
+            Fail::Timeout
+        );
+        assert_eq!(
+            Fail::of(&fdo(zbus::fdo::Error::UnknownMethod("x".into()))),
+            Fail::Other
+        );
+        assert_eq!(Fail::of(&zbus::Error::InvalidReply), Fail::Other);
+        let e = CallError::new("Action.DoAction", &io(std::io::ErrorKind::TimedOut));
+        assert!(e.to_string().contains("no answer within 3 s"), "{e}");
+    }
+
+    /// Needs the accessibility bus (run inside the live test's session:
+    /// `cargo test -p computer-use --lib -- --ignored atspi`).
+    #[test]
+    #[ignore]
+    fn an_action_held_by_the_app_times_out_and_a_gone_app_is_gone() {
+        let a11y = AtspiConnection::connect().expect("the accessibility bus");
+        // An app that takes the call and doesn't answer (a button whose
+        // handler opened a modal dialog before the reply).
+        let app = zbus::blocking::connection::Builder::address(
+            AtspiConnection::address().unwrap().as_str(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        let r = ObjRef {
+            bus: app.unique_name().unwrap().to_string(),
+            path: "/org/a11y/atspi/accessible/1".into(),
+        };
+        let t = Instant::now();
+        let e = a11y.do_action(&r, 0).unwrap_err();
+        assert_eq!(e.fail, Fail::Timeout, "{e}");
+        assert!(t.elapsed() >= METHOD_TIMEOUT, "{:?}", t.elapsed());
+        assert!(!a11y.lost());
+        drop(app);
+        let e = a11y.do_action(&r, 0).unwrap_err();
+        assert_eq!(e.fail, Fail::Gone, "{e}");
+        assert!(!a11y.lost());
+    }
+
+    #[test]
+    fn the_most_telling_failure_wins() {
+        assert_eq!(
+            Fail::worst(&[Fail::Gone, Fail::Timeout, Fail::Other]),
+            Fail::Timeout
+        );
+        assert_eq!(Fail::worst(&[Fail::Gone, Fail::Other]), Fail::Gone);
+        assert_eq!(Fail::worst(&[Fail::Other]), Fail::Other);
+        assert_eq!(
+            Fail::worst(&[Fail::Timeout, Fail::Disconnected]),
+            Fail::Disconnected
+        );
+    }
 }

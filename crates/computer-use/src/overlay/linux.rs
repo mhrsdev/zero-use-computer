@@ -438,7 +438,18 @@ impl Surface for X11Surface {
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
         let mut events = Vec::new();
-        while let Ok(Some(ev)) = self.conn.poll_for_event() {
+        loop {
+            let ev = match self.conn.poll_for_event() {
+                Ok(Some(ev)) => ev,
+                Ok(None) => break,
+                Err(e) => {
+                    // The X server is gone (it restarted): the windows and
+                    // the stop key's grab went with it. Exit with an error,
+                    // so the engine starts a new helper on the new server.
+                    eprintln!("overlay: lost the X server connection: {e}");
+                    std::process::exit(2);
+                }
+            };
             match ev {
                 Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
                     // Holding the key repeats it: only a fresh press counts.

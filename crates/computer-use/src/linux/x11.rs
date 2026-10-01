@@ -1,11 +1,14 @@
 //! X11 synthesized input (XTest) and window capture (GetImage), the fallback
 //! path when the accessibility API can't do something directly.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection as _;
-use x11rb::protocol::xproto::{self, ConnectionExt as _, ImageFormat};
+use x11rb::protocol::Event;
+use x11rb::protocol::xkb::{self, ConnectionExt as _};
+use x11rb::protocol::xproto::{self, ConnectionExt as _, ImageFormat, Mapping, ModMask};
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
@@ -17,6 +20,29 @@ const KEY_PRESS: u8 = 2;
 const KEY_RELEASE: u8 = 3;
 const BUTTON_PRESS: u8 = 4;
 const BUTTON_RELEASE: u8 = 5;
+/// How many free keycodes are used for characters not on the keyboard.
+const SPARES: usize = 4;
+
+/// A keycode with no keysyms, bound on the fly to a character that is not
+/// on the keyboard (another script, a symbol).
+#[derive(Debug, Clone, Copy)]
+struct Spare {
+    code: u8,
+    /// The keysym it is bound to now (0: unbound).
+    sym: u32,
+    /// When it was last pressed: it isn't rebound or unbound before the
+    /// focused app has had time to translate that press.
+    pressed: Option<Instant>,
+}
+
+/// Keyboard state changed for typing, to put back afterwards.
+#[derive(Debug, Default)]
+struct Saved {
+    /// The locked group (layout) to restore.
+    group: Option<xkb::Group>,
+    /// Caps Lock was on.
+    caps: bool,
+}
 
 pub struct X11 {
     conn: RustConnection,
@@ -24,20 +50,22 @@ pub struct X11 {
     /// The root window's size at connect time (see `root_size`).
     root_w: u16,
     root_h: u16,
-    /// keysym -> (keycode, needs_shift)
+    /// keysym -> (keycode, needs_shift), from the keymap's first group.
     keymap: HashMap<u32, (u8, bool)>,
     shift: u8,
     ctrl: u8,
     alt: u8,
     meta: u8,
-    /// A keycode with no keysyms we can rebind on the fly for characters not
-    /// on the keyboard (0 when every keycode is in use), and the keysym it
-    /// is bound to now.
-    spare: u8,
-    spare_sym: u32,
-    /// When the spare keycode was last pressed, so it isn't rebound before
-    /// the focused client has translated that press.
-    spare_pressed: Option<Instant>,
+    /// Keycodes to bind characters that are not on the keyboard to:
+    /// several, so that one is rarely rebound while an app may still be
+    /// translating its last press (none when every keycode is in use).
+    spares: Vec<Spare>,
+    /// The keyboard mapping changed since it was read (MappingNotify).
+    keymap_stale: Cell<bool>,
+    /// The connection to the X server broke: the owner reconnects.
+    lost: Cell<bool>,
+    /// The XKB extension is in use (keyboard groups and lock state).
+    xkb: bool,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -46,13 +74,13 @@ pub struct X11 {
 }
 
 impl Drop for X11 {
-    /// Give the spare keycode back: a bound one would otherwise keep its
-    /// last character, and stop being spare, until the X session ends.
+    /// Give bound spare keycodes back: one would otherwise keep its last
+    /// character, and stop being spare, until the X session ends.
     fn drop(&mut self) {
-        if self.spare != 0 && self.spare_sym != 0 {
-            let _ = self.conn.change_keyboard_mapping(1, self.spare, 2, &[0, 0]);
-            let _ = self.conn.flush();
+        for s in self.spares.iter().filter(|s| s.sym != 0) {
+            let _ = self.conn.change_keyboard_mapping(1, s.code, 2, &[0, 0]);
         }
+        let _ = self.conn.flush();
     }
 }
 
@@ -81,6 +109,29 @@ impl X11 {
             }
         }
 
+        // XKB, to type in the keymap's first layout whatever layout is on.
+        let xkb = conn
+            .xkb_use_extension(1, 0)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|r| r.supported);
+        if xkb {
+            // Hear of keymap changes: a new keyboard (setxkbmap) is only
+            // announced to XKB clients as an XKB event, and changed keysyms
+            // (MappingNotify) only when asked for.
+            let maps = xkb::MapPart::KEY_SYMS | xkb::MapPart::MODIFIER_MAP;
+            if let Err(e) = conn.xkb_select_events(
+                xkb::ID::USE_CORE_KBD.into(),
+                xkb::EventType::from(0u16),
+                xkb::EventType::NEW_KEYBOARD_NOTIFY | xkb::EventType::MAP_NOTIFY,
+                maps,
+                maps,
+                &xkb::SelectEventsAux::new(),
+            ) {
+                log::warn!("XKB keymap notifications unavailable: {e}");
+            }
+        }
+
         let mut x = Self {
             conn,
             root,
@@ -91,9 +142,10 @@ impl X11 {
             ctrl: 0,
             alt: 0,
             meta: 0,
-            spare: 0,
-            spare_sym: 0,
-            spare_pressed: None,
+            spares: Vec::new(),
+            keymap_stale: Cell::new(false),
+            lost: Cell::new(false),
+            xkb,
             red_mask,
             green_mask,
             blue_mask,
@@ -103,7 +155,73 @@ impl X11 {
         Ok(x)
     }
 
+    /// Whether the connection to the X server broke (seen by `drain`).
+    pub fn lost(&self) -> bool {
+        self.lost.get()
+    }
+
+    /// Handle what the server sent since the last call: errors of earlier
+    /// requests are logged, a changed keymap is read again before the next
+    /// key, and a broken connection is noted (see `lost`). Unread, the
+    /// events would pile up in memory.
+    pub fn drain(&self) {
+        loop {
+            match self.conn.poll_for_event() {
+                Ok(Some(ev)) => self.handle_event(ev),
+                Ok(None) => break,
+                Err(e) => {
+                    log::warn!("lost the connection to the X server: {e}");
+                    self.lost.set(true);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn handle_event(&self, ev: Event) {
+        // Our own binding of a spare keycode needs no new keymap.
+        let spare_only = |first: u8, n: u8| n == 1 && self.spares.iter().any(|s| s.code == first);
+        let none = xkb::MapPart::from(0u16);
+        match ev {
+            Event::Error(e) => log::warn!(
+                "X11 error: {:?} (request {}.{}, value {:#x})",
+                e.error_kind,
+                e.major_opcode,
+                e.minor_opcode,
+                e.bad_value
+            ),
+            Event::MappingNotify(e) => {
+                if e.request != Mapping::POINTER && !spare_only(e.first_keycode, e.count) {
+                    self.keymap_stale.set(true);
+                }
+            }
+            Event::XkbNewKeyboardNotify(_) => self.keymap_stale.set(true),
+            Event::XkbMapNotify(e) => {
+                let syms = e.changed & xkb::MapPart::KEY_SYMS != none
+                    && e.n_key_syms > 0
+                    && !spare_only(e.first_key_sym, e.n_key_syms);
+                let mods = e.changed & xkb::MapPart::MODIFIER_MAP != none
+                    && e.n_mod_map_keys > 0
+                    && !spare_only(e.first_mod_map_key, e.n_mod_map_keys);
+                if syms || mods {
+                    self.keymap_stale.set(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Read the keymap again if it changed.
+    fn ensure_keymap(&mut self) -> Result<()> {
+        self.drain();
+        if self.keymap_stale.get() {
+            self.load_keymap()?;
+        }
+        Ok(())
+    }
+
     fn load_keymap(&mut self) -> Result<()> {
+        self.keymap_stale.set(false);
         let setup = self.conn.setup();
         let min = setup.min_keycode;
         let max = setup.max_keycode;
@@ -115,8 +233,25 @@ impl X11 {
             .reply()
             .map_err(xe)?;
         let per = (mapping.keysyms_per_keycode as usize).max(1);
+        // Spare keycodes with no keysym at all, for binding arbitrary
+        // chars; never a real key (none: typing such chars then fails).
+        // Kept while one is bound (it isn't empty then).
+        if self.spares.iter().all(|s| s.sym == 0) {
+            self.spares = find_spares(&mapping.keysyms, per, min, SPARES)
+                .into_iter()
+                .map(|code| Spare {
+                    code,
+                    sym: 0,
+                    pressed: None,
+                })
+                .collect();
+        }
+        self.keymap.clear();
         for (i, chunk) in mapping.keysyms.chunks(per).enumerate() {
             let keycode = min + i as u8;
+            if self.spares.iter().any(|s| s.code == keycode) {
+                continue; // bound to one char at a time, never its key
+            }
             let base = chunk.first().copied().unwrap_or(0);
             let shifted = chunk.get(1).copied().unwrap_or(0);
             if base != 0 {
@@ -136,9 +271,6 @@ impl X11 {
             .map(|k| k.0)
             .unwrap_or(0);
         self.meta = self.keymap.get(&0xffeb).map(|k| k.0).unwrap_or(0); // Super_L
-        // A spare keycode with no keysym at all, for remapping arbitrary
-        // chars; never a real key (0 = none, typing such chars then fails).
-        self.spare = find_spare(&mapping.keysyms, per, min).unwrap_or(0);
         Ok(())
     }
 
@@ -312,25 +444,107 @@ impl X11 {
         Ok(())
     }
 
-    /// Type a run of text as key events.
+    /// Type a run of text as key events, in the keymap's first layout
+    /// whatever layout and Caps Lock the user has on (restored after).
     pub fn type_text(&mut self, text: &str) -> Result<()> {
+        self.ensure_keymap()?;
+        let saved = self.plain_keyboard()?;
+        let typed = self.type_chars(text);
+        let back = self.restore_keyboard(saved);
+        let spares = self.release_spares();
+        typed.and(back).and(spares)
+    }
+
+    fn type_chars(&mut self, text: &str) -> Result<()> {
         for c in text.chars() {
-            if c == '\n' {
-                self.press(&KeyCombo {
-                    modifiers: Modifiers::default(),
-                    key: Key::Named(NamedKey::Return),
-                })?;
-                continue;
-            }
-            self.press(&KeyCombo {
+            let key = if c == '\n' {
+                Key::Named(NamedKey::Return)
+            } else {
+                Key::Char(c)
+            };
+            self.press_one(&KeyCombo {
                 modifiers: Modifiers::default(),
-                key: Key::Char(c),
+                key,
             })?;
         }
         Ok(())
     }
 
+    /// Press a key combination. A character key types (or, with Ctrl,
+    /// means) what it says whatever layout and Caps Lock are on; other
+    /// keys (Return, Caps Lock itself) leave the keyboard state alone.
     pub fn press(&mut self, combo: &KeyCombo) -> Result<()> {
+        self.ensure_keymap()?;
+        let saved = match combo.key {
+            Key::Char(_) => self.plain_keyboard()?,
+            Key::Named(_) => Saved::default(),
+        };
+        let pressed = self.press_one(combo);
+        let back = self.restore_keyboard(saved);
+        let spares = self.release_spares();
+        pressed.and(back).and(spares)
+    }
+
+    /// Set the keyboard to the state the keymap was read for: its first
+    /// group (layout), and Caps Lock off. With "us,ru" and the Russian
+    /// layout on, the key for "a" would type "ф"; with Caps Lock on, "A".
+    /// Returns what to put back.
+    fn plain_keyboard(&self) -> Result<Saved> {
+        if !self.xkb {
+            return Ok(Saved::default());
+        }
+        let st = self
+            .conn
+            .xkb_get_state(xkb::ID::USE_CORE_KBD.into())
+            .map_err(xe)?
+            .reply()
+            .map_err(xe)?;
+        let saved = Saved {
+            group: (st.group != xkb::Group::M1).then_some(st.locked_group),
+            caps: st.locked_mods & ModMask::LOCK != ModMask::from(0u16),
+        };
+        self.lock_state(
+            saved.group.map(|_| xkb::Group::M1),
+            saved.caps.then_some(false),
+        )?;
+        Ok(saved)
+    }
+
+    /// Put back what `plain_keyboard` changed. The key events sent before
+    /// were made under the plain state (requests are handled in order).
+    fn restore_keyboard(&self, saved: Saved) -> Result<()> {
+        self.lock_state(saved.group, saved.caps.then_some(true))?;
+        self.flush()
+    }
+
+    /// Lock the keyboard group, and/or turn Caps Lock on or off (XKB).
+    fn lock_state(&self, group: Option<xkb::Group>, caps: Option<bool>) -> Result<()> {
+        if group.is_none() && caps.is_none() {
+            return Ok(());
+        }
+        let none = ModMask::from(0u16);
+        let affect = if caps.is_some() { ModMask::LOCK } else { none };
+        let locks = if caps == Some(true) {
+            ModMask::LOCK
+        } else {
+            none
+        };
+        self.conn
+            .xkb_latch_lock_state(
+                xkb::ID::USE_CORE_KBD.into(),
+                affect,
+                locks,
+                group.is_some(),
+                group.unwrap_or(xkb::Group::M1),
+                none,
+                false,
+                0,
+            )
+            .map_err(xe)?;
+        Ok(())
+    }
+
+    fn press_one(&mut self, combo: &KeyCombo) -> Result<()> {
         let (keycode, shift_from_key) = self.resolve_key(combo.key)?;
         let m = combo.modifiers;
         let mut down: Vec<u8> = Vec::new();
@@ -355,18 +569,18 @@ impl X11 {
             self.fake(KEY_RELEASE, *kc, 0, 0)?;
         }
         self.flush()?;
-        if keycode == self.spare {
-            self.spare_pressed = Some(Instant::now());
+        if let Some(s) = self.spares.iter_mut().find(|s| s.code == keycode) {
+            s.pressed = Some(Instant::now());
         }
         Ok(())
     }
 
-    /// Returns (keycode, needs_shift), remapping the spare keycode if needed.
+    /// Returns (keycode, needs_shift), binding a spare keycode if needed.
     fn resolve_key(&mut self, key: Key) -> Result<(u8, bool)> {
         let keysym =
             keysym_for(key).ok_or_else(|| Error::ActionFailed(format!("no keysym for {key:?}")))?;
         // A keypad key reached through Shift would depend on Num Lock:
-        // bind the exact keysym to the spare keycode instead.
+        // bind the exact keysym to a spare keycode instead.
         let keypad = (0xff80..=0xffbd).contains(&keysym);
         if let Some((kc, sh)) = self.keymap.get(&keysym)
             && !(keypad && *sh)
@@ -374,78 +588,62 @@ impl X11 {
             return Ok((*kc, *sh));
         }
         // Characters not on the keyboard (another script, a symbol): bind
-        // the spare keycode to this one for the press. The binding is not
-        // remembered as the character's key: the next such character
-        // rebinds the same keycode, and an old entry would type that one.
-        if self.spare == 0 {
-            return Err(Error::ActionFailed(
-                "no free keycode to type this character".into(),
-            ));
+        // a spare keycode to this one for the press (or reuse the one bound
+        // to it already). The binding never becomes the character's key in
+        // `keymap`: the keycode is rebound to other characters.
+        if let Some(s) = self.spares.iter().find(|s| s.sym == keysym) {
+            return Ok((s.code, false));
         }
-        if self.spare_sym != keysym {
-            self.bind_spare(keysym)?;
-        }
-        Ok((self.spare, false))
+        // The one pressed longest ago (or never).
+        let i = (0..self.spares.len())
+            .min_by_key(|&i| self.spares[i].pressed)
+            .ok_or_else(|| Error::ActionFailed("no free keycode to type this character".into()))?;
+        self.bind_spare(i, keysym)?;
+        Ok((self.spares[i].code, false))
     }
 
-    /// Bind the spare keycode to `keysym`, letting the last press on it be
-    /// translated first and clients see the new mapping (MappingNotify)
-    /// before the next press.
-    fn bind_spare(&mut self, keysym: u32) -> Result<()> {
-        if let Some(t) = self.spare_pressed.take() {
-            let since = t.elapsed();
-            if since < REMAP_SETTLE {
-                std::thread::sleep(REMAP_SETTLE - since);
-            }
-        }
+    /// Bind spare keycode `i` to `keysym`, once its last press has been
+    /// translated.
+    fn bind_spare(&mut self, i: usize, keysym: u32) -> Result<()> {
+        settle(self.spares[i].pressed.take());
         // Forget the old binding first: if the change fails, nothing claims
-        // the spare keycode still types the previous character.
-        self.spare_sym = 0;
-        let syms = [keysym, keysym];
-        // .check() round-trips so the mapping is live before the key event.
+        // the keycode still types the previous character.
+        self.spares[i].sym = 0;
+        // .check() waits for the server to have done it, so it has also
+        // told the apps (MappingNotify) ahead of the key event that follows.
         self.conn
-            .change_keyboard_mapping(1, self.spare, 2, &syms)
+            .change_keyboard_mapping(1, self.spares[i].code, 2, &[keysym, keysym])
             .map_err(xe)?
             .check()
             .map_err(xe)?;
-        self.flush()?;
-        std::thread::sleep(REMAP_SETTLE);
-        self.spare_sym = keysym;
+        self.spares[i].sym = keysym;
         Ok(())
     }
 
-    /// Pid of the window manager's active window (`_NET_ACTIVE_WINDOW` +
-    /// `_NET_WM_PID`), when a window manager provides them.
-    pub fn active_pid(&self) -> Option<u32> {
-        let atom = |name: &str| -> Option<u32> {
-            self.conn
-                .intern_atom(true, name.as_bytes())
-                .ok()?
-                .reply()
-                .ok()
-                .map(|r| r.atom)
-                .filter(|a| *a != 0)
-        };
-        let active = atom("_NET_ACTIVE_WINDOW")?;
-        let wm_pid = atom("_NET_WM_PID")?;
-        let win = self
-            .conn
-            .get_property(false, self.root, active, xproto::AtomEnum::WINDOW, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?
-            .value32()?
-            .next()?;
-        if win == 0 {
-            return None;
+    /// Unbind the spare keycodes again, after each typing, once the focused
+    /// app has had time to translate the last presses on them (it reads the
+    /// mapping when it gets the key, and needs the binding until then).
+    fn release_spares(&mut self) -> Result<()> {
+        let bound = |s: &&mut Spare| s.sym != 0;
+        settle(
+            self.spares
+                .iter_mut()
+                .filter(bound)
+                .filter_map(|s| s.pressed)
+                .max(),
+        );
+        let mut result = Ok(());
+        for s in self.spares.iter_mut().filter(bound) {
+            s.sym = 0;
+            s.pressed = None;
+            let r = self
+                .conn
+                .change_keyboard_mapping(1, s.code, 2, &[0, 0])
+                .map_err(xe)
+                .and_then(|c| c.check().map_err(xe));
+            result = result.and(r);
         }
-        self.conn
-            .get_property(false, win, wm_pid, xproto::AtomEnum::CARDINAL, 0, 1)
-            .ok()?
-            .reply()
-            .ok()?
-            .value32()?
-            .next()
+        result
     }
 
     /// Time since the last mouse or keyboard input on this display (the
@@ -538,16 +736,30 @@ impl X11 {
 
 /// Pace of synthesized drag steps.
 const DRAG_STEP: Duration = Duration::from_millis(12);
-/// Time for clients to act on a keyboard remap (MappingNotify) and to
-/// translate a press on the spare keycode before it is rebound.
+/// Time for the focused app to translate a press on a spare keycode before
+/// the keycode is rebound or unbound. Apps read the new mapping when they
+/// get the key event, which no request to the server can confirm.
 const REMAP_SETTLE: Duration = Duration::from_millis(30);
 
-/// A keycode none of whose keysyms is set.
-fn find_spare(keysyms: &[u32], per: usize, min: u8) -> Option<u8> {
+/// Wait until `REMAP_SETTLE` has passed since `pressed`.
+fn settle(pressed: Option<Instant>) {
+    if let Some(t) = pressed {
+        let since = t.elapsed();
+        if since < REMAP_SETTLE {
+            std::thread::sleep(REMAP_SETTLE - since);
+        }
+    }
+}
+
+/// Up to `n` keycodes none of whose keysyms is set.
+fn find_spares(keysyms: &[u32], per: usize, min: u8, n: usize) -> Vec<u8> {
     keysyms
         .chunks(per.max(1))
-        .position(|chunk| chunk.iter().all(|s| *s == 0))
-        .and_then(|i| u8::try_from(usize::from(min) + i).ok())
+        .enumerate()
+        .filter(|(_, chunk)| chunk.iter().all(|s| *s == 0))
+        .filter_map(|(i, _)| u8::try_from(usize::from(min) + i).ok())
+        .take(n)
+        .collect()
 }
 
 /// How a Z-pixmap image is laid out.
@@ -677,10 +889,161 @@ fn xe(e: impl std::fmt::Display) -> Error {
 mod tests {
     use super::*;
 
+    /// The ignored tests share the X server's focus and keymap.
+    static X_SERVER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A window that gets key presses, focused.
+    fn key_window(conn: &RustConnection, root: xproto::Window) -> xproto::Window {
+        use xproto::{CreateWindowAux, EventMask, WindowClass};
+        let win = conn.generate_id().unwrap();
+        conn.create_window(
+            0,
+            win,
+            root,
+            0,
+            0,
+            200,
+            100,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS),
+        )
+        .unwrap();
+        conn.map_window(win).unwrap();
+        conn.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        conn.set_input_focus(xproto::InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+            .unwrap();
+        conn.get_input_focus().unwrap().reply().unwrap();
+        win
+    }
+
+    /// (keycode, state) of each key press received so far.
+    fn key_presses(conn: &RustConnection) -> Vec<(u8, u16)> {
+        let mut out = Vec::new();
+        while let Some(ev) = conn.poll_for_event().unwrap() {
+            if let Event::KeyPress(e) = ev {
+                out.push((e.detail, u16::from(e.state)));
+            }
+        }
+        out
+    }
+
+    /// Needs an X server with XTest and XKB, a US keymap
+    /// (`xvfb-run cargo test -- --ignored`).
+    #[test]
+    #[ignore]
+    fn typing_ignores_the_users_layout_and_caps_lock() {
+        let _x = X_SERVER.lock().unwrap_or_else(|e| e.into_inner());
+        let (conn, n) = x11rb::connect(None).expect("an X display");
+        conn.xkb_use_extension(1, 0).unwrap().reply().unwrap();
+        let root = conn.setup().roots[n].root;
+        let (min, max) = (conn.setup().min_keycode, conn.setup().max_keycode);
+        let read_map = || {
+            let m = conn
+                .get_keyboard_mapping(min, max - min + 1)
+                .unwrap()
+                .reply()
+                .unwrap();
+            (m.keysyms, usize::from(m.keysyms_per_keycode))
+        };
+        let (syms, per) = read_map();
+        let code_of = |sym: u32| {
+            min + syms
+                .chunks(per)
+                .position(|c| c[0] == sym)
+                .expect("on a US keyboard") as u8
+        };
+        let (a, b, y, z) = (code_of(0x61), code_of(0x62), code_of(0x79), code_of(0x7a));
+        let row = |code: u8| syms[usize::from(code - min) * per..][..per].to_vec();
+        let originals: Vec<(u8, Vec<u32>)> = [a, b, y, z].iter().map(|c| (*c, row(*c))).collect();
+        key_window(&conn, root);
+        let kbd = xkb::ID::USE_CORE_KBD.into();
+        let mut keys = X11::connect().unwrap();
+        // The user's keyboard now has a Russian group, and German Y and Z
+        // (read by `keys` from the MappingNotify before it types).
+        for (code, s) in [
+            (a, [0x61, 0x41, 0x6c6, 0x6e6]),
+            (b, [0x62, 0x42, 0x6c9, 0x6e9]),
+            (y, [0x7a, 0x5a, 0x6ce, 0x6ee]),
+            (z, [0x79, 0x59, 0x6d1, 0x6f1]),
+        ] {
+            conn.change_keyboard_mapping(1, code, 4, &s)
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        struct Restore<'a>(&'a RustConnection, Vec<(u8, Vec<u32>)>);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                for (code, syms) in &self.1 {
+                    let per = syms.len() as u8;
+                    let _ = self.0.change_keyboard_mapping(1, *code, per, syms);
+                }
+                let _ = self.0.get_input_focus().map(|c| c.reply());
+            }
+        }
+        let _restore = Restore(&conn, originals);
+        let lock = |group: xkb::Group, caps: bool| {
+            let mods = if caps {
+                ModMask::LOCK
+            } else {
+                ModMask::from(0u16)
+            };
+            conn.xkb_latch_lock_state(
+                kbd,
+                ModMask::LOCK,
+                mods,
+                true,
+                group,
+                ModMask::from(0u16),
+                false,
+                0,
+            )
+            .unwrap();
+            conn.get_input_focus().unwrap().reply().unwrap();
+        };
+        // ... and has the Russian group and Caps Lock on.
+        lock(xkb::Group::M2, true);
+        let st = conn.xkb_get_state(kbd).unwrap().reply().unwrap();
+        assert_eq!(st.locked_group, xkb::Group::M2, "a second group to lock");
+        keys.type_text("aBz1ф").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let (syms, per) = read_map();
+        let spares: Vec<u8> = keys.spares.iter().map(|s| s.code).collect();
+        let (mut typed, mut spare_presses) = (Vec::new(), 0);
+        for (code, state) in key_presses(&conn) {
+            // Typed in the first group, without Caps Lock.
+            assert_eq!(state >> 13 & 3, 0, "group in state {state:#x}");
+            assert_eq!(state & 2, 0, "Caps Lock in state {state:#x}");
+            if spares.contains(&code) {
+                spare_presses += 1;
+                continue;
+            }
+            let sym = syms[usize::from(code - min) * per + usize::from(state & 1)];
+            if !(0xffe1..=0xffee).contains(&sym) {
+                typed.push(sym);
+            }
+        }
+        assert_eq!(typed, [0x61, 0x42, 0x7a, 0x31], "a, B, z, 1");
+        assert_eq!(spare_presses, 1, "ф on a spare keycode");
+        // The user's state is back, and the spare keycode free again.
+        let st = conn.xkb_get_state(kbd).unwrap().reply().unwrap();
+        assert_eq!(st.locked_group, xkb::Group::M2);
+        assert_ne!(st.locked_mods & ModMask::LOCK, ModMask::from(0u16));
+        for code in &spares {
+            let row = &syms[usize::from(code - min) * per..][..per];
+            assert!(row.iter().all(|s| *s == 0), "spare {code} still bound");
+        }
+        lock(xkb::Group::M1, false);
+    }
+
     /// Needs an X server with XTest (`xvfb-run cargo test -- --ignored`).
     #[test]
     #[ignore]
     fn drawing_and_keypad_keys_reach_the_window() {
+        let _x = X_SERVER.lock().unwrap_or_else(|e| e.into_inner());
         use x11rb::protocol::Event;
         use xproto::{CreateWindowAux, EventMask, KeyButMask, WindowClass};
         let (conn, n) = x11rb::connect(None).expect("an X display");
@@ -741,9 +1104,9 @@ mod tests {
             .unwrap();
         conn.flush().unwrap();
         let mut keys = X11::connect().unwrap();
-        // (One key: the mapping is read afterwards, and a second keypad
-        // key would rebind the same spare keycode.)
-        keys.press(&KeyCombo {
+        // The press alone: `press` gives the spare keycode back afterwards,
+        // and the mapping is read below.
+        keys.press_one(&KeyCombo {
             modifiers: Modifiers::default(),
             key: Key::Named(NamedKey::Numpad(Pad::Digit(5))),
         })
@@ -802,8 +1165,10 @@ mod tests {
         // 3 keycodes from 8, 4 keysyms each; only 10 is completely empty
         // (9 has a keysym in its second group only).
         let syms = [0x61, 0x41, 0, 0, 0, 0, 0x6c6, 0, 0, 0, 0, 0];
-        assert_eq!(find_spare(&syms, 4, 8), Some(10));
-        assert_eq!(find_spare(&syms[..8], 4, 8), None);
+        assert_eq!(find_spares(&syms, 4, 8, 4), [10]);
+        assert!(find_spares(&syms[..8], 4, 8, 4).is_empty());
+        let empty = [0; 16];
+        assert_eq!(find_spares(&empty, 4, 8, 2), [8, 9]);
     }
 
     fn layout(bpp: u8, pad: u8, masks: [u32; 3]) -> PixelLayout {
