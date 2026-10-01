@@ -197,7 +197,7 @@ jobs:
           `computer-use-mcp-<os>.zip`. If "Upload failed" appears and a `computer-use` plugin is
           already installed, remove the old one first, then upload again.
           Only if the full zip is refused for containing a program, use the small
-          `computer-use-plugin-<os>.zip` (about 5 KB, no program inside on purpose): first run
+          `computer-use-plugin-<os>.zip` (about 50 KB, no program inside on purpose): first run
           `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
           which copies the program to `~/.computer-use/bin`; then upload the plugin zip.
 

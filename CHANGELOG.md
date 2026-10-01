@@ -2,7 +2,8 @@
 
 ## v2.5.0
 
-Compared with v2.0.0.
+Compared with v2.0.0
+([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.0.0...v2.5.0)).
 
 ### New
 
@@ -34,21 +35,28 @@ Compared with v2.0.0.
   - the most exact method each app has;
   - checks after every pass;
   - an app playbook for each app, and recipes for common jobs.
-- **Skills over MCP**: every skill is offered as an MCP prompt, and each
-  of its files as a resource, for clients without skill files. They are
-  served with LF line endings on every OS.
+  - Offered over MCP like the other skills, as the `computer-use-design`
+    prompt and its files as resources.
+
+### Fixed
+
+- Skill files served over MCP had Windows line endings (CRLF) on Windows.
+  They now have LF on every OS.
 
 ### Changed
 
-- **No approvals in the server.** The on-screen approval window and
-  `change_setting` are gone.
+- **No approvals in the server.** Per-app approvals, the sensitive-app
+  categories, the on-screen approval window (and the indicator's "waiting
+  for approval" state) and `change_setting` are gone.
   - Which apps and actions need the user's OK is set by the
     `computer-use-security` skill. Every skill prompt brings it along.
-  - The server still keeps input on the app it is meant for. `launch_app`
-    never runs a command line. Passwords and card numbers are masked. The
-    emergency stop key works.
+  - The server still keeps input on the app it is meant for. Passwords
+    and card numbers are masked. The emergency stop key works.
+- **`launch_app` takes no command-line arguments** (`args` is gone). It
+  starts an app by its name, bundle id or executable, and never runs a
+  command line.
 - **Settings**: `computer-use-mcp config` on the command line.
 - **Removed tools**: `create_folder`, `list_folder`, `read_file` and
   `skill`.
   - For files, use the MCP client's own file tools.
-  - Skills come as MCP prompts and resources (above).
+  - Skills still come as MCP prompts and resources, as in v2.0.0.
