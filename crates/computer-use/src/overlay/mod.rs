@@ -146,6 +146,8 @@ pub enum Reply {
 
 /// Replies kept for a later `wait_for` at most.
 const MAX_BACKLOG: usize = 16;
+/// Commands waiting for the helper to read them, at most.
+const MAX_QUEUED: usize = 1024;
 
 /// How to start the helper process.
 #[derive(Debug, Clone)]
@@ -168,7 +170,7 @@ impl Launcher {
 /// non-blocking (except the explicit waits below, which are bounded).
 pub struct Overlay {
     child: Option<Child>,
-    tx: Option<mpsc::Sender<String>>,
+    tx: Option<mpsc::SyncSender<String>>,
     rx: mpsc::Receiver<Reply>,
     backlog: Vec<Reply>,
     alive: Arc<AtomicBool>,
@@ -209,7 +211,8 @@ impl Overlay {
         let stdout = child.stdout.take().expect("piped stdout");
         let alive = Arc::new(AtomicBool::new(true));
 
-        let (tx, lines) = mpsc::channel::<String>();
+        // Bounded: a helper that stops reading can't make it grow forever.
+        let (tx, lines) = mpsc::sync_channel::<String>(MAX_QUEUED);
         let a = alive.clone();
         std::thread::Builder::new()
             .name("overlay-writer".into())
@@ -311,8 +314,12 @@ impl Overlay {
         if !self.alive() {
             return;
         }
-        if let (Some(tx), Ok(line)) = (&self.tx, serde_json::to_string(cmd)) {
-            let _ = tx.send(line);
+        if let (Some(tx), Ok(line)) = (&self.tx, serde_json::to_string(cmd))
+            && let Err(mpsc::TrySendError::Full(_)) = tx.try_send(line)
+        {
+            // It stopped reading (hung): the engine starts a new one.
+            log::warn!("the overlay helper stopped responding; replacing it");
+            self.alive.store(false, Ordering::Relaxed);
         }
     }
 

@@ -256,6 +256,44 @@ fn files_stay_where_the_settings_allow() {
     let out = run(&mut e, r#"fetch("file:///etc/passwd")"#);
     assert!(out.text.contains("not a web address"), "{}", out.text);
     std::fs::remove_file(outside).ok();
+    // Devices and pipes never end: only regular files are read.
+    #[cfg(unix)]
+    {
+        let mut all = engine_with(&dir, |c| c.script.files = ScriptFiles::All);
+        let out = run(&mut all, r#"read_text("/dev/zero")"#);
+        assert!(
+            out.is_error && out.text.contains("not a regular file"),
+            "{}",
+            out.text
+        );
+        let out = run(&mut all, r#"write_text("/dev/null", "x")"#);
+        assert!(
+            out.is_error && out.text.contains("not a regular file"),
+            "{}",
+            out.text
+        );
+    }
+}
+
+#[test]
+fn a_replace_that_would_fill_the_memory_is_refused() {
+    let dir = library("replace");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"
+        let big = "a";
+        for i in 0..20 { big += big; }
+        big.replace("a", big)
+        "#,
+    );
+    assert!(
+        out.is_error && out.text.contains("replace would make a text"),
+        "{}",
+        out.text
+    );
+    let out = run(&mut e, r#""a-b-c".replace("-", "+")"#);
+    assert!(out.text.contains("a+b+c"), "{}", out.text);
 }
 
 #[test]

@@ -291,6 +291,12 @@ impl<B: Backend> Engine<B> {
         }
         self.config_mtime = mtime;
         self.config_retry = false;
+        // An editor saving the file may empty it first: an empty file is
+        // taken only when it is still empty the next time.
+        if changed && std::fs::metadata(&path).is_ok_and(|m| m.len() == 0) {
+            self.config_retry = true;
+            return;
+        }
         match ConfigStore::load(Some(&path)) {
             Ok(mut store) => {
                 if let Some(f) = &self.overrides {
@@ -6531,6 +6537,34 @@ mod tests {
         press_named(&mut e2, 7, "Next");
         let out = state_of(&mut e2, serde_json::json!({"disable_diff": true}));
         assert!(!out.text.contains("the rest:"), "{}", out.text);
+    }
+
+    #[test]
+    fn a_settings_file_caught_half_saved_is_not_taken() {
+        let dir = std::env::temp_dir().join(format!("cu-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tools]\ndisabled = [\"drag\"]\n").unwrap();
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {});
+        e.reload_if_changed();
+        assert!(!e.store.config.tools.is_enabled("drag"));
+        let touch = |secs: u64| {
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(std::time::SystemTime::now() + Duration::from_secs(secs))
+                .unwrap();
+        };
+        // An editor empties the file before writing it.
+        std::fs::write(&path, "").unwrap();
+        touch(5);
+        e.reload_if_changed();
+        assert!(!e.store.config.tools.is_enabled("drag"), "taken half-saved");
+        // Still empty the next time: the user emptied it.
+        e.reload_if_changed();
+        assert!(e.store.config.tools.is_enabled("drag"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

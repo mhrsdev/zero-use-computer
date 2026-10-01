@@ -523,6 +523,9 @@ impl Page {
 #[derive(Clone)]
 pub(super) struct Grid(Cells);
 
+/// The longest text a script makes (bytes).
+const MAX_TEXT: usize = 32 * 1024 * 1024;
+
 /// A Rhai engine with the limits and settings every script runs with, but
 /// none of the functions (enough to check that a script parses).
 pub(super) fn bare_engine() -> Engine {
@@ -531,7 +534,7 @@ pub(super) fn bare_engine() -> Engine {
         .set_strict_variables(true)
         .set_max_call_levels(64)
         .set_max_expr_depths(256, 128)
-        .set_max_string_size(32 * 1024 * 1024)
+        .set_max_string_size(MAX_TEXT)
         .set_max_array_size(2_000_000)
         .set_max_map_size(500_000)
         .set_max_modules(64);
@@ -1462,9 +1465,29 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     // As in JavaScript, these give the new text (Rhai's change it in place
     // and give nothing).
     engine.register_fn("trim", |s: &str| s.trim().to_string());
-    engine.register_fn("replace", |s: &str, find: &str, with: &str| {
-        s.replace(find, with)
-    });
+    engine.register_fn(
+        "replace",
+        |s: &str, find: &str, with: &str| -> Res<String> {
+            // Its size is known before it is made: a replace that would fill
+            // the memory is refused, not attempted.
+            let count = if find.is_empty() {
+                s.chars().count() + 1
+            } else {
+                s.matches(find).count()
+            };
+            let size =
+                (s.len() - count * find.len()).saturating_add(count.saturating_mul(with.len()));
+            if size > MAX_TEXT {
+                return Err(format!(
+                    "replace would make a text of {} MB; texts are at most {} MB",
+                    size / (1024 * 1024),
+                    MAX_TEXT / (1024 * 1024)
+                )
+                .into());
+            }
+            Ok(s.replace(find, with))
+        },
+    );
     engine.register_fn("fixed", |x: Dynamic, digits: INT| -> Res<String> {
         Ok(format!("{:.*}", digits.clamp(0, 12) as usize, n(&x)?))
     });

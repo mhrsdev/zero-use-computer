@@ -1066,7 +1066,21 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
     }
-    std::fs::write(path, new_text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+    write_atomic(path, &new_text)
+}
+
+/// Write `text` to `path` all at once: a reader (the server reloading its
+/// settings) sees the old file or the new one, never half of it.
+fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text).map_err(fail)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        fail(e)
+    })
 }
 
 fn doc_to_config(text: &str) -> Result<Config> {
@@ -1096,7 +1110,7 @@ pub fn write_template(path: &Path, force: bool) -> Result<()> {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
     }
-    std::fs::write(path, TEMPLATE).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+    write_atomic(path, TEMPLATE)
 }
 
 /// Configuration plus where it lives (for hot reload).

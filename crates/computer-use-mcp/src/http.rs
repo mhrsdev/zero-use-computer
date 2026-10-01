@@ -136,11 +136,23 @@ fn local_origin(request: &Request) -> bool {
 fn respond(request: Request, status: u16, body: Value) {
     let data = body.to_string();
     let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
-    let _ = request.respond(
-        Response::from_string(data)
-            .with_status_code(status)
-            .with_header(header),
-    );
+    let send = move || {
+        let _ = request.respond(
+            Response::from_string(data)
+                .with_status_code(status)
+                .with_header(header),
+        );
+    };
+    // A refused request may still be sending its body, which tiny_http
+    // reads to the end once it is answered: that happens on a thread of its
+    // own, so a client sending gigabytes can't hold up the others.
+    if status >= 400 {
+        let _ = std::thread::Builder::new()
+            .name("http-refuse".into())
+            .spawn(send);
+    } else {
+        send();
+    }
 }
 
 fn reply(id: Value, result: Value) -> Value {
