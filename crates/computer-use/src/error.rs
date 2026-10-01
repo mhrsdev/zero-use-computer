@@ -49,6 +49,14 @@ pub enum Error {
     #[error("{0}")]
     ActionFailed(String),
 
+    /// The action was sent, but the app didn't answer in time: it may or may
+    /// not have happened (a busy app, or one that opened a dialog and waits
+    /// on it). Never repeated blindly.
+    #[error(
+        "{0} didn't answer in time: the action was sent but may or may not have happened (the app may be busy or showing a dialog). Look (get_app_state) before doing it again."
+    )]
+    Unanswered(String),
+
     #[error(
         "the user stopped the agent with the emergency stop key ({0}). Stop here: don't retry, and ask the user how to proceed. Only the user can let the agent continue (by pressing {0} again)."
     )]

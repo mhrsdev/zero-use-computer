@@ -2071,6 +2071,11 @@ impl<B: Backend> Engine<B> {
                         }
                         return Ok(ToolOutput::text(msg));
                     }
+                    // Sent, but unanswered: clicking again could press it twice.
+                    Err(e @ Error::Unanswered(_)) => {
+                        self.settle_on(&app);
+                        return Ok(ToolOutput::text(format!("Pressed {what}, but {e}")));
+                    }
                     Err(e) if self.store.config.verify.retry && point.is_some() => {
                         log::info!("accessibility press failed ({e}); clicking instead");
                         note = format!(
@@ -2124,7 +2129,14 @@ impl<B: Backend> Engine<B> {
         let before = self.tree_fingerprint(app.pid);
         self.overlay_point_element(&app, handle, false);
         self.overlay_point_element(&app, handle, true);
-        self.backend.perform_action(handle, &native)?;
+        if let Err(e @ Error::Unanswered(_)) = self.backend.perform_action(handle, &native) {
+            self.settle_on(&app);
+            return Ok(ToolOutput::text(format!(
+                "Performed `{}` on {}, but {e}",
+                args.action,
+                node.label()
+            )));
+        }
         self.settle_on(&app);
         let mut msg = format!("Performed `{}` on {}.", args.action, node.label());
         if self.verified() && self.tree_fingerprint(app.pid) == before {
@@ -8113,6 +8125,30 @@ mod tests {
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
         );
         assert!(out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn an_unanswered_press_is_never_clicked_again() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        e.backend_mut().unanswered_actions.insert(3);
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("may or may not have happened"),
+            "{}",
+            out.text
+        );
+        let events = &e.backend().events;
+        assert!(events.contains(&Event::Action(3, "AXPress".into())));
+        assert!(
+            !events.iter().any(|ev| matches!(ev, Event::Click(..))),
+            "{events:?}"
+        );
     }
 
     #[test]

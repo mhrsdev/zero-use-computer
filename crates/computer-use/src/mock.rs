@@ -136,6 +136,8 @@ pub struct MockBackend {
     pub window_lists: usize,
     /// Elements whose accessibility action fails.
     pub fail_actions: std::collections::HashSet<ElementHandle>,
+    /// Elements whose action happens but the app doesn't answer in time.
+    pub unanswered_actions: std::collections::HashSet<ElementHandle>,
     /// Elements that accept set_value but keep their old value.
     pub ignore_set_value: std::collections::HashSet<ElementHandle>,
     /// Elements whose focus() reports success without focusing.
@@ -533,6 +535,9 @@ impl Backend for MockBackend {
             && let Some(app) = self.app_mut(next.info.pid)
         {
             *app = next;
+        }
+        if self.unanswered_actions.contains(&element) {
+            return Err(Error::Unanswered("mock app".into()));
         }
         Ok(())
     }
