@@ -654,6 +654,79 @@ fn xe(e: impl std::fmt::Display) -> Error {
 mod tests {
     use super::*;
 
+    /// Needs an X server with XTest (`xvfb-run cargo test -- --ignored`).
+    #[test]
+    #[ignore]
+    fn drawing_reaches_the_window_under_it_with_the_button_held() {
+        use x11rb::protocol::Event;
+        use xproto::{CreateWindowAux, EventMask, KeyButMask, WindowClass};
+        let (conn, n) = x11rb::connect(None).expect("an X display");
+        let root = conn.setup().roots[n].root;
+        let win = conn.generate_id().unwrap();
+        conn.create_window(
+            0,
+            win,
+            root,
+            0,
+            0,
+            400,
+            300,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().event_mask(
+                EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::BUTTON_MOTION,
+            ),
+        )
+        .unwrap();
+        conn.map_window(win).unwrap();
+        conn.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        let x = X11::connect().unwrap();
+        let line: Vec<(i32, i32)> = (0..=40).map(|i| (50 + i * 5, 100 + i * 2)).collect();
+        let mut paces = 0;
+        x.draw(&[line], 1, &mut |_| {
+            paces += 1;
+            Ok(())
+        })
+        .unwrap();
+        // Stopped midway: the button still comes up.
+        let mut calls = 0;
+        let stopped = x.draw(
+            &[vec![(60, 60), (80, 60), (100, 60), (120, 60)]],
+            1,
+            &mut |_| {
+                calls += 1;
+                if calls > 2 {
+                    Err(Error::Stopped("test".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(stopped, Err(Error::Stopped(_))));
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (mut presses, mut releases, mut held_moves) = (0, 0, 0);
+        let mut last = (0, 0);
+        while let Some(ev) = conn.poll_for_event().unwrap() {
+            match ev {
+                Event::ButtonPress(_) => presses += 1,
+                Event::ButtonRelease(e) => {
+                    releases += 1;
+                    last = (e.event_x, e.event_y);
+                }
+                Event::MotionNotify(e) if e.state.contains(KeyButMask::BUTTON1) => held_moves += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(paces, 41, "a pause before each move and the stroke");
+        assert_eq!((presses, releases), (2, 2));
+        assert!(held_moves >= 40, "{held_moves}");
+        assert_eq!(last, (80, 60), "released where the stopped stroke got to");
+    }
+
     #[test]
     fn control_chars_have_function_keysyms() {
         assert_eq!(keysym_for(Key::Char('\t')), Some(0xff09));
