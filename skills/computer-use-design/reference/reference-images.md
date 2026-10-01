@@ -20,17 +20,20 @@ eye" drifts.
 1. `screenshot(app, grid=50)` of the window showing the reference.
 2. Note where the image is: left `L`, top `T`, right `R`, bottom `B` (grid
    coordinates).
-3. For each element, back to front, note its box (left, top, right,
-   bottom) the same way. Include shapes, photos, text blocks and lines.
-4. Convert to canvas pixels for a `W` x `H` canvas:
-   - `x = (left - L) / (R - L) * W`
-   - `y = (top - T) / (B - T) * H`
-   - `w = (right - left) / (R - L) * W`
-   - `h = (bottom - top) / (B - T) * H`
+3. Choose the canvas size `W` x `H`. Keep the reference's aspect ratio
+   unless the brief says otherwise: `H = W * (B - T) / (R - L)`.
+4. For each element, back to front, get its box (left, top, right,
+   bottom) in canvas pixels. Include shapes, photos, text blocks and
+   lines.
+   - Easiest: `screenshot(app, canvas={"box": [L, T, R, B], "size": [W,
+     H]}, grid=true)`. The grid over the reference is labelled in canvas
+     pixels, and `pick` takes canvas pixels too: read the boxes straight
+     off it.
+   - Or note the boxes in grid coordinates and convert:
+     `x = (left - L) / (R - L) * W`, `y = (top - T) / (B - T) * H`,
+     `w = (right - left) / (R - L) * W`, `h = (bottom - top) / (B - T) * H`.
 
    Round to whole pixels and write them into the spec.
-5. Keep the reference's aspect ratio unless the brief says otherwise:
-   `H = W * (B - T) / (R - L)`.
 
 ## 3. Read the colours
 
@@ -55,7 +58,12 @@ eye" drifts.
 1. Place the reference as the bottom layer, scaled to the canvas.
 2. Set it to 30–50% opacity and lock it.
 3. Draw on new layers above it, with `draw` and `canvas` in canvas
-   pixels.
+   pixels:
+   - simple shapes as `rect`, `ellipse`, `polygon`, `star`;
+   - outlines as `points` with `smooth: true` through points read off the
+     grid, or `bezier`;
+   - `preview: true` shows the strokes in red over the reference: move
+     points until they sit on its edges, then draw.
 4. Hide or delete the reference layer before exporting.
 
 ## 6. 3D from photos (Blender)

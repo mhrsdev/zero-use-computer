@@ -58,9 +58,22 @@ is Cmd on a Mac, Ctrl elsewhere; `alt` is Option on a Mac.
 
 ## Painting and drawing
 
-- Brush `b`. Size `[` / `]` or the options bar. Pick the colour first.
+- Brush `b` (or Pencil, `shift+b` cycles them; the pencil has hard edges).
+  Size `[` / `]` or the options bar. Pick the colour first.
+- Set Smoothing in the options bar to 0%, or `draw` with `speed` 300–500:
+  smoothing makes the line lag behind the pointer and round off corners.
 - Strokes: `draw` with `canvas` in canvas pixels. A straight line is two
-  points; a smooth freehand line uses `smooth: true`.
+  points; a smooth freehand line uses `smooth: true`; stars, polygons,
+  arcs, Bézier curves, plots and `repeat` patterns work as in any app.
+  `preview: true` first.
+- `bezier` is a path for the mouse to follow with the brush. It does not
+  make Pen-tool anchor points.
+- Fill a drawn outline: Paint Bucket (`g`, `shift+g` cycles it with the
+  gradient) at the point the `draw` result gives. Or Magic Wand (`w`)
+  there, then Edit ▸ Fill.
+- Regular polygons and stars as shape layers: the Polygon tool (in the
+  `u` group). Click once; its dialog takes the size, the number of sides
+  and a Star Ratio.
 
 ## References
 

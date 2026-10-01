@@ -72,7 +72,7 @@ const DRAW_STEP: f64 = 3.0;
 /// `draw`: most pointer positions in one call.
 const DRAW_MAX_POINTS: usize = 40_000;
 /// `draw`: most strokes in one call.
-const DRAW_MAX_STROKES: usize = 500;
+const DRAW_MAX_STROKES: usize = 1000;
 /// `draw`: default pointer speed, screen units per second.
 const DRAW_SPEED: f64 = 800.0;
 /// `draw`: longest drawing in one call.
@@ -2239,22 +2239,16 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
-    fn draw(&mut self, args: DrawArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
-        self.check_window(&app, args.window.as_deref())?;
-        if args.strokes.is_empty() || args.strokes.len() > DRAW_MAX_STROKES {
-            return Err(Error::InvalidArgs(format!(
-                "`strokes` needs 1 to {DRAW_MAX_STROKES} strokes"
-            )));
-        }
-        let shapes = args
-            .strokes
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                draw_shape(s).map_err(|e| Error::InvalidArgs(format!("stroke {}: {e}", i + 1)))
-            })
-            .collect::<Result<Vec<_>>>()?;
+    /// The coordinates a drawing (or a canvas-labelled screenshot) uses:
+    /// the latest screenshot's pixels, an element's box (fractions), or a
+    /// document on screen in its own units or as a math range.
+    fn draw_frame(
+        &self,
+        app: &AppInfo,
+        element_index: Option<u32>,
+        canvas: Option<&DrawCanvas>,
+    ) -> Result<(crate::draw::Frame, &'static str)> {
+        use crate::draw::Frame;
         let map = self.state(app.pid).ok().and_then(|s| s.coord);
         let no_map = || {
             Error::InvalidArgs(
@@ -2262,11 +2256,10 @@ impl<B: Backend> Engine<B> {
                     .into(),
             )
         };
-        // The box the drawing goes in (screen coordinates), if not the
-        // whole screenshot.
-        let element = match args.element_index {
+        // The element's box (screen coordinates).
+        let element = match element_index {
             Some(i) => {
-                let h = self.element_by_index(&app, i)?;
+                let h = self.element_by_index(app, i)?;
                 let b = self
                     .state(app.pid)
                     .ok()
@@ -2280,50 +2273,100 @@ impl<B: Backend> Engine<B> {
             }
             None => None,
         };
-        let (frame, area) = match (&args.canvas, element) {
-            (Some(c), _) => {
-                let [w, h] = c.size;
+        let Some(c) = canvas else {
+            return Ok(match element {
+                Some(b) => (Frame::fractions(b), "the element"),
+                None => {
+                    let map = map.ok_or_else(no_map)?;
+                    (
+                        Frame::pixels(map.bounds, map.width, map.height),
+                        "the screenshot",
+                    )
+                }
+            });
+        };
+        let b = match (c.area, element) {
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidArgs(
+                    "give canvas.box or element_index, not both".into(),
+                ));
+            }
+            (Some([l, t, r, btm]), None) => {
+                let map = map.ok_or_else(no_map)?;
+                let (a, z) = (map.to_screen(l, t)?, map.to_screen(r, btm)?);
+                let b = Rect::new(a.x, a.y, z.x - a.x, z.y - a.y);
+                if b.is_empty() {
+                    return Err(Error::InvalidArgs(
+                        "canvas.box is [left, top, right, bottom], right of left and below top"
+                            .into(),
+                    ));
+                }
+                b
+            }
+            (None, Some(b)) => b,
+            (None, None) => {
+                return Err(Error::InvalidArgs(
+                    "canvas needs box (where the document is in the screenshot) or element_index"
+                        .into(),
+                ));
+            }
+        };
+        match (c.size, c.range) {
+            (Some(_), Some(_)) => Err(Error::InvalidArgs(
+                "canvas takes size (document units) or range (math), not both".into(),
+            )),
+            (Some([w, h]), None) => {
                 if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
                     return Err(Error::InvalidArgs(
                         "canvas.size is [width, height], both positive".into(),
                     ));
                 }
-                let b = match (c.area, element) {
-                    (Some(_), Some(_)) => {
-                        return Err(Error::InvalidArgs(
-                            "give canvas.box or element_index, not both".into(),
-                        ));
-                    }
-                    (Some([l, t, r, btm]), None) => {
-                        let map = map.ok_or_else(no_map)?;
-                        let (a, z) = (map.to_screen(l, t)?, map.to_screen(r, btm)?);
-                        let b = Rect::new(a.x, a.y, z.x - a.x, z.y - a.y);
-                        if b.is_empty() {
-                            return Err(Error::InvalidArgs(
-                                "canvas.box is [left, top, right, bottom], right of left and below top".into(),
-                            ));
-                        }
-                        b
-                    }
-                    (None, Some(b)) => b,
-                    (None, None) => {
-                        return Err(Error::InvalidArgs(
-                            "canvas needs box (where the document is in the screenshot) or element_index".into(),
-                        ));
-                    }
+                Ok((Frame::units(b, w, h), "the document"))
+            }
+            (None, Some([x0, x1, y0, y1])) => {
+                if ![x0, x1, y0, y1].iter().all(|v| v.is_finite()) || x1 <= x0 || y1 <= y0 {
+                    return Err(Error::InvalidArgs(
+                        "canvas.range is [x min, x max, y min, y max], each max above its min"
+                            .into(),
+                    ));
+                }
+                Ok((Frame::range(b, x0, x1, y0, y1), "the plot"))
+            }
+            (None, None) => Err(Error::InvalidArgs(
+                "canvas needs size [width, height] or range [x min, x max, y min, y max]".into(),
+            )),
+        }
+    }
+
+    fn draw(&mut self, args: DrawArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
+        if args.strokes.is_empty() || args.strokes.len() > DRAW_MAX_STROKES {
+            return Err(Error::InvalidArgs(format!(
+                "`strokes` needs 1 to {DRAW_MAX_STROKES} strokes"
+            )));
+        }
+        let (frame, area) = self.draw_frame(&app, args.element_index, args.canvas.as_ref())?;
+        let mut shapes: Vec<(String, crate::draw::Shape)> = Vec::new();
+        for (i, s) in args.strokes.iter().enumerate() {
+            let made = draw_shapes(s, &frame)
+                .map_err(|e| Error::InvalidArgs(format!("stroke {}: {e}", i + 1)))?;
+            let copies = made.len();
+            for (k, shape) in made.into_iter().enumerate() {
+                let name = if copies == 1 {
+                    format!("stroke {}", i + 1)
+                } else {
+                    format!("stroke {} (part {})", i + 1, k + 1)
                 };
-                (crate::draw::Frame::units(b, w, h), "the document")
+                shapes.push((name, shape));
             }
-            (None, Some(b)) => (crate::draw::Frame::fractions(b), "the element"),
-            (None, None) => {
-                let map = map.ok_or_else(no_map)?;
-                (
-                    crate::draw::Frame::pixels(map.bounds, map.width, map.height),
-                    "the screenshot",
-                )
+            if shapes.len() > DRAW_MAX_STROKES {
+                return Err(Error::InvalidArgs(format!(
+                    "more than {DRAW_MAX_STROKES} strokes once repeated; draw it in parts"
+                )));
             }
-        };
-        let plan = crate::draw::plan(&shapes, &frame, DRAW_STEP, DRAW_MAX_POINTS)
+        }
+        let plan = crate::draw::plan_labelled(&shapes, &frame, DRAW_STEP, DRAW_MAX_POINTS)
             .map_err(Error::InvalidArgs)?;
         let speed = args
             .speed
@@ -2342,6 +2385,10 @@ impl<B: Backend> Engine<B> {
         ) else {
             return Err(Error::InvalidArgs("nothing to draw".into()));
         };
+        let summary = self.draw_summary(&app, &frame, area, &plan, &shapes);
+        if args.preview {
+            return self.draw_preview(&app, args.window.as_deref(), &frame, &plan, summary);
+        }
 
         self.overlay_point(first, true);
         let target = self.input_target(&app)?;
@@ -2370,16 +2417,38 @@ impl<B: Backend> Engine<B> {
         drawn?;
         self.settle_on(&app);
 
-        // Where it went, in the coordinates the model used.
+        let mut msg = format!("Drew {summary}");
+        msg.push_str(self.explain(
+            "draw-check",
+            " Drawing changes pixels, which the accessibility tree doesn't show: check the result with a screenshot (screenshot: true).",
+            " Check it with a screenshot.",
+        ));
+        Ok(ToolOutput::text(msg))
+    }
+
+    /// "3 strokes (…) on the plot: x … to …, y … to …." plus what fell
+    /// outside and where to click inside closed shapes.
+    fn draw_summary(
+        &self,
+        app: &AppInfo,
+        frame: &crate::draw::Frame,
+        area: &str,
+        plan: &crate::draw::Plan,
+        shapes: &[(String, crate::draw::Shape)],
+    ) -> String {
+        // Where it goes, in the coordinates the model used.
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for p in plan.strokes.iter().flatten() {
             let (x, y) = frame.to_frame(*p);
             (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
         }
-        let digits = if area == "the element" { 2 } else { 0 };
+        let digits = match area {
+            "the element" | "the plot" => 2,
+            _ => 0,
+        };
         let n = plan.strokes.len();
         let mut msg = format!(
-            "Drew {n} stroke{} ({} pointer positions, {:.0} px of line) on {area}: x {x0:.digits$} to {x1:.digits$}, y {y0:.digits$} to {y1:.digits$}.",
+            "{n} stroke{} ({} pointer positions, {:.0} px of line) on {area}: x {x0:.digits$} to {x1:.digits$}, y {y0:.digits$} to {y1:.digits$}.",
             if n == 1 { "" } else { "s" },
             plan.points(),
             plan.length,
@@ -2390,12 +2459,95 @@ impl<B: Backend> Engine<B> {
                 plan.skipped
             ));
         }
-        msg.push_str(self.explain(
-            "draw-check",
-            " Drawing changes pixels, which the accessibility tree doesn't show: check the result with a screenshot (screenshot: true).",
-            " Check it with a screenshot.",
-        ));
-        Ok(ToolOutput::text(msg))
+        // Circles come out as ellipses when a unit of x and of y differ on
+        // screen: say so, with the numbers to fix it.
+        let (sx, sy) = frame.scale();
+        let (ux, uy) = (sx.abs(), sy.abs());
+        if area != "the screenshot" && ux > 0.0 && uy > 0.0 && (ux / uy - 1.0).abs() > 0.02 {
+            msg.push_str(&format!(
+                " On screen 1 unit of x is {ux:.1} px and 1 unit of y is {uy:.1} px, so circles look like ellipses; for equal units make the canvas's width/height match its box's."
+            ));
+        }
+        // Where a click fills each closed shape (bucket fill, magic wand),
+        // in the x/y click takes.
+        if let Some(map) = self.state(app.pid).ok().and_then(|s| s.coord) {
+            let inside: Vec<String> = crate::draw::fill_points(&plan.strokes, 20)
+                .into_iter()
+                .map(|(i, p)| {
+                    let (x, y) = map.to_image(p);
+                    let name = plan
+                        .shape
+                        .get(i)
+                        .and_then(|&k| shapes.get(k))
+                        .map_or("", |(n, _)| n.as_str());
+                    format!("({x:.0}, {y:.0}) {name}")
+                })
+                .collect();
+            if !inside.is_empty() {
+                msg.push_str(&format!(
+                    " To fill a closed shape, click inside it at: {}.",
+                    inside.join("; ")
+                ));
+            }
+        }
+        msg
+    }
+
+    /// The strokes in red over a screenshot of the window, with a grid in
+    /// the coordinates the call used; nothing is drawn.
+    fn draw_preview(
+        &mut self,
+        app: &AppInfo,
+        window: Option<&str>,
+        frame: &crate::draw::Frame,
+        plan: &crate::draw::Plan,
+        summary: String,
+    ) -> Result<ToolOutput> {
+        let text = format!(
+            "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the grid is in the coordinates you gave. Call draw again without preview to draw them."
+        );
+        if self.store.config.text_only || !self.store.config.screenshot.enabled {
+            return Ok(ToolOutput::text(text));
+        }
+        let window = self.resolve_window(app, window, false)?;
+        let mut cap = self.capture_clean(|b| b.capture(app, &window))?;
+        self.redact_capture(&mut cap);
+        let cfg = self.store.config.screenshot.clone();
+        let (out_w, _) = imaging::fit(cap.width, cap.height, cfg.max_dimension.max(64));
+        let out_scale = f64::from(cap.width) / f64::from(out_w.max(1));
+        let (bounds, cw, ch) = (cap.bounds, f64::from(cap.width), f64::from(cap.height));
+        let to_cap = |p: Point| {
+            (
+                (p.x - bounds.x) * cw / bounds.width.max(1e-9),
+                (p.y - bounds.y) * ch / bounds.height.max(1e-9),
+            )
+        };
+        let r = frame.screen_rect();
+        let (cx0, cy0) = to_cap(Point::new(r.x, r.y));
+        let (cx1, cy1) = to_cap(Point::new(r.x + r.width, r.y + r.height));
+        let (ax, ay) = LabelSpace::Frame(*frame).axes(&cap, out_w);
+        imaging::draw_grid(
+            &mut cap,
+            ax,
+            ay,
+            0.0,
+            out_scale,
+            Some(Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0)),
+        );
+        let width = (2.0 * out_scale).round().max(2.0) as i64;
+        for stroke in &plan.strokes {
+            let pts: Vec<(f64, f64)> = stroke.iter().map(|p| to_cap(*p)).collect();
+            imaging::draw_path(&mut cap, &pts, [255, 30, 60], width);
+            if let Some(&start) = pts.first() {
+                imaging::draw_path(&mut cap, &[start], [0, 200, 70], width * 3);
+            }
+        }
+        let (img, _) = imaging::encode(cap, &cfg)?;
+        Ok(ToolOutput {
+            text,
+            image: Some(img),
+            is_error: false,
+        })
     }
 
     /// Point the mouse at screenshot pixel (x, y) of `app`, for apps that
@@ -2704,6 +2856,11 @@ impl<B: Backend> Engine<B> {
         // What grid labels and `pick` points are in: screen coordinates,
         // or the x/y actions use for the window.
         let mut space = LabelSpace::Screen;
+        if args.canvas.is_some() && mode != ScreenshotMode::Window {
+            return Err(Error::InvalidArgs(
+                "canvas needs a window screenshot (app)".into(),
+            ));
+        }
         let (capture, marks, label) = match mode {
             ScreenshotMode::Auto | ScreenshotMode::Full => (
                 self.capture_clean(|b| b.capture_screen(None))?,
@@ -2762,6 +2919,15 @@ impl<B: Backend> Engine<B> {
                     }
                     _ => LabelSpace::Image,
                 };
+                // A document's own units or a math range, as draw takes them.
+                if let Some(c) = &args.canvas {
+                    let element = if c.area.is_none() {
+                        args.element_index
+                    } else {
+                        None
+                    };
+                    space = LabelSpace::Frame(self.draw_frame(&app, element, Some(c))?.0);
+                }
                 let marks = if args.annotate {
                     Some(
                         self.state(app.pid)?
@@ -2837,9 +3003,25 @@ impl<B: Backend> Engine<B> {
         }
         if let Some(step) = args.grid {
             let out_scale = f64::from(capture.width) / f64::from(out_w.max(1));
-            let used = imaging::draw_grid(&mut capture, ax, ay, f64::from(step.max(1)), out_scale);
+            // A document's grid covers just the document.
+            let clip = match space {
+                LabelSpace::Frame(f) => {
+                    let r = f.screen_rect();
+                    let sx = f64::from(capture.width) / capture.bounds.width.max(1e-9);
+                    let sy = f64::from(capture.height) / capture.bounds.height.max(1e-9);
+                    Some(Rect::new(
+                        (r.x - capture.bounds.x) * sx,
+                        (r.y - capture.bounds.y) * sy,
+                        r.width * sx,
+                        r.height * sy,
+                    ))
+                }
+                _ => None,
+            };
+            let used = imaging::draw_grid(&mut capture, ax, ay, step, out_scale, clip);
             note.push_str(&format!(
-                "\nGrid: a line every {used:.0}, labelled in {}.",
+                "\nGrid: a line every {}, labelled in {}.",
+                used,
                 space.describe()
             ));
         }
@@ -3413,6 +3595,8 @@ enum LabelSpace {
     Map(CoordMap),
     /// This image's own pixels (no get_app_state of the window yet).
     Image,
+    /// A document's own units or a math range (`canvas`).
+    Frame(crate::draw::Frame),
 }
 
 impl LabelSpace {
@@ -3446,6 +3630,20 @@ impl LabelSpace {
                     },
                 )
             }
+            LabelSpace::Frame(f) => {
+                let (fx, fy) = f.scale();
+                let (ox, oy) = f.to_frame(Point::new(cap.bounds.x, cap.bounds.y));
+                (
+                    imaging::Axis {
+                        offset: ox,
+                        scale: px_x / fx,
+                    },
+                    imaging::Axis {
+                        offset: oy,
+                        scale: px_y / fy,
+                    },
+                )
+            }
             LabelSpace::Image => {
                 let k = f64::from(out_w.max(1)) / cw;
                 (
@@ -3469,89 +3667,223 @@ impl LabelSpace {
             }
             LabelSpace::Map(_) => "the x/y that click, drag and draw use for this window",
             LabelSpace::Image => "this image's pixels (call get_app_state before acting with x/y)",
+            LabelSpace::Frame(f) if f.y_up() => "the canvas range (math, y up), as draw takes it",
+            LabelSpace::Frame(_) => "the document's units, as draw takes them with canvas",
         }
     }
 }
 
-/// A `draw` stroke as the drawing module takes it.
-fn draw_shape(s: &DrawStroke) -> std::result::Result<crate::draw::Shape, String> {
-    use crate::draw::{Expr, Shape};
+/// A `draw` stroke as the drawing module takes it: one shape, or several
+/// (axes and ticks, repeated copies).
+fn draw_shapes(
+    s: &DrawStroke,
+    frame: &crate::draw::Frame,
+) -> std::result::Result<Vec<crate::draw::Shape>, String> {
+    use crate::draw::{self, Affine, Expr, Shape};
+    let curve = s.x.is_some() || s.y.is_some();
     let kinds = [
-        s.points.is_some(),
-        s.x.is_some() || s.y.is_some(),
-        s.rect.is_some(),
-        s.ellipse.is_some(),
+        ("points", s.points.is_some()),
+        ("x/y", curve),
+        ("rect", s.rect.is_some()),
+        ("ellipse", s.ellipse.is_some()),
+        ("polygon", s.polygon.is_some()),
+        ("star", s.star.is_some()),
+        ("arc", s.arc.is_some()),
+        ("bezier", s.bezier.is_some()),
+        ("axes", s.axes.is_some()),
     ];
-    if kinds.iter().filter(|k| **k).count() > 1 {
-        return Err("give one of points, x and y, rect or ellipse".into());
-    }
-    if let Some(r) = s.rect {
-        let [x, y, w, h] = r;
-        if !r.iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
-            return Err("rect is [x, y, width, height] with a positive width and height".into());
+    let given: Vec<&str> = kinds.iter().filter(|k| k.1).map(|k| k.0).collect();
+    match given.len() {
+        0 => {
+            return Err(
+                "give a shape (rect, ellipse, polygon, star, arc, bezier), points, axes, or x and/or y expressions in t"
+                    .into(),
+            );
         }
-        return Ok(Shape::Points {
-            points: vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)],
-            closed: true,
-            smooth: false,
-        });
+        1 => {}
+        _ => {
+            return Err(format!(
+                "give one kind of stroke, not {}",
+                given.join(" and ")
+            ));
+        }
     }
-    if let Some(e) = s.ellipse {
+    let finite = |v: &[f64], what: &str| -> std::result::Result<(), String> {
+        if v.iter().all(|x| x.is_finite()) {
+            Ok(())
+        } else {
+            Err(format!("{what} has a number that isn't finite"))
+        }
+    };
+    let whole = |v: f64, what: &str, lo: u32, hi: u32| -> std::result::Result<u32, String> {
+        if v.fract() == 0.0 && v >= f64::from(lo) && v <= f64::from(hi) {
+            Ok(v as u32)
+        } else {
+            Err(format!("{what} must be a whole number from {lo} to {hi}"))
+        }
+    };
+    let circle = |cx: f64, cy: f64, rx: f64, ry: f64, t0: f64, t1: f64| {
+        Ok::<Shape, String>(Shape::Curve {
+            x: Expr::parse(&format!("({cx:?}) + ({rx:?})*cos(t)"))?,
+            y: Expr::parse(&format!("({cy:?}) + ({ry:?})*sin(t)"))?,
+            t0,
+            t1,
+            steps: None,
+            transform: Affine::IDENTITY,
+        })
+    };
+    let base: Shape = if let Some(r) = &s.rect {
+        if !(r.len() == 4 || r.len() == 5) {
+            return Err(
+                "rect is [x, y, width, height] or [x, y, width, height, corner radius]".into(),
+            );
+        }
+        finite(r, "rect")?;
+        let (x, y, w, h) = (r[0], r[1], r[2], r[3]);
+        let radius = r.get(4).copied().unwrap_or(0.0);
+        if w <= 0.0 || h <= 0.0 || radius < 0.0 {
+            return Err("rect needs a positive width and height (and radius 0 or more)".into());
+        }
+        Shape::points(draw::rect(x, y, w, h, radius), true)
+    } else if let Some(e) = s.ellipse {
         let [cx, cy, rx, ry] = e;
-        if !e.iter().all(|v| v.is_finite()) || rx <= 0.0 || ry <= 0.0 {
+        finite(&e, "ellipse")?;
+        if rx <= 0.0 || ry <= 0.0 {
             return Err(
                 "ellipse is [center x, center y, radius x, radius y] with positive radii".into(),
             );
         }
         // Drawn from its rightmost point, all the way round.
-        return Ok(Shape::Curve {
-            x: Expr::parse(&format!("({cx:?}) + ({rx:?})*cos(t)"))
-                .map_err(|e| format!("ellipse: {e}"))?,
-            y: Expr::parse(&format!("({cy:?}) + ({ry:?})*sin(t)"))
-                .map_err(|e| format!("ellipse: {e}"))?,
-            t0: 0.0,
-            t1: std::f64::consts::TAU,
-            steps: None,
-        });
-    }
-    match (&s.points, &s.x, &s.y) {
-        (Some(points), None, None) => Ok(Shape::Points {
+        circle(cx, cy, rx, ry, 0.0, std::f64::consts::TAU)?
+    } else if let Some(p) = s.polygon {
+        let [cx, cy, r, n] = p;
+        finite(&p, "polygon")?;
+        if r <= 0.0 {
+            return Err("polygon is [center x, center y, radius, corners], radius positive".into());
+        }
+        let n = whole(n, "polygon corners", 3, 1000)?;
+        Shape::points(draw::polygon(cx, cy, r, n, frame.y_up()), true)
+    } else if let Some(p) = s.star {
+        let [cx, cy, outer, inner, n] = p;
+        finite(&p, "star")?;
+        if outer <= 0.0 || inner <= 0.0 {
+            return Err(
+                "star is [center x, center y, outer radius, inner radius, points], radii positive"
+                    .into(),
+            );
+        }
+        let n = whole(n, "star points", 2, 500)?;
+        Shape::points(draw::star(cx, cy, outer, inner, n, frame.y_up()), true)
+    } else if let Some(a) = s.arc {
+        let [cx, cy, r, from, to] = a;
+        finite(&a, "arc")?;
+        if r <= 0.0 {
+            return Err(
+                "arc is [center x, center y, radius, from degrees, to degrees], radius positive"
+                    .into(),
+            );
+        }
+        circle(cx, cy, r, r, from.to_radians(), to.to_radians())?
+    } else if let Some(b) = &s.bezier {
+        let pts: Vec<(f64, f64)> = b.iter().map(|p| p.xy()).collect();
+        finite(
+            &pts.iter().flat_map(|p| [p.0, p.1]).collect::<Vec<_>>(),
+            "bezier",
+        )?;
+        Shape::Points {
+            points: draw::bezier(&pts)?,
+            closed: s.closed,
+            smooth: false,
+            transform: Affine::IDENTITY,
+        }
+    } else if let Some(a) = s.axes {
+        if !frame.y_up() {
+            return Err("axes need canvas.range (math coordinates)".into());
+        }
+        if s.rotate.is_some() || s.repeat.is_some() {
+            return Err("axes can't be turned or repeated".into());
+        }
+        finite(&a, "axes")?;
+        return draw::axes(frame, a[0].max(0.0), a[1].max(0.0), 10.0);
+    } else if let Some(points) = &s.points {
+        Shape::Points {
             points: points.iter().map(|p| p.xy()).collect(),
             closed: s.closed,
             smooth: s.smooth,
-        }),
-        (None, Some(x), Some(y)) => {
-            let bound = |v: &DrawNumber, which: &str| -> std::result::Result<f64, String> {
-                match v {
-                    DrawNumber::Num(n) => Ok(*n),
-                    DrawNumber::Expr(e) => Expr::parse(e)
-                        .map(|e| e.eval(0.0))
-                        .map_err(|err| format!("t {which}: {err}")),
-                }
-            };
-            let (t0, t1) = match &s.t {
-                Some([a, b]) => (bound(a, "from")?, bound(b, "to")?),
-                None => (0.0, 1.0),
-            };
-            if let Some(n) = s.steps
-                && !(1..=10_000).contains(&n)
-            {
-                return Err("steps must be 1 to 10000".into());
+            transform: Affine::IDENTITY,
+        }
+    } else {
+        // A curve: x and y in t, or a plot of y in x (x in y) over the
+        // whole area unless t says otherwise.
+        let (x, y, default_t) = match (&s.x, &s.y) {
+            (Some(x), Some(y)) => (
+                Expr::parse(x).map_err(|e| format!("x: {e}"))?,
+                Expr::parse(y).map_err(|e| format!("y: {e}"))?,
+                (0.0, 1.0),
+            ),
+            (None, Some(y)) => (
+                Expr::parse("t")?,
+                Expr::parse_in(y, Some("x")).map_err(|e| format!("y: {e}"))?,
+                (frame.x0, frame.x1),
+            ),
+            (Some(x), None) => (
+                Expr::parse_in(x, Some("y")).map_err(|e| format!("x: {e}"))?,
+                Expr::parse("t")?,
+                (frame.y0, frame.y1),
+            ),
+            (None, None) => unreachable!("one of x and y is given"),
+        };
+        let bound = |v: &DrawNumber, which: &str| -> std::result::Result<f64, String> {
+            match v {
+                DrawNumber::Num(n) => Ok(*n),
+                DrawNumber::Expr(e) => Expr::parse(e)
+                    .map(|e| e.eval(0.0))
+                    .map_err(|err| format!("t {which}: {err}")),
             }
-            Ok(Shape::Curve {
-                x: Expr::parse(x).map_err(|e| format!("x: {e}"))?,
-                y: Expr::parse(y).map_err(|e| format!("y: {e}"))?,
-                t0,
-                t1,
-                steps: s.steps,
-            })
+        };
+        let (t0, t1) = match &s.t {
+            Some([a, b]) => (bound(a, "from")?, bound(b, "to")?),
+            None => default_t,
+        };
+        if let Some(n) = s.steps
+            && !(1..=10_000).contains(&n)
+        {
+            return Err("steps must be 1 to 10000".into());
         }
-        (Some(_), _, _) => Err("give one of points, x and y, rect or ellipse".into()),
-        (None, Some(_), None) | (None, None, Some(_)) => {
-            Err("a curve needs both x and y (expressions in t)".into())
+        Shape::Curve {
+            x,
+            y,
+            t0,
+            t1,
+            steps: s.steps,
+            transform: Affine::IDENTITY,
         }
-        (None, None, None) => Err("give points, rect, ellipse, or x and y expressions in t".into()),
+    };
+    let center = base.center().unwrap_or((0.0, 0.0));
+    let mut shape = base;
+    if let Some(deg) = s.rotate {
+        let about = s.about.map(|p| p.xy()).unwrap_or(center);
+        finite(&[deg, about.0, about.1], "rotate")?;
+        shape = shape.then(frame.rotation(about, deg));
     }
+    let Some(r) = &s.repeat else {
+        return Ok(vec![shape]);
+    };
+    if r.count == 0 || r.count > 500 {
+        return Err("repeat.count must be 1 to 500".into());
+    }
+    let [dx, dy] = r.offset.unwrap_or([0.0, 0.0]);
+    let turn = r.rotate.unwrap_or(0.0);
+    let about = r.about.map(|p| p.xy()).unwrap_or(center);
+    finite(&[dx, dy, turn, about.0, about.1], "repeat")?;
+    Ok((0..r.count)
+        .map(|k| {
+            let k = f64::from(k);
+            shape
+                .then(Affine::translate(k * dx, k * dy))
+                .then(frame.rotation(about, k * turn))
+        })
+        .collect())
 }
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
@@ -3563,7 +3895,7 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::SelectText(a) => Some(a.app.clone()),
         ToolCall::Scroll(a) => Some(a.app.clone()),
         ToolCall::Drag(a) => Some(a.app.clone()),
-        ToolCall::Draw(a) => Some(a.app.clone()),
+        ToolCall::Draw(a) if !a.preview => Some(a.app.clone()),
         ToolCall::PressKey(a) => Some(a.app.clone()),
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
@@ -4581,7 +4913,12 @@ mod tests {
             "draw",
             serde_json::json!({"app": "TextEdit", "strokes": [{"rect": [1, 1, 5, 5], "ellipse": [1, 1, 1, 1]}]}),
         );
-        assert!(out.text.contains("give one of"), "{}", out.text);
+        assert!(
+            out.text
+                .contains("give one kind of stroke, not rect and ellipse"),
+            "{}",
+            out.text
+        );
         let out = e.call_tool(
             "draw",
             serde_json::json!({"app": "TextEdit", "strokes": [{"ellipse": [1, 1, 0, 1]}]}),
@@ -4649,6 +4986,175 @@ mod tests {
                 out.text
             );
         }
+    }
+
+    fn downs(e: &Engine<MockBackend>) -> Vec<Point> {
+        pointer_events(e)
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::PointerDown(_, p, _) => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plots_use_math_coordinates_with_axes() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // x -pi..pi, y -1.5..1.5 across (100, 100)-(700, 400).
+        let pi = std::f64::consts::PI;
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit",
+                "canvas": {"box": [100, 100, 700, 400], "range": ["-3", 3, -1.5, 1.5]},
+                "strokes": [{"axes": [1, 0.5]}, {"y": "sin(x)"}]}),
+        );
+        // A range must be numbers.
+        assert!(out.is_error, "{}", out.text);
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit",
+                "canvas": {"box": [100, 100, 700, 400], "range": [-pi, pi, -1.5, 1.5]},
+                "strokes": [{"axes": [1, 0.5]}, {"y": "sin(x)"}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Drew 17 strokes"), "{}", out.text);
+        assert!(out.text.contains("on the plot"), "{}", out.text);
+        // The sine starts at x = -pi, y = 0: the left edge, half way down.
+        let d = downs(&e);
+        let start = d.last().unwrap();
+        assert!(
+            (start.x - 100.0).abs() < 0.01 && (start.y - 250.0).abs() < 0.01,
+            "{start:?}"
+        );
+        // Its top (x = pi/2, y = 1) is 100 px above the middle.
+        let events = pointer_events(&e);
+        let sine_start = events
+            .iter()
+            .rposition(|ev| matches!(ev, Event::PointerDown(..)))
+            .unwrap();
+        let top = events[sine_start..]
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::PointerMove(_, p) => Some(p.y),
+                _ => None,
+            })
+            .fold(f64::MAX, f64::min);
+        assert!((top - 150.0).abs() < 0.5, "{top}");
+    }
+
+    #[test]
+    fn shapes_turn_repeat_and_report_where_to_fill() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [
+                {"rect": [100, 100, 200, 100], "rotate": 90},
+                {"star": [500, 300, 60, 25, 5], "repeat": {"count": 3, "offset": [10, 0]}}
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Drew 4 strokes"), "{}", out.text);
+        // Turned a quarter about its centre (200, 150): now 100 wide, 200 tall.
+        assert!(
+            out.text
+                .contains("To fill a closed shape, click inside it at: (200, 150) stroke 1; (500, 300) stroke 2 (part 1); (510, 300) stroke 2 (part 2);"),
+            "{}",
+            out.text
+        );
+        let d = downs(&e);
+        assert_eq!(d.len(), 4);
+        // The rect's first corner (100, 100) turned clockwise about (200, 150).
+        assert!(
+            (d[0].x - 250.0).abs() < 1e-6 && (d[0].y - 50.0).abs() < 1e-6,
+            "{:?}",
+            d[0]
+        );
+        // Stars start at their top point, each copy 10 px to the right.
+        assert!(
+            (d[1].x - 500.0).abs() < 1e-6 && (d[1].y - 240.0).abs() < 1e-6,
+            "{:?}",
+            d[1]
+        );
+        assert!((d[3].x - 520.0).abs() < 1e-6);
+        // Polygons, arcs, bezier.
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [
+                {"polygon": [300, 300, 50, 6]},
+                {"arc": [300, 300, 80, 0, 90]},
+                {"bezier": [[100, 500], [150, 400], [250, 400], [300, 500]]}
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Drew 3 strokes"), "{}", out.text);
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [{"polygon": [300, 300, 50, 2.5]}]}),
+        );
+        assert!(out.text.contains("whole number from 3"), "{}", out.text);
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [{"axes": [1, 1]}]}),
+        );
+        assert!(out.text.contains("axes need canvas.range"), "{}", out.text);
+    }
+
+    #[test]
+    fn previews_show_the_strokes_without_drawing() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "preview": true,
+                "canvas": {"box": [0, 0, 800, 600], "size": [1600, 1200]},
+                "strokes": [{"ellipse": [800, 600, 300, 300]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .starts_with("Preview only, nothing was drawn: 1 stroke"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("on the document"), "{}", out.text);
+        assert!(out.image.is_some());
+        assert!(pointer_events(&e).is_empty(), "nothing drawn");
+    }
+
+    #[test]
+    fn screenshot_grids_and_picks_follow_the_canvas() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "grid": true,
+                "canvas": {"box": [0, 0, 800, 600], "range": [-4, 4, -3, 3]},
+                "pick": [[0, 0]]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("Grid: a line every 1, labelled in the canvas range"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Colours: (0, 0) #C8C8C8."),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"grid": true, "canvas": {"box": [0, 0, 8, 6], "size": [8, 6]}}),
+        );
+        assert!(
+            out.text.contains("canvas needs a window screenshot"),
+            "{}",
+            out.text
+        );
     }
 
     #[test]
@@ -4732,14 +5238,17 @@ mod tests {
                 serde_json::json!({"x": "foo(t)", "y": "t"}),
                 "stroke 1: x: unknown name `foo`",
             ),
-            (serde_json::json!({"x": "t"}), "needs both x and y"),
+            (
+                serde_json::json!({"y": "sin(z)"}),
+                "y: unknown name `z`: use t or x",
+            ),
             (
                 serde_json::json!({}),
-                "give points, rect, ellipse, or x and y",
+                "give a shape (rect, ellipse, polygon, star, arc, bezier), points, axes",
             ),
             (
                 serde_json::json!({"points": [[1, 1]], "x": "t", "y": "t"}),
-                "give one of",
+                "give one kind of stroke",
             ),
             (
                 serde_json::json!({"points": [[1, 1], [5000, 1]]}),

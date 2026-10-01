@@ -27,8 +27,13 @@ is Cmd on a Mac, Ctrl elsewhere.
   4. Font and size in Window ▸ Type ▸ Character (`cmd+t`).
   5. Outline text for logos: Type ▸ Create Outlines (`cmd+shift+o`), after
      the text is final.
-- **Paths:** Pen `p`. Clicks make corners. Alternatively `draw` a
-  polyline with the Pencil `n` (smoothing applies).
+- **Stars and polygons:** the Star and Polygon tools (in the Rectangle
+  group). Click once; the dialog takes the radii and the number of points
+  or sides.
+- **Paths:** Pen `p`. Clicks make corners. Alternatively `draw` a curve or
+  plot with the Pencil `n`: set its Fidelity to Accurate (double-click the
+  tool) and `draw` at `speed` 300–500. The result is a path you can
+  style.
 - **Combine shapes:** Window ▸ Pathfinder (Unite, Minus Front).
 - **Save and export:**
   - `cmd+s` saves the `.ai`.
@@ -59,6 +64,12 @@ is Cmd on a Mac, Ctrl elsewhere.
   2. Click and `type_text`.
   3. `Escape` to finish.
   4. Font and size in the tool controls.
+- **Star/Polygon `*`:** in the tool controls choose star or polygon and
+  type Corners and Spoke ratio, then drag with `draw` (two points, from
+  the centre out).
+- **Curves and plots:** Pencil `p` with `draw`, at `speed` 300–500, makes
+  a path. Extensions ▸ Render ▸ Function Plotter draws y = f(x) as an exact
+  path in a selected rectangle.
 - **Combine:** Path ▸ Union / Difference. Text to paths: Path ▸ Object to
   Path.
 - **Save and export:**

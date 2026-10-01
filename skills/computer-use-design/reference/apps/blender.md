@@ -72,6 +72,17 @@ undo) also take Cmd on a Mac.
 - **Save:** `cmd+s` saves the `.blend`.
 - **Export:** File ▸ Export (glTF, FBX, OBJ, STL).
 
+## Strokes in the viewport
+
+`draw` works where Blender expects the mouse to paint: Grease Pencil
+Draw mode, Sculpt mode and Texture Paint.
+
+- Give `draw` the viewport's element or a `box` round it, and
+  `speed` 300–500.
+- Each stroke is one brush stroke; `repeat` lays out many (dabs of clay
+  round a centre, a row of grooves).
+- Sizes and positions of objects still go in as typed values, not strokes.
+
 ## References
 
 - Add ▸ Image ▸ Reference loads a photo or drawing into the viewport.

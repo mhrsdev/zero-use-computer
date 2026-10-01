@@ -59,20 +59,57 @@ Use the first of these that the app offers for the step:
    - Blender's `g x 2 Return`;
    - SketchUp's Measurements box;
    - Revit's temporary dimensions.
-3. **`draw` with exact shapes** (`rect`, `ellipse`, `points`, curves).
-   Give coordinates in the document's own pixels with
-   `canvas={"box": [l, t, r, b], "size": [w, h]}`; measure the box on a
-   grid screenshot.
+3. **`draw` with exact shapes**: see "Drawing" below.
 4. **The app's script console** (Blender Python, Photoshop scripts, Revit
    Dynamo or pyRevit, AutoCAD LISP). This is the most exact of all, but it
    runs code, so use it only after the user says yes (security rule 2).
 5. **Clicks and drags at estimated positions.** Last resort; take a grid
    screenshot first.
 
+## Drawing
+
+`draw` moves the mouse along exact shapes (all its options:
+`reference/drawing.md` in the computer-use skill). Use it like this:
+
+1. **Measure the canvas** once, and again after any zoom or scroll. Read
+   the document's box `[l, t, r, b]` off `screenshot(app, grid=50)`. Then
+   pass
+   `canvas={"box": [l, t, r, b], "size": [W, H]}` to `draw` and to
+   `screenshot`, and use the spec's own numbers. A plot area takes
+   `"range": [x0, x1, y0, y1]` instead of `size` (math, y up).
+2. **One spec element, one stroke:**
+
+   | Spec | Stroke |
+   |---|---|
+   | rect x y w h, radius r | `{"rect": [x, y, w, h, r]}` |
+   | ellipse centre (cx, cy), radii rx ry | `{"ellipse": [cx, cy, rx, ry]}` |
+   | polygon centre, radius, n sides | `{"polygon": [cx, cy, r, n]}` |
+   | star centre, outer, inner, n points | `{"star": [cx, cy, R, r, n]}` |
+   | arc, line, path | `arc`, `points`, `bezier` |
+   | n copies in a row or round a centre | `repeat` on that stroke |
+   | plot of f(x), axes | `{"y": "f(x)"}`, `{"axes": [xstep, ystep]}` |
+
+3. **Preview** with `preview: true`. Nothing is drawn; the red strokes are
+   shown over the canvas with a grid in your units. Compare with the spec,
+   fix the numbers, then draw for real.
+4. **Fill**: the result gives a point to click for each closed shape,
+   named after its stroke (a ring's lies between its circles). Click it
+   with the app's bucket or magic wand.
+5. **Check** the drawn pixels with `screenshot` (with the same `canvas`,
+   `grid=true` and `pick`).
+
+The active tool decides what a stroke does. With a brush or pencil, the
+outline is painted. With a shape tool, the app makes its own shape from one
+drag, so give two points, corner to corner. Apps that smooth strokes
+(Photoshop, Krita, Illustrator's Pencil) need `speed` 300–500 or their
+smoothing turned off.
+
 ## Seeing exactly
 
 - `screenshot(app, grid=100)` draws a labelled grid in the same x/y that
   `click`, `drag` and `draw` use. Read positions off it; never guess them.
+  With `canvas`, the grid covers the document only and is labelled in its
+  units.
 - `screenshot(app, pick=[[x,y], ...])` gives the exact colour at points:
   check a fill. `palette=true` lists the main colours: compare with the
   spec.

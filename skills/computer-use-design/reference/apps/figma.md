@@ -13,6 +13,10 @@ Mac, Ctrl elsewhere.
    2. Drag roughly with `draw` (two points).
    3. Then in the right Design panel type X, Y, W, H. X/Y are relative to
       the frame.
+   4. Polygon and Star are in the same menu as Rectangle; their point
+      count and ratio are in the Design panel.
+   5. Curves, plots and patterns: Pencil `shift+p`, then `draw` the
+      stroke (after a preview). Each stroke becomes a vector path.
 3. **Fill:** in the Design panel, click the fill row's hex value and type
    the hex. Stroke and corner radius are in the same panel.
 4. **Text:**

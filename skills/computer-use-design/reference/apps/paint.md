@@ -24,18 +24,33 @@ and predictable: good for flat shapes, icons and quick sketches.
 
 ## Shapes
 
-1. Shapes ▸ Rectangle / Oval / Line / Triangle / … Set the Size (outline
-   width).
+Rectangles, ovals and lines: use Paint's shape tools.
+
+1. Shapes ▸ Rectangle / Oval / Line / … Set the Size (outline width).
 2. Drag from the top-left corner to the bottom-right corner of the box:
    `draw` with one stroke of two points,
    `{"points": [[x, y], [x + w, y + h]]}` in canvas pixels.
 3. While the shape still has its handles, its outline/fill options can
    change. Clicking elsewhere fixes it in place.
 
+Stars, regular polygons, arcs, curves, plots and patterns: Paint's own
+star and polygon shapes are stretched to the drag, not regular. Draw the
+outline instead:
+
+1. Pencil (1 px, crisp edges for fills) or a brush, and colour 1.
+2. `draw` with `canvas` and the stroke: `{"star": [...]}`,
+   `{"polygon": [...]}`, `repeat` for many, `"range"` for a plot.
+   `preview: true` first.
+3. Fill each with the bucket at the point the result gives.
+
+Paint draws exactly where the pointer goes: the default `speed` is fine.
+
 ## Fill, text, brushes
 
-- Fill (bucket): click inside a closed area; it uses colour 1. Check
-  with `pick` afterwards.
+- Fill (bucket): click inside a closed area; it uses colour 1. After a
+  `draw`, click the point the result gives for that stroke. Check with
+  `pick` afterwards. A fill that spreads too far means a gap in the
+  outline: undo and redraw it closed.
 - Text (A):
   1. Drag a text box with `draw` (two points).
   2. Set font and size in the text toolbar.

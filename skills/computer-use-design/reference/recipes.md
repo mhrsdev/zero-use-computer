@@ -29,8 +29,10 @@ Follow the steps in order; after each numbered step, run the checks in
    - 2 colours + black/white;
    - a symbol built from 2–4 simple shapes;
    - the name in one font.
-2. Build the symbol from exact shapes (circles, rectangles, polygons with
-   `steps`). Combine with Pathfinder / Path ▸ Union and Difference.
+2. Build the symbol from exact shapes typed into the shape tools' dialogs
+   and fields (ellipses, rectangles, polygons, stars). Combine with
+   Pathfinder / Path ▸ Union and Difference. Curves that no tool makes:
+   the Pencil and a `draw` stroke (`bezier`, or `x`/`y` in t).
 3. Type the name. Set its size so its width is about 1.5–2× the symbol's.
    Align centres.
 4. Check:
@@ -43,25 +45,62 @@ Follow the steps in order; after each numbered step, run the checks in
 1. Canvas size via Image properties. Measure the canvas box on a grid
    screenshot.
 2. Set colour 1 (outline) and colour 2 (fill) by hex.
-3. Shapes, back to front: each is one `draw` with `canvas` and two points
-   (corner to corner) or a `rect`.
-4. Fill closed areas with the bucket. Check each with `pick`.
+3. Shapes, back to front:
+   - rectangles and ovals: the shape tool and a two-point `draw`, corner
+     to corner;
+   - stars, regular polygons, arcs, curves: the pencil or a brush and the
+     matching stroke (`star`, `polygon`, `arc`, …).
+
+   `preview: true` first, with the same `canvas`.
+4. Fill each closed outline with the bucket at the point the `draw` result
+   gave for its stroke. Check each with `pick`.
 5. Text box last. Save as PNG.
+
+## A badge or emblem (Paint, Photoshop, GIMP, Krita)
+
+Spec example, 1000 x 1000 canvas: a ring, a star in it, 12 dots round it.
+
+1. Pencil or hard brush, 6 px, colour `#1E3A5F`. Then one `draw` with
+   `canvas={"box": [...], "size": [1000, 1000]}` and `preview: true`:
+   - `{"ellipse": [500, 500, 400, 400]}` and
+     `{"ellipse": [500, 500, 340, 340]}` (the ring);
+   - `{"star": [500, 500, 260, 110, 5]}`;
+   - `{"ellipse": [500, 60, 14, 14], "repeat": {"count": 12, "rotate": 30, "about": [500, 500]}}`.
+2. Check the preview, then draw without it.
+3. Bucket fill at the points the result gave, each in its spec colour:
+   stroke 1 is the ring (its point is between the circles), stroke 2 the
+   disc round the star, stroke 3 the star.
+4. `screenshot(app, canvas=..., grid=true, pick=[[500, 500], [500, 130]])`:
+   the star's centre and the ring.
+
+## A radial pattern (mandala, flower, clock face)
+
+1. Spec: centre (cx, cy), the number of copies n, and one element drawn
+   pointing up from the centre.
+2. One stroke with `"repeat": {"count": n, "rotate": 360 / n, "about":
+   [cx, cy]}`. Write the angle as a number (30, not 360/12).
+3. Layers of the pattern are more strokes with their own repeat: petals,
+   then dots, then a ring.
+4. Clock face: ticks are `{"points": [[cx, cy - R], [cx, cy - R + 20]],
+   "repeat": {"count": 12, "rotate": 30, "about": [cx, cy]}}`.
 
 ## A plotted graph on any canvas
 
-1. Spec:
-   - plot box (left, top, width, height);
-   - x range a to b, y range c to d;
-   - the function.
-2. Axes: two strokes of `points`.
-3. Curve: one `draw` stroke.
-   - `x "left + (t - a) / (b - a) * width"`
-   - `y "top + height - (f(t) - c) / (d - c) * height"`
-   - `t [a, b]`
-
-   Pass `canvas` with the document box so the numbers are canvas pixels.
-4. Tick marks: short `points` strokes. Labels: text tool.
+1. Spec: see "Graphs and function plots" in [spec.md](spec.md): plot box
+   in screenshot pixels, x and y range, tick steps, the curves.
+2. One `draw` with `canvas={"box": [l, t, r, b], "range": [x0, x1, y0,
+   y1]}` and `preview: true`:
+   - `{"axes": [xstep, ystep]}`;
+   - `{"y": "f(x)"}` per function (over the whole x range), or `x`, `y`
+     and `t` for a parametric curve.
+3. Check the preview, then draw. Use a different colour per curve: one
+   `draw` call per colour.
+4. Labels: the tick at x = v is at screenshot x
+   `l + (v - x0) / (x1 - x0) * (r - l)`; the tick at y = v at screenshot y
+   `b - (v - y0) / (y1 - y0) * (b - t)`. Click just beside it with the
+   text tool and type the number.
+5. Check with `screenshot(app, canvas=<the same>, grid=true)`: the grid is
+   labelled in the plot's numbers, so each curve can be read against it.
 
 ## A one-room floor plan (Revit, AutoCAD, SketchUp)
 

@@ -27,6 +27,12 @@ are in the tree; the canvas is not. `cmd+` is Cmd on a Mac, Ctrl elsewhere.
   - Exact position: Layer ▸ Layer Attributes (Offset X/Y).
   - Order: Layer ▸ Stack.
 - **Guides:** Image ▸ Guides ▸ New Guide (by Percent / New Guide).
+- **Drawn outlines:**
+  1. Pencil `n` (hard edges) or Paintbrush `p`.
+  2. `draw` the shape, plot or pattern with `canvas`, after a preview.
+  3. Bucket Fill `shift+b` at the point the `draw` result gives.
+
+  Turn off Smooth stroke in Tool Options if it is on.
 - **Save and export:**
   - `cmd+s` saves the `.xcf`.
   - File ▸ Export As (`cmd+shift+e`) writes PNG or JPG.
@@ -45,8 +51,12 @@ are in the tree; the canvas is not. `cmd+` is Cmd on a Mac, Ctrl elsewhere.
   The colour dialog has a hex field.
 - **Brushes:**
   - Pick a preset and size.
-  - `draw` with `smooth: true` for freehand strokes.
+  - Set Brush Smoothing in Tool Options to None, or `draw` with `speed`
+    300–500.
+  - `draw` with `smooth: true` for freehand strokes; stars, polygons,
+    curves, plots and `repeat` patterns as in any app.
   - For straight lines, a stroke of two points.
+- **Fill:** Fill tool `f`, at the point the `draw` result gives.
 - **Text:** Text tool. Drag a box, then type in the text editor dialog.
   Save closes it.
 - **Save and export:**

@@ -422,8 +422,9 @@ impl Axis {
     }
 }
 
-/// Glyphs for grid labels besides the digits: a minus sign.
+/// Glyphs for grid labels besides the digits: a minus sign and a point.
 const MINUS: [u8; 15] = [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0];
+const POINT: [u8; 15] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];
 
 fn draw_glyph(cap: &mut Capture, pat: &[u8; 15], x: i64, y: i64, scale: i64, rgb: [u8; 3]) {
     for row in 0..5i64 {
@@ -466,6 +467,7 @@ fn draw_label(cap: &mut Capture, text: &str, x: i64, y: i64, scale: i64) {
     for c in text.chars() {
         let pat = match c.to_digit(10) {
             Some(d) => &DIGITS[d as usize],
+            None if c == '.' => &POINT,
             None => &MINUS,
         };
         draw_glyph(cap, pat, cx, y + scale, scale, [255, 255, 0]);
@@ -484,16 +486,60 @@ fn tint(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
     }
 }
 
+/// A round step (1, 2 or 5 times a power of ten) giving about `lines`
+/// lines over `span`.
+pub fn nice_step(span: f64, lines: f64) -> f64 {
+    let raw = (span.abs() / lines.max(1.0)).max(f64::MIN_POSITIVE);
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let f = raw / magnitude;
+    let nice = if f < 1.5 {
+        1.0
+    } else if f < 3.5 {
+        2.0
+    } else if f < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * magnitude
+}
+
+/// A grid label: whole numbers as such, fractions with just the decimals
+/// the step needs.
+fn grid_label(v: f64, step: f64) -> String {
+    let decimals = if step.fract() == 0.0 {
+        0
+    } else {
+        ((-step.log10()).ceil().max(0.0) as usize + 1).min(6)
+    };
+    let text = format!("{v:.decimals$}");
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    };
+    if text == "-0" { "0".into() } else { text }
+}
+
 /// Draw a labelled coordinate grid over `cap`: a line every `step` label
-/// units on each axis, its value written at the top (x) or left (y).
-/// `out_scale` is how many capture pixels make one pixel of the image that
-/// will be sent, so lines and labels stay readable after it is shrunk.
-/// Returns the step used (larger than asked when lines would crowd).
-pub fn draw_grid(cap: &mut Capture, ax: Axis, ay: Axis, step: f64, out_scale: f64) -> f64 {
+/// units on each axis, its value written at the top (x) or left (y) of
+/// `clip` (capture pixels; the whole capture if `None`), the only part
+/// the lines cover. `out_scale` is how many capture pixels make one pixel
+/// of the image that will be sent, so lines and labels stay readable after
+/// it is shrunk. A `step` of 0 picks a round one. Returns the step used
+/// (larger than asked when lines would crowd).
+pub fn draw_grid(
+    cap: &mut Capture,
+    ax: Axis,
+    ay: Axis,
+    step: f64,
+    out_scale: f64,
+    clip: Option<Rect>,
+) -> f64 {
     if cap.width == 0
         || cap.height == 0
         || step.is_nan()
-        || step <= 0.0
+        || step < 0.0
         || ax.scale == 0.0
         || ay.scale == 0.0
     {
@@ -504,23 +550,39 @@ pub fn draw_grid(cap: &mut Capture, ax: Axis, ay: Axis, step: f64, out_scale: f6
     } else {
         1.0
     };
+    let full = Rect::new(0.0, 0.0, f64::from(cap.width), f64::from(cap.height));
+    let area = clip
+        .and_then(|c| {
+            let x0 = c.x.max(0.0);
+            let y0 = c.y.max(0.0);
+            let x1 = (c.x + c.width).min(full.width);
+            let y1 = (c.y + c.height).min(full.height);
+            (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+        })
+        .unwrap_or(full);
     let line = out_scale.round().max(1.0) as i64;
     // Digits 9x15 sent pixels: readable for any model.
     let glyph = (3.0 * out_scale).round().max(1.0) as i64;
+    let mut step = if step == 0.0 {
+        let span = (ax.scale * area.width)
+            .abs()
+            .max((ay.scale * area.height).abs());
+        nice_step(span, 10.0)
+    } else {
+        step
+    };
     // At least 48 sent pixels between lines (room for a label), at most
     // 200 lines per axis.
-    let mut step = step;
     let min_gap = |a: &Axis| 48.0 * out_scale * a.scale.abs();
     while step < min_gap(&ax).max(min_gap(&ay)) {
         step *= 2.0;
     }
-    let (w, h) = (f64::from(cap.width), f64::from(cap.height));
-    let lines = |a: &Axis, len: f64| -> Vec<(f64, i64)> {
-        let (l0, l1) = (a.label(0.0), a.label(len));
+    let lines = |a: &Axis, from: f64, len: f64| -> Vec<(f64, i64)> {
+        let (l0, l1) = (a.label(from), a.label(from + len));
         let (lo, hi) = (l0.min(l1), l0.max(l1));
         let mut out = Vec::new();
-        let mut k = (lo / step).ceil();
-        while k * step <= hi && out.len() < 200 {
+        let mut k = (lo / step - 1e-9).ceil();
+        while k * step <= hi + step * 1e-9 && out.len() < 200 {
             let v = k * step;
             out.push((v, a.pixel(v).round() as i64));
             k += 1.0;
@@ -528,29 +590,64 @@ pub fn draw_grid(cap: &mut Capture, ax: Axis, ay: Axis, step: f64, out_scale: f6
         out
     };
     let magenta = [255, 0, 255];
-    let (xs, ys) = (lines(&ax, w), lines(&ay, h));
+    let (xs, ys) = (
+        lines(&ax, area.x, area.width),
+        lines(&ay, area.y, area.height),
+    );
+    let (top, bottom) = (area.y as i64, (area.y + area.height) as i64);
+    let (left, right) = (area.x as i64, (area.x + area.width) as i64);
     for &(_, px) in &xs {
         for dx in 0..line {
-            for y in 0..i64::from(cap.height) {
+            for y in top..bottom {
                 tint(&mut cap.rgba, cap.width, cap.height, px + dx, y, magenta);
             }
         }
     }
     for &(_, py) in &ys {
         for dy in 0..line {
-            for x in 0..i64::from(cap.width) {
+            for x in left..right {
                 tint(&mut cap.rgba, cap.width, cap.height, x, py + dy, magenta);
             }
         }
     }
-    let text = |v: f64| format!("{}", v.round() as i64);
     for &(v, px) in &xs {
-        draw_label(cap, &text(v), px + line + 1, 0, glyph);
+        draw_label(cap, &grid_label(v, step), px + line + 1, top, glyph);
     }
     for &(v, py) in &ys {
-        draw_label(cap, &text(v), 0, py + line + 1, glyph);
+        draw_label(cap, &grid_label(v, step), left, py + line + 1, glyph);
     }
     step
+}
+
+/// Draw a path (capture pixels) `width` pixels wide.
+pub fn draw_path(cap: &mut Capture, pts: &[(f64, f64)], rgb: [u8; 3], width: i64) {
+    let width = width.max(1);
+    let dot = |cap: &mut Capture, x: f64, y: f64| {
+        let (x, y) = (x.round() as i64 - width / 2, y.round() as i64 - width / 2);
+        for dy in 0..width {
+            for dx in 0..width {
+                put(&mut cap.rgba, cap.width, cap.height, x + dx, y + dy, rgb);
+            }
+        }
+    };
+    if let [only] = pts {
+        dot(cap, only.0, only.1);
+    }
+    for w in pts.windows(2) {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            continue;
+        }
+        let n = (x1 - x0)
+            .abs()
+            .max((y1 - y0).abs())
+            .ceil()
+            .clamp(1.0, 100_000.0) as usize;
+        for k in 0..=n {
+            let f = k as f64 / n as f64;
+            dot(cap, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
+        }
+    }
 }
 
 /// The colour at a capture pixel, as `#RRGGBB`.
@@ -714,7 +811,7 @@ mod tests {
             offset: 0.0,
             scale: 1.0,
         };
-        let step = draw_grid(&mut cap, axis, axis, 100.0, 1.0);
+        let step = draw_grid(&mut cap, axis, axis, 100.0, 1.0, None);
         assert_eq!(step, 100.0);
         // A line at x = 100 (tinted), none at x = 150.
         assert_ne!(color_at(&cap, 100.0, 150.0).unwrap(), "#FFFFFF");
@@ -727,12 +824,36 @@ mod tests {
             offset: 1000.0,
             scale: 2.0,
         };
-        draw_grid(&mut cap, shifted, axis, 100.0, 1.0);
+        draw_grid(&mut cap, shifted, axis, 100.0, 1.0, None);
         // 1100 is at pixel 50.
         assert_ne!(color_at(&cap, 50.0, 60.0).unwrap(), "#FFFFFF");
         // Too dense a grid is thinned out.
         let mut cap = solid(400, 300, [255, 255, 255]);
-        assert_eq!(draw_grid(&mut cap, axis, axis, 5.0, 2.0), 160.0);
+        assert_eq!(draw_grid(&mut cap, axis, axis, 5.0, 2.0, None), 160.0);
+        // A round step when asked for none; labels with decimals.
+        let mut cap = solid(400, 300, [255, 255, 255]);
+        let fine = Axis {
+            offset: -2.0,
+            scale: 0.01,
+        };
+        assert_eq!(draw_grid(&mut cap, fine, fine, 0.0, 1.0, None), 0.5);
+        assert_eq!(grid_label(-1.5, 0.5), "-1.5");
+        assert_eq!(grid_label(2.0, 0.5), "2");
+        assert_eq!(grid_label(-0.0, 1.0), "0");
+        assert_eq!(nice_step(1280.0, 10.0), 100.0);
+        assert_eq!(nice_step(6.0, 10.0), 0.5);
+        // Only inside the clip: nothing drawn outside it.
+        let mut cap = solid(400, 300, [255, 255, 255]);
+        draw_grid(
+            &mut cap,
+            axis,
+            axis,
+            100.0,
+            1.0,
+            Some(Rect::new(100.0, 100.0, 200.0, 100.0)),
+        );
+        assert_eq!(color_at(&cap, 50.0, 50.0).unwrap(), "#FFFFFF");
+        assert_ne!(color_at(&cap, 200.0, 150.0).unwrap(), "#FFFFFF");
     }
 
     #[test]

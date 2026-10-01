@@ -58,12 +58,12 @@ This project follows the same architecture and behaviour:
 | `select_text` | Select a substring (or all) in a text element. |
 | `scroll` | Scroll an element or the area at a point. |
 | `drag` | Drag between elements or points. |
-| `draw` | Draw with the mouse held down: rectangles, ellipses, lines, polygons, smooth freehand strokes, or parametric curves `x(t)`, `y(t)` (spirals, function plots). Coordinates in screenshot pixels, an element's box, or the document's own units (`canvas`). |
+| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `preview` shows the strokes over a screenshot first; the result gives a point inside each closed shape for a fill click. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
 | `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
-| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**). |
+| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
@@ -90,6 +90,9 @@ written so that smaller models get good results too:
 - a spec of exact numbers comes first;
 - each step uses the most exact method the app has (numeric fields, typed
   commands, `draw` in document units);
+- the spec's shapes map one to one to `draw` strokes (rect, ellipse,
+  polygon, star, arc, Bézier, plots with axes, repeats), previewed over the
+  canvas before anything is painted;
 - every pass is checked with grid screenshots and exact colour readings;
 - each app has a playbook, and there are recipes for common jobs.
 

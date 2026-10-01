@@ -165,6 +165,8 @@ struct Parser {
     toks: Vec<Tok>,
     at: usize,
     depth: usize,
+    /// Another name for `t` (`x` in a plot of y = f(x)).
+    alias: Option<String>,
 }
 
 impl Parser {
@@ -271,7 +273,7 @@ impl Parser {
     }
 
     fn name(&mut self, name: &str) -> Result<Node, String> {
-        if name == "t" {
+        if name == "t" || self.alias.as_deref() == Some(name) {
             return Ok(Node::T);
         }
         if let Some((_, v)) = CONSTANTS.iter().find(|(n, _)| *n == name) {
@@ -279,8 +281,12 @@ impl Parser {
         }
         let Some(i) = FUNCS.iter().position(|(n, ..)| *n == name) else {
             let funcs: Vec<&str> = FUNCS.iter().map(|(n, ..)| *n).collect();
+            let vars = match &self.alias {
+                Some(a) => format!("t or {a}"),
+                None => "t".into(),
+            };
             return Err(format!(
-                "unknown name `{name}`: use t, pi, tau, e or a function ({})",
+                "unknown name `{name}`: use {vars}, pi, tau, e or a function ({})",
                 funcs.join(", ")
             ));
         };
@@ -319,6 +325,11 @@ impl Parser {
 impl Expr {
     /// Parse `src`, an expression in `t`.
     pub fn parse(src: &str) -> Result<Expr, String> {
+        Self::parse_in(src, None)
+    }
+
+    /// Parse `src`, an expression in `t` or in `alias` (the same thing).
+    pub fn parse_in(src: &str, alias: Option<&str>) -> Result<Expr, String> {
         if src.len() > MAX_EXPR_LEN {
             return Err(format!("longer than {MAX_EXPR_LEN} characters"));
         }
@@ -330,6 +341,7 @@ impl Expr {
             toks,
             at: 0,
             depth: 0,
+            alias: alias.map(str::to_lowercase),
         };
         let node = p.sum()?;
         if let Some(extra) = p.peek() {
@@ -375,28 +387,24 @@ fn eval(n: &Node, t: f64) -> f64 {
 // Strokes
 
 /// The area coordinates refer to and its place on the screen: the latest
-/// screenshot (pixels) or an element's box (fractions, 0 to 1).
+/// screenshot (pixels), an element's box (fractions, 0 to 1), a document
+/// (its own units, y down) or a math range (y up).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
     origin: Point,
     scale_x: f64,
     scale_y: f64,
-    /// Coordinates run from 0 to `width` and 0 to `height`.
-    pub width: f64,
-    pub height: f64,
+    /// Coordinates run from `x0` to `x1` and from `y0` to `y1`.
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
 }
 
 impl Frame {
     /// Screenshot pixels: an image of `width` x `height` showing `bounds`.
     pub fn pixels(bounds: Rect, width: u32, height: u32) -> Self {
-        let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
-        Self {
-            origin: Point::new(bounds.x, bounds.y),
-            scale_x: bounds.width / w,
-            scale_y: bounds.height / h,
-            width: w,
-            height: h,
-        }
+        Self::units(bounds, f64::from(width.max(1)), f64::from(height.max(1)))
     }
 
     /// Fractions of `bounds` (screen coordinates).
@@ -405,29 +413,84 @@ impl Frame {
     }
 
     /// A document `width` x `height` units big, shown at `bounds` (screen
-    /// coordinates).
+    /// coordinates), y down.
     pub fn units(bounds: Rect, width: f64, height: f64) -> Self {
         Self {
             origin: Point::new(bounds.x, bounds.y),
             scale_x: bounds.width / width,
             scale_y: bounds.height / height,
-            width,
-            height,
+            x0: 0.0,
+            x1: width,
+            y0: 0.0,
+            y1: height,
         }
+    }
+
+    /// Math coordinates across `bounds`: x from `x0` (left) to `x1`
+    /// (right), y from `y0` (bottom) to `y1` (top).
+    pub fn range(bounds: Rect, x0: f64, x1: f64, y0: f64, y1: f64) -> Self {
+        let scale_x = bounds.width / (x1 - x0);
+        let scale_y = -bounds.height / (y1 - y0);
+        Self {
+            origin: Point::new(
+                bounds.x - x0 * scale_x,
+                bounds.y + bounds.height - y0 * scale_y,
+            ),
+            scale_x,
+            scale_y,
+            x0,
+            x1,
+            y0,
+            y1,
+        }
+    }
+
+    /// Whether y grows upwards (a math range).
+    pub fn y_up(&self) -> bool {
+        self.scale_y < 0.0
+    }
+
+    /// Screen units per frame unit on each axis (y negative when y is up).
+    pub fn scale(&self) -> (f64, f64) {
+        (self.scale_x, self.scale_y)
+    }
+
+    /// The area in screen coordinates.
+    pub fn screen_rect(&self) -> Rect {
+        let (a, b) = (
+            self.to_screen(self.x0, self.y0),
+            self.to_screen(self.x1, self.y1),
+        );
+        Rect::new(
+            a.x.min(b.x),
+            a.y.min(b.y),
+            (b.x - a.x).abs(),
+            (b.y - a.y).abs(),
+        )
+    }
+
+    /// "0..800 x 0..600".
+    pub fn describe(&self) -> String {
+        format!("{}..{} x {}..{}", self.x0, self.x1, self.y0, self.y1)
     }
 
     fn contains(&self, x: f64, y: f64) -> bool {
         // Allow for rounding at the far edges (1.0000000001).
-        let (ex, ey) = (self.width * 1e-9, self.height * 1e-9);
+        let ex = (self.x1 - self.x0).abs() * 1e-9;
+        let ey = (self.y1 - self.y0).abs() * 1e-9;
         x.is_finite()
             && y.is_finite()
-            && x >= -ex
-            && y >= -ey
-            && x <= self.width + ex
-            && y <= self.height + ey
+            && x >= self.x0 - ex
+            && x <= self.x1 + ex
+            && y >= self.y0 - ey
+            && y <= self.y1 + ey
     }
 
-    fn to_screen(self, x: f64, y: f64) -> Point {
+    fn clamp(&self, x: f64, y: f64) -> (f64, f64) {
+        (x.clamp(self.x0, self.x1), y.clamp(self.y0, self.y1))
+    }
+
+    pub fn to_screen(self, x: f64, y: f64) -> Point {
         Point::new(
             self.origin.x + x * self.scale_x,
             self.origin.y + y * self.scale_y,
@@ -441,9 +504,79 @@ impl Frame {
             (p.y - self.origin.y) / self.scale_y,
         )
     }
+
+    /// A turn by `degrees` about `about`, in this frame's coordinates.
+    /// Positive turns clockwise on screen, whatever way y grows, and a
+    /// circle stays a circle when the two axes have different scales.
+    pub fn rotation(self, about: (f64, f64), degrees: f64) -> Affine {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let k = self.scale_y / self.scale_x;
+        let (a, b, c, d) = (cos, -k * sin, sin / k, cos);
+        let (px, py) = about;
+        Affine {
+            a,
+            b,
+            c,
+            d,
+            e: px - a * px - b * py,
+            f: py - c * px - d * py,
+        }
+    }
 }
 
-/// One stroke as asked for.
+/// An affine map of frame coordinates:
+/// `x' = a x + b y + e`, `y' = c x + d y + f`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Affine {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+    pub e: f64,
+    pub f: f64,
+}
+
+impl Affine {
+    pub const IDENTITY: Affine = Affine {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    pub fn translate(dx: f64, dy: f64) -> Affine {
+        Affine {
+            e: dx,
+            f: dy,
+            ..Affine::IDENTITY
+        }
+    }
+
+    pub fn apply(&self, x: f64, y: f64) -> (f64, f64) {
+        (
+            self.a * x + self.b * y + self.e,
+            self.c * x + self.d * y + self.f,
+        )
+    }
+
+    /// `self` first, then `next`.
+    pub fn then(self, next: Affine) -> Affine {
+        let n = next;
+        Affine {
+            a: n.a * self.a + n.b * self.c,
+            b: n.a * self.b + n.b * self.d,
+            c: n.c * self.a + n.d * self.c,
+            d: n.c * self.b + n.d * self.d,
+            e: n.a * self.e + n.b * self.f + n.e,
+            f: n.c * self.e + n.d * self.f + n.f,
+        }
+    }
+}
+
+/// One stroke as asked for, with the transform (turn, offset) to apply
+/// to its coordinates.
 #[derive(Debug, Clone)]
 pub enum Shape {
     /// Straight lines through `points` (or a smooth curve through them);
@@ -452,6 +585,7 @@ pub enum Shape {
         points: Vec<(f64, f64)>,
         closed: bool,
         smooth: bool,
+        transform: Affine,
     },
     /// `(x(t), y(t))` for `t` from `t0` to `t1`; `steps` = that many
     /// straight pieces instead of a smooth curve.
@@ -461,13 +595,176 @@ pub enum Shape {
         t0: f64,
         t1: f64,
         steps: Option<u32>,
+        transform: Affine,
     },
+}
+
+impl Shape {
+    pub fn points(points: Vec<(f64, f64)>, closed: bool) -> Shape {
+        Shape::Points {
+            points,
+            closed,
+            smooth: false,
+            transform: Affine::IDENTITY,
+        }
+    }
+
+    /// The middle of its bounding box, before its transform.
+    pub fn center(&self) -> Option<(f64, f64)> {
+        let pts: Vec<(f64, f64)> = match self {
+            Shape::Points { points, .. } => points.clone(),
+            Shape::Curve { x, y, t0, t1, .. } => (0..=128)
+                .map(|i| {
+                    let t = t0 + (t1 - t0) * f64::from(i) / 128.0;
+                    (x.eval(t), y.eval(t))
+                })
+                .filter(|(a, b)| a.is_finite() && b.is_finite())
+                .collect(),
+        };
+        let first = *pts.first()?;
+        let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
+        for (x, y) in pts {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        Some(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+    }
+
+    /// The same shape, moved by `t` after its own transform.
+    pub fn then(&self, t: Affine) -> Shape {
+        let mut s = self.clone();
+        match &mut s {
+            Shape::Points { transform, .. } | Shape::Curve { transform, .. } => {
+                *transform = transform.then(t);
+            }
+        }
+        s
+    }
+}
+
+/// A rectangle's outline from the corner (x, y), with corners rounded by
+/// `radius` (0 = sharp).
+pub fn rect(x: f64, y: f64, w: f64, h: f64, radius: f64) -> Vec<(f64, f64)> {
+    let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
+    if r <= 0.0 {
+        return vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    }
+    let mut out = Vec::new();
+    let corners = [
+        (x + w - r, y + r, -90.0),
+        (x + w - r, y + h - r, 0.0),
+        (x + r, y + h - r, 90.0),
+        (x + r, y + r, 180.0),
+    ];
+    for (cx, cy, start) in corners {
+        for k in 0..=12 {
+            let a = (start + 90.0 * f64::from(k) / 12.0_f64).to_radians();
+            out.push((cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    out
+}
+
+/// The angle that points up on screen, in frame coordinates.
+fn up(y_up: bool) -> f64 {
+    if y_up {
+        std::f64::consts::FRAC_PI_2
+    } else {
+        -std::f64::consts::FRAC_PI_2
+    }
+}
+
+/// A regular polygon with `n` corners, the first pointing up.
+pub fn polygon(cx: f64, cy: f64, r: f64, n: u32, y_up: bool) -> Vec<(f64, f64)> {
+    (0..n)
+        .map(|k| {
+            let a = up(y_up) + std::f64::consts::TAU * f64::from(k) / f64::from(n);
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
+}
+
+/// A star with `n` points (outer radius `outer`, inner `inner`), the first
+/// pointing up.
+pub fn star(cx: f64, cy: f64, outer: f64, inner: f64, n: u32, y_up: bool) -> Vec<(f64, f64)> {
+    (0..2 * n)
+        .map(|k| {
+            let a = up(y_up) + std::f64::consts::PI * f64::from(k) / f64::from(n);
+            let r = if k % 2 == 0 { outer } else { inner };
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
+}
+
+/// Points along cubic Bézier segments: `pts` is the start, then two
+/// control points and an end point per segment (3n + 1 in all).
+pub fn bezier(pts: &[(f64, f64)]) -> Result<Vec<(f64, f64)>, String> {
+    if pts.len() < 4 || !(pts.len() - 1).is_multiple_of(3) {
+        return Err(
+            "bezier needs a start point, then two control points and an end point per segment (4, 7, 10… points)"
+                .into(),
+        );
+    }
+    let mut out = vec![pts[0]];
+    for seg in pts[1..].chunks(3) {
+        let p0 = *out.last().expect("non-empty");
+        let (c1, c2, p1) = (seg[0], seg[1], seg[2]);
+        for k in 1..=48 {
+            let t = f64::from(k) / 48.0;
+            let u = 1.0 - t;
+            let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            out.push((
+                w[0] * p0.0 + w[1] * c1.0 + w[2] * c2.0 + w[3] * p1.0,
+                w[0] * p0.1 + w[1] * c1.1 + w[2] * c2.1 + w[3] * p1.1,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Axes through 0 (or the nearest edge) with ticks every `tick_x` and
+/// `tick_y` (0 = no ticks) about `tick_len` screen units long.
+pub fn axes(frame: &Frame, tick_x: f64, tick_y: f64, tick_len: f64) -> Result<Vec<Shape>, String> {
+    let (sx, sy) = frame.scale();
+    let ya = 0f64.clamp(frame.y0, frame.y1);
+    let xa = 0f64.clamp(frame.x0, frame.x1);
+    let mut out = vec![
+        Shape::points(vec![(frame.x0, ya), (frame.x1, ya)], false),
+        Shape::points(vec![(xa, frame.y0), (xa, frame.y1)], false),
+    ];
+    let ticks = |lo: f64, hi: f64, step: f64| -> Result<Vec<f64>, String> {
+        if step <= 0.0 {
+            return Ok(Vec::new());
+        }
+        if !step.is_finite() || (hi - lo) / step > 200.0 {
+            return Err("too many ticks: use a larger tick step".into());
+        }
+        let mut v = Vec::new();
+        let mut k = (lo / step).ceil();
+        while k * step <= hi + step * 1e-9 {
+            v.push(k * step);
+            k += 1.0;
+        }
+        Ok(v)
+    };
+    let half_y = tick_len / 2.0 / sy.abs();
+    for v in ticks(frame.x0, frame.x1, tick_x)? {
+        let (a, b) = ((ya - half_y).max(frame.y0), (ya + half_y).min(frame.y1));
+        out.push(Shape::points(vec![(v, a), (v, b)], false));
+    }
+    let half_x = tick_len / 2.0 / sx.abs();
+    for v in ticks(frame.y0, frame.y1, tick_y)? {
+        let (a, b) = ((xa - half_x).max(frame.x0), (xa + half_x).min(frame.x1));
+        out.push(Shape::points(vec![(a, v), (b, v)], false));
+    }
+    Ok(out)
 }
 
 /// The gesture to perform: screen points, one list per press of the button.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Plan {
     pub strokes: Vec<Vec<Point>>,
+    /// For each stroke, the index of the shape it came from.
+    pub shape: Vec<usize>,
     /// Samples of curves that fell outside the frame (not drawn).
     pub skipped: usize,
     /// Distance the pointer travels with the button down, in screen units.
@@ -477,6 +774,176 @@ pub struct Plan {
 impl Plan {
     pub fn points(&self) -> usize {
         self.strokes.iter().map(Vec::len).sum()
+    }
+}
+
+/// Where a click fills each closed stroke (one that ends where it starts)
+/// with a bucket or magic wand, for at most `limit` of them: `(stroke
+/// index, point)`. The point is inside the stroke, clear of its edges, and
+/// outside the closed strokes drawn within it, so a ring's point lies
+/// between its two circles. Open strokes have none.
+pub fn fill_points(strokes: &[Vec<Point>], limit: usize) -> Vec<(usize, Point)> {
+    let closed: Vec<(usize, &[Point], Bounds, f64)> = strokes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.len() >= 4 && dist(s[0], s[s.len() - 1]) <= 1.0)
+        .map(|(i, s)| (i, s.as_slice(), Bounds::of(s), polygon_area(s).abs()))
+        .filter(|&(.., area)| area >= 4.0) // a real inside
+        .collect();
+    let mut out = Vec::new();
+    for &(i, s, b, area) in &closed {
+        if out.len() >= limit {
+            break;
+        }
+        // The strokes within this one: a fill stops at them. (Two of the
+        // same box: the smaller one is within.)
+        let holes: Vec<(&[Point], Bounds)> = closed
+            .iter()
+            .filter(|&&(j, _, c, other)| {
+                j != i && b.holds(&c) && (!c.holds(&b) || other < area * 0.98)
+            })
+            .map(|&(_, t, c, _)| (t, c))
+            .collect();
+        if let Some(p) = fill_point((s, b), &holes) {
+            out.push((i, p));
+        }
+    }
+    out
+}
+
+/// A point inside `poly` and outside every hole, as far from the edges as
+/// a few tries find: the centre when it is clear enough, else the middle of
+/// the best span along one of 16 lines across.
+fn fill_point(poly: (&[Point], Bounds), holes: &[(&[Point], Bounds)]) -> Option<Point> {
+    let all = || std::iter::once(poly).chain(holes.iter().copied());
+    // Only shapes whose box reaches the line can cross it.
+    let across = |y: f64| {
+        all()
+            .filter(move |(_, b)| b.y0 <= y && y <= b.y1)
+            .flat_map(move |(s, _)| crossings(s, y, false))
+    };
+    let down = |x: f64| {
+        all()
+            .filter(move |(_, b)| b.x0 <= x && x <= b.x1)
+            .flat_map(move |(s, _)| crossings(s, x, true))
+    };
+    let within = |(s, b): (&[Point], Bounds), p: Point| {
+        b.x0 <= p.x && p.x <= b.x1 && b.y0 <= p.y && p.y <= b.y1 && inside(s, p)
+    };
+    let free = |p: Point| within(poly, p) && !holes.iter().any(|&h| within(h, p));
+    // Distance to the nearest edge straight left, right, up or down.
+    let clearance = |p: Point| -> f64 {
+        across(p.y)
+            .map(|x| (x - p.x).abs())
+            .chain(down(p.x).map(|y| (y - p.y).abs()))
+            .fold(f64::MAX, f64::min)
+    };
+    // (point, clearance, score): equal clearances go to the line nearer
+    // the middle.
+    let b = poly.1;
+    let mid = (b.y0 + b.y1) / 2.0;
+    let mut best: Option<(Point, f64, f64)> = None;
+    for k in 0..16 {
+        let y = b.y0 + (b.y1 - b.y0) * (k as f64 + 0.5) / 16.0;
+        let mut xs: Vec<f64> = across(y).collect();
+        xs.sort_by(f64::total_cmp);
+        for w in xs.windows(2) {
+            let p = Point::new((w[0] + w[1]) / 2.0, y);
+            if w[1] - w[0] > 1.0 && free(p) {
+                let c = clearance(p);
+                let score = c - 1e-3 * (y - mid).abs();
+                if best.is_none_or(|(.., top)| score > top) {
+                    best = Some((p, c, score));
+                }
+            }
+        }
+    }
+    match (centroid(poly.0).filter(|&c| free(c)), best) {
+        (Some(c), Some((_, top, _))) if clearance(c) >= top / 2.0 => Some(c),
+        (Some(c), None) => Some(c),
+        (_, best) => best.map(|(p, ..)| p),
+    }
+}
+
+/// Where the edges of the closed `poly` cross the line y = `at` (x = `at`
+/// when `vertical`): the x (or y) of each crossing.
+fn crossings(poly: &[Point], at: f64, vertical: bool) -> Vec<f64> {
+    let flip = |p: &Point| if vertical { (p.y, p.x) } else { (p.x, p.y) };
+    poly.iter()
+        .zip(poly.iter().cycle().skip(1))
+        .filter_map(|(p, q)| {
+            let ((px, py), (qx, qy)) = (flip(p), flip(q));
+            ((py <= at) != (qy <= at)).then(|| px + (at - py) / (qy - py) * (qx - px))
+        })
+        .collect()
+}
+
+/// Whether `p` is inside the closed `poly` (even-odd).
+fn inside(poly: &[Point], p: Point) -> bool {
+    crossings(poly, p.y, false)
+        .into_iter()
+        .filter(|&x| x > p.x)
+        .count()
+        % 2
+        == 1
+}
+
+/// Twice the signed area of the closed `poly`, with its centre of mass.
+fn polygon_moments(poly: &[Point]) -> (f64, f64, f64) {
+    poly.iter()
+        .zip(poly.iter().cycle().skip(1))
+        .fold((0.0, 0.0, 0.0), |(a, cx, cy), (p, q)| {
+            let cross = p.x * q.y - q.x * p.y;
+            (
+                a + cross,
+                cx + (p.x + q.x) * cross,
+                cy + (p.y + q.y) * cross,
+            )
+        })
+}
+
+fn polygon_area(poly: &[Point]) -> f64 {
+    polygon_moments(poly).0 / 2.0
+}
+
+fn centroid(poly: &[Point]) -> Option<Point> {
+    let (a, cx, cy) = polygon_moments(poly);
+    (a.abs() > 1e-9).then(|| Point::new(cx / (3.0 * a), cy / (3.0 * a)))
+}
+
+/// The box around some points.
+#[derive(Debug, Clone, Copy)]
+struct Bounds {
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl Bounds {
+    fn of(points: &[Point]) -> Bounds {
+        points.iter().fold(
+            Bounds {
+                x0: f64::MAX,
+                y0: f64::MAX,
+                x1: f64::MIN,
+                y1: f64::MIN,
+            },
+            |b, p| Bounds {
+                x0: b.x0.min(p.x),
+                y0: b.y0.min(p.y),
+                x1: b.x1.max(p.x),
+                y1: b.y1.max(p.y),
+            },
+        )
+    }
+
+    /// Whether `other` fits in this box (give or take a pixel).
+    fn holds(&self, other: &Bounds) -> bool {
+        other.x0 >= self.x0 - 1.0
+            && other.y0 >= self.y0 - 1.0
+            && other.x1 <= self.x1 + 1.0
+            && other.y1 <= self.y1 + 1.0
     }
 }
 
@@ -492,33 +959,52 @@ fn dist(a: Point, b: Point) -> f64 {
 /// Turn `shapes` into strokes of screen points no more than `max_step`
 /// apart, at most `limit` points in all.
 pub fn plan(shapes: &[Shape], frame: &Frame, max_step: f64, limit: usize) -> Result<Plan, String> {
+    let labelled: Vec<(String, Shape)> = shapes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (format!("stroke {}", i + 1), s.clone()))
+        .collect();
+    plan_labelled(&labelled, frame, max_step, limit)
+}
+
+/// [`plan`], with the name each shape goes by in messages ("stroke 2,
+/// copy 3").
+pub fn plan_labelled(
+    shapes: &[(String, Shape)],
+    frame: &Frame,
+    max_step: f64,
+    limit: usize,
+) -> Result<Plan, String> {
     let mut out = Builder {
         plan: Plan::default(),
         limit,
         max_step,
     };
-    for (i, shape) in shapes.iter().enumerate() {
-        let n = i + 1;
+    for (index, (n, shape)) in shapes.iter().enumerate() {
+        let before = out.plan.strokes.len();
         match shape {
             Shape::Points {
                 points,
                 closed,
                 smooth,
+                transform,
             } => {
                 if points.is_empty() {
-                    return Err(format!("stroke {n} has no points"));
+                    return Err(format!("{n} has no points"));
                 }
-                for (k, &(x, y)) in points.iter().enumerate() {
+                let mut verts: Vec<(f64, f64)> =
+                    points.iter().map(|&(x, y)| transform.apply(x, y)).collect();
+                for (k, &(x, y)) in verts.iter().enumerate() {
                     if !frame.contains(x, y) {
                         return Err(format!(
-                            "stroke {n}, point {} ({x}, {y}) is outside the drawing area (0..{} x 0..{})",
+                            "{n}, point {} ({}, {}) is outside the drawing area ({})",
                             k + 1,
-                            frame.width,
-                            frame.height
+                            round4(x),
+                            round4(y),
+                            frame.describe()
                         ));
                     }
                 }
-                let mut verts = points.clone();
                 if *smooth && verts.len() >= 3 {
                     verts = smooth_through(&verts, *closed, frame, max_step);
                 } else if *closed && verts.len() >= 2 {
@@ -528,7 +1014,8 @@ pub fn plan(shapes: &[Shape], frame: &Frame, max_step: f64, limit: usize) -> Res
                     .iter()
                     .map(|&(x, y)| {
                         // Only a smooth curve can bulge past the area: keep it in.
-                        frame.to_screen(x.clamp(0.0, frame.width), y.clamp(0.0, frame.height))
+                        let (x, y) = frame.clamp(x, y);
+                        frame.to_screen(x, y)
                     })
                     .collect();
                 out.add(screen, true)?;
@@ -539,22 +1026,29 @@ pub fn plan(shapes: &[Shape], frame: &Frame, max_step: f64, limit: usize) -> Res
                 t0,
                 t1,
                 steps,
+                transform,
             } => {
                 if !(t0.is_finite() && t1.is_finite()) {
-                    return Err(format!("stroke {n}: t must run between finite numbers"));
+                    return Err(format!("{n}: t must run between finite numbers"));
                 }
-                let before = out.plan.strokes.len();
-                curve(x, y, *t0, *t1, *steps, frame, &mut out)?;
+                curve(x, y, *t0, *t1, *steps, transform, frame, &mut out)?;
                 if out.plan.strokes.len() == before {
                     return Err(format!(
-                        "stroke {n}: the curve is never inside the drawing area (0..{} x 0..{}); check its numbers",
-                        frame.width, frame.height
+                        "{n}: the curve is never inside the drawing area ({}); check its numbers",
+                        frame.describe()
                     ));
                 }
             }
         }
+        let made = out.plan.strokes.len();
+        out.plan.shape.resize(made, index);
     }
     Ok(out.plan)
+}
+
+/// A coordinate for a message: at most four decimals.
+fn round4(v: f64) -> f64 {
+    (v * 10_000.0).round() / 10_000.0
 }
 
 struct Builder {
@@ -612,17 +1106,19 @@ impl Builder {
 /// longer than `max_step` on screen. Where the curve leaves the frame or
 /// is undefined (or jumps: a piece that stays long however small), the
 /// button is lifted.
+#[allow(clippy::too_many_arguments)]
 fn curve(
     x: &Expr,
     y: &Expr,
     t0: f64,
     t1: f64,
     steps: Option<u32>,
+    transform: &Affine,
     frame: &Frame,
     out: &mut Builder,
 ) -> Result<(), String> {
     let at = |t: f64, skipped: &mut usize| -> Option<Point> {
-        let (bx, by) = (x.eval(t), y.eval(t));
+        let (bx, by) = transform.apply(x.eval(t), y.eval(t));
         if !(bx.is_finite() && by.is_finite()) {
             return None;
         }
@@ -814,6 +1310,7 @@ mod tests {
             t0: 0.0,
             t1: 2.0 * PI,
             steps,
+            transform: Affine::IDENTITY,
         }
     }
 
@@ -849,6 +1346,7 @@ mod tests {
             t0: 0.0,
             t1: 5.0,
             steps: Some(5),
+            transform: Affine::IDENTITY,
         };
         assert_eq!(
             plan(&[star], &f, 1000.0, 50_000).unwrap().strokes[0].len(),
@@ -866,6 +1364,7 @@ mod tests {
             t0: -3.0,
             t1: 3.0,
             steps: None,
+            transform: Affine::IDENTITY,
         };
         let p = plan(&[tan], &f, 3.0, 50_000).unwrap();
         assert_eq!(p.strokes.len(), 3, "{:?}", p.strokes.len());
@@ -877,6 +1376,7 @@ mod tests {
             t0: 0.0,
             t1: 2.5,
             steps: None,
+            transform: Affine::IDENTITY,
         };
         let p = plan(&[steps], &f, 3.0, 50_000).unwrap();
         assert_eq!(p.strokes.len(), 3);
@@ -887,6 +1387,7 @@ mod tests {
             t0: 0.0,
             t1: 1.0,
             steps: None,
+            transform: Affine::IDENTITY,
         };
         assert!(
             plan(&[away], &f, 3.0, 50_000)
@@ -907,6 +1408,7 @@ mod tests {
             ],
             closed: true,
             smooth: false,
+            transform: Affine::IDENTITY,
         };
         let p = plan(&[square], &f, 4.0, 50_000).unwrap();
         let s = &p.strokes[0];
@@ -921,12 +1423,14 @@ mod tests {
             points: vec![(10.0, 10.0)],
             closed: false,
             smooth: false,
+            transform: Affine::IDENTITY,
         };
         assert_eq!(plan(&[dot], &f, 4.0, 50_000).unwrap().strokes[0].len(), 1);
         let outside = Shape::Points {
             points: vec![(10.0, 10.0), (900.0, 10.0)],
             closed: false,
             smooth: false,
+            transform: Affine::IDENTITY,
         };
         let err = plan(&[outside], &f, 4.0, 50_000).unwrap_err();
         assert!(err.contains("point 2 (900, 10) is outside"), "{err}");
@@ -945,6 +1449,7 @@ mod tests {
             points: pts.clone(),
             closed: false,
             smooth: true,
+            transform: Affine::IDENTITY,
         };
         let p = plan(&[wave], &f, 3.0, 50_000).unwrap();
         let s = &p.strokes[0];
@@ -957,6 +1462,178 @@ mod tests {
         }
     }
 
+    fn near(a: Point, b: Point) -> bool {
+        dist(a, b) < 1e-6
+    }
+
+    #[test]
+    fn math_ranges_put_y_up() {
+        // x -2..2, y -1..1 across (100, 100)-(500, 300).
+        let f = Frame::range(Rect::new(100.0, 100.0, 400.0, 200.0), -2.0, 2.0, -1.0, 1.0);
+        assert!(f.y_up());
+        assert!(near(f.to_screen(0.0, 0.0), Point::new(300.0, 200.0)));
+        assert!(near(f.to_screen(2.0, 1.0), Point::new(500.0, 100.0)));
+        assert!(near(f.to_screen(-2.0, -1.0), Point::new(100.0, 300.0)));
+        assert_eq!(f.to_frame(Point::new(500.0, 100.0)), (2.0, 1.0));
+        assert_eq!(f.describe(), "-2..2 x -1..1");
+        assert_eq!(f.screen_rect(), Rect::new(100.0, 100.0, 400.0, 200.0));
+        // A plot of y = f(x) parsed with x as the variable.
+        let sin = Expr::parse_in("sin(x)", Some("x")).unwrap();
+        assert!((sin.eval(PI / 2.0) - 1.0).abs() < 1e-12);
+        assert!(
+            Expr::parse("sin(x)")
+                .unwrap_err()
+                .contains("unknown name `x`")
+        );
+    }
+
+    #[test]
+    fn turns_are_clockwise_on_screen_and_keep_circles_round() {
+        // y up, and 1 unit is 100 px across but 50 px down.
+        let f = Frame::range(Rect::new(0.0, 0.0, 400.0, 200.0), -2.0, 2.0, -2.0, 2.0);
+        let r = f.rotation((0.0, 0.0), 90.0);
+        let (x, y) = r.apply(1.0, 0.0);
+        // Right of the centre, turned clockwise: straight down on screen,
+        // as far away as before.
+        let (c, p) = (f.to_screen(0.0, 0.0), f.to_screen(x, y));
+        assert!((p.x - c.x).abs() < 1e-9 && p.y > c.y, "{p:?}");
+        assert!((dist(c, p) - 100.0).abs() < 1e-9);
+        // Composition: a move then a turn.
+        let t = Affine::translate(1.0, 0.0).then(f.rotation((0.0, 0.0), 180.0));
+        let (x, y) = t.apply(0.0, 0.0);
+        assert!((x + 1.0).abs() < 1e-9 && y.abs() < 1e-9);
+    }
+
+    #[test]
+    fn shape_helpers() {
+        // A square (4 corners) with its first corner up, on screen.
+        let sq = polygon(0.0, 0.0, 10.0, 4, false);
+        assert_eq!(sq.len(), 4);
+        assert!((sq[0].0).abs() < 1e-9 && (sq[0].1 + 10.0).abs() < 1e-9);
+        let up_sq = polygon(0.0, 0.0, 10.0, 4, true);
+        assert!((up_sq[0].1 - 10.0).abs() < 1e-9);
+        let st = star(0.0, 0.0, 10.0, 4.0, 5, false);
+        assert_eq!(st.len(), 10);
+        assert!((st[1].0.hypot(st[1].1) - 4.0).abs() < 1e-9);
+        let rr = rect(0.0, 0.0, 100.0, 50.0, 10.0);
+        assert!(
+            rr.iter()
+                .all(|&(x, y)| (0.0..=100.0).contains(&x) && (0.0..=50.0).contains(&y))
+        );
+        assert_eq!(rect(0.0, 0.0, 10.0, 10.0, 0.0).len(), 4);
+        let b = bezier(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]).unwrap();
+        assert_eq!(b[0], (0.0, 0.0));
+        assert!((b.last().unwrap().0 - 10.0).abs() < 1e-9);
+        assert!(
+            bezier(&[(0.0, 0.0), (1.0, 1.0)])
+                .unwrap_err()
+                .contains("4, 7, 10")
+        );
+        // Axes: two lines, then a tick at each step.
+        let f = Frame::range(Rect::new(0.0, 0.0, 600.0, 300.0), -3.0, 3.0, -1.5, 1.5);
+        let ax = axes(&f, 1.0, 0.5, 10.0).unwrap();
+        assert_eq!(ax.len(), 2 + 7 + 7);
+        assert!(
+            axes(&f, 0.0001, 0.0, 10.0)
+                .unwrap_err()
+                .contains("too many ticks")
+        );
+    }
+
+    #[test]
+    fn closed_strokes_have_a_point_inside() {
+        let p = |x, y| Point::new(x, y);
+        let square = [
+            p(0.0, 0.0),
+            p(100.0, 0.0),
+            p(100.0, 100.0),
+            p(0.0, 100.0),
+            p(0.0, 0.0),
+        ];
+        let one = |s: &[Point]| fill_points(&[s.to_vec()], 20).first().map(|&(_, q)| q);
+        assert_eq!(one(&square), Some(p(50.0, 50.0)));
+        // A C shape: its centre is in the gap, so the point comes from a
+        // scan across it, inside the shape and clear of its edges.
+        let c = [
+            p(0.0, 0.0),
+            p(100.0, 0.0),
+            p(100.0, 20.0),
+            p(20.0, 20.0),
+            p(20.0, 80.0),
+            p(100.0, 80.0),
+            p(100.0, 100.0),
+            p(0.0, 100.0),
+            p(0.0, 0.0),
+        ];
+        let q = one(&c).unwrap();
+        assert!(q.x > 5.0 && q.x < 15.0 && q.y > 25.0 && q.y < 75.0, "{q:?}");
+        // An open line has no inside.
+        assert_eq!(
+            one(&[p(0.0, 0.0), p(10.0, 0.0), p(20.0, 5.0), p(30.0, 0.0)]),
+            None
+        );
+    }
+
+    #[test]
+    fn fill_points_skip_the_shapes_drawn_inside() {
+        // A badge: two circles (a ring), a star in the middle, an open line
+        // and a dot outside the ring.
+        let f = Frame::units(Rect::new(0.0, 0.0, 1000.0, 1000.0), 1000.0, 1000.0);
+        let circle = |r: f64| Shape::Curve {
+            x: Expr::parse(&format!("500+{r}*cos(t)")).unwrap(),
+            y: Expr::parse(&format!("500+{r}*sin(t)")).unwrap(),
+            t0: 0.0,
+            t1: std::f64::consts::TAU,
+            steps: None,
+            transform: Affine::IDENTITY,
+        };
+        let shapes = vec![
+            circle(400.0),
+            circle(340.0),
+            Shape::points(vec![(10.0, 990.0), (200.0, 990.0)], false),
+            Shape::points(star(500.0, 500.0, 260.0, 110.0, 5, false), true),
+            Shape::points(rect(490.0, 40.0, 20.0, 20.0, 0.0), true),
+        ];
+        let p = plan(&shapes, &f, 3.0, 50_000).unwrap();
+        assert_eq!(p.shape, vec![0, 1, 2, 3, 4]);
+        let fills = fill_points(&p.strokes, 20);
+        let at = |i: usize| fills.iter().find(|&&(k, _)| k == i).map(|&(_, q)| q);
+        let r = |q: Point| (q.x - 500.0).hypot(q.y - 500.0);
+        // The ring's point is between its circles.
+        let ring = at(0).unwrap();
+        assert!(r(ring) > 345.0 && r(ring) < 395.0, "{ring:?}");
+        // The inner circle's is inside it but not in the star.
+        let disc = at(1).unwrap();
+        assert!(r(disc) < 335.0 && r(disc) > 110.0, "{disc:?}");
+        // The star's is its centre; the square's its middle.
+        let st = at(3).unwrap();
+        assert!(r(st) < 0.01, "{st:?}");
+        let sq = at(4).unwrap();
+        assert!(
+            (sq.x - 500.0).abs() < 0.01 && (sq.y - 50.0).abs() < 0.01,
+            "{sq:?}"
+        );
+        // The line has none.
+        assert_eq!(at(2), None);
+        assert_eq!(fills.len(), 4);
+        assert_eq!(fill_points(&p.strokes, 2).len(), 2);
+
+        // A circle full of dots: its point is clear of all of them.
+        let mut many = vec![circle(400.0)];
+        for gx in 0..20 {
+            for gy in 0..20 {
+                let (x, y) = (230.0 + gx as f64 * 28.0, 230.0 + gy as f64 * 28.0);
+                many.push(Shape::points(rect(x, y, 10.0, 10.0, 0.0), true));
+            }
+        }
+        let p = plan(&many, &f, 3.0, 50_000).unwrap();
+        let q = fill_points(&p.strokes, 1)[0].1;
+        assert!(r(q) < 395.0, "{q:?}");
+        for s in &p.strokes[1..] {
+            assert!(!inside(s, q), "{q:?} is in a dot");
+        }
+    }
+
     #[test]
     fn element_fractions_and_limits() {
         let f = Frame::fractions(Rect::new(200.0, 100.0, 400.0, 200.0));
@@ -964,6 +1641,7 @@ mod tests {
             points: vec![(0.0, 0.0), (1.0, 1.0)],
             closed: false,
             smooth: false,
+            transform: Affine::IDENTITY,
         };
         let p = plan(&[diag], &f, 5.0, 50_000).unwrap();
         assert_eq!(p.strokes[0][0], Point::new(200.0, 100.0));

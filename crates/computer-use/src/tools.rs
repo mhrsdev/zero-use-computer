@@ -255,6 +255,9 @@ pub struct DrawArgs {
     pub canvas: Option<DrawCanvas>,
     #[serde(default)]
     pub button: MouseButton,
+    /// Show the strokes over a screenshot instead of drawing them.
+    #[serde(default)]
+    pub preview: bool,
     /// Pointer speed while drawing, in screen pixels per second.
     #[serde(default)]
     pub speed: Option<f64>,
@@ -267,8 +270,14 @@ pub struct DrawCanvas {
     /// `[left, top, right, bottom]` of the document in screenshot pixels.
     #[serde(default, rename = "box")]
     pub area: Option<[f64; 4]>,
-    /// `[width, height]` of the document in its own units (pixels, mm…).
-    pub size: [f64; 2],
+    /// `[width, height]` of the document in its own units (pixels, mm…),
+    /// y down.
+    #[serde(default)]
+    pub size: Option<[f64; 2]>,
+    /// `[x min, x max, y min, y max]`: math coordinates across the box,
+    /// y up.
+    #[serde(default)]
+    pub range: Option<[f64; 4]>,
 }
 
 /// One press-move-release of a `draw`: points, or a parametric curve.
@@ -290,12 +299,50 @@ pub struct DrawStroke {
     pub t: Option<[DrawNumber; 2]>,
     #[serde(default)]
     pub steps: Option<u32>,
-    /// A rectangle: `[x, y, width, height]`.
+    /// A rectangle: `[x, y, width, height]`, optionally a corner radius.
     #[serde(default)]
-    pub rect: Option<[f64; 4]>,
+    pub rect: Option<Vec<f64>>,
     /// An ellipse: `[center x, center y, radius x, radius y]`.
     #[serde(default)]
     pub ellipse: Option<[f64; 4]>,
+    /// A regular polygon: `[center x, center y, radius, corners]`.
+    #[serde(default)]
+    pub polygon: Option<[f64; 4]>,
+    /// A star: `[center x, center y, outer radius, inner radius, points]`.
+    #[serde(default)]
+    pub star: Option<[f64; 5]>,
+    /// A circular arc: `[center x, center y, radius, from°, to°]`.
+    #[serde(default)]
+    pub arc: Option<[f64; 5]>,
+    /// Cubic Bézier: start, then two controls and an end per segment.
+    #[serde(default)]
+    pub bezier: Option<Vec<DrawPoint>>,
+    /// Axes through 0 with ticks every `[x step, y step]` (math range).
+    #[serde(default)]
+    pub axes: Option<[f64; 2]>,
+    /// Turn the stroke by this many degrees (clockwise on screen).
+    #[serde(default)]
+    pub rotate: Option<f64>,
+    /// The point to turn about (default: the stroke's centre).
+    #[serde(default)]
+    pub about: Option<DrawPoint>,
+    /// Draw the stroke several times, moved and/or turned each time.
+    #[serde(default)]
+    pub repeat: Option<DrawRepeat>,
+}
+
+/// `repeat`: copy k (from 0) is moved by k × offset and turned by k ×
+/// rotate about `about`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DrawRepeat {
+    pub count: u32,
+    #[serde(default)]
+    pub offset: Option<[f64; 2]>,
+    #[serde(default)]
+    pub rotate: Option<f64>,
+    #[serde(default)]
+    pub about: Option<DrawPoint>,
 }
 
 /// A point as `[x, y]` or `{"x": .., "y": ..}`.
@@ -455,26 +502,30 @@ pub struct ScreenshotArgs {
     /// Zoom into this element of the window (from get_app_state).
     #[serde(default, deserialize_with = "de_opt_index")]
     pub element_index: Option<u32>,
-    /// Draw a labelled coordinate grid, a line every this many pixels.
+    /// Draw a labelled coordinate grid, a line every this many units
+    /// (0 = a round step that suits the image).
     #[serde(default, deserialize_with = "de_grid")]
-    pub grid: Option<u32>,
+    pub grid: Option<f64>,
     /// List the image's main colours.
     #[serde(default)]
     pub palette: bool,
     /// Exact colours at these points.
     #[serde(default)]
     pub pick: Option<Vec<DrawPoint>>,
+    /// Label the grid and read `pick` points in a document's own units or
+    /// a math range, as `draw` takes them.
+    #[serde(default)]
+    pub canvas: Option<DrawCanvas>,
 }
 
-/// `grid`: a spacing in pixels, or `true` for every 100.
-fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
+/// `grid`: a spacing, or `true` for a round step that suits the image.
+fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, D::Error> {
     Ok(match Option::<Value>::deserialize(d)? {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
-        Some(Value::Bool(true)) => Some(100),
+        Some(Value::Bool(true)) => Some(0.0),
         Some(Value::Number(n)) => match n.as_f64() {
-            Some(v) if v >= 1.0 => Some(v.min(100_000.0) as u32),
-            Some(_) => None,
-            None => None,
+            Some(v) if v > 0.0 && v.is_finite() => Some(v),
+            _ => None,
         },
         Some(other) => {
             return Err(serde::de::Error::custom(format!(
@@ -687,6 +738,19 @@ fn coord_prop(axis: &str) -> Value {
     json!({"type": "number", "description": format!("{axis} coordinate in screenshot pixels (from the latest get_app_state image).")})
 }
 
+fn canvas_prop() -> Value {
+    json!({
+        "type": "object",
+        "description": "Coordinates of a document: box = [left, top, right, bottom] where it is in the screenshot (or element_index's box), with size = [width, height] in its own units (y down) or range = [x min, x max, y min, y max] (math, y up).",
+        "properties": {
+            "box": {"type": "array", "items": {"type": "number"}},
+            "size": {"type": "array", "items": {"type": "number"}},
+            "range": {"type": "array", "items": {"type": "number"}}
+        },
+        "additionalProperties": false
+    })
+}
+
 fn hover_prop(axis: &str) -> Value {
     json!({"type": "number", "description": format!("{axis} in screenshot pixels: point the mouse there first, for apps that send keys to what is under the pointer (Blender, some CAD apps).")})
 }
@@ -835,7 +899,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "draw",
             title: "Draw",
-            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is rect [x,y,w,h], ellipse [cx,cy,rx,ry], points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them) or a parametric curve: x and y are expressions in t (+ - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e...) from t[0] to t[1] (default 0 to 1); steps=n draws n straight pieces instead (polygons, stars). Circle: {\"x\": \"400+90*cos(t)\", \"y\": \"300+90*sin(t)\", \"t\": [0, \"2*pi\"]}. Coordinates are screenshot pixels like click's x/y or, with element_index, fractions of that element's box (0,0 top-left, 1,1 bottom-right); canvas={box, size} lets you use the document's own pixels instead (box = where the document is in the screenshot). Parts of a curve outside that area are not drawn. The stop key ends a drawing midway.",
+            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is a shape (rect [x,y,w,h(,radius)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,from°,to°], bezier [[x,y],...]), points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them), a parametric curve (x and y are expressions in t: + - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e... from t[0] to t[1], default 0 to 1; steps=n draws n straight pieces) or a function plot (only y, in x: {\"y\": \"sin(x)\"}). Any stroke can be turned (rotate, about) and repeated (repeat: count, offset, rotate, about). Coordinates are screenshot pixels like click's x/y; with element_index, fractions of that element's box; with canvas, a document's own units (box + size) or math coordinates with y up (box + range, where axes [xstep, ystep] draws axes and ticks). preview=true shows the strokes over a screenshot without drawing. Parts of a curve outside the area are not drawn. Closed shapes come back with a point inside each, for a fill click. The stop key ends a drawing midway.",
             input_schema: schema(
                 app_props(),
                 json!({
@@ -853,23 +917,34 @@ pub fn definitions() -> Vec<ToolDefinition> {
                                 "y": {"type": "string", "description": "y(t)"},
                                 "t": {"type": "array", "items": {"type": ["number", "string"]}, "description": "[from, to]: numbers or expressions like \"2*pi\"."},
                                 "steps": {"type": "integer", "minimum": 1},
-                                "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, width, height]"},
-                                "ellipse": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius x, radius y]"}
+                                "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, width, height] or [x, y, width, height, corner radius]"},
+                                "ellipse": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius x, radius y]"},
+                                "polygon": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, corners]"},
+                                "star": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, outer radius, inner radius, points]"},
+                                "arc": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, from degrees, to degrees]"},
+                                "bezier": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Cubic: start, then control, control, end per segment."},
+                                "axes": {"type": "array", "items": {"type": "number"}, "description": "[x tick step, y tick step]: axes through 0 (needs canvas.range)."},
+                                "rotate": {"type": "number", "description": "Degrees, clockwise on screen, about `about` (default: the stroke's centre)."},
+                                "about": {"type": "array", "items": {"type": "number"}},
+                                "repeat": {
+                                    "type": "object",
+                                    "description": "Copies: copy k is moved by k*offset and turned by k*rotate degrees about `about`.",
+                                    "properties": {
+                                        "count": {"type": "integer", "minimum": 1},
+                                        "offset": {"type": "array", "items": {"type": "number"}},
+                                        "rotate": {"type": "number"},
+                                        "about": {"type": "array", "items": {"type": "number"}}
+                                    },
+                                    "required": ["count"],
+                                    "additionalProperties": false
+                                }
                             },
                             "additionalProperties": false
                         }
                     },
                     "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
-                    "canvas": {
-                        "type": "object",
-                        "description": "Draw in document units: {\"box\": [left, top, right, bottom] of the document in screenshot pixels (or use element_index), \"size\": [width, height] in its own units}.",
-                        "properties": {
-                            "box": {"type": "array", "items": {"type": "number"}},
-                            "size": {"type": "array", "items": {"type": "number"}}
-                        },
-                        "required": ["size"],
-                        "additionalProperties": false
-                    },
+                    "canvas": canvas_prop(),
+                    "preview": {"type": "boolean", "description": "Show the strokes in red over a screenshot, with a grid in the same coordinates; nothing is drawn."},
                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                     "speed": {"type": "number", "minimum": 50, "description": "Pointer speed in pixels per second (default 800)."}
                 }),
@@ -947,7 +1022,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot",
             title: "Screenshot",
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N pixels (labels are the x/y that click and draw use for that window; screen coordinates for full/region), palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid).",
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -960,9 +1035,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "height": {"type": "number", "description": "Region height."},
                     "annotate": {"type": "boolean", "default": false, "description": "Draw element indices over a window capture."},
                     "element_index": index_prop("Zoom into this element of the window (from get_app_state)."),
-                    "grid": {"type": ["integer", "boolean"], "description": "Labelled coordinate grid: a line every N pixels (true = 100)."},
+                    "grid": {"type": ["number", "boolean"], "description": "Labelled coordinate grid: a line every N units (true = a round step)."},
                     "palette": {"type": "boolean", "description": "List the image's main colours (hex, share)."},
-                    "pick": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]: the exact colour at each point."}
+                    "pick": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]: the exact colour at each point."},
+                    "canvas": canvas_prop()
                 },
                 "additionalProperties": false
             }),
@@ -1073,7 +1149,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => "Drag from an element/point to another element/point.",
         "draw" => {
-            "Draw with the mouse held down along strokes: rect=[x,y,w,h], ellipse=[cx,cy,rx,ry], points=[[x,y],...] (closed, smooth) or a curve x, y = expressions in t over t=[from,to] (e.g. x \"400+90*cos(t)\", y \"300+90*sin(t)\", t [0,\"2*pi\"]; steps=n for straight pieces). Screenshot pixels, fractions of element_index's box, or document units with canvas={box:[l,t,r,b], size:[w,h]}."
+            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). preview=true only shows them. Returns points inside closed shapes for fills."
         }
         "press_key" => {
             "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it)."
@@ -1084,7 +1160,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
         "screenshot" => {
-            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N: labelled grid every N px in the x/y click and draw use; palette=true: main colours; pick=[[x,y]]: exact colours."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
         "window" => {
@@ -1224,6 +1300,7 @@ mod tests {
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
             "steps": [{"tool": "list_apps"}], "speed": 300, "grid": 50, "palette": true,
+            "preview": false,
             "pick": [[1, 2]], "canvas": {"box": [0, 0, 10, 10], "size": [100, 100]},
             "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},
                         {"x": "t", "y": 5, "t": [0, "2*pi"], "steps": 6}]

@@ -2,57 +2,97 @@
 
 `draw` presses the button, moves along each stroke and releases: a pen or
 brush in a paint app, a whiteboard, a chart editor. Pick the tool, colour and
-size in the app first, then draw, then check with `screenshot`: drawn pixels
-don't show in the accessibility tree.
+size in the app first. Then `preview`, then draw, then check with
+`screenshot`: drawn pixels don't show in the accessibility tree.
 
-## Where
+## Coordinates
 
-- Default: screenshot pixels, like `click`'s x/y (y grows downwards).
-- `canvas: {"box": [left, top, right, bottom], "size": [w, h]}`: the
-  document's own units. `box` is where the document is in the screenshot
-  (read it off `screenshot(app, grid=50)`), `size` its size in its units
-  (e.g. 1080 x 1350 px). Then every coordinate is a document pixel,
-  whatever the zoom. With `element_index` instead of `box`, the element's
-  box is the document.
-- `element_index`: fractions of that element's box, (0,0) its top-left and
-  (1,1) its bottom-right. Handy for "the middle of the canvas"; a circle in
-  fractions is an ellipse unless the box is square, so use pixels for exact
-  shapes.
-- Parts of a curve outside the area are not drawn; points outside it are an
-  error.
+| How | Coordinates |
+|---|---|
+| default | screenshot pixels, like `click`'s x/y (y down) |
+| `element_index` | fractions of that element's box: (0,0) top-left, (1,1) bottom-right |
+| `canvas: {"box": [l, t, r, b], "size": [w, h]}` | the document's own units (e.g. 1080 x 1350 px), y down, whatever the zoom |
+| `canvas: {"box": [l, t, r, b], "range": [x0, x1, y0, y1]}` | math coordinates across the box, **y up**: for plots |
+
+- `box` is where the document (or plot area) is in the screenshot. Read it
+  off `screenshot(app, grid=50)`. With `element_index` instead of `box`,
+  that element's box is used.
+- Use the same `canvas` in `screenshot(app, canvas=..., grid=true,
+  pick=[...])`. The grid then covers just the document, labelled in its
+  units, and `pick` reads colours at document coordinates.
+- Explicit points outside the area are an error. Parts of a curve outside
+  it are skipped (the pen lifts).
+- If 1 unit of x and of y differ on screen, circles look like ellipses (the
+  result says so). Give the range the same proportions as its box.
 
 ## Strokes
 
 Each stroke is one press-move-release; several strokes lift the pen between
-them (axes, then a curve).
+them.
 
-- Rectangle: `{"rect": [x, y, width, height]}`. Ellipse or circle:
-  `{"ellipse": [center x, center y, radius x, radius y]}`.
-- Lines and polygons: `{"points": [[100,100],[300,100],[300,200]], "closed": true}`.
-- Freehand curves: `"smooth": true` draws a smooth curve through the points.
-- Parametric curves: `x` and `y` are expressions in `t`, from `t[0]` to
-  `t[1]` (default 0 to 1); `steps: n` makes n straight pieces instead.
-  - Circle / ellipse: `x "400+90*cos(t)"`, `y "300+60*sin(t)"`,
-    `t [0, "2*pi"]`; an arc is part of that range.
-  - Regular polygon: the circle with `steps: 6`. Star:
-    `x "400+90*cos(t*4*pi/5)"`, `y "300+90*sin(t*4*pi/5)"`, `t [0, 5]`,
-    `steps: 5`.
-  - Spiral: `x "400+8*t*cos(t)"`, `y "300+8*t*sin(t)"`, `t [0, "6*pi"]`.
-  - Heart: `x "400+6*16*sin(t)^3"`,
-    `y "300-6*(13*cos(t)-5*cos(2*t)-2*cos(3*t)-cos(4*t))"`, `t [0, "2*pi"]`.
-- Plotting y = f(u) for u from a to b into a box (left, top, width,
-  height): `x "left + (t-a)/(b-a)*width"`, `y "baseline - scale*f(t)"`,
-  `t [a, b]`. Screen y grows downwards, hence the minus. Where f jumps or
-  is undefined (`tan`, `1/t`) the pen lifts.
+| Stroke | Meaning |
+|---|---|
+| `{"rect": [x, y, w, h]}` | rectangle; a 5th number rounds the corners |
+| `{"ellipse": [cx, cy, rx, ry]}` | ellipse or circle |
+| `{"polygon": [cx, cy, r, n]}` | regular polygon, first corner up |
+| `{"star": [cx, cy, R, r, n]}` | star with n points, outer R, inner r |
+| `{"arc": [cx, cy, r, from, to]}` | arc, degrees from +x towards +y |
+| `{"bezier": [[x,y], [c1], [c2], [x,y], ...]}` | cubic curves: start, then control, control, end per segment |
+| `{"points": [[x,y], ...], "closed": true}` | straight lines; `"smooth": true` for a smooth curve through them (freehand) |
+| `{"x": "...", "y": "...", "t": [a, b]}` | parametric curve; `"steps": n` makes n straight pieces |
+| `{"y": "sin(x)"}` | plot of y = f(x) over the whole x range (or `t: [a, b]`) |
+| `{"axes": [xstep, ystep]}` | axes through 0 with ticks; needs `canvas.range` |
 
-Expressions: `+ - * / % ^` (also `**`), parentheses, `2t` and `2pi` mean
-products; `sin cos tan asin acos atan atan2 sinh cosh tanh sqrt cbrt abs exp
-ln log10 log2 floor ceil round trunc sign min max pow hypot mod clamp`;
-`pi tau e`.
+Any stroke can also take:
+
+- `"rotate": deg`: clockwise on screen, about `"about": [x, y]` (default:
+  its centre).
+- `"repeat": {"count": n, "offset": [dx, dy], "rotate": deg, "about": [x, y]}`:
+  copy k is moved by k × offset and turned by k × rotate. Use it for rows
+  of dots, petals around a centre, or a spiral of squares.
+
+Examples:
+
+- **Circle:** `{"ellipse": [400, 300, 90, 90]}`.
+- **Flower:** 8 petals round (400, 300):
+  `{"ellipse": [400, 240, 20, 50], "repeat": {"count": 8, "rotate": 45, "about": [400, 300]}}`.
+- **Spiral:** `x "400+8*t*cos(t)"`, `y "300+8*t*sin(t)"`, `t [0, "6*pi"]`.
+- **Heart:** `x "400+6*16*sin(t)^3"`,
+  `y "300-6*(13*cos(t)-5*cos(2*t)-2*cos(3*t)-cos(4*t))"`, `t [0, "2*pi"]`.
+- **A plot with axes:**
+  `canvas {"box": [l, t, r, b], "range": [-3.2, 3.2, -1.5, 1.5]}`, then
+  strokes `{"axes": [1, 0.5]}` and `{"y": "sin(x)"}`.
+
+Expressions:
+
+- operators `+ - * / % ^` (also `**`), parentheses, and products written
+  together (`2t`, `2pi`);
+- functions `sin cos tan asin acos atan atan2 sinh cosh tanh sqrt cbrt abs
+  exp ln log10 log2 floor ceil round trunc sign min max pow hypot mod clamp`;
+- constants `pi tau e`. Where f jumps or is undefined (`tan`, `1/x`), the
+  pen lifts.
+
+## Preview, then draw
+
+- `"preview": true` draws nothing. It shows the strokes in red over a
+  screenshot, with a grid in the coordinates you used. Check the placement,
+  then call again without it.
+- The result gives, for each closed shape, a point to click with a fill
+  (bucket) tool or a magic wand, in click coordinates and named after its
+  stroke. The point avoids the shapes drawn inside it: a ring's (one circle
+  in another) lies between the two circles.
+
+## Shape tools versus brushes
+
+- With a brush, pencil or pen **tool** active, the stroke is the line that
+  gets painted: `rect`, `ellipse` and the others draw their outlines.
+- With an app's **shape tool** (Paint's rectangle, Figma's `r`), the app
+  makes the shape from one drag. Give a stroke of two points, corner to
+  corner: `{"points": [[x, y], [x + w, y + h]]}`.
 
 ## Speed and stopping
 
-- `speed` is in pixels per second (default 800). Slow it down for apps that
-  draw jagged lines or miss parts.
+- `speed` is in pixels per second (default 800). Use 300–500 for apps that
+  smooth strokes (Photoshop, Krita) or that draw jagged lines.
 - The stop key ends a drawing midway; the button is always released.
 - Drawing a signature is acting in the user's name: security rule 3.

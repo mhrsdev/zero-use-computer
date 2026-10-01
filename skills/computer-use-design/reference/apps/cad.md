@@ -48,6 +48,23 @@ goes to the command line. Use `type_text` with `\n` for Enter, and give
 4. `ZOOM E` and take a `screenshot` to check.
 5. Measure: `DIST\n` and two points. Or `LIST\n` on an object.
 
+## Curves from a formula
+
+`draw` moves the mouse, which CAD snaps and rounds: don't use it for
+geometry here. For a curve such as y = sin(x) or a spiral, work out the
+points yourself and type them:
+
+1. Choose enough points: about every 5° of a turn, or 20 to 50 along a
+   graph.
+2. `type_text` the whole command in one call:
+   `SPLINE\n0,0\n0.5,0.4794\n1,0.8415\n…\n\n` (smooth through the
+   points), or `PLINE\n…\n\n` (straight pieces). No extra `\n` at the
+   end: on an empty command line it repeats the last command. If the
+   command line still asks for something, read it and answer or press
+   `Escape`.
+3. Regular polygons: `POLYGON\n6\n2500,2000\nI\n500\n` (sides, centre,
+   inscribed, radius). Patterns round a centre: `ARRAYPOLAR`.
+
 ## Save and output
 
 - `cmd+s` saves the `.dwg`.

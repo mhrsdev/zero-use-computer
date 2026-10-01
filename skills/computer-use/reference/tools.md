@@ -18,9 +18,13 @@
   - `grid: 100` draws a labelled grid every 100 px, in the x/y that
     `click`, `drag` and `draw` use for that window (screen coordinates for
     full/region shots): read positions off it instead of guessing.
+    `grid: true` picks a round step.
   - `palette: true` lists the main colours (hex and share);
     `pick: [[x, y], ...]` gives the exact colour at each point (same
     coordinates as the grid).
+  - `canvas` (window shots, the same object `draw` takes): the grid covers
+    only that box, labelled in the document's units or the plot's range,
+    and `pick` points are in those units too.
 - `window(app, action)`: `list`, `focus`, `move` (x, y, optional width and
   height), `resize`, `maximize`, `minimize`, `restore`, `fullscreen`,
   `exit_fullscreen`, `close`, `tile_left` / `tile_right` / `tile_top` /

@@ -13,21 +13,51 @@ Canvas: <W> x <H> px, background <#hex>, margin <m> px
 Palette: <#hex> main, <#hex> accent, <#hex> text, <#hex> light
 Fonts: <family> for headings, <family> for body (installed ones only)
 Elements, back to front:
-  1. <name>: <rect|ellipse|line|path|image|text> x <x> y <y> w <w> h <h>,
-     fill <#hex>, stroke <#hex> <n> px, radius <r>, opacity <n>%
-  2. ...
+  1. <name>: rect x <x> y <y> w <w> h <h> radius <r>,
+     fill <#hex>, stroke <#hex> <n> px, opacity <n>%
+  2. <name>: ellipse centre (<cx>, <cy>) radii <rx> <ry>, fill ..., stroke ...
+  3. <name>: polygon|star centre (<cx>, <cy>) radius <R> [inner <r>] n <n>
+  4. <name>: line|path|arc points (<x>, <y>) (<x>, <y>) ...
+  5. <name>: <any of these> x <count>, offset (<dx>, <dy>) | turned <deg>
+     round (<cx>, <cy>)
+  6. <name>: image <file> x <x> y <y> w <w> h <h>
 Text:
   "<exact text>": <font> <size> px <weight>, <#hex>, left|center|right,
   box x <x> y <y> w <w>
 Checks: <what must be true at the end>
 ```
 
-- Positions are the top-left corner in canvas pixels, (0, 0) top-left.
-  For a centred element: x = (W - w) / 2. Write down the number, not the
-  formula.
+- Positions are in canvas pixels, (0, 0) top-left: the top-left corner for
+  rects, the centre for round shapes. For a centred rect:
+  x = (W - w) / 2. Write down the number, not the formula.
+- Each shape is then one `draw` stroke with the same numbers (the table in
+  the skill's "Drawing" section), or one shape typed into the app's
+  fields. A repeated element is one stroke with `repeat`.
 - Keep everything at least the margin away from the edges.
 - Fonts: use ones the app lists. If the requested font is missing, say so
   and pick a similar one.
+
+## Graphs and function plots
+
+```
+SPEC
+Goal: ...   App: <app>   Output: <file>
+Plot box: [<l>, <t>, <r>, <b>] in screenshot pixels
+Range: x <x0> to <x1>, y <y0> to <y1>
+Axes: ticks every <xstep> on x, <ystep> on y; labels <font> <size>
+Curves: y = <f(x)> <#hex> <n> px; x(t) = ..., y(t) = ..., t <a> to <b>
+```
+
+- The plot box is where the plot goes on screen: read it off
+  `screenshot(app, grid=50)`. From canvas pixels (x, y) in a document
+  shown at [L, T, R, B] with size W x H: `L + x * (R - L) / W`,
+  `T + y * (B - T) / H`.
+- Give the range the same proportions as the box, or circles come out as
+  ellipses.
+- Draw with `canvas={"box": [l, t, r, b], "range": [x0, x1, y0, y1]}`:
+  `{"axes": [xstep, ystep]}`, then one stroke per curve. Tick labels go in
+  with the text tool; `screenshot` with the same `canvas` labels its grid
+  in the plot's numbers, so you can read where each label goes.
 
 ## 3D: models and scenes (Blender)
 
