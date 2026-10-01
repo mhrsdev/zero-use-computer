@@ -43,8 +43,9 @@ its rules are yours to follow.
 Every result stays in the conversation, so ask only for what you need:
 
 - Search with `find_element(role/name/text)` instead of re-reading a tree.
-  Long lists come folded (`[… N more "list item" folded]`): find_element
-  finds the folded items too.
+  Very long lists come folded (`[… N more "list item" folded]`):
+  find_element finds the folded items too. Only if you really need every
+  element at once, `get_app_state(max_tokens=0)` returns the whole tree.
 - Leave `screenshot` unset: one comes when it adds something, and a picture
   you already have isn't sent again. Ask `screenshot: true` when you need a
   fresh look; `screenshot(app, element_index)` zooms into one element.

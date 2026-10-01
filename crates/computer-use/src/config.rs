@@ -159,10 +159,31 @@ pub struct TreeConfig {
     pub report_changes: bool,
     /// Longest change report (lines) appended to an action result.
     pub report_changes_max_lines: usize,
-    /// Token budget of one tree or diff (estimated; 0 = no limit). A larger
-    /// tree has its long lists folded to their first and last items, then
-    /// is cut; folded elements stay findable with find_element.
+    /// Token budget of one tree or diff (estimated; 0 = no limit).
     pub max_tokens: usize,
+    /// How a tree over `max_tokens` is shortened (see [`Summarize`]).
+    pub summarize: Summarize,
+    /// Items kept at the start of a folded list (and two at its end).
+    /// Higher keeps more of every long list.
+    pub fold_keep: usize,
+    /// Explanations (what a diff or a partial screenshot means) in full the
+    /// first time and in a few words after that. false = in full every time.
+    pub brief_repeats: bool,
+}
+
+/// How much a tree over the token budget is shortened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Summarize {
+    /// Never: every tree is sent whole, whatever its size.
+    Off,
+    /// Only long lists (list items, rows, menu items…) are folded to their
+    /// first and last items; nothing is cut.
+    Light,
+    /// Long lists first, then any long run of look-alike elements, and the
+    /// rest cut if it still doesn't fit. Default.
+    #[default]
+    Normal,
 }
 
 impl Default for TreeConfig {
@@ -180,6 +201,9 @@ impl Default for TreeConfig {
             report_changes: true,
             report_changes_max_lines: 25,
             max_tokens: 10_000,
+            summarize: Summarize::Normal,
+            fold_keep: 5,
+            brief_repeats: true,
         }
     }
 }

@@ -25,6 +25,8 @@ Every view is labelled with a screen number:
   one (`[… N more "row" folded; find_element finds them]`), and if still
   too big, it is cut (`[… N more lines not shown]`). Folded and cut
   elements still have indices: `find_element` returns them.
+  `get_app_state(max_tokens=0)` returns one whole tree, nothing folded; the
+  user can also lower or switch off this shortening in their settings.
 - Explanations (what a diff means, what a partial screenshot is) come in
   full the first time and in a short form after that.
 

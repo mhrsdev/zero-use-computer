@@ -132,11 +132,6 @@ impl Hints {
     fn first(&self, key: &'static str) -> bool {
         self.0.borrow_mut().insert(key)
     }
-
-    /// `long` the first time, `short` afterwards.
-    fn pick<'a>(&self, key: &'static str, long: &'a str, short: &'a str) -> &'a str {
-        if self.first(key) { long } else { short }
-    }
 }
 
 /// How the current view relates to what the model has seen.
@@ -387,6 +382,19 @@ impl<B: Backend> Engine<B> {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Whether to give the explanation `key` in full: the first time, or
+    /// every time when `tree.brief_repeats` is off.
+    fn explain_first(&self, key: &'static str) -> bool {
+        let first = self.hints.first(key);
+        first || !self.store.config.tree.brief_repeats
+    }
+
+    /// `long` the first time (or always, without `tree.brief_repeats`),
+    /// `short` afterwards.
+    fn explain<'a>(&self, key: &'static str, long: &'a str, short: &'a str) -> &'a str {
+        if self.explain_first(key) { long } else { short }
     }
 
     /// Shared stop flag: the stop key sets and clears it; a host may too
@@ -961,7 +969,7 @@ impl<B: Backend> Engine<B> {
 
     /// Render the latest snapshot against what the model has seen of that
     /// screen: a diff, the full tree, or a note that nothing changed.
-    fn render(&self, pid: u32, full: bool) -> Result<Refreshed> {
+    fn render(&self, pid: u32, full: bool, max_tokens: Option<usize>) -> Result<Refreshed> {
         let st = self.state(pid)?;
         let tcfg = &self.store.config.tree;
         let (seen, base) = match &st.known {
@@ -984,7 +992,10 @@ impl<B: Backend> Engine<B> {
                 .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
                 .count(),
         };
-        let budget = tcfg.max_tokens;
+        let mut budget = tree::Budget::from_config(tcfg);
+        if let Some(tokens) = max_tokens {
+            budget.tokens = tokens;
+        }
         match base {
             None => {
                 out.text = tree::render_full_within(nodes, tcfg.indent, budget);
@@ -1002,7 +1013,7 @@ impl<B: Backend> Engine<B> {
                     out.text = if d.is_empty() {
                         tree::render_diff(&d, nodes)
                     } else {
-                        let intro = self.hints.pick(
+                        let intro = self.explain(
                             "diff",
                             tree::DIFF_INTRO,
                             "Changes (+ added, ~ changed, - removed):",
@@ -1010,7 +1021,7 @@ impl<B: Backend> Engine<B> {
                         tree::render_diff_with(&d, nodes, intro)
                     };
                 } else if d.is_empty() {
-                    out.text = if self.hints.first("revisit") {
+                    out.text = if self.explain_first("revisit") {
                         format!(
                             "Identical to when you last saw screen #{}; element indices are as they were then.\n",
                             st.screen
@@ -1019,7 +1030,7 @@ impl<B: Backend> Engine<B> {
                         format!("Identical to screen #{} as you saw it.\n", st.screen)
                     };
                 } else {
-                    let intro = if self.hints.first("revisit") {
+                    let intro = if self.explain_first("revisit") {
                         format!(
                             "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
                             st.screen
@@ -1030,8 +1041,12 @@ impl<B: Backend> Engine<B> {
                     out.text = tree::render_diff_with(&d, nodes, &intro);
                 }
                 // A diff gets the same budget as a whole tree.
-                if !out.full && budget > 0 && crate::text::estimate_tokens(&out.text) > budget {
-                    out.text = tree::cut_to_budget(&out.text, budget);
+                if !out.full
+                    && budget.active()
+                    && budget.level == crate::config::Summarize::Normal
+                    && crate::text::estimate_tokens(&out.text) > budget.tokens
+                {
+                    out.text = tree::cut_to_budget(&out.text, budget.tokens);
                 }
             }
         }
@@ -1615,7 +1630,7 @@ impl<B: Backend> Engine<B> {
         let observed = self.observe(&app, &window, args.ocr);
         self.force_ocr = false;
         observed?;
-        let r = self.render(app.pid, args.disable_diff)?;
+        let r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
         let size_changed = self.commit(app.pid, &window);
 
         let mut header = format!(
@@ -1728,7 +1743,7 @@ impl<B: Backend> Engine<B> {
                         if let Some(st) = self.states.get_mut(&app.pid) {
                             st.coord = known_coord;
                         }
-                        header.push_str(self.hints.pick(
+                        header.push_str(self.explain(
                             "shot-unchanged",
                             "\nScreenshot: unchanged since you last saw it, not re-sent (screenshot=true forces one).",
                             "\nScreenshot: unchanged, not re-sent.",
@@ -1751,7 +1766,7 @@ impl<B: Backend> Engine<B> {
                         // the model already has.
                         let (w, h, x1, y1) =
                             (img.width, img.height, ox + img.width, oy + img.height);
-                        header.push_str(&if self.hints.first("shot-part") {
+                        header.push_str(&if self.explain_first("shot-part") {
                             format!(
                                 "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
                             )
@@ -1787,7 +1802,7 @@ impl<B: Backend> Engine<B> {
                                     img.width, img.height
                                 ));
                                 if overview {
-                                    header.push_str(self.hints.pick(
+                                    header.push_str(self.explain(
                                         "overview",
                                         " (An overview; pass screenshot=true for full detail, or screenshot(element_index) to zoom into one element.)",
                                         " (overview)",
@@ -1814,7 +1829,7 @@ impl<B: Backend> Engine<B> {
                 }
             }
         } else if allowed {
-            header.push_str(self.hints.pick(
+            header.push_str(self.explain(
                 "shot-none",
                 "\nScreenshot: not attached (pass screenshot=true for one).",
                 "\nScreenshot: not attached.",
@@ -2522,7 +2537,7 @@ impl<B: Backend> Engine<B> {
                 if let Some(part) = self.changed_part(&capture, Some(&sig), Some(old), Some(map)) {
                     let (img, (ox, oy)) = imaging::encode_part(&capture, part, &map, &cfg)?;
                     let (w, h, x1, y1) = (img.width, img.height, ox + img.width, oy + img.height);
-                    let text = if self.hints.first("screen-part") {
+                    let text = if self.explain_first("screen-part") {
                         format!(
                             "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}"
                         )
@@ -2970,7 +2985,7 @@ impl<B: Backend> Engine<B> {
         if self.observe(&app, &window, fresh).is_err() {
             return out;
         }
-        let Ok(r) = self.render(app.pid, false) else {
+        let Ok(r) = self.render(app.pid, false, None) else {
             return out;
         };
         if r.seen == Seen::Same && !r.full && r.changes == 0 {
@@ -4640,6 +4655,71 @@ mod tests {
         let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
         let img = out.image.expect("asked for");
         assert_eq!((img.width, img.height), (800, 600));
+    }
+
+    /// TextEdit with a 300-item list, and a small token budget.
+    fn long_list_engine(cfg: impl FnOnce(&mut Config)) -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        for i in 0..300u64 {
+            app.elements.push(
+                crate::mock::MockElement::new(
+                    1000 + i,
+                    "list item",
+                    &format!("Item {i}"),
+                    Rect::new(0.0, 40.0 + i as f64, 100.0, 1.0),
+                )
+                .child_of(1),
+            );
+        }
+        backend.add_app(app);
+        let mut c = Config::default();
+        c.tree.max_tokens = 400;
+        cfg(&mut c);
+        Engine::new(backend, ConfigStore::in_memory(c)).with_time(Instant::now, |_| {})
+    }
+
+    #[test]
+    fn summarizing_can_be_turned_down_or_off() {
+        // Over the budget: the list is folded.
+        let mut e = long_list_engine(|_| {});
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("folded"), "{}", out.text);
+        // The model can ask for one whole tree.
+        let out = state_of(
+            &mut e,
+            serde_json::json!({"disable_diff": true, "max_tokens": 0}),
+        );
+        assert!(!out.text.contains("folded"), "{}", out.text);
+        assert!(out.text.contains("Item 150"), "{}", out.text);
+        // The user can turn it off.
+        let mut e = long_list_engine(|c| c.tree.summarize = crate::config::Summarize::Off);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(!out.text.contains("folded") && out.text.contains("Item 150"));
+        // Or keep more of each list.
+        let mut e = long_list_engine(|c| c.tree.fold_keep = 40);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("Item 39") && !out.text.contains("Item 40\""));
+    }
+
+    #[test]
+    fn explanations_can_always_be_given_in_full() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut cfg = Config::default();
+        cfg.tree.brief_repeats = false;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        for _ in 0..2 {
+            let out = state_of(&mut e, serde_json::json!({"screenshot": false}));
+            assert!(
+                out.text
+                    .contains("not attached (pass screenshot=true for one)"),
+                "{}",
+                out.text
+            );
+        }
     }
 
     #[test]

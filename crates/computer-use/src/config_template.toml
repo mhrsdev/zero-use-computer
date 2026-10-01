@@ -78,11 +78,18 @@ diff = true                 # later get_app_state calls return a diff
 diff_full_ratio = 0.33      # show the full tree when more than this changed
 report_changes = true       # append "state after the action" to action results
 report_changes_max_lines = 25
-# Token budget of one tree or diff (estimated). Only bigger trees are touched:
-# their long lists are folded to the first and last items (never the focused
-# or selected one), then cut; folded elements stay findable with
-# find_element. 0 = no limit.
+# Token budget of one tree or diff (estimated). Only bigger trees are
+# shortened; folded and cut elements stay findable with find_element, and
+# the focused or selected element is never folded away. 0 = no limit.
 max_tokens = 10000
+# How a tree over the budget is shortened:
+#   "normal" = fold long lists, then other long runs, then cut what's left
+#   "light"  = only fold long lists (rows, list items…); never cut
+#   "off"    = never shorten: every tree is sent whole
+# The model can also ask for one whole tree with get_app_state(max_tokens=0).
+summarize = "normal"
+fold_keep = 5               # items kept at the start of a folded list (+2 at its end)
+brief_repeats = true        # explain notes in full once, then briefly (false = always in full)
 
 [timing]
 settle_ms = 40              # pause after each action before looking again

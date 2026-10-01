@@ -478,35 +478,68 @@ const LIST_ROLES: &[&str] = &[
     "menu item",
 ];
 
-/// Siblings of one role beyond this many are folded, keeping the first
-/// `FOLD_HEAD` and the last `FOLD_TAIL` of them.
-const FOLD_MIN: usize = 12;
-const FOLD_HEAD: usize = 5;
+/// Items always kept at the end of a folded list.
 const FOLD_TAIL: usize = 2;
+/// A list is folded only if that hides at least this many items.
+const FOLD_MIN_HIDDEN: usize = 6;
 
-/// The whole tree within about `budget` tokens (0 = no limit). When it
-/// doesn't fit, long runs of look-alike siblings are folded (list items
-/// first, then any role) to their first and last few, with a line saying
-/// how many are hidden; if it still doesn't fit, it is cut. Folded and cut
-/// elements keep their indices: `find_element` finds them.
-pub fn render_full_within(nodes: &[Node], indent: usize, budget: usize) -> String {
-    let full = render_full(nodes, indent);
-    if budget == 0 || crate::text::estimate_tokens(&full) <= budget {
-        return full;
-    }
-    let lists = render_folded(nodes, indent, |role| LIST_ROLES.contains(&role));
-    if crate::text::estimate_tokens(&lists) <= budget {
-        return lists;
-    }
-    let any = render_folded(nodes, indent, |_| true);
-    if crate::text::estimate_tokens(&any) <= budget {
-        return any;
-    }
-    cut_to_budget(&any, budget)
+/// How a tree over its token budget is shortened.
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    /// Estimated tokens (0 = no limit).
+    pub tokens: usize,
+    pub level: crate::config::Summarize,
+    /// Items kept at the start of a folded list.
+    pub keep: usize,
 }
 
-/// Render with long sibling runs of the roles `fold` accepts folded.
-fn render_folded(nodes: &[Node], indent: usize, fold: impl Fn(&str) -> bool) -> String {
+impl Budget {
+    pub fn from_config(cfg: &TreeConfig) -> Self {
+        Self {
+            tokens: cfg.max_tokens,
+            level: cfg.summarize,
+            keep: cfg.fold_keep,
+        }
+    }
+
+    /// Whether anything is ever shortened.
+    pub fn active(&self) -> bool {
+        self.tokens > 0 && self.level != crate::config::Summarize::Off
+    }
+}
+
+/// The whole tree within its budget. When it doesn't fit, long runs of
+/// look-alike siblings are folded to their first and last few (list items
+/// first; with `Normal`, then any role), with a line saying how many are
+/// hidden; with `Normal`, what still doesn't fit is cut. Folded and cut
+/// elements keep their indices: `find_element` finds them.
+pub fn render_full_within(nodes: &[Node], indent: usize, budget: Budget) -> String {
+    use crate::config::Summarize;
+    let full = render_full(nodes, indent);
+    if !budget.active() || crate::text::estimate_tokens(&full) <= budget.tokens {
+        return full;
+    }
+    let lists = render_folded(nodes, indent, budget.keep, |role| {
+        LIST_ROLES.contains(&role)
+    });
+    if budget.level == Summarize::Light || crate::text::estimate_tokens(&lists) <= budget.tokens {
+        return lists;
+    }
+    let any = render_folded(nodes, indent, budget.keep, |_| true);
+    if crate::text::estimate_tokens(&any) <= budget.tokens {
+        return any;
+    }
+    cut_to_budget(&any, budget.tokens)
+}
+
+/// Render with long sibling runs of the roles `fold` accepts folded,
+/// keeping the first `keep` and the last `FOLD_TAIL` of each.
+fn render_folded(
+    nodes: &[Node],
+    indent: usize,
+    keep: usize,
+    fold: impl Fn(&str) -> bool,
+) -> String {
     let mut groups: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
     for (i, n) in nodes.iter().enumerate() {
         if fold(&n.role) {
@@ -530,9 +563,12 @@ fn render_folded(nodes: &[Node], indent: usize, fold: impl Fn(&str) -> bool) -> 
     // First position of each folded run -> how many are folded there.
     let mut folded_at: HashMap<usize, usize> = HashMap::new();
     let mut hidden = vec![false; nodes.len()];
-    for members in groups.values().filter(|m| m.len() > FOLD_MIN) {
+    for members in groups
+        .values()
+        .filter(|m| m.len() >= keep + FOLD_TAIL + FOLD_MIN_HIDDEN)
+    {
         let mut run: Option<usize> = None;
-        for &i in &members[FOLD_HEAD..members.len() - FOLD_TAIL] {
+        for &i in &members[keep..members.len() - FOLD_TAIL] {
             if current[i] {
                 run = None;
                 continue;
@@ -759,12 +795,25 @@ mod tests {
         let mut p = prune(&raw, None, &cfg());
         IndexAllocator::default().assign_fresh(&mut p.nodes);
         let full = render_full(&p.nodes, 1);
-        // Plenty of room: nothing changes.
-        assert_eq!(render_full_within(&p.nodes, 1, 0), full);
-        assert_eq!(render_full_within(&p.nodes, 1, 100_000), full);
+        use crate::config::Summarize;
+        let b = |tokens, level| Budget {
+            tokens,
+            level,
+            keep: 5,
+        };
+        // No limit, plenty of room, or summarizing off: nothing changes.
+        assert_eq!(
+            render_full_within(&p.nodes, 1, b(0, Summarize::Normal)),
+            full
+        );
+        assert_eq!(
+            render_full_within(&p.nodes, 1, b(100_000, Summarize::Normal)),
+            full
+        );
+        assert_eq!(render_full_within(&p.nodes, 1, b(10, Summarize::Off)), full);
         // Tight: the list is folded to its first and last items, the rest of
         // the window is kept.
-        let folded = render_full_within(&p.nodes, 1, 300);
+        let folded = render_full_within(&p.nodes, 1, b(300, Summarize::Normal));
         assert!(crate::text::estimate_tokens(&folded) <= 300, "{folded}");
         assert!(folded.contains("Message 0") && folded.contains("Message 199"));
         assert!(!folded.contains("Message 100"));
@@ -778,7 +827,7 @@ mod tests {
         raw2[2 + 100].states.selected = true;
         let mut p2 = prune(&raw2, None, &cfg());
         IndexAllocator::default().assign_fresh(&mut p2.nodes);
-        let folded = render_full_within(&p2.nodes, 1, 300);
+        let folded = render_full_within(&p2.nodes, 1, b(300, Summarize::Normal));
         assert!(folded.contains("Message 100"), "{folded}");
         assert!(
             folded.contains("[… 95 more \"list item\" folded"),
@@ -788,10 +837,30 @@ mod tests {
             folded.contains("[… 97 more \"list item\" folded"),
             "{folded}"
         );
+        // Keep more of each list.
+        let more = render_full_within(
+            &p.nodes,
+            1,
+            Budget {
+                keep: 20,
+                ..b(300, Summarize::Normal)
+            },
+        );
+        assert!(
+            more.contains("Message 19") && !more.contains("Message 20\""),
+            "{more}"
+        );
         // Tighter still: cut, saying so.
-        let cut = render_full_within(&p.nodes, 1, 40);
+        let cut = render_full_within(&p.nodes, 1, b(40, Summarize::Normal));
         assert!(cut.contains("more lines not shown"), "{cut}");
         assert!(crate::text::estimate_tokens(&cut) <= 80, "{cut}");
+        // Light: lists folded, nothing cut.
+        let light = render_full_within(&p.nodes, 1, b(40, Summarize::Light));
+        assert!(
+            !light.contains("not shown") && light.contains("folded"),
+            "{light}"
+        );
+        assert!(light.contains("button \"Send\""));
     }
 
     #[test]
