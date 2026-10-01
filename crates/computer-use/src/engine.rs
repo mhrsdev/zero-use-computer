@@ -139,6 +139,8 @@ pub struct Engine<B: Backend> {
     traces: Vec<(String, crate::paint::Trace)>,
     /// Designs on the design board, by name (newest last).
     designs: Vec<(String, crate::design::Design)>,
+    /// 3D scenes, by name (newest last).
+    scenes: Vec<(String, crate::scene::Scene)>,
     fonts: crate::design::FontCache,
     /// Exported files (temporary).
     exports: crate::design::TempFiles,
@@ -226,6 +228,7 @@ impl<B: Backend> Engine<B> {
             ocr_reuse: false,
             traces: Vec::new(),
             designs: Vec::new(),
+            scenes: Vec::new(),
             fonts: crate::design::FontCache::default(),
             exports: crate::design::TempFiles::default(),
             ocr_note: None,
@@ -1516,6 +1519,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Draw(a) => self.draw(a),
             ToolCall::TraceImage(a) => self.trace_image(a),
             ToolCall::Design(a) => self.design(a),
+            ToolCall::Scene(a) => self.scene(a),
             ToolCall::Locate(a) => self.locate(a),
             ToolCall::PressKey(a) => self.press_key(a),
             ToolCall::TypeText(a) => self.type_text(a),
@@ -2690,6 +2694,139 @@ impl<B: Backend> Engine<B> {
             })
             .collect();
         Ok((shapes, step.kind == StepKind::Solid))
+    }
+
+    fn scene(&mut self, args: SceneArgs) -> Result<ToolOutput> {
+        use crate::scene::num;
+        let key = design_key(&args.name);
+        if key.is_empty() {
+            return Err(Error::InvalidArgs("give the scene a name".into()));
+        }
+        let mut s = self
+            .scenes
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, s)| s.clone())
+            .unwrap_or_default();
+        // All or nothing: the stored scene changes only if every part works.
+        s.apply(&args).map_err(Error::InvalidArgs)?;
+        self.scenes.retain(|(n, _)| *n != key);
+        self.scenes.push((key.clone(), s.clone()));
+        if self.scenes.len() > 8 {
+            self.scenes.remove(0);
+        }
+        let mut text = match s.bounds() {
+            None => format!(
+                "Scene \"{key}\": empty. Add objects: add=[{{\"id\", \"shape\", \"size\", \"at\"}}]."
+            ),
+            Some((lo, hi)) => format!(
+                "Scene \"{key}\": {} object{}, {} x {} x {} (x {} to {}, y {} to {}, z {} to {}), Z up{}. {}.",
+                s.objects.len(),
+                if s.objects.len() == 1 { "" } else { "s" },
+                num(hi[0] - lo[0]),
+                num(hi[1] - lo[1]),
+                num(hi[2] - lo[2]),
+                num(lo[0]),
+                num(hi[0]),
+                num(lo[1]),
+                num(hi[1]),
+                num(lo[2]),
+                num(hi[2]),
+                if s.ground { ", the ground at z 0" } else { "" },
+                s.listing()
+            ),
+        };
+        if !s.objects.is_empty() {
+            let checks = s.checks();
+            if checks.is_empty() {
+                text.push_str(if s.ground {
+                    "\nChecks: everything rests on the ground or on something; nothing runs into anything."
+                } else {
+                    "\nChecks: all parts are joined; nothing runs into anything."
+                });
+            } else {
+                text.push_str(&format!("\nChecks: {}.", checks.join("; ")));
+            }
+            let build = self.explain(
+                "scene-build",
+                "\nTo build it: at is each object's centre, size its full extent on its own x, y, z before rotate turns it (degrees about x, then y, then z). In Blender: Add > Mesh > Cube (box), Cylinder, UV Sphere, Cone, Torus or Plane, then in the sidebar (N) > Item type Location = at, Rotation = rotate and Dimensions = size. Other apps take the same numbers (a box's corner is at minus half its size). Or export=\"obj\" and import the file (File > Import > Wavefront .obj).",
+                "\nBuild: Location = at, Rotation = rotate, Dimensions = size; or export=\"obj\".",
+            );
+            text.push_str(build);
+        }
+        let view = args.view.unwrap_or_default();
+        let look = args.look.unwrap_or([35.0, 25.0]);
+        if look.iter().any(|v| !v.is_finite()) {
+            return Err(Error::InvalidArgs("look is [turn, tilt] in degrees".into()));
+        }
+        let ids = args.ids.unwrap_or(true);
+        let cfg = self.store.config.screenshot.clone();
+        let picture = (!self.store.config.text_only && cfg.enabled
+            || args.export == Some(SceneExport::Png))
+        .then(|| s.render(view, look, ids));
+        if let Some(format) = args.export {
+            let written = match format {
+                SceneExport::Obj => {
+                    // The colours first: the model names their file.
+                    let (_, mtl) = s.obj(&key, "");
+                    let mtl_path = self
+                        .exports
+                        .write(&key, "mtl", mtl.as_bytes())
+                        .map_err(Error::InvalidArgs)?;
+                    let mtl_name = mtl_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let (obj, _) = s.obj(&key, &mtl_name);
+                    let path = self
+                        .exports
+                        .write(&key, "obj", obj.as_bytes())
+                        .map_err(Error::InvalidArgs)?;
+                    (path, obj.len() + mtl.len(), " with its colours beside it")
+                }
+                SceneExport::Png => {
+                    let pic = picture
+                        .clone()
+                        .ok_or_else(|| Error::InvalidArgs("nothing to write".into()))?;
+                    let mut pm = tiny_skia::Pixmap::new(pic.width, pic.height)
+                        .ok_or_else(|| Error::InvalidArgs("nothing to write".into()))?;
+                    pm.data_mut().copy_from_slice(&pic.rgba);
+                    let bytes = pm
+                        .encode_png()
+                        .map_err(|e| Error::InvalidArgs(format!("could not write the PNG: {e}")))?;
+                    let path = self
+                        .exports
+                        .write(&key, "png", &bytes)
+                        .map_err(Error::InvalidArgs)?;
+                    (path, bytes.len(), "")
+                }
+            };
+            text.push_str(&format!(
+                "\nExported to {}{} ({} KB). It is temporary: import it into the app now (it is deleted when the server stops).",
+                written.0.display(),
+                written.2,
+                written.1.div_ceil(1024)
+            ));
+        }
+        let Some(picture) = picture.filter(|_| !self.store.config.text_only && cfg.enabled) else {
+            return Ok(ToolOutput::text(text));
+        };
+        if !s.objects.is_empty() {
+            let long = format!(
+                "\nThe picture: front (x right, z up), right (y right, z up) and top (x right, y up) to one scale, a grid line every {}; and a perspective view (look [{}, {}]) with shadows straight down onto the ground. view=\"front\" (or right, top, perspective) shows one bigger.",
+                num(s.step()),
+                num(look[0]),
+                num(look[1])
+            );
+            let short = format!("\nGrid: a line every {}.", num(s.step()));
+            text.push_str(self.explain("scene-picture", &long, &short));
+        }
+        let (img, _) = imaging::encode(picture, &cfg)?;
+        Ok(ToolOutput {
+            text,
+            image: Some(img),
+            is_error: false,
+        })
     }
 
     fn design(&mut self, args: DesignArgs) -> Result<ToolOutput> {
@@ -6794,6 +6931,103 @@ mod tests {
         assert!(out.text.contains("It is temporary"), "{}", out.text);
         drop(e);
         assert!(!path.exists(), "deleted with the server");
+    }
+
+    #[test]
+    fn scenes_are_planned_seen_checked_and_exported() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "Stool",
+                "add": [{"id": "seat", "shape": "cylinder", "size": [0.4, 0.04], "at": [0, 0, 0.47], "color": "#8B5A2B"},
+                        {"id": "leg", "shape": "box", "size": [0.04, 0.04, 0.45], "at": [0.12, 0.12, 0.225]},
+                        {"id": "lamp", "shape": "sphere", "size": [0.1], "at": [0, 0, 0.6]}],
+                "mirror": [{"id": "leg", "as": "leg-b"}],
+                "repeat": [{"id": "leg", "count": 2, "offset": [0, -0.24, 0]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+        assert!(
+            out.text.starts_with("Scene \"stool\": 5 objects, 0.4 x 0.4 x 0.65 (x -0.2 to 0.2, y -0.2 to 0.2, z 0 to 0.65), Z up, the ground at z 0. seat cylinder 0.4 x 0.4 x 0.04 at (0, 0, 0.47), z 0.45 to 0.49, #8B5A2B;"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("lamp floats in the air: nothing holds it; the bottom of lamp is 0.06 above seat (move it down 0.06"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("In Blender: Add > Mesh"), "{}", out.text);
+        assert!(out.text.contains("a grid line every 0.1"), "{}", out.text);
+
+        // A bad change leaves the scene as it was; a good one fixes it.
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "change": [{"id": "lamp", "on": "seat"}], "remove": ["nope"]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("no object \"nope\""),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "change": [{"id": "lamp", "on": "seat"}], "view": "top"}),
+        );
+        assert!(
+            out.text
+                .contains("Checks: everything rests on the ground or on something"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("Build: Location = at"), "{}", out.text);
+
+        // Exports are temporary: the model and its colours.
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "export": "obj"}),
+        );
+        let path = out
+            .text
+            .split("Exported to ")
+            .nth(1)
+            .and_then(|r| r.split(" with").next())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("{}", out.text));
+        let obj = std::fs::read_to_string(&path).unwrap();
+        let mtl_name = obj
+            .lines()
+            .find_map(|l| l.strip_prefix("mtllib "))
+            .unwrap()
+            .to_string();
+        let mtl = path.with_file_name(&mtl_name);
+        assert!(
+            std::fs::read_to_string(&mtl)
+                .unwrap()
+                .contains("newmtl c8B5A2B")
+        );
+        assert!(
+            obj.contains("o seat\nusemtl c8B5A2B\nv "),
+            "{}",
+            &obj[..200]
+        );
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "export": "png", "view": "perspective"}),
+        );
+        let png = out
+            .text
+            .split("Exported to ")
+            .nth(1)
+            .and_then(|r| r.split(" (").next())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("{}", out.text));
+        assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"));
+        drop(e);
+        assert!(
+            !path.exists() && !mtl.exists() && !png.exists(),
+            "deleted with the server"
+        );
     }
 
     #[test]

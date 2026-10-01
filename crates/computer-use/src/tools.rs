@@ -821,6 +821,132 @@ pub enum TraceDetail {
     High,
 }
 
+/// A 3D model planned as solids before it is built in an app.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SceneArgs {
+    pub name: String,
+    #[serde(default)]
+    pub add: Option<Vec<SceneObject>>,
+    #[serde(default)]
+    pub change: Option<Vec<SceneObject>>,
+    #[serde(default)]
+    pub remove: Option<Vec<String>>,
+    #[serde(default)]
+    pub mirror: Option<Vec<SceneMirror>>,
+    #[serde(default)]
+    pub repeat: Option<Vec<SceneRepeat>>,
+    /// The ground at z 0 (default on): what floats or sinks is reported.
+    #[serde(default)]
+    pub ground: Option<bool>,
+    #[serde(default)]
+    pub view: Option<SceneView>,
+    /// The perspective camera: [turn, tilt] in degrees (turn 0 looks from
+    /// the front, 90 from the right; tilt 0 is level, 90 from above).
+    #[serde(default)]
+    pub look: Option<[f64; 2]>,
+    /// The objects' ids on the picture (default on).
+    #[serde(default)]
+    pub ids: Option<bool>,
+    #[serde(default)]
+    pub export: Option<SceneExport>,
+}
+
+/// A solid: what it is, its size, where its centre is, how it is turned.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SceneObject {
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub shape: Option<SceneShape>,
+    /// box [x, y, z]; cylinder and cone [diameter, height]; sphere
+    /// [diameter]; torus [outer diameter, thickness]; plane [x, y]. Three
+    /// numbers give each axis its own size.
+    #[serde(default)]
+    pub size: Option<Vec<f64>>,
+    /// Its centre [x, y, z].
+    #[serde(default)]
+    pub at: Option<[f64; 3]>,
+    /// Degrees about x, then y, then z (as Blender's XYZ rotation).
+    #[serde(default)]
+    pub rotate: Option<[f64; 3]>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub color: Option<String>,
+    /// Set its height so it rests on this object's top, or on "ground".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub on: Option<String>,
+    /// Move by [dx, dy, dz].
+    #[serde(default, rename = "move")]
+    pub shift: Option<[f64; 3]>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SceneShape {
+    #[serde(alias = "cube")]
+    Box,
+    Cylinder,
+    #[serde(alias = "ball")]
+    Sphere,
+    Cone,
+    #[serde(alias = "ring")]
+    Torus,
+    Plane,
+}
+
+/// A mirrored copy of an object (the other leg, the other wing).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SceneMirror {
+    pub id: String,
+    #[serde(rename = "as")]
+    pub copy: String,
+    /// The axis that flips: "x" (left-right, default), "y" or "z".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub axis: Option<String>,
+    /// Where the mirror is on that axis (default 0).
+    #[serde(default)]
+    pub at: Option<f64>,
+}
+
+/// Copies of an object in a row, or around a vertical axis.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SceneRepeat {
+    pub id: String,
+    /// How many there are in all, the original first.
+    pub count: u32,
+    /// Each copy this much further [dx, dy, dz].
+    #[serde(default)]
+    pub offset: Option<[f64; 3]>,
+    /// Or turned around a vertical axis through [x, y].
+    #[serde(default)]
+    pub around: Option<[f64; 2]>,
+    /// The whole turn the copies spread over (default 360).
+    #[serde(default)]
+    pub angle: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SceneView {
+    /// Front, right, top and perspective on one picture.
+    #[default]
+    All,
+    Front,
+    Right,
+    Top,
+    Perspective,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SceneExport {
+    Obj,
+    Png,
+}
+
 /// `grid`: a spacing, or `true` for a round step that suits the image.
 fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, D::Error> {
     Ok(match Option::<Value>::deserialize(d)? {
@@ -939,6 +1065,7 @@ pub enum ToolCall {
     Drag(DragArgs),
     Draw(DrawArgs),
     Design(DesignArgs),
+    Scene(SceneArgs),
     Locate(LocateArgs),
     TraceImage(TraceImageArgs),
     PressKey(PressKeyArgs),
@@ -973,6 +1100,7 @@ impl ToolCall {
             "draw" => ToolCall::Draw(parse_args(name, args)?),
             "trace_image" => ToolCall::TraceImage(parse_args(name, args)?),
             "design" => ToolCall::Design(parse_args(name, args)?),
+            "scene" => ToolCall::Scene(parse_args(name, args)?),
             "locate" => ToolCall::Locate(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
@@ -1002,6 +1130,7 @@ impl ToolCall {
             ToolCall::Draw(_) => "draw",
             ToolCall::TraceImage(_) => "trace_image",
             ToolCall::Design(_) => "design",
+            ToolCall::Scene(_) => "scene",
             ToolCall::Locate(_) => "locate",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
@@ -1145,6 +1274,24 @@ fn layer_props() -> Value {
         },
     );
     json!({"type": "object", "properties": Value::Object(m), "additionalProperties": false})
+}
+
+/// A solid in a 3D scene.
+fn scene_object_props() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Its name (\"seat\", \"leg-fl\"); used by change, mirror, repeat, on."},
+            "shape": {"type": "string", "enum": ["box", "cylinder", "sphere", "cone", "torus", "plane"]},
+            "size": {"type": "array", "items": {"type": "number"}, "description": "box [x, y, z]; cylinder, cone [diameter, height]; sphere [diameter]; torus [outer diameter, thickness]; plane [x, y]; or [x, y, z] for any."},
+            "at": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Its centre [x, y, z]."},
+            "rotate": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Degrees about x, then y, then z (Blender's XYZ). A cylinder or cone stands along z until turned."},
+            "color": {"type": "string", "description": "\"#RRGGBB\"."},
+            "on": {"type": "string", "description": "Set its height so it rests on this object's top, or on \"ground\"."},
+            "move": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Move by [dx, dy, dz]."}
+        },
+        "additionalProperties": false
+    })
 }
 
 fn snap_prop() -> Value {
@@ -1393,6 +1540,30 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Design board"),
         },
         ToolDefinition {
+            name: "scene",
+            title: "3D scene",
+            description: "Plan a 3D model as solids before building it in a 3D app: boxes, cylinders, spheres, cones, tori and planes with exact sizes, centres and rotations, in metres (or any one unit), Z up, the ground at z 0. Each call can add, change, remove, mirror (the other leg or wing) and repeat (in a row, or around an axis) objects; it returns one picture with the front (x right, z up), right (y right, z up) and top (x right, y up) views to one scale with a grid, and a perspective view with shadows straight down; the objects with their extents; checks (parts that float, sink below the ground or run into each other, with how far); and how to build it. Then build it: Location = at, Rotation = rotate, Dimensions = size in Blender's sidebar (the same numbers in other apps), or export=\"obj\" (a temporary file to import). Start with name and add; later calls with the same name change it.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "add": {"type": "array", "items": scene_object_props(), "description": "New objects (shape and size needed). Without at, an object stands on the ground at the middle."},
+                    "change": {"type": "array", "items": scene_object_props(), "description": "Objects to change, by id."},
+                    "remove": {"type": "array", "items": {"type": "string"}},
+                    "mirror": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "as": {"type": "string"}, "axis": {"type": "string", "enum": ["x", "y", "z"]}, "at": {"type": "number"}}, "required": ["id", "as"], "additionalProperties": false}, "description": "A mirrored copy: axis x flips left-right about x = at (default 0)."},
+                    "repeat": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "integer", "minimum": 2, "maximum": 100}, "offset": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "around": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "angle": {"type": "number"}}, "required": ["id", "count"], "additionalProperties": false}, "description": "Copies named id-2, id-3...: count in all, each offset [dx, dy, dz] further, or turned around a vertical axis through around [x, y] (angle in all, default 360)."},
+                    "ground": {"type": "boolean", "description": "The ground at z 0 (default true): report what floats or sinks."},
+                    "view": {"type": "string", "enum": ["all", "front", "right", "top", "perspective"], "description": "One view, bigger (default all four)."},
+                    "look": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Perspective camera [turn, tilt] in degrees: turn 0 from the front, 90 from the right; tilt 90 from above (default [35, 25])."},
+                    "ids": {"type": "boolean", "description": "Objects' ids on the picture (default true)."},
+                    "export": {"type": "string", "enum": ["obj", "png"], "description": "Write a temporary file: obj (with its colours, to import into a 3D app) or png (the picture)."}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            annotations: read_only("3D scene"),
+        },
+        ToolDefinition {
             name: "press_key",
             title: "Press key",
             description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
@@ -1610,6 +1781,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "design" => {
             "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; returns the picture, layers, checks and paint steps; export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
         }
+        "scene" => {
+            "3D scene: plan a model as solids (box, cylinder, sphere, cone, torus, plane; size, at = centre, rotate; metres, Z up) with add/change/remove/mirror/repeat; returns front/right/top views to scale + perspective, extents, checks (floating, sinking, overlaps) and build numbers; export obj (temporary). Plan every 3D model here first."
+        }
         "trace_image" => {
             "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
         }
@@ -1717,7 +1891,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 23);
+        assert_eq!(defs.len(), 24);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1778,10 +1952,22 @@ mod tests {
             }"#,
         )
         .unwrap();
+        // The scene's add, mirror and export differ from the design's.
+        let scene = json!({
+            "name": "s", "ground": true, "view": "front", "look": [30, 20], "ids": false,
+            "export": "obj", "remove": ["c"],
+            "add": [{"id": "a", "shape": "cylinder", "size": [1, 2], "at": [0, 0, 1],
+                     "rotate": [0, 90, 0], "color": "ff0000", "on": "ground", "move": [1, 0, 0]}],
+            "change": [{"id": "a", "shape": "cube", "size": [1]}],
+            "mirror": [{"id": "a", "as": "b", "axis": "y", "at": 1}],
+            "repeat": [{"id": "a", "count": 3, "offset": [1, 0, 0]},
+                       {"id": "b", "count": 4, "around": [0, 0], "angle": 180}]
+        });
         for d in definitions() {
+            let sample = if d.name == "scene" { &scene } else { &full };
             let mut args = serde_json::Map::new();
             for (k, _) in d.input_schema["properties"].as_object().unwrap() {
-                args.insert(k.clone(), full[k].clone());
+                args.insert(k.clone(), sample[k].clone());
             }
             ToolCall::parse(d.name, Value::Object(args))
                 .unwrap_or_else(|e| panic!("{}: {e}", d.name));
@@ -1795,7 +1981,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 23);
+        assert_eq!(compact.len(), 24);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

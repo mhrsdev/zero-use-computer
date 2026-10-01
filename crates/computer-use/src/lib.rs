@@ -63,6 +63,7 @@ pub mod overlay;
 pub mod paint;
 pub mod privacy;
 pub mod roles;
+pub mod scene;
 pub mod screens;
 pub mod target;
 pub mod text;
