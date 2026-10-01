@@ -1,7 +1,9 @@
 //! Window management on macOS through the Accessibility API (a window's
 //! AXPosition, AXSize, AXMinimized and AXFullScreen attributes, its close
-//! button, AXRaise) and CoreGraphics / AppKit for the displays. macOS has no
-//! public API to move windows between Spaces.
+//! button, AXRaise, the app's AXFrontmost) and CoreGraphics / AppKit for the
+//! displays. macOS has no public API to move windows between Spaces.
+
+use std::time::{Duration, Instant};
 
 use core_graphics::display::CGDisplay;
 use core_graphics::geometry::{CGPoint, CGSize};
@@ -10,7 +12,7 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSScre
 
 use super::ffi;
 use crate::error::{Error, Result};
-use crate::types::{Display, Rect, WindowOp};
+use crate::types::{AppInfo, Display, Rect, WindowOp};
 
 pub fn displays() -> Result<Vec<Display>> {
     let ids = CGDisplay::active_displays()
@@ -60,34 +62,92 @@ fn fail(what: &str) -> Error {
     Error::ActionFailed(format!("the window did not accept {what}"))
 }
 
-pub fn apply(win: ffi::AXUIElementRef, pid: u32, op: &WindowOp) -> Result<()> {
+/// The error for a window change that failed with `err`.
+fn failed(err: ffi::AXError, app: &AppInfo, what: &str) -> Error {
+    match err {
+        ffi::kAXErrorCannotComplete => Error::Unanswered(app.name.clone()),
+        ffi::kAXErrorAPIDisabled => Error::Permission(
+            "Accessibility is turned off for this server: enable the app that runs it under System Settings ▸ Privacy & Security ▸ Accessibility".into(),
+        ),
+        _ => fail(what),
+    }
+}
+
+/// Take the window out of full screen, and wait (up to 2 s) until it is:
+/// the animation ignores a move or resize sent meanwhile.
+fn leave_full_screen(win: ffi::AXUIElementRef, app: &AppInfo) -> Result<()> {
+    if ffi::copy_bool(win, "AXFullScreen") != Some(true) {
+        return Ok(());
+    }
+    ffi::set_bool(win, "AXFullScreen", false).map_err(|e| failed(e, app, "leaving full screen"))?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while ffi::copy_bool(win, "AXFullScreen") == Some(true) {
+        if Instant::now() >= deadline {
+            return Err(Error::ActionFailed(
+                "the window is still leaving full screen; try again in a moment".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// Bring the app forward. `activateWithOptions` alone is only a request
+/// since macOS 14 (IgnoringOtherApps is ignored, and an app in the
+/// background may be refused), so AXFrontmost is set too.
+fn activate(app_el: ffi::AXUIElementRef, app: &AppInfo) -> Result<()> {
+    let activated =
+        NSRunningApplication::runningApplicationWithProcessIdentifier(app.pid as libc::pid_t)
+            .is_some_and(|a| {
+                #[allow(deprecated)]
+                a.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps)
+            });
+    match ffi::set_bool(app_el, "AXFrontmost", true) {
+        Ok(()) => Ok(()),
+        Err(e) if ffi::is_fatal(e) => Err(failed(e, app, "")),
+        Err(_) if activated => Ok(()),
+        Err(_) => Err(Error::ActionFailed(format!(
+            "{} could not be brought to the front",
+            app.name
+        ))),
+    }
+}
+
+pub fn apply(
+    win: ffi::AXUIElementRef,
+    app_el: ffi::AXUIElementRef,
+    app: &AppInfo,
+    op: &WindowOp,
+) -> Result<()> {
     match *op {
         WindowOp::Focus => {
             if ffi::copy_bool(win, "AXMinimized") == Some(true) {
-                ffi::set_bool(win, "AXMinimized", false);
+                ffi::set_bool(win, "AXMinimized", false)
+                    .map_err(|e| failed(e, app, "restoring"))?;
             }
-            ffi::perform_action(win, "AXRaise");
-            ffi::set_bool(win, "AXMain", true);
-            if let Some(app) =
-                NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
-            {
-                #[allow(deprecated)]
-                app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+            // Raised and made main first: activating the app then brings
+            // this window forward with it.
+            if let Err(e) = ffi::perform_action(win, "AXRaise") {
+                if ffi::is_fatal(e) {
+                    return Err(failed(e, app, "raising"));
+                }
+                log::debug!("AXRaise failed ({e}); activating {} anyway", app.name);
             }
+            // Not every window can be main (panels); raising is what counts.
+            let _ = ffi::set_bool(win, "AXMain", true);
+            activate(app_el, app)?;
         }
         WindowOp::SetBounds(r) => {
-            if ffi::copy_bool(win, "AXFullScreen") == Some(true) {
-                ffi::set_bool(win, "AXFullScreen", false);
-            }
+            leave_full_screen(win, app)?;
             let pos = CGPoint::new(r.x, r.y);
             let size = CGSize::new(r.width, r.height);
             // Move, size, then move again: a resize near a screen edge can
             // shift the window.
             let moved = ffi::set_point(win, "AXPosition", pos);
             let sized = ffi::set_size(win, "AXSize", size);
-            ffi::set_point(win, "AXPosition", pos);
-            if !moved && !sized {
-                return Err(fail("a new position or size"));
+            let _ = ffi::set_point(win, "AXPosition", pos);
+            if let (Err(e), Err(_)) = (moved, sized) {
+                return Err(failed(e, app, "a new position or size"));
             }
         }
         WindowOp::Maximize => {
@@ -107,34 +167,28 @@ pub fn apply(win: ffi::AXUIElementRef, pid: u32, op: &WindowOp) -> Result<()> {
                 .find(|d| d.bounds.contains(center))
                 .or_else(|| ds.iter().find(|d| d.primary))
                 .ok_or_else(|| Error::Platform("no display".into()))?;
-            return apply(win, pid, &WindowOp::SetBounds(d.work_area));
+            return apply(win, app_el, app, &WindowOp::SetBounds(d.work_area));
         }
         WindowOp::Minimize => {
-            if !ffi::set_bool(win, "AXMinimized", true) {
-                return Err(fail("minimizing"));
-            }
+            ffi::set_bool(win, "AXMinimized", true).map_err(|e| failed(e, app, "minimizing"))?;
         }
         WindowOp::Restore => {
-            if ffi::copy_bool(win, "AXFullScreen") == Some(true) {
-                ffi::set_bool(win, "AXFullScreen", false);
-            }
-            if ffi::copy_bool(win, "AXMinimized") == Some(true)
-                && !ffi::set_bool(win, "AXMinimized", false)
-            {
-                return Err(fail("restoring"));
+            leave_full_screen(win, app)?;
+            if ffi::copy_bool(win, "AXMinimized") == Some(true) {
+                ffi::set_bool(win, "AXMinimized", false)
+                    .map_err(|e| failed(e, app, "restoring"))?;
             }
         }
         WindowOp::Fullscreen(on) => {
-            if !ffi::set_bool(win, "AXFullScreen", on) {
-                return Err(fail("full screen"));
-            }
+            ffi::set_bool(win, "AXFullScreen", on).map_err(|e| failed(e, app, "full screen"))?;
         }
         WindowOp::Close => {
             let button = ffi::copy_single_element(win, "AXCloseButton")
                 .ok_or_else(|| Error::ActionFailed("this window has no close button".into()))?;
-            if !ffi::perform_action(button.as_ref(), "AXPress") {
-                return Err(fail("closing"));
-            }
+            // An app asking to save first answers once its dialog is shown
+            // (or, if the dialog is app-modal, only once it closes).
+            ffi::perform_action(button.as_ref(), "AXPress")
+                .map_err(|e| failed(e, app, "closing"))?;
         }
         WindowOp::ToDesktop(_) => {
             return Err(Error::Unsupported(

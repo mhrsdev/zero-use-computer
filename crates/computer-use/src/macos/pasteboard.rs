@@ -1,14 +1,45 @@
-//! macOS clipboard via `NSPasteboard`.
+//! macOS clipboard via `NSPasteboard`. The callers hold an autorelease pool.
 
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 
 use crate::error::{Error, Result};
 
+/// Marker types (nspasteboard.org) that password managers and the like put
+/// on what they copy: secret, or not meant to be kept or read by others.
+const CONCEALED: [&str; 2] = [
+    "org.nspasteboard.ConcealedType",
+    "org.nspasteboard.TransientType",
+];
+
+/// Most clipboard text returned (bytes of UTF-8).
+const MAX_BYTES: usize = 1 << 20;
+
 pub fn get() -> Result<String> {
     let pb = NSPasteboard::generalPasteboard();
+    if let Some(types) = pb.types()
+        && (0..types.count()).any(|i| CONCEALED.contains(&&*types.objectAtIndex(i).to_string()))
+    {
+        return Err(Error::Blocked(
+            "reading the clipboard".into(),
+            "it holds concealed content (a password or another secret, as marked by the app that copied it)".into(),
+        ));
+    }
     let s = unsafe { pb.stringForType(NSPasteboardTypeString) };
-    Ok(s.map(|s| s.to_string()).unwrap_or_default())
+    let mut text = s.map(|s| s.to_string()).unwrap_or_default();
+    if text.len() > MAX_BYTES {
+        let total = text.chars().count();
+        let mut cut = MAX_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        let kept = text.chars().count();
+        text.push_str(&format!(
+            "\n[… cut here: the clipboard holds {total} characters, {kept} shown]"
+        ));
+    }
+    Ok(text)
 }
 
 pub fn set(text: &str) -> Result<()> {
