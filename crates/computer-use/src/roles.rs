@@ -146,6 +146,31 @@ pub fn atspi_action(native: &str) -> String {
         "toggle" => "toggle".into(),
         "expand or contract" | "expand or collapse" => "expand_or_collapse".into(),
         "menu" | "popup" | "showmenu" => "show_menu".into(),
+        // Some toolkits name an action with a sentence (GTK's table cells:
+        // "expands or contracts the row in the tree view containing this
+        // cell"): its key word is name enough, and far fewer tokens.
+        other if other.split_whitespace().count() > 2 => {
+            let has = |w: &str| other.contains(w);
+            if has("expand") || has("contract") || has("collapse") {
+                "expand_or_collapse".into()
+            } else if has("edit") {
+                "edit".into()
+            } else if has("toggle") {
+                "toggle".into()
+            } else if has("menu") {
+                "show_menu".into()
+            } else if has("activate") {
+                "activate".into()
+            } else {
+                snake(
+                    &other
+                        .split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            }
+        }
         other => snake(other),
     }
 }
@@ -288,6 +313,19 @@ mod tests {
         );
         assert_eq!(from_ax("AXFancyThing", None), "fancything");
         assert_eq!(ax_action("AXShowMenu"), "show_menu");
+        assert_eq!(
+            atspi_action("expands or contracts the row in the tree view containing this cell"),
+            "expand_or_collapse"
+        );
+        assert_eq!(
+            atspi_action("creates a widget in which the contents of the cell can be edited"),
+            "edit"
+        );
+        assert_eq!(atspi_action("activates the cell"), "activate");
+        assert_eq!(
+            atspi_action("does something quite unusual here"),
+            "does_something_quite"
+        );
         assert_eq!(ax_action("AXZoomWindow"), "zoom_window");
         assert_eq!(from_atspi("push button"), "button");
         assert_eq!(atspi_action("expand or contract"), "expand_or_collapse");
