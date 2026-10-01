@@ -5,13 +5,18 @@
 //! older systems fall back to hiding for the moment of a capture). Fading
 //! uses the windows' constant alpha. The helper keeps the same DPI awareness
 //! as the engine so both use the same coordinates. Windows destroys the
-//! windows if the helper process dies.
+//! windows if the helper process dies. Each window gets its image before it
+//! is first shown, and DWM is told not to animate it or round its corners.
 
 use std::collections::HashMap;
 
 use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{
     COLORREF, CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM,
+};
+use windows::Win32::Graphics::Dwm::{
+    DWM_WINDOW_CORNER_PREFERENCE, DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DWMWCP_DONOTROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
@@ -35,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{BOOL, PCWSTR, w};
 
 use super::draw;
 use super::helper::{Layer, Surface, SurfaceEvent};
@@ -133,6 +138,26 @@ impl WinSurface {
             )
         }
         .ok()?;
+        // No DWM transition when it is shown or hidden (it appears and goes
+        // exactly when told), and no rounded corners on Windows 11 (the
+        // glow's corners stay as drawn). Older systems refuse harmlessly.
+        let off = BOOL::from(true);
+        let square = DWMWCP_DONOTROUND;
+        // SAFETY: `hwnd` is our window; DWM reads one value of each size.
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                (&off as *const BOOL).cast(),
+                std::mem::size_of::<BOOL>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                (&square as *const DWM_WINDOW_CORNER_PREFERENCE).cast(),
+                std::mem::size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32,
+            );
+        }
         // Keep it out of screenshots; remember if the system can't.
         // SAFETY: `hwnd` is our window.
         if self.excluded
