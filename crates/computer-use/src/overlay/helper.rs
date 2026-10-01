@@ -658,11 +658,11 @@ impl Painter {
         fonts: &Fonts,
         s: &mut dyn Surface,
     ) {
-        let scale = if cfg.scale > 0.0 {
+        let scale = draw::sane_scale(if cfg.scale > 0.0 {
             cfg.scale as f32
         } else {
             s.render_scale()
-        };
+        });
         let ppu = s.px_per_unit().max(0.1);
         let screen = s.screen();
 
@@ -961,6 +961,8 @@ pub fn run(args: &[String]) -> i32 {
     let mut painter = Painter::default();
     let mut hidden = false;
     let mut hotkey_now = String::new();
+    /// Within this of the previous one, a stop-key press is key repeat.
+    const HOTKEY_QUIET: Duration = Duration::from_millis(400);
     let mut last_hotkey: Option<Instant> = None;
     let mut last_parent_check = Instant::now();
     // Set once told to stop: fade out, then exit.
@@ -1044,19 +1046,19 @@ pub fn run(args: &[String]) -> i32 {
 
         for ev in surface.pump() {
             match ev {
-                SurfaceEvent::Hotkey
-                    if quitting.is_none()
-                        && last_hotkey
-                            .is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) =>
-                {
-                    // Shown at once, whatever the engine is doing. (Presses
-                    // in quick succession are key repeat, not a second press.)
+                SurfaceEvent::Hotkey => {
+                    // Presses in quick succession are key repeat, not a
+                    // second press. Every press restarts the quiet time, so
+                    // holding the key down can't toggle stop off again.
+                    let repeat = last_hotkey.is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
                     last_hotkey = Some(Instant::now());
-                    let on = !machine.stopped();
-                    machine.apply(Cmd::Stopped { on }, Instant::now());
-                    reply(&Reply::Stop { on });
+                    if quitting.is_none() && !repeat {
+                        // Shown at once, whatever the engine is doing.
+                        let on = !machine.stopped();
+                        machine.apply(Cmd::Stopped { on }, Instant::now());
+                        reply(&Reply::Stop { on });
+                    }
                 }
-                SurfaceEvent::Hotkey => {}
             }
         }
         if let Some(pid) = parent

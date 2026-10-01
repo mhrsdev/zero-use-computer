@@ -49,7 +49,7 @@ This project follows the same architecture and behaviour:
 | Tool | What it does |
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by name/bundle id/executable (no arguments) and wait for a window. |
+| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments) and wait for a window. |
 | `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
 | `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
@@ -395,21 +395,31 @@ screenshot pixels to screen coordinates, and keeping input on the target app. Ea
 
 ## Use it as an MCP server
 
-**Download** a ready-made binary: every push builds `computer-use-mcp` for
-Windows (x64), macOS (Apple silicon and Intel) and Linux (x64) — open the
+**Download** a ready-made build: every push builds `computer-use-mcp` for
+Windows (x64), macOS (Apple silicon and Intel) and Linux (x64). Open the
 repository's **Actions** tab, pick the latest *CI* run and download
-`computer-use-mcp-<platform>` from its **Artifacts** (tagged versions `v*`
-also attach zips to a GitHub **Release**). Each download contains the binary,
-[`mcp.example.json`](mcp.example.json), the READMEs and the skill file.
+`computer-use-mcp-<platform>` from its **Artifacts**; tagged versions (`v*`,
+or *Run workflow* with a tag) also attach zips to a GitHub **Release**. Each
+download contains the binary, the two skills, installers for Claude Code,
+ready-to-copy client configs in [`examples/`](examples) and the connection
+guide [`docs/CONNECT.md`](docs/CONNECT.md). It is also a valid Claude plugin
+(`.claude-plugin/plugin.json` + `.mcp.json`).
+
+**Claude Code in one step:** extract the zip to a permanent folder and run
+`install.cmd` (Windows) or `./install.sh` (macOS / Linux). It registers the
+server with `claude mcp add` (`--scope user` by default) and writes a
+settings file if there is none; `claude mcp list` checks it.
 
 Or build it:
 
 ```bash
 cargo build --release -p computer-use-mcp
 # binary at target/release/computer-use-mcp (computer-use-mcp.exe on Windows)
+scripts/package-claude-code.sh   # the same bundle the installers come in
 ```
 
-**Claude Code** (`.mcp.json` or your MCP config):
+Then point any MCP client at `computer-use-mcp serve`, e.g. Claude Code's
+`.mcp.json`:
 
 ```json
 {
@@ -422,17 +432,16 @@ cargo build --release -p computer-use-mcp
 }
 ```
 
-**Codex** (`~/.codex/config.toml`):
+[`docs/CONNECT.md`](docs/CONNECT.md) has the steps for Claude Code, Claude
+Desktop, Codex, Cursor, VS Code and HTTP, with configs in
+[`examples/`](examples).
 
-```toml
-[mcp_servers.computer-use]
-command = "/path/to/target/release/computer-use-mcp"
-args = ["serve"]
-```
-
-Any MCP client works — the server speaks JSON-RPC 2.0 over stdio and implements
-`initialize`, `tools/list` and `tools/call`. It never asks the client to
-approve anything; give the agent the two skills above.
+The server speaks JSON-RPC 2.0 over stdio (or HTTP) and implements
+`initialize`, `tools/*`, and `prompts/*` / `resources/*` for the skills: for
+clients without skill files, the `computer-use` and `computer-use-security`
+skills are MCP prompts, and every skill file is a resource
+(`computer-use://skills/<skill>/<file>`). It never asks the client to approve
+anything; give the agent both skills.
 
 ### CLI
 
@@ -625,7 +634,11 @@ What the server still guarantees, because an agent can't do it for itself:
   is sent. (macOS posts input to the app's own process.)
 - **`launch_app` opens apps, it doesn't run commands.** The name is never
   split into arguments, and the launched app is cut off from the server's
-  stdin/stdout.
+  stdin/stdout. A name that isn't a program is looked up in the system's
+  list of installed apps (Start Menu shortcuts and App Paths on Windows,
+  `.desktop` entries on Linux, LaunchServices on macOS); only an exact name
+  counts, so it never picks one of several apps, and what runs is what the
+  app's own menu entry runs.
 - **`cmd` means the shortcut key**: Cmd on a Mac, Ctrl elsewhere; the
   Windows/Super key only when named (`win`, `super`).
 - **Private data is masked** before anything reaches the model (passwords,

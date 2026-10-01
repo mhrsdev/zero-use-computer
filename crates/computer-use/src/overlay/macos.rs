@@ -58,16 +58,28 @@ unsafe extern "C" {
         out_ref: *mut *mut c_void,
     ) -> i32;
     fn UnregisterEventHotKey(hot_key: *mut c_void) -> i32;
+    fn GetEventKind(event: *mut c_void) -> u32;
 }
 
 const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
+const K_EVENT_HOT_KEY_RELEASED: u32 = 6;
 
 /// Set by the hot key handler, read by `pump`.
 static HOTKEY_HIT: AtomicBool = AtomicBool::new(false);
+/// The hot key is held down (a repeat is not a new press).
+static HOTKEY_DOWN: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn on_hotkey(_next: *mut c_void, _event: *mut c_void, _data: *mut c_void) -> i32 {
-    HOTKEY_HIT.store(true, Ordering::SeqCst);
+extern "C" fn on_hotkey(_next: *mut c_void, event: *mut c_void, _data: *mut c_void) -> i32 {
+    // SAFETY: `event` is the event this handler was called for.
+    match unsafe { GetEventKind(event) } {
+        K_EVENT_HOT_KEY_RELEASED => HOTKEY_DOWN.store(false, Ordering::SeqCst),
+        _ => {
+            if !HOTKEY_DOWN.swap(true, Ordering::SeqCst) {
+                HOTKEY_HIT.store(true, Ordering::SeqCst);
+            }
+        }
+    }
     0 // noErr
 }
 
@@ -269,6 +281,8 @@ impl Surface for MacSurface {
             // SAFETY: unregistering the hot key we registered.
             unsafe { UnregisterEventHotKey(r) };
         }
+        // The old key's release (if it is held) never arrives now.
+        HOTKEY_DOWN.store(false, Ordering::SeqCst);
         let Some(combo) = combo else {
             return false;
         };
@@ -276,18 +290,24 @@ impl Surface for MacSurface {
             return false;
         };
         // SAFETY: Carbon calls on the main thread with valid arguments; the
-        // handler is a plain function that only sets a flag.
+        // handler is a plain function that only sets flags.
         unsafe {
             let target = GetApplicationEventTarget();
             if !self.handler {
-                let spec = EventTypeSpec {
-                    event_class: K_EVENT_CLASS_KEYBOARD,
-                    event_kind: K_EVENT_HOT_KEY_PRESSED,
-                };
+                let specs =
+                    [K_EVENT_HOT_KEY_PRESSED, K_EVENT_HOT_KEY_RELEASED].map(|kind| EventTypeSpec {
+                        event_class: K_EVENT_CLASS_KEYBOARD,
+                        event_kind: kind,
+                    });
                 let mut r = std::ptr::null_mut();
-                self.handler =
-                    InstallEventHandler(target, on_hotkey, 1, &spec, std::ptr::null_mut(), &mut r)
-                        == 0;
+                self.handler = InstallEventHandler(
+                    target,
+                    on_hotkey,
+                    specs.len() as u32,
+                    specs.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut r,
+                ) == 0;
             }
             let m = combo.modifiers;
             let mut mods = 0u32;

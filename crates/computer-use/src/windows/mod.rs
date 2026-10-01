@@ -13,7 +13,7 @@ mod notify;
 mod ocr;
 mod wm;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
@@ -28,7 +28,7 @@ use windows::Win32::System::Variant::{
 };
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GA_ROOT, GetAncestor, GetWindowTextLengthW, GetWindowTextW,
+    EnumWindows, GA_ROOT, GetAncestor, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsWindowVisible,
 };
 use windows::core::{BOOL, BSTR, Interface, PWSTR};
@@ -43,12 +43,25 @@ pub struct WindowsBackend {
     automation: IUIAutomation,
     walker: IUIAutomationTreeWalker,
     handles: HashMap<ElementHandle, (u32, IUIAutomationElement)>,
+    /// Window handles from `list_windows`: (pid, window element), one per
+    /// HWND for as long as the window is listed. Kept apart from `handles`
+    /// so a snapshot doesn't invalidate a window list callers still reuse.
+    window_handles: HashMap<ElementHandle, (u32, IUIAutomationElement)>,
     hwnds: HashMap<ElementHandle, isize>,
     next_handle: ElementHandle,
     /// Walk with a CacheRequest (one cross-process call per window).
     use_cache_request: bool,
     cache_request: Option<IUIAutomationCacheRequest>,
+    /// Apps whose subtree cache request failed or timed out (huge or hung
+    /// trees): walked node by node, within the snapshot limits, instead.
+    uncached_pids: HashSet<u32>,
 }
+
+/// Upper bound for one UI Automation cross-process transaction (a subtree
+/// cache request of a huge tree, or a hung app): past it the call fails
+/// instead of blocking.
+const UIA_TRANSACTION_TIMEOUT_MS: u32 = 5_000;
+const UIA_CONNECTION_TIMEOUT_MS: u32 = 3_000;
 
 /// Properties prefetched for every element by the cache request.
 const CACHED_PROPS: [UIA_PROPERTY_ID; 22] = [
@@ -120,6 +133,11 @@ impl WindowsBackend {
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|e| {
                     Error::Platform(format!("CoCreateInstance(CUIAutomation): {e}"))
                 })?;
+            // Bound every cross-process call (Windows 8+).
+            if let Ok(a2) = automation.cast::<IUIAutomation2>() {
+                let _ = a2.SetTransactionTimeout(UIA_TRANSACTION_TIMEOUT_MS);
+                let _ = a2.SetConnectionTimeout(UIA_CONNECTION_TIMEOUT_MS);
+            }
             let walker = automation
                 .ControlViewWalker()
                 .map_err(|e| Error::Platform(format!("ControlViewWalker: {e}")))?;
@@ -127,10 +145,12 @@ impl WindowsBackend {
                 automation,
                 walker,
                 handles: HashMap::new(),
+                window_handles: HashMap::new(),
                 hwnds: HashMap::new(),
                 next_handle: 1,
                 use_cache_request: true,
                 cache_request: None,
+                uncached_pids: HashSet::new(),
             })
         }
     }
@@ -145,6 +165,7 @@ impl WindowsBackend {
     fn resolve(&self, handle: ElementHandle) -> Result<IUIAutomationElement> {
         self.handles
             .get(&handle)
+            .or_else(|| self.window_handles.get(&handle))
             .map(|(_, el)| el.clone())
             .ok_or_else(|| Error::Internal(format!("stale element handle {handle}")))
     }
@@ -326,11 +347,17 @@ impl WindowsBackend {
         let idx = out.len();
         let node = self.build_node(pid, el, parent);
         out.push(node);
+        if depth >= opts.max_depth {
+            return; // children would be cut anyway: don't enumerate them
+        }
+        // Bounded even if a provider reports a sibling cycle.
+        let mut siblings = 0;
         let mut child = unsafe { self.walker.GetFirstChildElement(el) }.ok();
         while let Some(c) = child {
-            if out.len() >= opts.max_nodes {
+            if out.len() >= opts.max_nodes || siblings >= opts.max_nodes {
                 break;
             }
+            siblings += 1;
             self.walk(pid, &c, Some(idx), depth + 1, opts, out);
             child = unsafe { self.walker.GetNextSiblingElement(&c) }.ok();
         }
@@ -479,6 +506,9 @@ impl WindowsBackend {
         let idx = out.len();
         let node = self.build_node_cached(pid, el, parent);
         out.push(node);
+        if depth >= opts.max_depth {
+            return;
+        }
         let Ok(children) = (unsafe { el.GetCachedChildren() }) else {
             return;
         };
@@ -573,18 +603,43 @@ impl Backend for WindowsBackend {
         Ok(by_pid.into_values().collect())
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
+    fn launch_app(&mut self, query: &str) -> Result<Option<String>> {
+        use crate::launch::{self, Pick};
         // The whole query is the program: never split into arguments, so a
         // launch can't become a command line (`cmd /c …`).
-        crate::backend::spawn_detached(Command::new(query)).map_err(|e| {
-            Error::ActionFailed(format!(
-                "could not launch `{query}`: {e}. Pass an executable name or path (no arguments)."
-            ))
-        })
+        let err = match crate::backend::spawn_detached(Command::new(query)) {
+            Ok(()) => return Ok(None),
+            Err(e) => e,
+        };
+        if err.kind() != std::io::ErrorKind::NotFound || query.contains(['\\', '/', ':']) {
+            return Err(Error::ActionFailed(format!(
+                "could not launch `{query}`: {err}"
+            )));
+        }
+        // A program registered under App Paths (`chrome`, `winword`), which
+        // the Run box finds but PATH doesn't.
+        if let Some(exe) = app_path(query) {
+            crate::backend::spawn_detached(Command::new(&exe)).map_err(|e| {
+                Error::ActionFailed(format!("could not launch `{query}` ({exe}): {e}"))
+            })?;
+            return Ok(Some(exe));
+        }
+        // An app's name in the Start Menu ("Google Chrome"): open its
+        // shortcut, as clicking it would.
+        match launch::pick(query, &launch::start_menu_shortcuts(&start_menu_dirs())) {
+            Pick::One(lnk) => shell_open(&lnk).map(|()| None),
+            other => Err(Error::ActionFailed(launch::not_found(
+                query,
+                &other,
+                "the Start Menu",
+            ))),
+        }
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
+        let foreground = unsafe { GetForegroundWindow() };
         let mut out = Vec::new();
+        let mut listed: HashSet<ElementHandle> = HashSet::new();
         for hwnd in self.top_level_windows() {
             let mut pid = 0u32;
             unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
@@ -598,11 +653,26 @@ impl Backend for WindowsBackend {
             let bounds = unsafe { element.CurrentBoundingRectangle() }
                 .ok()
                 .map(rect_to_bounds);
-            let focused = unsafe { element.CurrentHasKeyboardFocus() }
-                .map(|b| b.as_bool())
-                .unwrap_or(false);
-            let handle = self.handle_for(app.pid, element);
+            // The element's own HasKeyboardFocus is false whenever one of
+            // its children has the focus: compare with the foreground HWND.
+            let focused = !hwnd.0.is_null() && hwnd == foreground;
+            // The same handle for the same window, across listings.
+            let known = self.hwnds.iter().find_map(|(h, w)| {
+                (*w == hwnd.0 as isize
+                    && self
+                        .window_handles
+                        .get(h)
+                        .is_some_and(|(p, _)| *p == app.pid))
+                .then_some(*h)
+            });
+            let handle = known.unwrap_or_else(|| {
+                let h = self.next_handle;
+                self.next_handle += 1;
+                h
+            });
+            self.window_handles.insert(handle, (app.pid, element));
             self.hwnds.insert(handle, hwnd.0 as isize);
+            listed.insert(handle);
             out.push(WindowInfo {
                 id: hwnd.0 as u64,
                 title: Self::window_title(hwnd),
@@ -612,6 +682,17 @@ impl Backend for WindowsBackend {
                 minimized: wm::minimized(hwnd),
                 handle,
             });
+        }
+        // Windows of this app that are gone drop their handles.
+        let gone: Vec<ElementHandle> = self
+            .window_handles
+            .iter()
+            .filter(|(h, (p, _))| *p == app.pid && !listed.contains(h))
+            .map(|(h, _)| *h)
+            .collect();
+        for h in gone {
+            self.window_handles.remove(&h);
+            self.hwnds.remove(&h);
         }
         Ok(out)
     }
@@ -623,10 +704,13 @@ impl Backend for WindowsBackend {
         opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
         let root = self.resolve(window.handle)?;
+        // Element handles of the app's previous views go; its window
+        // handles (kept apart) stay valid.
         self.handles.retain(|_, (p, _)| *p != app.pid);
         let mut out = Vec::new();
-        if self.use_cache_request {
-            // One cross-process call fetches the whole subtree's properties.
+        if self.use_cache_request && !self.uncached_pids.contains(&app.pid) {
+            // One cross-process call fetches the whole subtree's properties
+            // (bounded by the UIA transaction timeout).
             let cached = self
                 .cache_request()
                 .and_then(|cr| unsafe { root.BuildUpdatedCache(&cr) });
@@ -635,7 +719,12 @@ impl Backend for WindowsBackend {
                     self.walk_cached(app.pid, &cached_root, None, 0, opts, &mut out);
                     return Ok(out);
                 }
-                Err(e) => log::warn!("UIA cache request failed ({e}); walking uncached"),
+                Err(e) => {
+                    // Too big or too slow for one request: from now on walk
+                    // this app within the node/depth limits instead.
+                    log::warn!("UIA cache request failed ({e}); walking uncached");
+                    self.uncached_pids.insert(app.pid);
+                }
             }
         }
         self.walk(app.pid, &root, None, 0, opts, &mut out);
@@ -763,7 +852,7 @@ impl Backend for WindowsBackend {
         &mut self,
         element: ElementHandle,
         text: Option<&str>,
-        _occurrence: usize,
+        occurrence: usize,
     ) -> Result<()> {
         let el = self.resolve(element)?;
         let text_pat: IUIAutomationTextPattern = self
@@ -774,8 +863,23 @@ impl Backend for WindowsBackend {
             None => unsafe { range.Select() }.map_err(Error::action)?,
             Some(needle) => {
                 let bstr = BSTR::from(needle);
-                let found = unsafe { range.FindText(&bstr, false, false) }
-                    .map_err(|_| Error::ActionFailed(format!("`{needle}` not found")))?;
+                let not_found = || Error::ActionFailed(format!("`{needle}` not found"));
+                let mut found =
+                    unsafe { range.FindText(&bstr, false, false) }.map_err(|_| not_found())?;
+                // FindText returns the first match in the range: move the
+                // range's start past each hit to reach the nth.
+                for _ in 1..occurrence.max(1) {
+                    unsafe {
+                        range.MoveEndpointByRange(
+                            TextPatternRangeEndpoint_Start,
+                            &found,
+                            TextPatternRangeEndpoint_End,
+                        )
+                    }
+                    .map_err(Error::action)?;
+                    found =
+                        unsafe { range.FindText(&bstr, false, false) }.map_err(|_| not_found())?;
+                }
                 unsafe { found.Select() }.map_err(Error::action)?;
             }
         }
@@ -844,6 +948,87 @@ impl Backend for WindowsBackend {
     }
 }
 
+/// The Start Menu's program folders: the user's own first, then all users'.
+fn start_menu_dirs() -> Vec<std::path::PathBuf> {
+    ["APPDATA", "ProgramData"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|base| std::path::PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs"))
+        .collect()
+}
+
+/// The program registered for `name` under `App Paths` (per user, then for
+/// the machine), if that file exists.
+fn app_path(name: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    use windows::core::HSTRING;
+    let file = if name.to_lowercase().ends_with(".exe") {
+        name.to_string()
+    } else {
+        format!("{name}.exe")
+    };
+    let key = HSTRING::from(format!(
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{file}"
+    ));
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buf = vec![0u16; 1024];
+        let mut bytes = (buf.len() * 2) as u32;
+        // SAFETY: `buf` holds `bytes` bytes; the default value is read
+        // (null value name), and REG_EXPAND_SZ comes back expanded.
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                &key,
+                windows::core::PCWSTR::null(),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut bytes),
+            )
+        };
+        if status.is_err() {
+            continue;
+        }
+        let len = (bytes as usize / 2).min(buf.len());
+        let value = String::from_utf16_lossy(&buf[..len]);
+        let path = value
+            .trim_end_matches('\0')
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        if !path.is_empty() && std::path::Path::new(&path).is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Open a file the backend found itself (a Start Menu shortcut) the way
+/// Explorer does. Never called with anything the agent typed.
+fn shell_open(file: &std::path::Path) -> Result<()> {
+    use windows::Win32::UI::Shell::{
+        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, PCWSTR};
+    let verb = HSTRING::from("open");
+    let wfile = HSTRING::from(file.as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(wfile.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // SAFETY: the strings outlive the call; no process handle is asked for
+    // (no SEE_MASK_NOCLOSEPROCESS), so nothing is left to close.
+    unsafe { ShellExecuteExW(&mut info) }
+        .map_err(|e| Error::ActionFailed(format!("could not open {}: {e}", file.display())))
+}
+
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let vec = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
     vec.push(hwnd);
@@ -901,7 +1086,6 @@ fn rect_to_bounds(r: RECT) -> Rect {
 }
 
 fn foreground_pid() -> Option<u32> {
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() {
         return None;

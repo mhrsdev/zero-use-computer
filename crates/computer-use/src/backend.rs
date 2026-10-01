@@ -55,9 +55,12 @@ pub trait Backend {
     /// Running GUI apps.
     fn list_apps(&mut self) -> Result<Vec<AppInfo>>;
 
-    /// Start an app by name, bundle id or executable. Returns once the launch
-    /// request has been issued; the engine waits for the app to appear.
-    fn launch_app(&mut self, query: &str) -> Result<()>;
+    /// Start an app by name, bundle id or executable, with no arguments.
+    /// Returns once the launch request has been issued; the engine waits for
+    /// the app to appear. When the name was looked up in the OS's list of
+    /// installed apps (see [`crate::launch`]), returns the program that was
+    /// started, so the engine can recognise the app by it.
+    fn launch_app(&mut self, query: &str) -> Result<Option<String>>;
 
     /// Top-level windows of an app, most relevant first is not required.
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>>;

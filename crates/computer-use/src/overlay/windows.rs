@@ -86,14 +86,28 @@ impl WinSurface {
         // SAFETY: `class` is fully initialised; a repeat registration fails
         // harmlessly.
         unsafe { RegisterClassW(&class) };
-        Ok(Self {
+        let mut s = Self {
             instance,
             layers: HashMap::new(),
-            excluded: true,
+            excluded: capture_exclusion_supported(),
             hidden: false,
             opacity: 1.0,
             hotkey: false,
-        })
+        };
+        // Find out now whether captures can leave us out, before telling the
+        // engine: a never-shown test window.
+        if s.excluded {
+            match s.create_window() {
+                Some(test) => {
+                    // SAFETY: destroying the window just created.
+                    unsafe {
+                        let _ = DestroyWindow(test);
+                    }
+                }
+                None => s.excluded = false,
+            }
+        }
+        Ok(s)
     }
 
     /// A click-through layered popup.
@@ -120,7 +134,9 @@ impl WinSurface {
         .ok()?;
         // Keep it out of screenshots; remember if the system can't.
         // SAFETY: `hwnd` is our window.
-        if unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_err() {
+        if self.excluded
+            && unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }.is_err()
+        {
             self.excluded = false;
         }
         Some(hwnd)
@@ -390,6 +406,38 @@ impl Surface for WinSurface {
             }
         }
     }
+}
+
+/// Whether this Windows can leave a window out of captures: Windows 10 2004
+/// (build 19041) or later. Older builds accept `WDA_EXCLUDEFROMCAPTURE` but
+/// treat it as `WDA_MONITOR`, so the overlay would show in screenshots as a
+/// black box. An unknown build is left to the test window.
+fn capture_exclusion_supported() -> bool {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    let mut buf = [0u16; 32];
+    let mut bytes = std::mem::size_of_val(&buf) as u32;
+    // SAFETY: `buf` holds `bytes` bytes; a REG_SZ value is read.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
+            w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status.is_err() {
+        return true;
+    }
+    let len = (bytes as usize / 2).min(buf.len());
+    String::from_utf16_lossy(&buf[..len])
+        .trim_end_matches('\0')
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .is_none_or(|build| build >= 19041)
 }
 
 /// Whether process `pid` is still running.

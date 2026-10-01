@@ -65,7 +65,7 @@ dbus-run-session -- bash -euc '
   [ -n "$launcher" ] && "$launcher" --launch-immediately >/tmp/atspi.log 2>&1 &
   # A registry daemon so apps can register.
   for r in /usr/libexec/at-spi2-registryd /usr/lib/at-spi2-core/at-spi2-registryd; do
-    [ -x "$r" ] && "$r" >/tmp/atspi-reg.log 2>&1 & break
+    [ -x "$r" ] && { "$r" >/tmp/atspi-reg.log 2>&1 & break; }
   done
   sleep 1
   # Optionally a window manager (CU_WM=openbox) to exercise the EWMH paths.

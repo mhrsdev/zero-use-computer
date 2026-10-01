@@ -12,9 +12,24 @@ use serde_json::{Value, json};
 
 use crate::jsonrpc::*;
 
-/// Default protocol version if the client doesn't send one.
-const PROTOCOL_VERSION: &str = "2025-06-18";
+/// MCP protocol versions this server speaks, newest first.
+const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_NAME: &str = "computer-use";
+
+/// The version to answer `initialize` with: the client's when this server
+/// speaks it, else the newest one (the client then decides).
+pub(crate) fn negotiate_protocol(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|r| PROTOCOL_VERSIONS.iter().find(|v| **v == r))
+        .copied()
+        .unwrap_or(PROTOCOL_VERSIONS[0])
+}
+
+/// The error for a `tools/call` naming no tool this build has (a protocol
+/// error, unlike a tool that fails or is switched off in the settings).
+pub(crate) fn unknown_tool(name: &str) -> Option<String> {
+    (!tools::definitions().iter().any(|d| d.name == name)).then(|| format!("unknown tool: {name}"))
+}
 
 pub struct Server<R: BufRead, W: Write, B: Backend> {
     engine: Option<Engine<B>>,
@@ -47,25 +62,41 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         Ok(())
     }
 
+    /// The next message. A line that is too long, not UTF-8 or not a
+    /// JSON-RPC message is answered with an error and skipped: one bad line
+    /// never ends the session.
     fn read_message(&mut self) -> std::io::Result<Option<Incoming>> {
         loop {
-            let mut line = String::new();
-            let n = self.reader.read_line(&mut line)?;
-            if n == 0 {
-                return Ok(None); // EOF
-            }
+            let bytes = match read_capped_line(&mut self.reader, MAX_LINE_BYTES)? {
+                RawLine::Eof => return Ok(None),
+                RawLine::TooLong => {
+                    log::warn!("dropping a message over {MAX_LINE_BYTES} bytes");
+                    self.write_msg(&Response::err(
+                        Value::Null,
+                        INVALID_REQUEST,
+                        format!("message too long (over {MAX_LINE_BYTES} bytes)"),
+                    ))?;
+                    continue;
+                }
+                RawLine::Line(bytes) => bytes,
+            };
+            let Ok(line) = std::str::from_utf8(&bytes) else {
+                log::warn!("dropping a message that is not UTF-8");
+                self.write_msg(&Response::err(
+                    Value::Null,
+                    PARSE_ERROR,
+                    "parse error: message is not valid UTF-8",
+                ))?;
+                continue;
+            };
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Incoming>(&line) {
+            match parse_message(line) {
                 Ok(msg) => return Ok(Some(msg)),
-                Err(e) => {
-                    log::warn!("dropping unparseable message: {e}");
-                    self.write_msg(&Response::err(
-                        Value::Null,
-                        PARSE_ERROR,
-                        format!("parse error: {e}"),
-                    ))?;
+                Err(reply) => {
+                    log::warn!("dropping a bad message: {:?}", reply.error);
+                    self.write_msg(&reply)?;
                 }
             }
         }
@@ -149,26 +180,19 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
                 self.shutdown = true;
                 Some(Response::ok(id, Value::Null))
             }
-            // Not implemented but harmless to answer emptily.
-            "resources/list" => Some(Response::ok(id, json!({"resources": []}))),
-            "prompts/list" => Some(Response::ok(id, json!({"prompts": []}))),
-            other => Some(Response::err(
-                id,
-                METHOD_NOT_FOUND,
-                format!("method not found: {other}"),
-            )),
+            other => Some(match crate::catalog::handle(other, &params) {
+                Some(Ok(result)) => Response::ok(id, result),
+                Some(Err((code, message))) => Response::err(id, code, message),
+                None => Response::err(id, METHOD_NOT_FOUND, format!("method not found: {other}")),
+            }),
         }
     }
 
     fn initialize(&mut self, params: &Value) -> Value {
-        let protocol = params
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .unwrap_or(PROTOCOL_VERSION)
-            .to_string();
+        let protocol = negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str));
         json!({
             "protocolVersion": protocol,
-            "capabilities": {"tools": {"listChanged": true}},
+            "capabilities": crate::catalog::capabilities(true),
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             "instructions": instructions(),
         })
@@ -210,6 +234,9 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             Some(n) => n.to_string(),
             None => return Response::err(id, INVALID_PARAMS, "tools/call requires `name`"),
         };
+        if let Some(e) = unknown_tool(&name) {
+            return Response::err(id, INVALID_PARAMS, e);
+        }
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let engine = self.engine.as_mut().expect("engine present");
@@ -345,6 +372,8 @@ mod tests {
             lines: Vec<String>,
             path: std::path::PathBuf,
             step: usize,
+            buf: Vec<u8>,
+            at: usize,
         }
         impl std::io::Read for Script {
             fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
@@ -353,25 +382,28 @@ mod tests {
         }
         impl std::io::BufRead for Script {
             fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-                unreachable!()
-            }
-            fn consume(&mut self, _n: usize) {}
-            fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
-                if self.step == 2 {
-                    // Disable a tool and bump the mtime so the change is seen.
-                    std::fs::write(
-                        &self.path,
-                        "[tree]\nmax_nodes = 300\n[tools]\ndisabled = [\"drag\"]\n",
-                    )?;
-                    let f = std::fs::File::options().write(true).open(&self.path)?;
-                    f.set_modified(SystemTime::now() + Duration::from_secs(5))?;
+                if self.at == self.buf.len() {
+                    if self.step == 2 {
+                        // Disable a tool and bump the mtime so the change is seen.
+                        std::fs::write(
+                            &self.path,
+                            "[tree]\nmax_nodes = 300\n[tools]\ndisabled = [\"drag\"]\n",
+                        )?;
+                        let f = std::fs::File::options().write(true).open(&self.path)?;
+                        f.set_modified(SystemTime::now() + Duration::from_secs(5))?;
+                    }
+                    self.buf = self
+                        .lines
+                        .get(self.step)
+                        .map(|l| l.as_bytes().to_vec())
+                        .unwrap_or_default();
+                    self.at = 0;
+                    self.step += 1;
                 }
-                let Some(line) = self.lines.get(self.step) else {
-                    return Ok(0);
-                };
-                self.step += 1;
-                buf.push_str(line);
-                Ok(line.len())
+                Ok(&self.buf[self.at..])
+            }
+            fn consume(&mut self, n: usize) {
+                self.at += n;
             }
         }
         let reader = Script {
@@ -383,6 +415,8 @@ mod tests {
             ],
             path: path.clone(),
             step: 0,
+            buf: Vec::new(),
+            at: 0,
         };
         let mut out: Vec<u8> = Vec::new();
         {
@@ -414,9 +448,68 @@ mod tests {
     }
 
     #[test]
+    fn skills_are_prompts_and_resources() {
+        let input = format!(
+            "{}{}{}",
+            line("initialize", 1, json!({"capabilities":{}})),
+            line("prompts/get", 2, json!({"name":"computer-use-security"})),
+            line(
+                "resources/read",
+                3,
+                json!({"uri":"computer-use://skills/nope/SKILL.md"})
+            ),
+        );
+        let out = converse(&input);
+        let caps = &out[0]["result"]["capabilities"];
+        assert!(caps["prompts"].is_object() && caps["resources"].is_object());
+        let text = out[1]["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("security rules"), "{text}");
+        assert_eq!(out[2]["error"]["code"], crate::catalog::RESOURCE_NOT_FOUND);
+    }
+
+    #[test]
     fn unknown_method_is_error() {
         let input = line("frobnicate", 1, json!({}));
         let out = converse(&input);
         assert_eq!(out[0]["error"]["code"], METHOD_NOT_FOUND);
+        let input = line("tools/call", 2, json!({"name": "frobnicate"}));
+        let out = converse(&input);
+        assert_eq!(out[0]["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[test]
+    fn bad_lines_are_answered_and_skipped() {
+        let mut input = b"{oops\n\xff\xfe\n[1]\n".to_vec();
+        input.extend_from_slice(line("ping", 7, json!({})).as_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut server = Server::new(engine(), Cursor::new(input), &mut out);
+            server.run().unwrap();
+        }
+        let msgs: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let codes: Vec<&Value> = msgs.iter().map(|m| &m["error"]["code"]).collect();
+        assert_eq!(
+            codes[..3],
+            [
+                &json!(PARSE_ERROR),
+                &json!(PARSE_ERROR),
+                &json!(INVALID_REQUEST)
+            ]
+        );
+        assert_eq!(msgs[3]["id"], 7);
+        assert_eq!(msgs[3]["result"], json!({}));
+    }
+
+    #[test]
+    fn protocol_version_is_negotiated() {
+        assert_eq!(negotiate_protocol(Some("2025-03-26")), "2025-03-26");
+        assert_eq!(negotiate_protocol(Some("1999-01-01")), "2025-06-18");
+        assert_eq!(negotiate_protocol(None), "2025-06-18");
     }
 }

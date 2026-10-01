@@ -574,10 +574,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app",
             title: "Launch app",
-            description: "Start (or bring up) a desktop app by name, bundle id or executable, and wait until it shows a window. Then call get_app_state. It only opens apps: arguments and command lines are not accepted.",
+            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"app": {"type": "string", "description": "App name, bundle id or executable (no arguments)."}},
+                "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments)."}},
                 "required": ["app"],
                 "additionalProperties": false
             }),

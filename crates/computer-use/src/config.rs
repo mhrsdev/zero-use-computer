@@ -823,6 +823,30 @@ impl Config {
                 c.pixel_grid
             ));
         }
+        // Numbers that become durations or drawing sizes: out of range (or
+        // inf / NaN) they would panic or stall.
+        for (key, value, max) in [
+            ("launch_timeout_secs", self.launch_timeout_secs, 3600.0),
+            ("overlay.scale", o.scale, 8.0),
+            (
+                "macos.messaging_timeout_secs",
+                f64::from(self.macos.messaging_timeout_secs),
+                120.0,
+            ),
+            ("tree.diff_full_ratio", self.tree.diff_full_ratio, 1.0),
+        ] {
+            if !(0.0..=max).contains(&value) {
+                return Err(format!("{key} must be between 0 and {max} (got {value})"));
+            }
+        }
+        for (key, value) in [
+            ("overlay.border_width", o.border_width),
+            ("overlay.glow_size", o.glow_size),
+        ] {
+            if value > 2000 {
+                return Err(format!("{key} must be at most 2000 (got {value})"));
+            }
+        }
         Ok(())
     }
 }
@@ -1186,6 +1210,18 @@ mod tests {
         edit_file(&path, "cache.match_threshold", Edit::Set("0.6".into())).unwrap();
         std::fs::write(&path, "[cache]\npixel_grid = 1\n").unwrap();
         assert!(ConfigStore::load(Some(&path)).is_err());
+        // Numbers that would panic or stall as durations or drawing sizes.
+        for bad in [
+            "launch_timeout_secs = inf\n",
+            "launch_timeout_secs = 1e20\n",
+            "launch_timeout_secs = -1\n",
+            "[overlay]\nscale = nan\n",
+            "[overlay]\nglow_size = 100000\n",
+            "[tree]\ndiff_full_ratio = 3\n",
+        ] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(ConfigStore::load(Some(&path)).is_err(), "{bad}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

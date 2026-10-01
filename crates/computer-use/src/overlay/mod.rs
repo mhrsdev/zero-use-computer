@@ -144,6 +144,9 @@ pub enum Reply {
     },
 }
 
+/// Replies kept for a later `wait_for` at most.
+const MAX_BACKLOG: usize = 16;
+
 /// How to start the helper process.
 #[derive(Debug, Clone)]
 pub struct Launcher {
@@ -313,13 +316,23 @@ impl Overlay {
         }
     }
 
+    /// Keep a reply for a later `wait_for`. Late answers nobody waits for
+    /// any more (a `Hidden` after its wait timed out) are dropped, oldest
+    /// first, so the backlog can't grow without bound.
+    fn take(&mut self, r: Reply) {
+        if let Reply::Ready { excluded, .. } = r {
+            self.excluded = excluded;
+            return;
+        }
+        if self.backlog.len() >= MAX_BACKLOG {
+            self.backlog.remove(0);
+        }
+        self.backlog.push(r);
+    }
+
     fn drain(&mut self) {
         while let Ok(r) = self.rx.try_recv() {
-            if let Reply::Ready { excluded, .. } = r {
-                self.excluded = excluded;
-            } else {
-                self.backlog.push(r);
-            }
+            self.take(r);
         }
     }
 
@@ -338,8 +351,7 @@ impl Overlay {
                 return None;
             }
             match self.rx.recv_timeout(left.min(Duration::from_millis(50))) {
-                Ok(Reply::Ready { excluded, .. }) => self.excluded = excluded,
-                Ok(r) => self.backlog.push(r),
+                Ok(r) => self.take(r),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
             }
@@ -371,16 +383,26 @@ impl Drop for Overlay {
         self.send(&Cmd::Quit);
         self.tx = None; // closes the helper's stdin
         if let Some(mut child) = self.child.take() {
-            // Give it time to fade out before it is stopped.
-            let deadline = Instant::now() + Duration::from_millis(1200);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            // Give it time to fade out before it is stopped, without holding
+            // up the engine. (If this process exits first, the helper sees
+            // its stdin close and goes by itself.)
+            let reap = move || {
+                let deadline = Instant::now() + Duration::from_millis(1200);
+                while Instant::now() < deadline {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            };
+            let _ = std::thread::Builder::new()
+                .name("overlay-reap".into())
+                .spawn(reap);
         }
     }
 }

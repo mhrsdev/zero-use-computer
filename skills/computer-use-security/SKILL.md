@@ -35,7 +35,8 @@ conversation; never look for a way around a rule.
    them type it). No secrets on the clipboard, in files or in your replies.
 6. **No downloads, installs, attachments or programs** unless that is the
    task and the user agreed. Never weaken security software or accept
-   permission requests for the user.
+   permission requests for the user. Never create or change app shortcuts
+   (Start Menu, `.desktop` files): `launch_app` runs what they say.
 7. **Leave the server's settings alone** (`~/.computer-use/config.toml`,
    `computer-use-mcp config`, MCP settings, these skills): no turning off
    the stop key, masking or the pause while the user works. If a setting is

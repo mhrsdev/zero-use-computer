@@ -53,6 +53,7 @@ pub mod engine;
 pub mod error;
 pub mod imaging;
 pub mod keys;
+pub mod launch;
 pub mod mock;
 pub mod ocr;
 pub mod overlay;
@@ -130,7 +131,7 @@ impl Backend for Box<dyn Backend> {
     fn list_apps(&mut self) -> Result<Vec<types::AppInfo>> {
         (**self).list_apps()
     }
-    fn launch_app(&mut self, query: &str) -> Result<()> {
+    fn launch_app(&mut self, query: &str) -> Result<Option<String>> {
         (**self).launch_app(query)
     }
     fn list_windows(&mut self, app: &types::AppInfo) -> Result<Vec<types::WindowInfo>> {

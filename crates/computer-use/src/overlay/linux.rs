@@ -47,6 +47,13 @@ pub struct X11Surface {
     last_raise: Instant,
     /// The stop key's passive grab: keycode and modifiers.
     hotkey: Option<(u8, ModMask)>,
+    /// The stop key is held down (key repeat is not a new press), and when
+    /// it last reported a press.
+    hotkey_down: bool,
+    hotkey_pressed: u32,
+    /// When the stop key was last released (X sends release + press with
+    /// the same time for each key repeat).
+    hotkey_released: Option<u32>,
 }
 
 /// NumLock (Mod2) and CapsLock variants, so the stop key works whatever
@@ -124,6 +131,9 @@ impl X11Surface {
             hidden: false,
             last_raise: Instant::now(),
             hotkey: None,
+            hotkey_down: false,
+            hotkey_pressed: 0,
+            hotkey_released: None,
         })
     }
 
@@ -376,6 +386,7 @@ impl Surface for X11Surface {
 
     fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
         self.ungrab_hotkey();
+        self.hotkey_down = false;
         let Some(combo) = combo else {
             return false;
         };
@@ -430,7 +441,23 @@ impl Surface for X11Surface {
         while let Ok(Some(ev)) = self.conn.poll_for_event() {
             match ev {
                 Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
-                    events.push(SurfaceEvent::Hotkey);
+                    // Holding the key repeats it: only a fresh press counts.
+                    // (A press long after the last one is new even if its
+                    // release got lost.)
+                    let repeat = (self.hotkey_down
+                        && e.time.wrapping_sub(self.hotkey_pressed) < 1000)
+                        || self
+                            .hotkey_released
+                            .is_some_and(|t| e.time.wrapping_sub(t) <= 1);
+                    self.hotkey_down = true;
+                    self.hotkey_pressed = e.time;
+                    if !repeat {
+                        events.push(SurfaceEvent::Hotkey);
+                    }
+                }
+                Event::KeyRelease(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
+                    self.hotkey_down = false;
+                    self.hotkey_released = Some(e.time);
                 }
                 Event::Expose(e) if e.count == 0 => {
                     if let Some(w) = self.layers.values().find(|w| w.id == e.window) {

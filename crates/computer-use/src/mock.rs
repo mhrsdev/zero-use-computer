@@ -282,17 +282,24 @@ impl Backend for MockBackend {
         Ok(self.apps.iter().map(|a| a.info.clone()).collect())
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
+    fn launch_app(&mut self, query: &str) -> Result<Option<String>> {
         self.events.push(Event::Launch(query.into()));
         if let Some(app) = self.launchable.remove(&query.to_lowercase()) {
+            // Like a catalog lookup: report the program when it differs.
+            let program = app.info.exe.clone().filter(|_| {
+                !app.info
+                    .match_keys()
+                    .iter()
+                    .any(|k| k.contains(&query.to_lowercase()))
+            });
             self.apps.push(app);
-            Ok(())
+            Ok(program)
         } else if self
             .apps
             .iter()
             .any(|a| a.info.match_keys().contains(&query.to_lowercase()))
         {
-            Ok(())
+            Ok(None)
         } else {
             Err(Error::AppNotFound(query.into()))
         }

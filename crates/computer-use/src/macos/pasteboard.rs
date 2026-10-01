@@ -3,7 +3,7 @@
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub fn get() -> Result<String> {
     let pb = NSPasteboard::generalPasteboard();
@@ -13,10 +13,16 @@ pub fn get() -> Result<String> {
 
 pub fn set(text: &str) -> Result<()> {
     let pb = NSPasteboard::generalPasteboard();
-    unsafe {
+    let written = unsafe {
         pb.clearContents();
         let ns = NSString::from_str(text);
-        pb.setString_forType(&ns, NSPasteboardTypeString);
+        pb.setString_forType(&ns, NSPasteboardTypeString)
+    };
+    if written {
+        Ok(())
+    } else {
+        Err(Error::Platform(
+            "could not write the text to the pasteboard".into(),
+        ))
     }
-    Ok(())
 }

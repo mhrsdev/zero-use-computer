@@ -97,19 +97,42 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
     send(&inputs)
 }
 
+/// Pace of synthesized drag steps: apps that start a drag on a timer or a
+/// motion threshold (SM_CXDRAG) miss a single burst of events.
+const DRAG_STEP: std::time::Duration = std::time::Duration::from_millis(12);
+
 pub fn drag(from: Point, to: Point) -> Result<()> {
     let back = home();
-    let mut inputs = vec![move_to(from), mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0)];
-    for step in 1..=8 {
-        let p = Point::new(
-            from.x + (to.x - from.x) * f64::from(step) / 8.0,
-            from.y + (to.y - from.y) * f64::from(step) / 8.0,
-        );
-        inputs.push(move_to(p));
+    let mut pressed = false;
+    let dragged = drag_steps(from, to, &mut pressed);
+    if dragged.is_err() && pressed {
+        // Never leave the button held down.
+        let _ = send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
     }
-    inputs.push(mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0));
-    inputs.extend(back);
-    send(&inputs)
+    if let Some(b) = back {
+        let _ = send(&[b]);
+    }
+    dragged
+}
+
+/// The drag itself, one event at a time; `pressed` tells whether the
+/// button went down (and so must come up if a later step fails).
+fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
+    let step = |input: INPUT| -> Result<()> {
+        send(&[input])?;
+        std::thread::sleep(DRAG_STEP);
+        Ok(())
+    };
+    step(move_to(from))?;
+    step(mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0))?;
+    *pressed = true;
+    for n in 1..=8 {
+        step(move_to(Point::new(
+            from.x + (to.x - from.x) * f64::from(n) / 8.0,
+            from.y + (to.y - from.y) * f64::from(n) / 8.0,
+        )))?;
+    }
+    send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)])
 }
 
 pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {

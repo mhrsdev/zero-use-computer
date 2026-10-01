@@ -40,6 +40,10 @@ pub struct LinuxBackend {
     /// handle → (owning pid, element). Cleared per app on each snapshot so it
     /// never grows beyond the elements of the latest views.
     handles: HashMap<ElementHandle, (u32, ObjRef)>,
+    /// Window (root) handles from `list_windows`, one per window element.
+    /// They survive snapshots, since callers reuse a window list for a
+    /// while, and are only replaced by the next listing of the app.
+    window_handles: HashMap<ObjRef, (u32, ElementHandle)>,
     next_handle: ElementHandle,
     batch_size: usize,
     text_max: usize,
@@ -65,6 +69,7 @@ impl LinuxBackend {
             x11,
             app_refs: HashMap::new(),
             handles: HashMap::new(),
+            window_handles: HashMap::new(),
             next_handle: 1,
             batch_size: defaults.batch_size,
             text_max: defaults.text_max_chars,
@@ -89,7 +94,27 @@ impl LinuxBackend {
         self.handles
             .get(&handle)
             .map(|(_, r)| r.clone())
+            .or_else(|| {
+                self.window_handles
+                    .iter()
+                    .find(|(_, (_, h))| *h == handle)
+                    .map(|(r, _)| r.clone())
+            })
             .ok_or_else(|| Error::Internal(format!("stale element handle {handle}")))
+    }
+
+    /// The handle of a window element: the same one for as long as the
+    /// window is listed.
+    fn window_handle(&mut self, pid: u32, r: ObjRef) -> ElementHandle {
+        if let Some((p, h)) = self.window_handles.get(&r)
+            && *p == pid
+        {
+            return *h;
+        }
+        let h = self.next_handle;
+        self.next_handle += 1;
+        self.window_handles.insert(r, (pid, h));
+        h
     }
 
     /// Application accessibles and their pids, looked up concurrently.
@@ -105,6 +130,9 @@ impl LinuxBackend {
                 apps.push((child, pid));
             }
         }
+        // Apps that quit take their window handles with them.
+        let live = &self.app_refs;
+        self.window_handles.retain(|_, (p, _)| live.contains_key(p));
         Ok(apps)
     }
 
@@ -127,6 +155,9 @@ impl LinuxBackend {
             .into_iter()
             .zip(data)
             .filter(|(_, d)| {
+                if d.unreachable {
+                    return false; // gone, or the app is frozen
+                }
                 let role = roles::from_atspi(&d.acc.role_name);
                 let has_extent = d.extents.is_some_and(|(_, _, w, h)| w > 0 && h > 0);
                 is_window_role(&role) || (has_extent && d.acc.states.has(state::SHOWING))
@@ -234,6 +265,9 @@ impl Backend for LinuxBackend {
         let active = self.x11.as_ref().and_then(|x| x.active_pid());
         let mut out = Vec::new();
         for ((_, pid), d) in apps.into_iter().zip(data) {
+            if d.unreachable {
+                continue; // quit meanwhile, or frozen (timed out)
+            }
             let acc = d.acc;
             if acc.role_name != "application" && acc.name.is_empty() {
                 continue;
@@ -256,26 +290,54 @@ impl Backend for LinuxBackend {
         Ok(out)
     }
 
-    fn launch_app(&mut self, query: &str) -> Result<()> {
+    fn launch_app(&mut self, query: &str) -> Result<Option<String>> {
+        use crate::launch::{self, Pick};
         // The whole query is the program: never split into arguments, so a
         // launch can't become a command line (`xterm -e …`).
-        crate::backend::spawn_detached(Command::new(query)).map_err(|e| {
-            Error::ActionFailed(format!(
-                "could not launch `{query}`: {e}. Pass an executable name on PATH (no arguments)."
-            ))
-        })
+        let err = match crate::backend::spawn_detached(Command::new(query)) {
+            Ok(()) => return Ok(None),
+            Err(e) => e,
+        };
+        if err.kind() != std::io::ErrorKind::NotFound || query.contains('/') {
+            return Err(Error::ActionFailed(format!(
+                "could not launch `{query}`: {err}"
+            )));
+        }
+        // Not a program: an app's name in the menu ("Text Editor").
+        let entries = launch::desktop_entries(&launch::application_dirs());
+        match launch::find_desktop_entry(&entries, query) {
+            Pick::One(entry) => {
+                let mut cmd = Command::new(&entry.exec[0]);
+                cmd.args(&entry.exec[1..]);
+                crate::backend::spawn_detached(cmd).map_err(|e| {
+                    Error::ActionFailed(format!(
+                        "could not launch `{}` ({}): {e}",
+                        entry.name, entry.exec[0]
+                    ))
+                })?;
+                Ok(Some(entry.exec[0].clone()))
+            }
+            other => Err(Error::ActionFailed(launch::not_found(
+                query,
+                &other,
+                "the installed applications",
+            ))),
+        }
     }
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
         let app_ref = self.app_ref(app.pid)?;
         let windows = self.windows_of(&app_ref)?;
+        // Windows no longer listed drop their handles.
+        self.window_handles
+            .retain(|r, (p, _)| *p != app.pid || windows.iter().any(|(w, _)| w == r));
         let mut out = Vec::new();
         for (r, d) in windows {
             let bounds = d
                 .extents
                 .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into()));
             let id = stable_id(&r.path);
-            let handle = self.handle_for(app.pid, r);
+            let handle = self.window_handle(app.pid, r);
             let active = d.acc.states.has(state::ACTIVE);
             out.push(WindowInfo {
                 id,
@@ -301,7 +363,8 @@ impl Backend for LinuxBackend {
         opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
         let root = self.resolve(window.handle)?;
-        // Handles from this app's previous views are no longer needed.
+        // Handles from this app's previous views are no longer needed; its
+        // window handles (kept separately) stay valid for the next snapshot.
         self.handles.retain(|_, (p, _)| *p != app.pid);
         let walked = self.a11y.walk(
             &root,

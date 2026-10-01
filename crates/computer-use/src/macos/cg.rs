@@ -2,7 +2,9 @@
 //! windows without moving the user's cursor) and window capture.
 
 use std::ffi::c_void;
+use std::time::Duration;
 
+use core_graphics::display::CGDisplay;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit,
 };
@@ -25,6 +27,10 @@ fn post(pid: u32, event: &CGEvent) {
     // Deliver to the target process only, so the user's cursor never moves.
     event.post_to_pid(pid as libc::pid_t);
 }
+
+/// Pace of synthesized drag steps: apps that start a drag on a timer or a
+/// motion threshold miss a single burst of events.
+const DRAG_STEP: Duration = Duration::from_millis(12);
 
 fn flags(m: Modifiers) -> CGEventFlags {
     let mut f = CGEventFlags::empty();
@@ -85,9 +91,11 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
     if let Ok(e) = mk(CGEventType::MouseMoved, from) {
         post(pid, &e);
     }
+    std::thread::sleep(DRAG_STEP);
     if let Ok(e) = mk(CGEventType::LeftMouseDown, from) {
         post(pid, &e);
     }
+    std::thread::sleep(DRAG_STEP);
     for step in 1..=8 {
         let p = CGPoint {
             x: from.x + (to.x - from.x) * f64::from(step) / 8.0,
@@ -96,6 +104,7 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
         if let Ok(e) = mk(CGEventType::LeftMouseDragged, p) {
             post(pid, &e);
         }
+        std::thread::sleep(DRAG_STEP);
     }
     if let Ok(e) = mk(CGEventType::LeftMouseUp, to) {
         post(pid, &e);
@@ -127,7 +136,9 @@ pub fn type_text(pid: u32, text: &str) -> Result<()> {
     let src = source()?;
     // Keyboard events carrying a unicode string type it verbatim, in any
     // language. Each carries at most UNITS_PER_EVENT UTF-16 units (cut
-    // between characters), and every key-down gets its key-up.
+    // between characters), and every key-down gets its key-up. Flags are
+    // cleared so a modifier the user happens to hold doesn't turn the text
+    // into shortcuts.
     let mut chunk = String::new();
     let mut units = 0;
     let mut chunks = Vec::new();
@@ -149,6 +160,7 @@ pub fn type_text(pid: u32, text: &str) -> Result<()> {
         for down in [true, false] {
             let event = CGEvent::new_keyboard_event(src.clone(), 0, down)
                 .map_err(|_| Error::action("keyboard event"))?;
+            event.set_flags(CGEventFlags::empty());
             event.set_string(part);
             post(pid, &event);
         }
@@ -189,12 +201,27 @@ pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
     }
 }
 
-/// Capture the whole main display, or a screen-space rectangle of it.
+/// The union of all active displays' bounds (global coordinates), falling
+/// back to the main display.
+fn desktop_bounds() -> Rect {
+    let ids = CGDisplay::active_displays().unwrap_or_default();
+    let mut rects = ids.into_iter().map(|id| CGDisplay::new(id).bounds());
+    let first = rects.next().unwrap_or_else(|| CGDisplay::main().bounds());
+    let (mut x0, mut y0) = (first.origin.x, first.origin.y);
+    let (mut x1, mut y1) = (x0 + first.size.width, y0 + first.size.height);
+    for b in rects {
+        x0 = x0.min(b.origin.x);
+        y0 = y0.min(b.origin.y);
+        x1 = x1.max(b.origin.x + b.size.width);
+        y1 = y1.max(b.origin.y + b.size.height);
+    }
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// Capture the whole desktop (every display), or a screen-space rectangle
+/// of it.
 pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
-    let rect = region.unwrap_or_else(|| {
-        let b = unsafe { ffi::CGDisplayBounds(ffi::CGMainDisplayID()) };
-        Rect::new(b.origin.x, b.origin.y, b.size.width, b.size.height)
-    });
+    let rect = region.unwrap_or_else(desktop_bounds);
     let bounds = CGRect {
         origin: CGPoint {
             x: rect.x,

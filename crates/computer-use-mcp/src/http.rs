@@ -14,10 +14,9 @@ use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::jsonrpc::{INVALID_PARAMS, Incoming, METHOD_NOT_FOUND, PARSE_ERROR};
-use crate::server::instructions;
+use crate::jsonrpc::{INVALID_PARAMS, Incoming, METHOD_NOT_FOUND, parse_message};
+use crate::server::{instructions, negotiate_protocol, unknown_tool};
 
-const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Largest request body accepted (a JSON-RPC message is far smaller).
 const MAX_BODY: u64 = 4 * 1024 * 1024;
 
@@ -154,15 +153,9 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 /// Dispatch one JSON-RPC message; `None` for a notification.
 fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
-    let msg: Incoming = match serde_json::from_str(body) {
+    let msg: Incoming = match parse_message(body) {
         Ok(m) => m,
-        Err(e) => {
-            return Some(error(
-                Value::Null,
-                PARSE_ERROR,
-                &format!("parse error: {e}"),
-            ));
-        }
+        Err(reply) => return Some(serde_json::to_value(*reply).unwrap_or(Value::Null)),
     };
     let method = msg.method.clone()?;
     let params = msg.params.unwrap_or(Value::Null);
@@ -192,8 +185,8 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
         "initialize" => reply(
             id,
             json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": false}},
+                "protocolVersion": negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str)),
+                "capabilities": crate::catalog::capabilities(false),
                 "serverInfo": {"name": "computer-use", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": instructions(),
             }),
@@ -216,6 +209,9 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             reply(id, json!({"tools": list}))
         }
         "tools/call" => match params.get("name").and_then(Value::as_str) {
+            Some(name) if unknown_tool(name).is_some() => {
+                error(id, INVALID_PARAMS, &format!("unknown tool: {name}"))
+            }
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let out = engine.call_tool(name, args);
@@ -223,7 +219,11 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             }
             None => error(id, INVALID_PARAMS, "tools/call requires `name`"),
         },
-        other => error(id, METHOD_NOT_FOUND, &format!("method not found: {other}")),
+        other => match crate::catalog::handle(other, &params) {
+            Some(Ok(result)) => reply(id, result),
+            Some(Err((code, message))) => error(id, code, &message),
+            None => error(id, METHOD_NOT_FOUND, &format!("method not found: {other}")),
+        },
     })
 }
 

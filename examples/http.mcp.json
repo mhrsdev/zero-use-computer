@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "computer-use": {
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": {
+        "Authorization": "Bearer ${COMPUTER_USE_HTTP_TOKEN}"
+      }
+    }
+  }
+}

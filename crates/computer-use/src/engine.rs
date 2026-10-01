@@ -62,6 +62,10 @@ struct PendingImage {
     pixels: Option<PixelSig>,
 }
 
+/// Failed starts or crashes of the overlay helper before the engine stops
+/// trying (until the server restarts).
+const MAX_OVERLAY_FAILURES: u32 = 5;
+
 pub struct Engine<B: Backend> {
     backend: B,
     store: ConfigStore,
@@ -81,8 +85,9 @@ pub struct Engine<B: Backend> {
     overlay: Option<Overlay>,
     /// How to start it; set by the host (`with_overlay`).
     overlay_launcher: Option<Launcher>,
-    /// Start attempts, so a helper that keeps failing is left alone.
-    overlay_starts: u32,
+    /// Failed starts and crashes, so a helper that keeps failing is left
+    /// alone. (Stopping it because the settings turned it off isn't one.)
+    overlay_failures: u32,
     overlay_retry_at: Option<Instant>,
     /// Why the helper (and with it the stop key) last failed to start.
     overlay_error: Option<String>,
@@ -100,6 +105,9 @@ pub struct Engine<B: Backend> {
     settled: Option<u64>,
     /// The last full-screen screenshot sent: its fingerprint and scale.
     screen_shot: Option<(PixelSig, CoordMap)>,
+    /// One taken during this call: it becomes `screen_shot` only if it is
+    /// the image the call returns (a batch returns only its last image).
+    pending_screen_shot: Option<(PixelSig, CoordMap)>,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -111,6 +119,8 @@ pub struct Engine<B: Backend> {
     last_capture: Option<(u32, u64, u64, Capture)>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
+    /// The file changed but didn't load: read it once more on the next call.
+    config_retry: bool,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
     overrides: Option<ConfigOverride>,
     clock: Box<dyn Fn() -> Instant + Send>,
@@ -183,7 +193,7 @@ impl<B: Backend> Engine<B> {
             depth: 0,
             overlay: None,
             overlay_launcher: None,
-            overlay_starts: 0,
+            overlay_failures: 0,
             overlay_retry_at: None,
             overlay_error: None,
             stop_note_shown: false,
@@ -192,12 +202,14 @@ impl<B: Backend> Engine<B> {
             last_input: None,
             settled: None,
             screen_shot: None,
+            pending_screen_shot: None,
             force_ocr: false,
             ocr_reuse: false,
             ocr_note: None,
             ocr_note_shown: false,
             last_capture: None,
             config_mtime,
+            config_retry: false,
             overrides: None,
             clock: Box::new(Instant::now),
             sleep: Box::new(std::thread::sleep),
@@ -214,10 +226,12 @@ impl<B: Backend> Engine<B> {
             return;
         };
         let mtime = file_mtime(&path);
-        if mtime == self.config_mtime {
+        let changed = mtime != self.config_mtime;
+        if !changed && !self.config_retry {
             return;
         }
         self.config_mtime = mtime;
+        self.config_retry = false;
         match ConfigStore::load(Some(&path)) {
             Ok(mut store) => {
                 if let Some(f) = &self.overrides {
@@ -229,7 +243,12 @@ impl<B: Backend> Engine<B> {
                 self.epoch += 1;
                 self.overlay_reconfigure();
             }
-            Err(e) => log::warn!("keeping previous settings; {e}"),
+            Err(e) => {
+                log::warn!("keeping previous settings; {e}");
+                // Maybe read half-written: look once more next time, even if
+                // the finished file keeps this modification time.
+                self.config_retry = changed;
+            }
         }
     }
 
@@ -245,8 +264,12 @@ impl<B: Backend> Engine<B> {
         self
     }
 
-    /// Replace the settings (embedders that manage config themselves).
-    pub fn set_config(&mut self, store: ConfigStore) {
+    /// Replace the settings (embedders that manage config themselves). The
+    /// host's overrides still apply.
+    pub fn set_config(&mut self, mut store: ConfigStore) {
+        if let Some(f) = &self.overrides {
+            f(&mut store.config);
+        }
         self.backend.configure(&store.config);
         self.store = store;
         self.epoch += 1;
@@ -284,6 +307,8 @@ impl<B: Backend> Engine<B> {
         if self.overlay.as_ref().is_some_and(|o| !o.alive()) {
             // It died: try again a little later, a few times at most.
             self.overlay = None;
+            self.overlay_failures += 1;
+            self.overlay_error = Some("it stopped unexpectedly".into());
             self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(10));
         }
         if self.overlay.is_none() {
@@ -292,11 +317,19 @@ impl<B: Backend> Engine<B> {
                     .then(|| crate::overlay::find_helper(cfg))
                     .flatten()
             })?;
-            if self.overlay_starts >= 5 || self.overlay_retry_at.is_some_and(|t| (self.clock)() < t)
-            {
+            if self.overlay_failures >= MAX_OVERLAY_FAILURES {
+                if let Some(e) = &self.overlay_error
+                    && !e.contains("gave up")
+                {
+                    self.overlay_error = Some(format!(
+                        "{e}; gave up after {MAX_OVERLAY_FAILURES} tries, restart the server to try again"
+                    ));
+                }
                 return None;
             }
-            self.overlay_starts += 1;
+            if self.overlay_retry_at.is_some_and(|t| (self.clock)() < t) {
+                return None;
+            }
             match Overlay::spawn(&launcher, cfg, &hotkey, self.stop.clone()) {
                 Ok(o) => {
                     self.overlay = Some(o);
@@ -304,6 +337,7 @@ impl<B: Backend> Engine<B> {
                 }
                 Err(e) => {
                     log::warn!("overlay unavailable: {e}");
+                    self.overlay_failures += 1;
                     self.overlay_error = Some(e.to_string());
                     self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(30));
                 }
@@ -1131,6 +1165,9 @@ impl<B: Backend> Engine<B> {
     /// Record that the images handed out by the finished top-level call
     /// reached the model: their screens now have that screenshot.
     fn commit_images(&mut self) {
+        if let Some(shot) = self.pending_screen_shot.take() {
+            self.screen_shot = Some(shot);
+        }
         for p in std::mem::take(&mut self.pending_images) {
             let Some(st) = self.states.get_mut(&p.pid) else {
                 continue;
@@ -1413,6 +1450,7 @@ impl<B: Backend> Engine<B> {
                 self.commit_images();
             } else {
                 self.pending_images.clear();
+                self.pending_screen_shot = None;
             }
         }
         out
@@ -1489,6 +1527,7 @@ impl<B: Backend> Engine<B> {
                 // Undo what the interrupted call left half-done.
                 self.depth = 0;
                 self.pending_images.clear();
+                self.pending_screen_shot = None;
                 self.epoch += 1;
                 ToolOutput::error(&Error::Internal(format!(
                     "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"
@@ -1579,30 +1618,33 @@ impl<B: Backend> Engine<B> {
         // An app to open, not a command line: backends start exactly this
         // program with no arguments, and nothing that could read as an option.
         args.app = args.app.trim().to_string();
-        if args.app.is_empty() || args.app.starts_with('-') {
+        if args.app.is_empty() || args.app.starts_with('-') || args.app.contains(char::is_control) {
             return Err(Error::InvalidArgs(
                 "`app` must be an app name, bundle id or executable (no options or arguments)"
                     .into(),
             ));
         }
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
-        self.backend.launch_app(&args.app)?;
+        let program = self.backend.launch_app(&args.app)?;
 
         let deadline = (self.clock)()
             + Duration::from_secs_f64(self.store.config.launch_timeout_secs.max(0.5));
-        let ql = args.app.to_lowercase();
+        // The app shows up under the name asked for, or (when the name was
+        // looked up in the OS's app list) under the program that was run.
+        let mut names = vec![args.app.to_lowercase()];
+        names.extend(program.as_deref().map(crate::launch::program_key));
+        let matches = |a: &AppInfo| {
+            a.match_keys()
+                .iter()
+                .any(|k| names.iter().any(|n| k.contains(n.as_str())))
+        };
         loop {
             let apps = self.find_apps()?;
             // Prefer a newly-appeared app that matches the query.
             let found = apps
                 .iter()
-                .find(|a| {
-                    !before.contains(&a.pid) && a.match_keys().iter().any(|k| k.contains(&ql))
-                })
-                .or_else(|| {
-                    apps.iter()
-                        .find(|a| a.match_keys().iter().any(|k| k.contains(&ql)))
-                });
+                .find(|a| !before.contains(&a.pid) && matches(a))
+                .or_else(|| apps.iter().find(|a| matches(a)));
             if let Some(app) = found {
                 let app = app.clone();
                 return Ok(ToolOutput::text(format!(
@@ -1879,8 +1921,26 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// Actions act on the window of the latest `get_app_state` (their
+    /// element indices and x/y belong to it). A `window` argument naming
+    /// another window is an error, not silently ignored.
+    fn check_window(&mut self, app: &AppInfo, window: Option<&str>) -> Result<()> {
+        let Some(w) = window.map(str::trim).filter(|w| !w.is_empty()) else {
+            return Ok(());
+        };
+        let wanted = self.resolve_window(app, Some(w), false)?;
+        match self.states.get(&app.pid).and_then(|s| s.window_id) {
+            Some(id) if id != wanted.id => Err(Error::InvalidArgs(format!(
+                "the latest get_app_state of {} shows another window; call get_app_state with window=\"{w}\" first, then act on it.",
+                app.name
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     fn click(&mut self, args: ClickArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let count = args.click_count.clamp(1, 3);
         let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
         // What things looked like, to tell whether the click did anything.
@@ -1962,6 +2022,7 @@ impl<B: Backend> Engine<B> {
 
     fn perform_secondary(&mut self, args: SecondaryActionArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "perform_secondary_action")?;
@@ -1989,6 +2050,7 @@ impl<B: Backend> Engine<B> {
 
     fn set_value(&mut self, args: SetValueArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "set_value")?;
@@ -2042,6 +2104,7 @@ impl<B: Backend> Engine<B> {
 
     fn select_text(&mut self, args: SelectTextArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
         ocr_can_only_be_clicked(handle, "select_text")?;
@@ -2061,6 +2124,7 @@ impl<B: Backend> Engine<B> {
 
     fn scroll(&mut self, args: ScrollArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let pages = if args.amount.is_finite() && args.amount > 0.0 {
             args.amount
         } else {
@@ -2122,6 +2186,7 @@ impl<B: Backend> Engine<B> {
 
     fn drag(&mut self, args: DragArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let from = self.anchor(
             &app,
             args.from_element_index,
@@ -2158,6 +2223,7 @@ impl<B: Backend> Engine<B> {
 
     fn press_key(&mut self, args: PressKeyArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         let combos = keys::parse_sequence(&args.key)?;
         if let Some(i) = args.element_index {
             let h = self.element_by_index(&app, i)?;
@@ -2180,6 +2246,7 @@ impl<B: Backend> Engine<B> {
 
     fn type_text(&mut self, args: TypeTextArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
         if args.text.is_empty() {
             return Err(Error::InvalidArgs("`text` must not be empty".into()));
         }
@@ -2546,12 +2613,12 @@ impl<B: Backend> Engine<B> {
                             "Screenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your last full-screen one (x/y still refer to that whole screenshot).{note}"
                         )
                     };
-                    self.screen_shot = Some((sig, map));
+                    self.pending_screen_shot = Some((sig, map));
                     return Ok(image(img, text));
                 }
             }
             let (img, map) = imaging::encode(capture, &cfg)?;
-            self.screen_shot = Some((sig, map));
+            self.pending_screen_shot = Some((sig, map));
             let text = format!(
                 "Screenshot of {label}: {}x{} px.{note}",
                 img.width, img.height
@@ -2604,7 +2671,14 @@ impl<B: Backend> Engine<B> {
             }
             let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
             let before = self.pending_images.len();
+            let shot_before = self.pending_screen_shot.take();
             let result = parsed.and_then(|c| self.call(c));
+            let imaged = result.as_ref().is_ok_and(|o| o.image.is_some());
+            if !imaged {
+                // No image from this step: an earlier step's stays the one
+                // the batch returns.
+                self.pending_screen_shot = shot_before;
+            }
             match result {
                 Ok(out) => {
                     let first = out.text.lines().next().unwrap_or("");
@@ -3164,6 +3238,12 @@ fn window_list(windows: &[WindowInfo]) -> String {
 }
 
 /// Resolve an app from a name / id / pid query against a snapshot of apps.
+/// Of several processes of one app, the frontmost one (else the first).
+fn many_of_one(apps: &[&AppInfo]) -> AppInfo {
+    let a = apps.iter().find(|a| a.frontmost).unwrap_or(&apps[0]);
+    (*a).clone()
+}
+
 fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     let q = query.trim();
     if q.is_empty() {
@@ -3184,11 +3264,8 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
         return Ok(exact[0].clone());
     }
     if exact.len() > 1 {
-        // Same name twice: prefer frontmost.
-        if let Some(a) = exact.iter().find(|a| a.frontmost) {
-            return Ok((*a).clone());
-        }
-        return Ok(exact[0].clone());
+        // Same name twice: one app, several processes.
+        return Ok(many_of_one(&exact));
     }
     // Key match (exe stem, bundle id, etc.).
     let key: Vec<&AppInfo> = apps
@@ -3209,19 +3286,23 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     match sub.as_slice() {
         [a] => Ok((*a).clone()),
         [] => Err(Error::AppNotFound(query.into())),
-        many => {
-            if let Some(a) = many.iter().find(|a| a.frontmost) {
-                return Ok((*a).clone());
-            }
-            Err(Error::AmbiguousApp {
-                query: query.into(),
-                candidates: many
-                    .iter()
-                    .map(|a| format!("{} (pid {})", a.name, a.pid))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            })
+        // Several windows of one app (two Notepads): the frontmost one.
+        [first, rest @ ..]
+            if rest
+                .iter()
+                .all(|a| a.name.eq_ignore_ascii_case(&first.name)) =>
+        {
+            Ok(many_of_one(&sub))
         }
+        // Several different apps: never guess, ask for the exact one.
+        many => Err(Error::AmbiguousApp {
+            query: query.into(),
+            candidates: many
+                .iter()
+                .map(|a| format!("{} (pid {})", a.name, a.pid))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
     }
 }
 
@@ -3505,6 +3586,26 @@ mod tests {
     }
 
     #[test]
+    fn launch_by_catalog_name_finds_the_program_that_ran() {
+        let mut backend = MockBackend::new();
+        // "Visual Studio Code" is the menu name; the app runs as "Code".
+        backend.add_launchable("visual studio code", {
+            let mut a = MockBackend::text_editor(56);
+            a.info.name = "Code".into();
+            a.info.id = "code".into();
+            a.info.exe = Some("/usr/share/code/code".into());
+            a
+        });
+        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {});
+        let out = e.call_tool(
+            "launch_app",
+            serde_json::json!({"app": "Visual Studio Code"}),
+        );
+        assert!(out.text.contains("Launched Code (id: code"), "{}", out.text);
+    }
+
+    #[test]
     fn launch_app_never_takes_a_command_line() {
         let mut e = engine();
         // The whole string is the program; it is never split into arguments.
@@ -3520,12 +3621,14 @@ mod tests {
                 .any(|ev| matches!(ev, Event::Launch(q) if q == "xterm -e sh -c id"))
         );
         // Nothing that could read as an option.
-        let out = e.call_tool("launch_app", serde_json::json!({"app": " --args x"}));
-        assert!(
-            out.is_error && out.text.contains("no options"),
-            "{}",
-            out.text
-        );
+        for app in [" --args x", "notes\n--args"] {
+            let out = e.call_tool("launch_app", serde_json::json!({ "app": app }));
+            assert!(
+                out.is_error && out.text.contains("no options"),
+                "{app:?}: {}",
+                out.text
+            );
+        }
     }
 
     #[test]
@@ -3568,9 +3671,25 @@ mod tests {
         assert_eq!(resolve_app_in(&apps, "com.apple.Safari").unwrap().pid, 1);
         // Exact name beats the frontmost tiebreak.
         assert_eq!(resolve_app_in(&apps, "Safari").unwrap().pid, 1);
-        // "safari" (lowercased) is only a substring of both -> frontmost wins.
-        assert_eq!(resolve_app_in(&apps, "afari").unwrap().pid, 2);
+        // Part of two different apps' names: never a guess, even for the
+        // frontmost one.
+        assert!(matches!(
+            resolve_app_in(&apps, "afari"),
+            Err(Error::AmbiguousApp { .. })
+        ));
         assert!(resolve_app_in(&apps, "Firefox").is_err());
+        // Two processes of one app: the frontmost.
+        let note = |pid, frontmost| AppInfo {
+            name: "Notepad".into(),
+            id: format!("notepad-{pid}"),
+            pid,
+            exe: None,
+            frontmost,
+            hidden: false,
+        };
+        let two = vec![note(7, false), note(8, true)];
+        assert_eq!(resolve_app_in(&two, "notep").unwrap().pid, 8);
+        assert_eq!(resolve_app_in(&two, "Notepad").unwrap().pid, 8);
     }
 
     #[test]
@@ -3916,6 +4035,42 @@ mod tests {
     }
 
     #[test]
+    fn an_action_naming_another_window_is_refused() {
+        let mut app = MockBackend::text_editor(9);
+        app.windows.push(MockWindow {
+            id: 2,
+            title: "Preferences".into(),
+            bounds: Rect::new(900.0, 0.0, 300.0, 200.0),
+            root: 50,
+            focused: false,
+        });
+        app.elements.push(MockElement::new(
+            50,
+            "window",
+            "Preferences",
+            Rect::new(900.0, 0.0, 300.0, 200.0),
+        ));
+        let mut backend = MockBackend::new();
+        backend.add_app(app);
+        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let bold = index_named(&e, 9, "Bold");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold, "window": "Preferences"}),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("window=\"Preferences\""), "{}", out.text);
+        // Naming the window it shows is fine.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold, "window": "Untitled"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    #[test]
     fn dialog_is_followed_and_main_window_recognised_after() {
         let pid = 9;
         let main = || {
@@ -4149,11 +4304,13 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Everything the recording helper got, once the engine has let it go
+    /// (its last message is `quit`; dropping the engine doesn't wait).
     #[cfg(unix)]
     fn read_log(path: &std::path::Path) -> String {
-        for _ in 0..100 {
+        for _ in 0..250 {
             if let Ok(t) = std::fs::read_to_string(path)
-                && t.contains("\"t\":\"end\"")
+                && t.contains("\"t\":\"quit\"")
             {
                 return t;
             }

@@ -129,7 +129,7 @@ pub fn cursor(
     });
     let w = pad + pad.max(tag_x + tag_w + 4.0 * s);
     let h = pad + pad.max(tag_y + tag_h + 4.0 * s);
-    let mut pm = Pixmap::new(w.ceil() as u32, h.ceil() as u32).expect("non-zero cursor size");
+    let mut pm = canvas(w, h);
     let (c, id) = (pad, Transform::identity());
 
     // A soft glow around the tip in the state colour.
@@ -269,7 +269,7 @@ pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap
     let h = (t.height + 12.0 * scale).max(26.0 * scale).ceil();
     let gap = if t.width > 0.0 { 8.0 * scale } else { 0.0 };
     let w = (pad + dot + gap + t.width + pad).ceil();
-    let mut pm = Pixmap::new(w.max(1.0) as u32, h.max(1.0) as u32).expect("label size");
+    let mut pm = canvas(w, h);
 
     let dark_accent = luminance(accent) < 0.15;
     let (bg, fg) = if dark_accent {
@@ -334,13 +334,40 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     pb.finish()
 }
 
+/// A drawing scale that can't make an image absurdly large (or empty):
+/// finite and between 0.1 and 8, else 1.
+pub fn sane_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(0.1, 8.0)
+    } else {
+        1.0
+    }
+}
+
+/// Largest side of any overlay image, in pixels.
+const MAX_SIDE: f32 = 16_384.0;
+
+/// A blank image of about `w`×`h` pixels, clamped to 1..=16384 per side.
+fn canvas(w: f32, h: f32) -> Pixmap {
+    let side = |v: f32| {
+        if v.is_finite() {
+            v.ceil().clamp(1.0, MAX_SIDE) as u32
+        } else {
+            1
+        }
+    };
+    Pixmap::new(side(w), side(h))
+        .or_else(|| Pixmap::new(1, 1))
+        .expect("1x1 pixmap")
+}
+
 /// One border edge: a glow in `color` that is strongest (with a bright core
 /// line `core` px thick) on side `strong` — 0 top, 1 right, 2 bottom, 3 left
 /// — and fades out across the band. A dark colour gets a light core so it
 /// shows on dark screens too.
 pub fn edge(width: u32, height: u32, color: Color, strong: u8, core: f32) -> Pixmap {
-    let (w, h) = (width.max(1), height.max(1));
-    let mut pm = Pixmap::new(w, h).expect("edge size");
+    let mut pm = canvas(width as f32, height as f32);
+    let (w, h) = (pm.width(), pm.height());
     let (fw, fh) = (w as f32, h as f32);
     let (from, to, depth) = match strong {
         0 => (Point::from_xy(0.0, 0.0), Point::from_xy(0.0, fh), fh),
@@ -412,6 +439,19 @@ pub fn to_bgra_premultiplied(pm: &Pixmap) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absurd_sizes_and_scales_are_clamped() {
+        assert_eq!(sane_scale(f32::INFINITY), 1.0);
+        assert_eq!(sane_scale(f32::NAN), 1.0);
+        assert_eq!(sane_scale(1e9), 8.0);
+        assert_eq!(sane_scale(0.0), 0.1);
+        let c = canvas(f32::INFINITY, 1e12);
+        assert_eq!((c.width(), c.height()), (1, 16_384));
+        let blue = parse_color("#1E88E5").unwrap();
+        let e = edge(0, u32::MAX, blue, 0, 3.0);
+        assert_eq!((e.width(), e.height()), (1, 16_384));
+    }
 
     #[test]
     fn colors_parse() {
