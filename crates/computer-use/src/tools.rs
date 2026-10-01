@@ -329,6 +329,15 @@ pub struct DrawStroke {
     /// Draw the stroke several times, moved and/or turned each time.
     #[serde(default)]
     pub repeat: Option<DrawRepeat>,
+    /// Paint the closed shape solid with a round brush this wide (in the
+    /// stroke's units) instead of its outline.
+    #[serde(default)]
+    pub fill: Option<f64>,
+    /// A picture traced with trace_image: draw this step of it.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub trace: Option<String>,
+    #[serde(default)]
+    pub step: Option<u32>,
 }
 
 /// `repeat`: copy k (from 0) is moved by k × offset and turned by k ×
@@ -516,6 +525,47 @@ pub struct ScreenshotArgs {
     /// a math range, as `draw` takes them.
     #[serde(default)]
     pub canvas: Option<DrawCanvas>,
+    /// Compare the document (`canvas`) with a picture traced by
+    /// trace_image: where it differs most.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub compare: Option<String>,
+}
+
+/// Turn a reference picture into a few flat colours and shapes to paint.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TraceImageArgs {
+    /// An image file (PNG or JPEG).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub path: Option<String>,
+    /// Or what an app's window shows.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    /// The part of the window: [left, top, right, bottom] in screenshot
+    /// pixels.
+    #[serde(default, rename = "box")]
+    pub area: Option<[f64; 4]>,
+    /// Or one element of the window.
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+    #[serde(default)]
+    pub colors: Option<u32>,
+    #[serde(default)]
+    pub detail: Option<TraceDetail>,
+    /// What to call it in draw and screenshot (default: from the file).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceDetail {
+    Low,
+    #[default]
+    Medium,
+    High,
 }
 
 /// `grid`: a spacing, or `true` for a round step that suits the image.
@@ -635,6 +685,7 @@ pub enum ToolCall {
     Scroll(ScrollArgs),
     Drag(DragArgs),
     Draw(DrawArgs),
+    TraceImage(TraceImageArgs),
     PressKey(PressKeyArgs),
     TypeText(TypeTextArgs),
     FindElement(FindElementArgs),
@@ -665,6 +716,7 @@ impl ToolCall {
             "scroll" => ToolCall::Scroll(parse_args(name, args)?),
             "drag" => ToolCall::Drag(parse_args(name, args)?),
             "draw" => ToolCall::Draw(parse_args(name, args)?),
+            "trace_image" => ToolCall::TraceImage(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
             "find_element" => ToolCall::FindElement(parse_args(name, args)?),
@@ -691,6 +743,7 @@ impl ToolCall {
             ToolCall::Scroll(_) => "scroll",
             ToolCall::Drag(_) => "drag",
             ToolCall::Draw(_) => "draw",
+            ToolCall::TraceImage(_) => "trace_image",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
             ToolCall::FindElement(_) => "find_element",
@@ -899,7 +952,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "draw",
             title: "Draw",
-            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is a shape (rect [x,y,w,h(,radius)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,from°,to°], bezier [[x,y],...]), points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them), a parametric curve (x and y are expressions in t: + - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e... from t[0] to t[1], default 0 to 1; steps=n draws n straight pieces) or a function plot (only y, in x: {\"y\": \"sin(x)\"}). Any stroke can be turned (rotate, about) and repeated (repeat: count, offset, rotate, about). Coordinates are screenshot pixels like click's x/y; with element_index, fractions of that element's box; with canvas, a document's own units (box + size) or math coordinates with y up (box + range, where axes [xstep, ystep] draws axes and ticks). preview=true shows the strokes over a screenshot without drawing. Parts of a curve outside the area are not drawn. Closed shapes come back with a point inside each, for a fill click. The stop key ends a drawing midway.",
+            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is a shape (rect [x,y,w,h(,radius)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,from°,to°], bezier [[x,y],...]), points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them), a parametric curve (x and y are expressions in t: + - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e... from t[0] to t[1], default 0 to 1; steps=n draws n straight pieces) or a function plot (only y, in x: {\"y\": \"sin(x)\"}). Any stroke can be turned (rotate, about) and repeated (repeat: count, offset, rotate, about). Coordinates are screenshot pixels like click's x/y; with element_index, fractions of that element's box; with canvas, a document's own units (box + size) or math coordinates with y up (box + range, where axes [xstep, ystep] draws axes and ticks). fill=w paints a closed shape solid with a brush w wide instead of its outline (no bucket needed; later shapes cover earlier ones). trace + step draws one colour step of a picture traced with trace_image. preview=true shows the strokes over a screenshot without drawing. Parts of a curve outside the area are not drawn. Closed outlines come back with where a bucket click fills each (one click per piece when other lines cut it, or where a fill would leak out through a gap). The stop key ends a drawing midway.",
             input_schema: schema(
                 app_props(),
                 json!({
@@ -937,7 +990,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                                     },
                                     "required": ["count"],
                                     "additionalProperties": false
-                                }
+                                },
+                                "fill": {"type": "number", "description": "Paint the closed shape solid instead of its outline, with a round brush this wide (in the stroke's units; set the app's brush to this size). Shapes painted back to front cover each other."},
+                                "trace": {"type": "string", "description": "A picture traced with trace_image: draw one step of it (with step and fill), fitted into the canvas or element."},
+                                "step": {"type": "integer", "minimum": 1, "description": "Which step of the trace (1 = first)."}
                             },
                             "additionalProperties": false
                         }
@@ -951,6 +1007,26 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 &["strokes"],
             ),
             annotations: acting("Draw"),
+        },
+        ToolDefinition {
+            name: "trace_image",
+            title: "Trace a picture",
+            description: "Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes to paint back to front, for copying it in a paint app. Returns the steps (one colour each, in painting order) and a picture of the result. Then, per step: set the app's colour to the step's hex and draw with strokes=[{trace: name, step: n, fill: brush width}] and the canvas. screenshot with compare=name shows where the canvas still differs.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "An image file (PNG or JPEG) the user gave."},
+                    "app": {"type": "string", "description": "Or trace what this app's window shows."},
+                    "window": {"type": "string", "description": "Window id or title substring."},
+                    "box": {"type": "array", "items": {"type": "number"}, "description": "The part of the window: [left, top, right, bottom] in screenshot pixels."},
+                    "element_index": index_prop("Or this element of the window."),
+                    "colors": {"type": "integer", "minimum": 2, "maximum": 16, "description": "How many flat colours (default 8)."},
+                    "detail": {"type": "string", "enum": ["low", "medium", "high"], "description": "How small a shape is kept (default medium; high for faces and small features)."},
+                    "name": {"type": "string", "description": "What draw and screenshot call it (default: from the file or app)."}
+                },
+                "additionalProperties": false
+            }),
+            annotations: read_only("Trace a picture"),
         },
         ToolDefinition {
             name: "press_key",
@@ -1022,7 +1098,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot",
             title: "Screenshot",
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid).",
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1038,7 +1114,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "grid": {"type": ["number", "boolean"], "description": "Labelled coordinate grid: a line every N units (true = a round step)."},
                     "palette": {"type": "boolean", "description": "List the image's main colours (hex, share)."},
                     "pick": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]: the exact colour at each point."},
-                    "canvas": canvas_prop()
+                    "canvas": canvas_prop(),
+                    "compare": {"type": "string", "description": "A trace_image name: compare the canvas with it."}
                 },
                 "additionalProperties": false
             }),
@@ -1149,7 +1226,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => "Drag from an element/point to another element/point.",
         "draw" => {
-            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). preview=true only shows them. Returns points inside closed shapes for fills."
+            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace+step draws a step of a trace_image picture. preview=true only shows them. Returns where a bucket click fills each closed outline."
         }
         "press_key" => {
             "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it)."
@@ -1159,8 +1236,11 @@ fn short_description(name: &str) -> Option<&'static str> {
         }
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
+        "trace_image" => {
+            "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
+        }
         "screenshot" => {
-            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
         "window" => {
@@ -1263,7 +1343,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 20);
+        assert_eq!(defs.len(), 21);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1324,7 +1404,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 20);
+        assert_eq!(compact.len(), 21);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

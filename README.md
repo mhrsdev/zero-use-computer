@@ -31,8 +31,9 @@ This project follows the same architecture and behaviour:
   See [Screen memory & caching](#screen-memory--caching).
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
-  `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`
-  and `draw` (shapes and parametric curves with the mouse held down).
+  `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`,
+  `draw` (shapes and parametric curves with the mouse held down) and
+  `trace_image` (a reference picture as flat colours to paint).
 - **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
   screen and a status label in state colours, click-through and invisible to
   the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
@@ -58,7 +59,8 @@ This project follows the same architecture and behaviour:
 | `select_text` | Select a substring (or all) in a text element. |
 | `scroll` | Scroll an element or the area at a point. |
 | `drag` | Drag between elements or points. |
-| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `preview` shows the strokes over a screenshot first; the result gives a point inside each closed shape for a fill click. |
+| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `fill` paints a closed shape solid with the brush (shapes painted back to front cover each other). `preview` shows the strokes over a screenshot first; the result says where a bucket click fills each closed outline, checked on the real pixels (one click per piece when other lines cut it, or where a fill would leak out). |
+| `trace_image` | Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes, as steps to paint back to front with `draw`; `screenshot` with `compare` then shows where the canvas still differs. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
 | `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
@@ -92,7 +94,9 @@ written so that smaller models get good results too:
   commands, `draw` in document units);
 - the spec's shapes map one to one to `draw` strokes (rect, ellipse,
   polygon, star, arc, Bézier, plots with axes, repeats), previewed over the
-  canvas before anything is painted;
+  canvas before anything is painted, and painted solid back to front;
+- a photo is copied with `trace_image`: flat colour steps the model paints
+  in order, then checks against the trace;
 - every pass is checked with grid screenshots and exact colour readings;
 - each app has a playbook, and there are recipes for common jobs.
 

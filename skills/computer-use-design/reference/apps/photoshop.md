@@ -71,6 +71,10 @@ is Cmd on a Mac, Ctrl elsewhere; `alt` is Option on a Mac.
 - Fill a drawn outline: Paint Bucket (`g`, `shift+g` cycles it with the
   gradient) at the point the `draw` result gives. Or Magic Wand (`w`)
   there, then Edit ▸ Fill.
+- Solid shapes with the brush: `"fill": w` (the brush size) paints the
+  whole shape; on a new layer per element they stay editable.
+- Copying a photo as flat art: `trace_image`, then each step with `fill`
+  on its own layer (the "Copying a photo" recipe).
 - Regular polygons and stars as shape layers: the Polygon tool (in the
   `u` group). Click once; its dialog takes the size, the number of sides
   and a Star Ratio.

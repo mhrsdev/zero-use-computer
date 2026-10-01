@@ -45,12 +45,37 @@ outline instead:
 
 Paint draws exactly where the pointer goes: the default `speed` is fine.
 
+## Shapes that overlap
+
+Paint has one layer: outlines that cross cut each other into pieces, and a
+bucket click fills only one piece. A head drawn over ears, or a muzzle over
+a head, goes wrong that way. Instead, back to front:
+
+- **Solid with a brush (best):** Brushes ▸ Brush (or the pencil), size w,
+  colour 1 set, then `draw` with `"fill": w` per shape. Each covers the
+  ones before it. Use `speed` 2500: Paint keeps up.
+- **Shape tool, filled:** Fill "Solid color" (colour 2) and Outline "No
+  outline", then the two-point drag. Also covers what is under it; only
+  rectangles, ovals and Paint's own shapes.
+- **Layers** (newer Paint): one shape per layer, then outline and bucket
+  work as in any app.
+
+Outlines with bucket fills are fine for shapes nothing crosses.
+
+## Copying a photo
+
+Use `trace_image` and paint its steps with `fill`: the "Copying a photo"
+recipe in the design skill's recipes.
+
 ## Fill, text, brushes
 
 - Fill (bucket): click inside a closed area; it uses colour 1. After a
-  `draw`, click the point the result gives for that stroke. Check with
-  `pick` afterwards. A fill that spreads too far means a gap in the
-  outline: undo and redraw it closed.
+  `draw`, click the point the result gives for that stroke (a point per
+  piece when it says the shape is cut). Check with `pick` afterwards. A
+  fill that spreads too far means a gap in the outline: undo and close it
+  (the result says where the gap is).
+- Colour 1 stays whatever was set last: set it before every shape and
+  check with `pick` after.
 - Text (A):
   1. Drag a text box with `draw` (two points).
   2. Set font and size in the text toolbar.

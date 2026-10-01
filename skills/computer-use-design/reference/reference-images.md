@@ -53,7 +53,15 @@ eye" drifts.
   size as a share of the image height, alignment, colour.
 - Choose the closest installed font and say which one you used.
 
-## 5. Trace instead of measuring (2D apps)
+## 5. Photos: trace_image
+
+For a photo (or any picture with light and shade) in a paint app, measuring
+elements by hand misses most of it. `trace_image` turns it into flat colour
+steps to paint with `draw`: see "Copying a photo" in
+[recipes.md](recipes.md). Measure by hand for designs with exact shapes and
+text.
+
+## 6. Trace over it by hand (2D apps)
 
 1. Place the reference as the bottom layer, scaled to the canvas.
 2. Set it to 30–50% opacity and lock it.
@@ -66,7 +74,7 @@ eye" drifts.
      points until they sit on its edges, then draw.
 4. Hide or delete the reference layer before exporting.
 
-## 6. 3D from photos (Blender)
+## 7. 3D from photos (Blender)
 
 - Estimate sizes from things of known size:
 
@@ -81,7 +89,7 @@ eye" drifts.
 - Load the photo as a reference image (Add > Image > Reference) behind the
   front or side view, and match the outlines.
 
-## 7. Plans from an image or PDF (Revit, CAD)
+## 8. Plans from an image or PDF (Revit, CAD)
 
 1. Import it as an underlay.
 2. Scale it with one known dimension (measure a wall whose length you
@@ -89,10 +97,13 @@ eye" drifts.
 3. Trace the walls on top.
 4. Write the corner coordinates into the spec.
 
-## 8. Compare at the end
+## 9. Compare at the end
 
 - Show both side by side, or the result and the reference one after the
   other, at the same zoom.
 - Compare element by element: position (within about 1% of the canvas),
   size, colour (`pick` both at the same spots), text.
+- After `trace_image`, `screenshot(app, canvas=..., compare=name)` does it
+  for you: which parts of the canvas differ, and what colour they should
+  be.
 - Fix the biggest difference first, then compare again.

@@ -22,8 +22,9 @@ against the spec.
    canvas or units, every element back to front with position, size and
    colour, the text, and the output file. If the user gave a reference
    image, measure it first:
-   [reference/reference-images.md](reference/reference-images.md). If the
-   brief is vague, choose sensible values, list them in the spec and go on.
+   [reference/reference-images.md](reference/reference-images.md). To copy
+   a photo or picture in a paint app, trace it ("Copying a photo" below).
+   If the brief is vague, choose sensible values, list them in the spec and go on.
    Ask only for what you can't choose yourself (the text of a logo, a brand
    colour).
 2. **Set up the document exactly**: size, units and background, typed
@@ -92,10 +93,15 @@ Use the first of these that the app offers for the step:
 3. **Preview** with `preview: true`. Nothing is drawn; the red strokes are
    shown over the canvas with a grid in your units. Compare with the spec,
    fix the numbers, then draw for real.
-4. **Fill**: the result gives a point to click for each closed shape,
-   named after its stroke (a ring's lies between its circles). Click it
-   with the app's bucket or magic wand.
-5. **Check** the drawn pixels with `screenshot` (with the same `canvas`,
+4. **Solid shapes**: with a brush or pencil, add `"fill": w` (`w` = the
+   brush size you set in the app). Paint back to front: each shape covers
+   the ones before it, so overlapping shapes come out right. This is the
+   safest way in apps without layers (Paint).
+5. **Bucket fills** (outlines only): the result says where a click fills
+   each closed outline. When other lines cut it into pieces, it gives a
+   point per piece; when the outline has a gap, it says where: close it
+   first. Never bucket-fill a shape that other outlines cross: use `fill`.
+6. **Check** the drawn pixels with `screenshot` (with the same `canvas`,
    `grid=true` and `pick`).
 
 The active tool decides what a stroke does. With a brush or pencil, the
@@ -103,6 +109,19 @@ outline is painted. With a shape tool, the app makes its own shape from one
 drag, so give two points, corner to corner. Apps that smooth strokes
 (Photoshop, Krita, Illustrator's Pencil) need `speed` 300–500 or their
 smoothing turned off.
+
+### Copying a photo
+
+Don't draw it by eye: a photo has light, shade and texture that shapes
+from memory miss.
+
+1. `trace_image(path=...)`, or `app` + `box` when it is on screen. It
+   returns numbered steps of flat colour and a picture of the result.
+2. Each step, in order: set the colour to its hex, then
+   `draw(canvas=..., strokes=[{"trace": name, "step": n, "fill": w}])`.
+3. `screenshot(canvas=..., compare=name)` lists what still differs.
+
+Details: [reference/recipes.md](reference/recipes.md), "Copying a photo".
 
 ## Seeing exactly
 

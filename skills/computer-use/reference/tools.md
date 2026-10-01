@@ -25,6 +25,11 @@
   - `canvas` (window shots, the same object `draw` takes): the grid covers
     only that box, labelled in the document's units or the plot's range,
     and `pick` points are in those units too.
+  - `compare: "name"` (with `canvas`): how the document differs from a
+    picture traced with `trace_image`.
+- `trace_image(path | app + box, colors, detail, name)`: a reference
+  picture as flat colour steps to paint with `draw` (see
+  [drawing.md](drawing.md)).
 - `window(app, action)`: `list`, `focus`, `move` (x, y, optional width and
   height), `resize`, `maximize`, `minimize`, `restore`, `fullscreen`,
   `exit_fullscreen`, `close`, `tile_left` / `tile_right` / `tile_top` /

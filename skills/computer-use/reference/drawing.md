@@ -42,6 +42,7 @@ them.
 | `{"x": "...", "y": "...", "t": [a, b]}` | parametric curve; `"steps": n` makes n straight pieces |
 | `{"y": "sin(x)"}` | plot of y = f(x) over the whole x range (or `t: [a, b]`) |
 | `{"axes": [xstep, ystep]}` | axes through 0 with ticks; needs `canvas.range` |
+| `{"trace": "name", "step": n, "fill": w}` | one colour step of a picture traced with `trace_image` (below) |
 
 Any stroke can also take:
 
@@ -50,6 +51,10 @@ Any stroke can also take:
 - `"repeat": {"count": n, "offset": [dx, dy], "rotate": deg, "about": [x, y]}`:
   copy k is moved by k × offset and turned by k × rotate. Use it for rows
   of dots, petals around a centre, or a spiral of squares.
+- `"fill": w`: paint a closed shape solid instead of its outline. `w` is
+  the brush width, in the same units as the coordinates: set the app's
+  brush to that size first. The brush stays inside the edge, and shapes
+  painted later cover earlier ones, like layers. No bucket needed.
 
 Examples:
 
@@ -77,15 +82,42 @@ Expressions:
 - `"preview": true` draws nothing. It shows the strokes in red over a
   screenshot, with a grid in the coordinates you used. Check the placement,
   then call again without it.
-- The result gives, for each closed shape, a point to click with a fill
-  (bucket) tool or a magic wand, in click coordinates and named after its
-  stroke. The point avoids the shapes drawn inside it: a ring's (one circle
-  in another) lies between the two circles.
+- For each closed outline (not `fill`), the result says where a bucket or
+  magic-wand click fills it, in click coordinates, checked on the real
+  pixels:
+  - one point: one click fills it (a ring's point lies between its two
+    circles);
+  - "cut into N pieces by other lines": click each point given;
+  - "would leak out through a gap near (x, y)": the outline isn't closed
+    there. Close it (or undo and redraw) before filling, or the fill
+    floods the canvas.
+
+## Copying a picture: trace_image
+
+`trace_image(path="C:/Users/me/cat.jpg")` (or `app` + `box` for a picture
+shown on screen) turns a reference into a few flat colours and shapes,
+painted back to front. It returns numbered steps and a picture of the
+result. Then for each step, in order:
+
+1. Set the app's colour to the step's hex.
+2. `draw(app, canvas={"box": [...], "size": [W, H]}, strokes=[{"trace":
+   "cat", "step": n, "fill": w}])`, where `w` is the app's brush size.
+
+- Step 1 is usually the background (all of the picture): on an empty
+  canvas a bucket click does it.
+- `colors` (default 8) and `detail` (`low`, `medium`, `high`; use `high`
+  for faces) control how close it comes. Give the canvas the picture's
+  proportions.
+- A smaller brush keeps small shapes; the result says when some are
+  narrower than the brush.
+- `screenshot(app, canvas=..., compare="cat")` lists where the canvas
+  still differs from the trace, with the colour each place should be.
 
 ## Shape tools versus brushes
 
 - With a brush, pencil or pen **tool** active, the stroke is the line that
-  gets painted: `rect`, `ellipse` and the others draw their outlines.
+  gets painted: `rect`, `ellipse` and the others draw their outlines (or,
+  with `fill`, the whole shape).
 - With an app's **shape tool** (Paint's rectangle, Figma's `r`), the app
   makes the shape from one drag. Give a stroke of two points, corner to
   corner: `{"points": [[x, y], [x + w, y + h]]}`.
@@ -93,6 +125,7 @@ Expressions:
 ## Speed and stopping
 
 - `speed` is in pixels per second (default 800). Use 300–500 for apps that
-  smooth strokes (Photoshop, Krita) or that draw jagged lines.
+  smooth strokes (Photoshop, Krita) or that draw jagged lines. Solid fills
+  are long: in apps that keep up (Paint) use 2000–3000.
 - The stop key ends a drawing midway; the button is always released.
 - Drawing a signature is acting in the user's name: security rule 3.

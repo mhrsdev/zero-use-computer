@@ -31,6 +31,7 @@ are in the tree; the canvas is not. `cmd+` is Cmd on a Mac, Ctrl elsewhere.
   1. Pencil `n` (hard edges) or Paintbrush `p`.
   2. `draw` the shape, plot or pattern with `canvas`, after a preview.
   3. Bucket Fill `shift+b` at the point the `draw` result gives.
+  4. Or paint shapes solid with the brush: `"fill": w`.
 
   Turn off Smooth stroke in Tool Options if it is on.
 - **Save and export:**

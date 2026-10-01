@@ -58,6 +58,7 @@ pub mod launch;
 pub mod mock;
 pub mod ocr;
 pub mod overlay;
+pub mod paint;
 pub mod privacy;
 pub mod roles;
 pub mod screens;

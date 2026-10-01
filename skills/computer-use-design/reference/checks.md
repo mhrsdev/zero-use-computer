@@ -27,6 +27,8 @@ stroke starts. Check:
 3. Colours: `pick` at the centre of each new element (for a drawn shape,
    the inside point the `draw` result gave). Same hex as the spec? (Within
    a few units is fine for anti-aliased edges, not for fills.)
+   After painting a traced picture: `screenshot(app, canvas=...,
+   compare=name)`.
 4. Text: zoom in. Every character right? Font, size, colour and alignment
    as in the spec? Not cut off?
 5. Layers or objects: named, in the right order, nothing left selected
@@ -60,4 +62,7 @@ stroke starts. Check:
 | One big box or oval instead of an outline | A shape tool was active, so the app made its own shape from the drag | Undo; pick the brush or pencil, or give the shape tool a two-point stroke |
 | Rounded corners or wobbly lines | The app smooths strokes, or `speed` too high | Undo; `speed` 300–500, or turn the brush's smoothing off |
 | Circles came out as ellipses | `range` or `size` not in the box's proportions | Fix the canvas numbers; the `draw` result warns about this |
-| The fill spilled outside the shape | A gap in the outline (not `closed`, or a stroke cut at the canvas edge) | Undo; draw the shape again with `closed: true` inside the canvas, then fill at the inside point |
+| The fill spilled outside the shape | A gap in the outline (not `closed`, or a stroke cut at the canvas edge); the `draw` result names where | Undo; close the outline there (or draw the shape again with `closed: true` inside the canvas), then fill |
+| A fill covered only part of a shape | Other outlines cross it and cut it into pieces | Click each point the `draw` result gave, or undo and paint it with `fill`, back to front |
+| A copied photo looks like a different picture | Drawn by eye | Use `trace_image` and its steps; `screenshot(compare=...)` shows what still differs |
+| Small details vanished in a traced picture | The brush is wider than them (the `draw` result says so) | Draw that step again with a smaller brush and `fill` |

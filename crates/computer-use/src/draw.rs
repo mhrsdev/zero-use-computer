@@ -783,6 +783,27 @@ impl Plan {
 /// outside the closed strokes drawn within it, so a ring's point lies
 /// between its two circles. Open strokes have none.
 pub fn fill_points(strokes: &[Vec<Point>], limit: usize) -> Vec<(usize, Point)> {
+    fill_targets(strokes, limit, |_| true)
+        .into_iter()
+        .map(|t| (t.stroke, t.point))
+        .collect()
+}
+
+/// A closed stroke to fill: where to click, and the closed strokes drawn
+/// within it (a fill stops at them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FillTarget {
+    pub stroke: usize,
+    pub point: Point,
+    pub holes: Vec<usize>,
+}
+
+/// [`fill_points`] for the strokes `wanted` says, with their holes.
+pub fn fill_targets(
+    strokes: &[Vec<Point>],
+    limit: usize,
+    wanted: impl Fn(usize) -> bool,
+) -> Vec<FillTarget> {
     let closed: Vec<(usize, &[Point], Bounds, f64)> = strokes
         .iter()
         .enumerate()
@@ -795,17 +816,29 @@ pub fn fill_points(strokes: &[Vec<Point>], limit: usize) -> Vec<(usize, Point)> 
         if out.len() >= limit {
             break;
         }
+        if !wanted(i) {
+            continue;
+        }
         // The strokes within this one: a fill stops at them. (Two of the
         // same box: the smaller one is within.)
-        let holes: Vec<(&[Point], Bounds)> = closed
+        let inner: Vec<usize> = closed
             .iter()
             .filter(|&&(j, _, c, other)| {
                 j != i && b.holds(&c) && (!c.holds(&b) || other < area * 0.98)
             })
+            .map(|&(j, ..)| j)
+            .collect();
+        let holes: Vec<(&[Point], Bounds)> = closed
+            .iter()
+            .filter(|c| inner.contains(&c.0))
             .map(|&(_, t, c, _)| (t, c))
             .collect();
-        if let Some(p) = fill_point((s, b), &holes) {
-            out.push((i, p));
+        if let Some(point) = fill_point((s, b), &holes) {
+            out.push(FillTarget {
+                stroke: i,
+                point,
+                holes: inner,
+            });
         }
     }
     out
@@ -865,9 +898,273 @@ fn fill_point(poly: (&[Point], Bounds), holes: &[(&[Point], Bounds)]) -> Option<
     }
 }
 
+/// Strokes that paint the inside of the closed `outline` with a round
+/// brush `width` across (screen units): a pass round the inside of the
+/// edge, then rows across, joined into one stroke wherever the join stays
+/// inside. The paint goes up to `bleed` past the edge (0: exactly to it),
+/// so shapes painted side by side leave no gap between them.
+pub fn brush_fill(outline: &[Point], width: f64, bleed: f64) -> Vec<Vec<Point>> {
+    let mut out = Vec::new();
+    if outline.len() < 3 || !(width.is_finite() && width > 0.0) {
+        return out;
+    }
+    let r = width / 2.0;
+    let inset = (r - bleed.max(0.0)).max(0.0);
+    let b = Bounds::of(outline);
+    // The edge pass.
+    if inset < 0.5 {
+        out.push(outline.to_vec());
+    } else {
+        out.extend(inner_edge(outline, inset));
+    }
+    // Rows: no more than 0.6 of a brush apart, so they overlap.
+    let gap = width * 0.6;
+    let edge = inset.max(gap / 2.0).min(r);
+    let (top, bottom) = (b.y0 + edge, b.y1 - edge);
+    let rows: Vec<f64> = if bottom <= top {
+        vec![(b.y0 + b.y1) / 2.0]
+    } else {
+        let n = ((bottom - top) / gap).ceil().max(1.0) as usize;
+        (0..=n)
+            .map(|k| top + (bottom - top) * k as f64 / n as f64)
+            .collect()
+    };
+    // Open chains: (stroke, the row's span as cut, ends going right).
+    let mut open: Vec<(Vec<Point>, (f64, f64), bool)> = Vec::new();
+    let edges: Vec<(Point, Point)> = outline
+        .iter()
+        .zip(outline.iter().cycle().skip(1))
+        .map(|(p, q)| (*p, *q))
+        .collect();
+    for y in rows {
+        let mut xs = crossings(outline, y, false);
+        xs.sort_by(f64::total_cmp);
+        // The edges near this row: the only ones the brush can touch.
+        let near: Vec<(Point, Point)> = edges
+            .iter()
+            .filter(|(p, q)| p.y.min(q.y) - inset <= y && y <= p.y.max(q.y) + inset)
+            .copied()
+            .collect();
+        let clear = |x: f64| {
+            let c = Point::new(x, y);
+            near.iter()
+                .map(|&(p, q)| segment_distance(c, p, q))
+                .fold(f64::MAX, f64::min)
+                >= inset - 0.25
+        };
+        // Where the brush runs on this row, with the stretch of the row
+        // each run stands for (to join it to the row above).
+        let mut runs: Vec<((f64, f64), (f64, f64))> = Vec::new();
+        for pair in xs.chunks_exact(2) {
+            let (left, right) = (pair[0], pair[1]);
+            if right <= left {
+                continue;
+            }
+            let (a, z) = (left + inset, right - inset);
+            let m = (left + right) / 2.0;
+            if inset <= 0.0 {
+                runs.push(((a.min(m), z.max(m)), (left, right)));
+                continue;
+            }
+            // Narrower than the brush: exact shapes only where the brush
+            // fits; shapes that may bleed get a line down the middle.
+            let lenient = bleed > 0.0;
+            if a > z {
+                if lenient || clear(m) {
+                    runs.push(((m, m), (left, right)));
+                }
+                continue;
+            }
+            // Split where the brush would touch an edge (a notch above or
+            // below the row, a slanting edge at the ends).
+            let n = ((z - a) / (inset / 3.0).max(0.5)).ceil().max(1.0) as usize;
+            let mut from: Option<f64> = None;
+            let mut last = a;
+            for k in 0..=n {
+                let x = a + (z - a) * k as f64 / n as f64;
+                if clear(x) {
+                    from.get_or_insert(x);
+                    last = x;
+                } else if let Some(f) = from.take() {
+                    runs.push(((f, last), (f - inset, last + inset)));
+                }
+            }
+            if let Some(f) = from {
+                runs.push(((f, last), (f - inset, last + inset)));
+            }
+            if lenient && !runs.iter().any(|r| r.1.0 < right && left < r.1.1) {
+                runs.push(((m, m), (left, right)));
+            }
+        }
+        let overlaps = |p: (f64, f64), q: (f64, f64)| p.0 < q.1 && q.0 < p.1;
+        let mut next: Vec<(Vec<Point>, (f64, f64), bool)> = Vec::new();
+        let mut taken = vec![false; open.len()];
+        for &((a, z), span) in &runs {
+            // Join the chain above when it is the only one touching this
+            // run and touches no other, and the join stays clear.
+            let above: Vec<usize> = (0..open.len())
+                .filter(|&i| !taken[i] && overlaps(open[i].1, span))
+                .collect();
+            let joined = match above.as_slice() {
+                [i] if runs.iter().filter(|r| overlaps(open[*i].1, r.1)).count() == 1 => {
+                    let i = *i;
+                    let right = !open[i].2;
+                    let (from, to) = if right { (a, z) } else { (z, a) };
+                    let last = *open[i].0.last().expect("chains are never empty");
+                    let start = Point::new(from, y);
+                    let mid = Point::new((last.x + start.x) / 2.0, (last.y + start.y) / 2.0);
+                    if stays_inside(outline, last, start)
+                        && edge_distance(outline, mid) >= inset - 0.25
+                    {
+                        taken[i] = true;
+                        let mut stroke = std::mem::take(&mut open[i].0);
+                        stroke.push(start);
+                        stroke.push(Point::new(to, y));
+                        next.push((stroke, span, right));
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if !joined {
+                next.push((vec![Point::new(a, y), Point::new(z, y)], span, true));
+            }
+        }
+        for (i, chain) in open.into_iter().enumerate() {
+            if !taken[i] {
+                out.push(chain.0);
+            }
+        }
+        open = next;
+    }
+    out.extend(open.into_iter().map(|c| c.0));
+    out.retain(|s| !s.is_empty());
+    out
+}
+
+/// The closed `outline` moved `d` inwards: where a round brush `2d` wide
+/// must run to paint up to the edge and no further. Pieces that would
+/// leave the shape are dropped.
+fn inner_edge(outline: &[Point], d: f64) -> Vec<Vec<Point>> {
+    // Distinct points, without the closing repeat.
+    let mut pts: Vec<Point> = Vec::with_capacity(outline.len());
+    for &p in outline {
+        if pts.last().is_none_or(|q: &Point| dist(*q, p) > 1e-6) {
+            pts.push(p);
+        }
+    }
+    if pts.len() > 1 && dist(pts[0], pts[pts.len() - 1]) <= 1e-6 {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    // With y down, a positive area means the inside is to the left of
+    // each edge: (-dy, dx).
+    let sign = if polygon_area(&pts) > 0.0 { 1.0 } else { -1.0 };
+    let inward = |p: Point, q: Point| -> Option<(f64, f64)> {
+        let (dx, dy) = (q.x - p.x, q.y - p.y);
+        let len = dx.hypot(dy);
+        (len > 1e-9).then(|| (-dy / len * sign, dx / len * sign))
+    };
+    let mut runs: Vec<Vec<Point>> = vec![Vec::new()];
+    let mut all = true;
+    for i in 0..n {
+        let (prev, p, next) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+        let (Some(a), Some(c)) = (inward(prev, p), inward(p, next)) else {
+            continue;
+        };
+        let (mx, my) = (a.0 + c.0, a.1 + c.1);
+        let len = mx.hypot(my);
+        let q = if len < 1e-9 {
+            None
+        } else {
+            let (mx, my) = (mx / len, my / len);
+            // Further out at corners, but never more than about 3 d.
+            let cos = (mx * a.0 + my * a.1).max(0.35);
+            let k = d / cos;
+            Some(Point::new(p.x + mx * k, p.y + my * k))
+        };
+        // Inside, and at least about `d` from every edge (a point near a
+        // corner, moved off one edge, can be too near the other).
+        match q.filter(|&q| inside(outline, q) && edge_distance(outline, q) >= d * 0.9) {
+            Some(q) => runs.last_mut().expect("never empty").push(q),
+            None => {
+                all = false;
+                runs.push(Vec::new());
+            }
+        }
+    }
+    if all
+        && let Some(run) = runs.first_mut()
+        && let Some(&first) = run.first()
+    {
+        run.push(first);
+    }
+    // A run that ends where the first begins is one piece.
+    if !all && runs.len() > 1 {
+        let first = runs.remove(0);
+        if let Some(last) = runs.last_mut() {
+            last.extend(first);
+        }
+    }
+    runs.retain(|r| r.len() >= 2);
+    runs
+}
+
+/// About how wide a closed stroke is at its narrowest kind of place: 4 x
+/// area / perimeter (a circle's diameter; a long strip comes out wider
+/// than it is).
+pub fn shape_width(stroke: &[Point]) -> f64 {
+    let perimeter: f64 = stroke.windows(2).map(|w| dist(w[0], w[1])).sum();
+    if perimeter <= 0.0 {
+        return 0.0;
+    }
+    4.0 * polygon_area(stroke).abs() / perimeter
+}
+
+/// How far `p` is from the nearest edge of the closed `poly`.
+fn edge_distance(poly: &[Point], p: Point) -> f64 {
+    poly.iter()
+        .zip(poly.iter().cycle().skip(1))
+        .map(|(&a, &b)| segment_distance(p, a, b))
+        .fold(f64::MAX, f64::min)
+}
+
+/// How far `p` is from the segment `a`-`b`.
+fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-12 {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+    };
+    (p.x - (a.x + t * dx)).hypot(p.y - (a.y + t * dy))
+}
+
+/// Whether the segment `a`-`b` stays inside the closed `poly` (crosses
+/// none of its edges and its middle is inside).
+fn stays_inside(poly: &[Point], a: Point, b: Point) -> bool {
+    let cross =
+        |o: Point, p: Point, q: Point| (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    let hits = poly
+        .iter()
+        .zip(poly.iter().cycle().skip(1))
+        .any(|(&p, &q)| {
+            let (d1, d2) = (cross(p, q, a), cross(p, q, b));
+            let (d3, d4) = (cross(a, b, p), cross(a, b, q));
+            d1 * d2 < 0.0 && d3 * d4 < 0.0
+        });
+    !hits && inside(poly, Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0))
+}
+
 /// Where the edges of the closed `poly` cross the line y = `at` (x = `at`
 /// when `vertical`): the x (or y) of each crossing.
-fn crossings(poly: &[Point], at: f64, vertical: bool) -> Vec<f64> {
+pub(crate) fn crossings(poly: &[Point], at: f64, vertical: bool) -> Vec<f64> {
     let flip = |p: &Point| if vertical { (p.y, p.x) } else { (p.x, p.y) };
     poly.iter()
         .zip(poly.iter().cycle().skip(1))
@@ -1042,6 +1339,53 @@ pub fn plan_labelled(
         }
         let made = out.plan.strokes.len();
         out.plan.shape.resize(made, index);
+    }
+    Ok(out.plan)
+}
+
+/// `plan` with the strokes of some shapes painted solid instead: `fills`
+/// holds, per shape, the brush width in screen units and how far its paint
+/// may go past the edge (see [`brush_fill`]), or `None` to keep the outline.
+pub fn fill_plan(
+    plan: Plan,
+    fills: &[Option<(f64, f64)>],
+    names: &[String],
+    max_step: f64,
+    limit: usize,
+) -> Result<Plan, String> {
+    if fills.iter().all(Option::is_none) {
+        return Ok(plan);
+    }
+    let mut out = Builder {
+        plan: Plan {
+            skipped: plan.skipped,
+            ..Plan::default()
+        },
+        limit,
+        max_step,
+    };
+    for (stroke, &shape) in plan.strokes.into_iter().zip(&plan.shape) {
+        let before = out.plan.strokes.len();
+        match fills.get(shape).copied().flatten() {
+            Some((width, bleed)) => {
+                let closed = stroke.len() >= 4 && dist(stroke[0], stroke[stroke.len() - 1]) <= 1.0;
+                if !closed {
+                    let name = names.get(shape).map_or("a stroke", String::as_str);
+                    return Err(format!(
+                        "{name}: fill needs a closed shape that is all inside the drawing area"
+                    ));
+                }
+                // Straight rows need fewer pointer positions.
+                out.max_step = max_step.max(width / 2.0);
+                for s in brush_fill(&stroke, width, bleed) {
+                    out.add(s, true)?;
+                }
+                out.max_step = max_step;
+            }
+            None => out.add(stroke, true)?,
+        }
+        let made = out.plan.strokes.len();
+        out.plan.shape.resize(made.max(before), shape);
     }
     Ok(out.plan)
 }
@@ -1572,6 +1916,101 @@ mod tests {
             one(&[p(0.0, 0.0), p(10.0, 0.0), p(20.0, 5.0), p(30.0, 0.0)]),
             None
         );
+    }
+
+    /// Paint `strokes` with a square brush `w` wide on a grid; which
+    /// pixel centres got paint.
+    fn painted(strokes: &[Vec<Point>], w: f64, size: usize) -> Vec<bool> {
+        let mut grid = vec![false; size * size];
+        let r = w / 2.0;
+        for s in strokes {
+            let mut pts = s.clone();
+            if pts.len() == 1 {
+                pts.push(pts[0]);
+            }
+            for seg in pts.windows(2) {
+                let n = (dist(seg[0], seg[1]) / 0.5).ceil().max(1.0) as usize;
+                for k in 0..=n {
+                    let f = k as f64 / n as f64;
+                    let (cx, cy) = (
+                        seg[0].x + (seg[1].x - seg[0].x) * f,
+                        seg[0].y + (seg[1].y - seg[0].y) * f,
+                    );
+                    let (x0, x1) = ((cx - r).ceil().max(0.0) as usize, (cx + r).floor() as usize);
+                    let (y0, y1) = ((cy - r).ceil().max(0.0) as usize, (cy + r).floor() as usize);
+                    for y in y0..=y1.min(size - 1) {
+                        for x in x0..=x1.min(size - 1) {
+                            // Round brush.
+                            if (x as f64 - cx).hypot(y as f64 - cy) <= r {
+                                grid[y * size + x] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn brush_fills_cover_the_shape_and_stay_inside() {
+        let p = |x, y| Point::new(x, y);
+        let circle: Vec<Point> = (0..=240)
+            .map(|k| {
+                let t = k as f64 / 240.0 * std::f64::consts::TAU;
+                p(100.0 + 70.0 * t.cos(), 100.0 + 70.0 * t.sin())
+            })
+            .collect();
+        let star: Vec<Point> = star(100.0, 100.0, 80.0, 35.0, 5, false)
+            .into_iter()
+            .chain(std::iter::once((100.0, 20.0)))
+            .map(|(x, y)| p(x, y))
+            .collect();
+        for (name, shape) in [("circle", circle), ("star", star)] {
+            for w in [6.0, 14.0] {
+                let strokes = brush_fill(&shape, w, 0.0);
+                let grid = painted(&strokes, w, 200);
+                let (mut inside_px, mut covered, mut outside) = (0, 0, 0);
+                for y in 0..200 {
+                    for x in 0..200 {
+                        let c = p(x as f64, y as f64);
+                        let ins = inside(&shape, c);
+                        // Clear of the edge by more than a pixel: must be
+                        // painted. Outside by more than a pixel: must not.
+                        let near = edge_distance(&shape, c) <= 1.5;
+                        if ins && !near {
+                            inside_px += 1;
+                            covered += usize::from(grid[y * 200 + x]);
+                        }
+                        if !ins && !near && grid[y * 200 + x] {
+                            outside += 1;
+                        }
+                    }
+                }
+                let share = covered as f64 / inside_px as f64;
+                // Sharp star tips are too narrow for a round brush.
+                let want = if name == "star" { 0.97 } else { 0.995 };
+                assert!(share >= want, "{name} w {w}: {share}");
+                assert_eq!(outside, 0, "{name} w {w}");
+                // Few strokes: the rows are joined.
+                assert!(strokes.len() <= 12, "{name} w {w}: {}", strokes.len());
+            }
+        }
+        // With bleed the paint goes that far past the edge, no further.
+        let sq: Vec<Point> = [
+            (50.0, 50.0),
+            (150.0, 50.0),
+            (150.0, 150.0),
+            (50.0, 150.0),
+            (50.0, 50.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| p(x, y))
+        .collect();
+        let grid = painted(&brush_fill(&sq, 10.0, 3.0), 10.0, 200);
+        assert!(grid[100 * 200 + 47] && !grid[100 * 200 + 45]);
+        assert!(grid[48 * 200 + 100] && !grid[46 * 200 + 100]);
+        assert!(shape_width(&sq) > 99.0 && shape_width(&sq) < 101.0);
     }
 
     #[test]

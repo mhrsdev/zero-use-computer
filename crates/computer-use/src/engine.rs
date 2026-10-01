@@ -135,6 +135,8 @@ pub struct Engine<B: Backend> {
     config_retry: bool,
     /// Host-level overrides (e.g. command-line flags) re-applied on reload.
     overrides: Option<ConfigOverride>,
+    /// Pictures traced with trace_image, by name (newest last).
+    traces: Vec<(String, crate::paint::Trace)>,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -217,6 +219,7 @@ impl<B: Backend> Engine<B> {
             pending_screen_shot: None,
             force_ocr: false,
             ocr_reuse: false,
+            traces: Vec::new(),
             ocr_note: None,
             ocr_note_shown: false,
             last_capture: None,
@@ -1503,6 +1506,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Scroll(a) => self.scroll(a),
             ToolCall::Drag(a) => self.drag(a),
             ToolCall::Draw(a) => self.draw(a),
+            ToolCall::TraceImage(a) => self.trace_image(a),
             ToolCall::PressKey(a) => self.press_key(a),
             ToolCall::TypeText(a) => self.type_text(a),
             ToolCall::FindElement(a) => self.find_element(a),
@@ -2348,9 +2352,42 @@ impl<B: Backend> Engine<B> {
         }
         let (frame, area) = self.draw_frame(&app, args.element_index, args.canvas.as_ref())?;
         let mut shapes: Vec<(String, crate::draw::Shape)> = Vec::new();
+        // Per shape: painted solid with a brush this wide on screen, and
+        // how far past its edge (traces go about one of their pixels past,
+        // so no gaps show between neighbours).
+        let mut fills: Vec<Option<(f64, f64)>> = Vec::new();
+        let unit = {
+            let (sx, sy) = frame.scale();
+            sx.abs().min(sy.abs())
+        };
         for (i, s) in args.strokes.iter().enumerate() {
-            let made = draw_shapes(s, &frame)
-                .map_err(|e| Error::InvalidArgs(format!("stroke {}: {e}", i + 1)))?;
+            let bad = |e: String| Error::InvalidArgs(format!("stroke {}: {e}", i + 1));
+            let made = match &s.trace {
+                Some(name) => self.trace_shapes(s, name, &frame, area),
+                None => draw_shapes(s, &frame),
+            }
+            .map_err(bad)?;
+            let fill = match s.fill {
+                None if s.trace.is_some() => {
+                    return Err(bad(
+                        "a trace step is painted solid: give fill, the brush width".into(),
+                    ));
+                }
+                None => None,
+                Some(w) if w.is_finite() && w > 0.0 => {
+                    if w * unit < 2.0 {
+                        return Err(bad(format!(
+                            "fill {w} is under 2 pixels on screen; use a wider brush"
+                        )));
+                    }
+                    let bleed = match &s.trace {
+                        Some(name) => self.trace_pixel(name, &frame),
+                        None => 0.0,
+                    };
+                    Some((w * unit, bleed))
+                }
+                Some(_) => return Err(bad("fill is the brush width, a positive number".into())),
+            };
             let copies = made.len();
             for (k, shape) in made.into_iter().enumerate() {
                 let name = if copies == 1 {
@@ -2359,6 +2396,7 @@ impl<B: Backend> Engine<B> {
                     format!("stroke {} (part {})", i + 1, k + 1)
                 };
                 shapes.push((name, shape));
+                fills.push(fill);
             }
             if shapes.len() > DRAW_MAX_STROKES {
                 return Err(Error::InvalidArgs(format!(
@@ -2368,6 +2406,26 @@ impl<B: Backend> Engine<B> {
         }
         let plan = crate::draw::plan_labelled(&shapes, &frame, DRAW_STEP, DRAW_MAX_POINTS)
             .map_err(Error::InvalidArgs)?;
+        let names: Vec<String> = shapes.iter().map(|s| s.0.clone()).collect();
+        // Solid shapes narrower than the brush come out bigger.
+        let thin: Vec<f64> = plan
+            .strokes
+            .iter()
+            .zip(&plan.shape)
+            .filter_map(|(s, &k)| {
+                let (w, _) = fills.get(k).copied().flatten()?;
+                let width = crate::draw::shape_width(s);
+                (width < w).then_some(width)
+            })
+            .collect();
+        let plan = crate::draw::fill_plan(plan, &fills, &names, DRAW_STEP, DRAW_MAX_POINTS)
+            .map_err(|e| {
+                if e.contains("pointer positions") {
+                    Error::InvalidArgs(format!("{e}, or paint with a wider brush (fill)"))
+                } else {
+                    Error::InvalidArgs(e)
+                }
+            })?;
         let speed = args
             .speed
             .filter(|s| s.is_finite())
@@ -2385,9 +2443,23 @@ impl<B: Backend> Engine<B> {
         ) else {
             return Err(Error::InvalidArgs("nothing to draw".into()));
         };
-        let summary = self.draw_summary(&app, &frame, area, &plan, &shapes);
+        let mut summary = self.draw_summary(&frame, area, &plan);
+        if let Some(w) = fills.iter().flatten().map(|f| f.0).min_by(f64::total_cmp) {
+            summary.push_str(&format!(
+                " Solid shapes are painted for a brush {w:.0} px wide on screen; a smaller brush leaves stripes."
+            ));
+        }
+        if let Some(narrowest) = thin.iter().copied().min_by(f64::total_cmp) {
+            summary.push_str(&format!(
+                " {} of the solid shapes are narrower than the brush and come out bigger (the narrowest is about {:.0} wide): for fine detail use a smaller brush.",
+                thin.len(),
+                narrowest / unit.max(1e-9)
+            ));
+        }
         if args.preview {
-            return self.draw_preview(&app, args.window.as_deref(), &frame, &plan, summary);
+            let cap = self.window_capture(&app, args.window.as_deref())?;
+            let fill_note = self.fill_report(&app, cap.clone(), &plan, &shapes, &fills, true);
+            return self.draw_preview(cap, &frame, &plan, format!("{summary}{fill_note}"));
         }
 
         self.overlay_point(first, true);
@@ -2417,7 +2489,12 @@ impl<B: Backend> Engine<B> {
         drawn?;
         self.settle_on(&app);
 
-        let mut msg = format!("Drew {summary}");
+        let cap = self
+            .window_capture(&app, args.window.as_deref())
+            .ok()
+            .flatten();
+        let fill_note = self.fill_report(&app, cap, &plan, &shapes, &fills, false);
+        let mut msg = format!("Drew {summary}{fill_note}");
         msg.push_str(self.explain(
             "draw-check",
             " Drawing changes pixels, which the accessibility tree doesn't show: check the result with a screenshot (screenshot: true).",
@@ -2427,14 +2504,12 @@ impl<B: Backend> Engine<B> {
     }
 
     /// "3 strokes (…) on the plot: x … to …, y … to …." plus what fell
-    /// outside and where to click inside closed shapes.
+    /// outside.
     fn draw_summary(
         &self,
-        app: &AppInfo,
         frame: &crate::draw::Frame,
         area: &str,
         plan: &crate::draw::Plan,
-        shapes: &[(String, crate::draw::Shape)],
     ) -> String {
         // Where it goes, in the coordinates the model used.
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -2468,27 +2543,490 @@ impl<B: Backend> Engine<B> {
                 " On screen 1 unit of x is {ux:.1} px and 1 unit of y is {uy:.1} px, so circles look like ellipses; for equal units make the canvas's width/height match its box's."
             ));
         }
-        // Where a click fills each closed shape (bucket fill, magic wand),
-        // in the x/y click takes.
-        if let Some(map) = self.state(app.pid).ok().and_then(|s| s.coord) {
-            let inside: Vec<String> = crate::draw::fill_points(&plan.strokes, 20)
-                .into_iter()
-                .map(|(i, p)| {
-                    let (x, y) = map.to_image(p);
-                    let name = plan
-                        .shape
-                        .get(i)
-                        .and_then(|&k| shapes.get(k))
-                        .map_or("", |(n, _)| n.as_str());
-                    format!("({x:.0}, {y:.0}) {name}")
-                })
-                .collect();
-            if !inside.is_empty() {
-                msg.push_str(&format!(
-                    " To fill a closed shape, click inside it at: {}.",
-                    inside.join("; ")
+        msg
+    }
+
+    /// A picture traced with trace_image, by name.
+    fn trace_named(&self, name: &str) -> std::result::Result<&crate::paint::Trace, String> {
+        if let Some((_, t)) = self
+            .traces
+            .iter()
+            .rev()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name.trim()))
+        {
+            return Ok(t);
+        }
+        let known: Vec<&str> = self.traces.iter().map(|(n, _)| n.as_str()).collect();
+        Err(if known.is_empty() {
+            format!("no picture called \"{name}\": trace it with trace_image first")
+        } else {
+            format!(
+                "no picture called \"{name}\" (traced: {})",
+                known.join(", ")
+            )
+        })
+    }
+
+    /// How big one of a traced picture's working pixels is on screen,
+    /// fitted into `frame` (how far apart its neighbouring shapes' edges
+    /// may be).
+    fn trace_pixel(&self, name: &str, frame: &crate::draw::Frame) -> f64 {
+        self.trace_named(name).map_or(0.0, |t| {
+            let place = crate::paint::fit_in(frame.screen_rect(), t.width, t.height);
+            place.width / f64::from(t.target.width.max(1))
+        })
+    }
+
+    /// The shapes of one step of a traced picture, fitted into the
+    /// drawing area with its proportions kept.
+    fn trace_shapes(
+        &self,
+        s: &DrawStroke,
+        name: &str,
+        frame: &crate::draw::Frame,
+        area: &str,
+    ) -> std::result::Result<Vec<crate::draw::Shape>, String> {
+        let shape_too = s.points.is_some()
+            || s.x.is_some()
+            || s.y.is_some()
+            || s.rect.is_some()
+            || s.ellipse.is_some()
+            || s.polygon.is_some()
+            || s.star.is_some()
+            || s.arc.is_some()
+            || s.bezier.is_some()
+            || s.axes.is_some();
+        if shape_too {
+            return Err("give trace on its own (with step and fill), not with a shape".into());
+        }
+        if s.rotate.is_some() || s.repeat.is_some() {
+            return Err("a trace can't be turned or repeated".into());
+        }
+        if area == "the screenshot" {
+            return Err("a trace needs canvas or element_index: where the picture goes".into());
+        }
+        let t = self.trace_named(name)?;
+        let n = t.steps.len();
+        let step = match s.step {
+            Some(k) if k >= 1 && k as usize <= n => k as usize,
+            _ => return Err(format!("\"{name}\" has steps 1 to {n}: give step")),
+        };
+        let place = crate::paint::fit_in(frame.screen_rect(), t.width, t.height);
+        let (xa, xb) = (frame.x0.min(frame.x1), frame.x0.max(frame.x1));
+        let (ya, yb) = (frame.y0.min(frame.y1), frame.y0.max(frame.y1));
+        Ok(t.steps[step - 1]
+            .regions
+            .iter()
+            .map(|r| {
+                let pts = r
+                    .iter()
+                    .map(|&(u, v)| {
+                        let (x, y) = frame.to_frame(Point::new(
+                            place.x + u * place.width,
+                            place.y + v * place.height,
+                        ));
+                        (x.clamp(xa, xb), y.clamp(ya, yb))
+                    })
+                    .collect();
+                crate::draw::Shape::points(pts, true)
+            })
+            .collect())
+    }
+
+    fn trace_image(&mut self, args: TraceImageArgs) -> Result<ToolOutput> {
+        use crate::tools::TraceDetail;
+        let colors = args.colors.unwrap_or(8);
+        if !(2..=16).contains(&colors) {
+            return Err(Error::InvalidArgs("colors is 2 to 16".into()));
+        }
+        let (src, source, default_name) = match (&args.path, &args.app) {
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidArgs(
+                    "give path (an image file) or app (what its window shows), not both".into(),
                 ));
             }
+            (None, None) => {
+                return Err(Error::InvalidArgs(
+                    "give path (an image file) or app (trace what its window shows)".into(),
+                ));
+            }
+            (Some(path), None) => {
+                let p = std::path::Path::new(path.trim());
+                let size = std::fs::metadata(p)
+                    .map_err(|e| Error::InvalidArgs(format!("can't read {path}: {e}")))?
+                    .len();
+                if size > 64 * 1024 * 1024 {
+                    return Err(Error::InvalidArgs(format!(
+                        "{path} is {} MB; give an image under 64 MB",
+                        size / (1024 * 1024)
+                    )));
+                }
+                let img = image::open(p)
+                    .map_err(|e| {
+                        Error::InvalidArgs(format!(
+                            "{path} isn't a picture I can read (PNG or JPEG): {e}"
+                        ))
+                    })?
+                    .to_rgba8();
+                let (w, h) = img.dimensions();
+                let file = p
+                    .file_name()
+                    .map_or_else(|| path.clone(), |f| f.to_string_lossy().into_owned());
+                let stem = p
+                    .file_stem()
+                    .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                (
+                    Capture {
+                        width: w,
+                        height: h,
+                        rgba: img.into_raw(),
+                        bounds: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+                    },
+                    file,
+                    stem,
+                )
+            }
+            (None, Some(query)) => {
+                if self.store.config.text_only || !self.store.config.screenshot.enabled {
+                    return Err(Error::Blocked(
+                        "trace_image".into(),
+                        "screenshots are disabled (text_only / screenshot.enabled=false)".into(),
+                    ));
+                }
+                let app = self.resolve_app(query)?;
+                let window = self.resolve_window(&app, args.window.as_deref(), false)?;
+                let part = match (args.area, args.element_index) {
+                    (Some(_), Some(_)) => {
+                        return Err(Error::InvalidArgs(
+                            "give box or element_index, not both".into(),
+                        ));
+                    }
+                    (Some([l, t, r, b]), None) => {
+                        let map = self.state(app.pid).ok().and_then(|s| s.coord).ok_or_else(|| {
+                            Error::InvalidArgs(
+                                "box is in screenshot pixels: call get_app_state (or screenshot) first"
+                                    .into(),
+                            )
+                        })?;
+                        let (a, z) = (map.to_screen(l, t)?, map.to_screen(r, b)?);
+                        let rect = Rect::new(a.x, a.y, z.x - a.x, z.y - a.y);
+                        if rect.is_empty() {
+                            return Err(Error::InvalidArgs(
+                                "box is [left, top, right, bottom], right of left and below top"
+                                    .into(),
+                            ));
+                        }
+                        Some(rect)
+                    }
+                    (None, Some(i)) => {
+                        self.observe(&app, &window, false)?;
+                        let node = self.node_by_index(&app, i)?;
+                        Some(node.bounds.filter(|b| !b.is_empty()).ok_or_else(|| {
+                            Error::InvalidArgs(format!(
+                                "element {i} ({}) has no on-screen area",
+                                node.label()
+                            ))
+                        })?)
+                    }
+                    (None, None) => None,
+                };
+                let mut cap = self.capture_clean(|b| b.capture(&app, &window))?;
+                self.redact_capture(&mut cap);
+                if let Some(r) = part {
+                    let sx = f64::from(cap.width) / cap.bounds.width.max(1e-9);
+                    let sy = f64::from(cap.height) / cap.bounds.height.max(1e-9);
+                    let x0 = ((r.x - cap.bounds.x) * sx).max(0.0);
+                    let y0 = ((r.y - cap.bounds.y) * sy).max(0.0);
+                    let x1 = ((r.x + r.width - cap.bounds.x) * sx).min(f64::from(cap.width));
+                    let y1 = ((r.y + r.height - cap.bounds.y) * sy).min(f64::from(cap.height));
+                    if x1 - x0 < 4.0 || y1 - y0 < 4.0 {
+                        return Err(Error::InvalidArgs(
+                            "that part of the window is (almost) off the picture".into(),
+                        ));
+                    }
+                    cap = imaging::crop(
+                        &cap,
+                        (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32),
+                    );
+                }
+                (
+                    cap,
+                    format!("{} window \"{}\"", app.name, window.title),
+                    app.name.clone(),
+                )
+            }
+        };
+        let detail = match args.detail.unwrap_or_default() {
+            TraceDetail::Low => crate::paint::Detail::LOW,
+            TraceDetail::Medium => crate::paint::Detail::MEDIUM,
+            TraceDetail::High => crate::paint::Detail::HIGH,
+        };
+        let t = crate::paint::trace(&src, colors as usize, detail);
+        // A short name the model can repeat.
+        let name: String = args
+            .name
+            .clone()
+            .unwrap_or(default_name)
+            .trim()
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(40)
+            .collect();
+        let name = if name.is_empty() {
+            "picture".to_string()
+        } else {
+            name
+        };
+        let regions: usize = t.steps.iter().map(|s| s.regions.len()).sum();
+        let mut text = format!(
+            "Traced \"{name}\" ({source}, {} x {} px) as {} steps of flat colour, {regions} shapes in all; the picture shows the result. Paint the steps in order, back to front: for each, set the app's colour to its hex, then draw.",
+            t.width,
+            t.height,
+            t.steps.len()
+        );
+        for (k, s) in t.steps.iter().enumerate() {
+            text.push_str(&format!(
+                "\n{}. {}: {} shape{}, {:.0}% of the picture",
+                k + 1,
+                crate::paint::hex(s.color),
+                s.regions.len(),
+                if s.regions.len() == 1 { "" } else { "s" },
+                s.share * 100.0
+            ));
+            if k == 0 && s.share > 0.9 {
+                text.push_str(" (all of it: on an empty canvas one bucket click does this step)");
+            }
+        }
+        text.push_str(&format!(
+            "\nEach step: draw(app, canvas=<the document's box and size>, strokes=[{{\"trace\": \"{name}\", \"step\": n, \"fill\": <the app's brush size>}}]). The picture keeps its proportions ({} x {}): give the canvas the same, or it is centred with margins. Afterwards screenshot(app, canvas=..., compare=\"{name}\") shows where the canvas still differs.",
+            t.width, t.height
+        ));
+        let cfg = self.store.config.screenshot.clone();
+        let (pw, ph) = imaging::fit(t.width, t.height, 512);
+        let picture = crate::paint::render(&t, pw, ph);
+        self.traces.retain(|(n, _)| n != &name);
+        self.traces.push((name, t));
+        if self.traces.len() > 8 {
+            self.traces.remove(0);
+        }
+        if self.store.config.text_only || !cfg.enabled {
+            return Ok(ToolOutput::text(text));
+        }
+        let (img, _) = imaging::encode(picture, &cfg)?;
+        Ok(ToolOutput {
+            text,
+            image: Some(img),
+            is_error: false,
+        })
+    }
+
+    /// How the document in `cap` compares with a traced picture: how many
+    /// cells of an 8 x 8 grid look alike, and the most different ones.
+    fn compare_note(
+        &self,
+        name: &str,
+        frame: &crate::draw::Frame,
+        cap: &Capture,
+    ) -> std::result::Result<String, String> {
+        const CELLS: usize = 8;
+        /// ΔE under this looks alike.
+        const ALIKE: f64 = 12.0;
+        let t = self.trace_named(name)?;
+        let place = crate::paint::fit_in(frame.screen_rect(), t.width, t.height);
+        let (sx, sy) = (
+            f64::from(cap.width) / cap.bounds.width.max(1e-9),
+            f64::from(cap.height) / cap.bounds.height.max(1e-9),
+        );
+        let area = Rect::new(
+            (place.x - cap.bounds.x) * sx,
+            (place.y - cap.bounds.y) * sy,
+            place.width * sx,
+            place.height * sy,
+        );
+        let mut cells = crate::paint::compare(t, cap, area, CELLS);
+        if cells.is_empty() {
+            return Err("the canvas is not in this picture".into());
+        }
+        let alike = cells.iter().filter(|c| c.delta < ALIKE).count();
+        let mean = cells.iter().map(|c| c.delta).sum::<f64>() / cells.len() as f64;
+        let mut msg = format!(
+            "\nCompared with \"{name}\": {alike} of {} cells look alike (mean colour difference {mean:.0}; under {ALIKE:.0} looks alike).",
+            cells.len()
+        );
+        cells.sort_by(|a, b| b.delta.total_cmp(&a.delta));
+        let worst: Vec<String> = cells
+            .iter()
+            .filter(|c| c.delta >= ALIKE)
+            .take(4)
+            .map(|c| {
+                let at = |i: usize, j: usize| {
+                    frame.to_frame(Point::new(
+                        place.x + place.width * i as f64 / CELLS as f64,
+                        place.y + place.height * j as f64 / CELLS as f64,
+                    ))
+                };
+                let (a, b) = (at(c.col, c.row), at(c.col + 1, c.row + 1));
+                format!(
+                    "x {:.0} to {:.0}, y {:.0} to {:.0} should be {} but is {}",
+                    a.0.min(b.0),
+                    a.0.max(b.0),
+                    a.1.min(b.1),
+                    a.1.max(b.1),
+                    crate::paint::hex(c.want),
+                    crate::paint::hex(c.got)
+                )
+            })
+            .collect();
+        if !worst.is_empty() {
+            msg.push_str(&format!(" Most different: {}.", worst.join("; ")));
+        }
+        Ok(msg)
+    }
+
+    /// A clean picture of the window (private areas blacked out), or
+    /// `None` when screenshots are off.
+    fn window_capture(&mut self, app: &AppInfo, window: Option<&str>) -> Result<Option<Capture>> {
+        if self.store.config.text_only || !self.store.config.screenshot.enabled {
+            return Ok(None);
+        }
+        let window = self.resolve_window(app, window, false)?;
+        let mut cap = self.capture_clean(|b| b.capture(app, &window))?;
+        self.redact_capture(&mut cap);
+        Ok(Some(cap))
+    }
+
+    /// Where a bucket click (or magic wand) fills each closed outline of
+    /// the drawing, in the x/y click takes: read off the pixels of `cap`
+    /// (with the strokes added first when they are only `planned`), so it
+    /// knows when other lines cut a shape into pieces or a gap lets a
+    /// fill run out. Without a picture, from the shapes alone.
+    fn fill_report(
+        &self,
+        app: &AppInfo,
+        cap: Option<Capture>,
+        plan: &crate::draw::Plan,
+        shapes: &[(String, crate::draw::Shape)],
+        fills: &[Option<(f64, f64)>],
+        planned: bool,
+    ) -> String {
+        let solid = |i: usize| {
+            plan.shape
+                .get(i)
+                .and_then(|&k| fills.get(k))
+                .is_some_and(Option::is_some)
+        };
+        let targets = crate::draw::fill_targets(&plan.strokes, 20, |i| !solid(i));
+        let Some(map) = self.state(app.pid).ok().and_then(|s| s.coord) else {
+            return String::new();
+        };
+        if targets.is_empty() {
+            return String::new();
+        }
+        let name = |i: usize| {
+            plan.shape
+                .get(i)
+                .and_then(|&k| shapes.get(k))
+                .map_or("a stroke", |(n, _)| n.as_str())
+        };
+        let mut cap = cap;
+        let (to_cap, to_screen) = match &cap {
+            Some(c) => {
+                let (b, sx, sy) = (
+                    c.bounds,
+                    f64::from(c.width) / c.bounds.width.max(1e-9),
+                    f64::from(c.height) / c.bounds.height.max(1e-9),
+                );
+                (
+                    Some(move |p: Point| Point::new((p.x - b.x) * sx, (p.y - b.y) * sy)),
+                    Some(move |p: Point| Point::new(b.x + p.x / sx, b.y + p.y / sy)),
+                )
+            }
+            None => (None, None),
+        };
+        // Not drawn yet: put the strokes on the picture, as paint.
+        if planned && let (Some(c), Some(to_cap)) = (cap.as_mut(), to_cap) {
+            let sx = f64::from(c.width) / c.bounds.width.max(1e-9);
+            for (i, stroke) in plan.strokes.iter().enumerate() {
+                let width = plan
+                    .shape
+                    .get(i)
+                    .and_then(|&k| fills.get(k).copied().flatten())
+                    .map_or(2.0, |(w, _)| w * sx);
+                let pts: Vec<(f64, f64)> = stroke
+                    .iter()
+                    .map(|p| {
+                        let q = to_cap(*p);
+                        (q.x, q.y)
+                    })
+                    .collect();
+                imaging::draw_path(c, &pts, [0, 0, 0], width.round().max(2.0) as i64);
+            }
+        }
+        let show = |p: Point| {
+            let (x, y) = map.to_image(p);
+            format!("({x:.0}, {y:.0})")
+        };
+        let mut clicks: Vec<String> = Vec::new();
+        let mut leaks: Vec<String> = Vec::new();
+        for t in targets {
+            let checked = match (&cap, to_cap, to_screen) {
+                (Some(c), Some(to_cap), Some(_)) => {
+                    let outline: Vec<Point> =
+                        plan.strokes[t.stroke].iter().map(|p| to_cap(*p)).collect();
+                    let holes: Vec<Vec<Point>> = t
+                        .holes
+                        .iter()
+                        .map(|&h| plan.strokes[h].iter().map(|p| to_cap(*p)).collect())
+                        .collect();
+                    let hole_refs: Vec<&[Point]> = holes.iter().map(Vec::as_slice).collect();
+                    crate::paint::fill_check(c, &outline, &hole_refs, to_cap(t.point))
+                }
+                _ => None,
+            };
+            let back = |p: Point| to_screen.map_or(p, |f| f(p));
+            match checked {
+                Some(f) if f.leak.is_some() => {
+                    let at = back(f.leak.unwrap_or(t.point));
+                    leaks.push(format!(
+                        "{} would leak out through a gap near {}: close the outline first",
+                        name(t.stroke),
+                        show(at)
+                    ));
+                }
+                Some(f) if f.clicks.len() > 1 => {
+                    let n = f.clicks.len();
+                    let at: Vec<String> = f.clicks.iter().take(5).map(|&p| show(back(p))).collect();
+                    let more = if n > 5 {
+                        format!(" and {} smaller", n - 5)
+                    } else {
+                        String::new()
+                    };
+                    clicks.push(format!(
+                        "{}, cut into {n} pieces by other lines, at {}{more}",
+                        name(t.stroke),
+                        at.join(", ")
+                    ));
+                }
+                _ => clicks.push(format!("{} at {}", name(t.stroke), show(t.point))),
+            }
+        }
+        let mut msg = String::new();
+        if !clicks.is_empty() {
+            msg.push_str(&format!(
+                " To fill a closed outline (bucket or magic wand), click {}.",
+                clicks.join("; ")
+            ));
+        }
+        for l in leaks {
+            let mut l = l;
+            if let Some(first) = l.get(..1) {
+                l = first.to_uppercase() + &l[1..];
+            }
+            msg.push_str(&format!(" {l}."));
         }
         msg
     }
@@ -2497,8 +3035,7 @@ impl<B: Backend> Engine<B> {
     /// the coordinates the call used; nothing is drawn.
     fn draw_preview(
         &mut self,
-        app: &AppInfo,
-        window: Option<&str>,
+        cap: Option<Capture>,
         frame: &crate::draw::Frame,
         plan: &crate::draw::Plan,
         summary: String,
@@ -2506,12 +3043,9 @@ impl<B: Backend> Engine<B> {
         let text = format!(
             "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the grid is in the coordinates you gave. Call draw again without preview to draw them."
         );
-        if self.store.config.text_only || !self.store.config.screenshot.enabled {
+        let Some(mut cap) = cap else {
             return Ok(ToolOutput::text(text));
-        }
-        let window = self.resolve_window(app, window, false)?;
-        let mut cap = self.capture_clean(|b| b.capture(app, &window))?;
-        self.redact_capture(&mut cap);
+        };
         let cfg = self.store.config.screenshot.clone();
         let (out_w, _) = imaging::fit(cap.width, cap.height, cfg.max_dimension.max(64));
         let out_scale = f64::from(cap.width) / f64::from(out_w.max(1));
@@ -2997,6 +3531,18 @@ impl<B: Backend> Engine<B> {
                 })
                 .collect();
             note.push_str(&format!("\nColours: {}.", read.join("; ")));
+        }
+        if let Some(name) = &args.compare {
+            let LabelSpace::Frame(f) = space else {
+                return Err(Error::InvalidArgs(
+                    "compare needs canvas: where the picture is on screen".into(),
+                ));
+            };
+            note.push_str(
+                &self
+                    .compare_note(name, &f, &capture)
+                    .map_err(Error::InvalidArgs)?,
+            );
         }
         if let Some(marks) = marks {
             imaging::annotate(&mut capture, &marks);
@@ -5060,7 +5606,7 @@ mod tests {
         // Turned a quarter about its centre (200, 150): now 100 wide, 200 tall.
         assert!(
             out.text
-                .contains("To fill a closed shape, click inside it at: (200, 150) stroke 1; (500, 300) stroke 2 (part 1); (510, 300) stroke 2 (part 2);"),
+                .contains("To fill a closed outline (bucket or magic wand), click stroke 1 at (200, 150); stroke 2 (part 1), cut into 5 pieces by other lines, at (500, 300), "),
             "{}",
             out.text
         );
@@ -5122,6 +5668,241 @@ mod tests {
         assert!(out.text.contains("on the document"), "{}", out.text);
         assert!(out.image.is_some());
         assert!(pointer_events(&e).is_empty(), "nothing drawn");
+    }
+
+    #[test]
+    fn fill_paints_shapes_solid_with_the_brush() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit",
+                "canvas": {"box": [0, 0, 800, 600], "size": [800, 600]},
+                "strokes": [{"rect": [100, 100, 200, 100], "fill": 10},
+                            {"ellipse": [500, 300, 60, 60]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("Solid shapes are painted for a brush 10 px wide on screen"),
+            "{}",
+            out.text
+        );
+        // Only the outline needs a bucket.
+        assert!(
+            out.text.contains("click stroke 2 at (500, 300)"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("stroke 1 at"), "{}", out.text);
+        // The brush stays half its width inside the rectangle, and its
+        // rows are close enough to leave no stripes.
+        let mut rows: Vec<f64> = Vec::new();
+        for ev in pointer_events(&e) {
+            let (Event::PointerDown(_, p, _)
+            | Event::PointerMove(_, p)
+            | Event::PointerUp(_, p, _)) = ev
+            else {
+                continue;
+            };
+            if p.x < 400.0 {
+                assert!(
+                    (104.9..=295.1).contains(&p.x) && (104.9..=195.1).contains(&p.y),
+                    "{p:?}"
+                );
+                rows.push(p.y);
+            }
+        }
+        rows.sort_by(f64::total_cmp);
+        rows.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        assert!(rows.first().is_some_and(|y| *y < 106.0), "{rows:?}");
+        assert!(rows.last().is_some_and(|y| *y > 194.0), "{rows:?}");
+        assert!(rows.windows(2).all(|w| w[1] - w[0] <= 6.01), "{rows:?}");
+        // An open line can't be painted solid.
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit",
+                "strokes": [{"points": [[10, 10], [50, 50]], "fill": 5}]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("fill needs a closed shape"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn previews_find_shapes_that_other_lines_cut() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "preview": true,
+                "strokes": [{"ellipse": [400, 300, 100, 100]},
+                            {"points": [[250, 300], [550, 300]]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("stroke 1, cut into 2 pieces by other lines, at "),
+            "{}",
+            out.text
+        );
+        assert!(pointer_events(&e).is_empty(), "nothing drawn");
+    }
+
+    #[test]
+    fn traced_pictures_are_painted_step_by_step_and_compared() {
+        // A picture file: a red disc on white, twice as wide as high.
+        let dir = std::env::temp_dir().join(format!("cu-trace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Logo Mark.png");
+        let (w, h) = (200u32, 100u32);
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let d = (f64::from(x) - 100.0).hypot(f64::from(y) - 50.0);
+                rgba.extend_from_slice(if d < 30.0 {
+                    &[220, 30, 30, 255]
+                } else {
+                    &[255, 255, 255, 255]
+                });
+            }
+        }
+        image::save_buffer(&path, &rgba, w, h, image::ColorType::Rgba8).unwrap();
+
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "trace_image",
+            serde_json::json!({"path": path.to_string_lossy(), "colors": 2}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("Traced \"logo-mark\" (Logo Mark.png, 200 x 100 px) as 2 steps"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text
+                .contains("\n1. #FEFEFE: 1 shape, 100% of the picture (all of it")
+                || out
+                    .text
+                    .contains("\n1. #FFFFFF: 1 shape, 100% of the picture (all of it"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("\n2. #DC1E1E: 1 shape"), "{}", out.text);
+        assert!(out.image.is_some());
+
+        // Step 2 into a 400 x 200 document shown at (0, 0)-(800, 400).
+        let canvas = serde_json::json!({"box": [0, 0, 800, 400], "size": [400, 200]});
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas,
+                "strokes": [{"trace": "logo-mark", "step": 2, "fill": 4}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        // The disc: centre (400, 200), radius 120 on screen; the brush runs
+        // on its edge, traced from a 160-pixel-wide working copy (one of
+        // its pixels is 5 on screen).
+        for ev in pointer_events(&e) {
+            if let Event::PointerMove(_, p) = ev {
+                assert!((p.x - 400.0).hypot(p.y - 200.0) <= 130.0, "{p:?}");
+            }
+        }
+        for (strokes, want) in [
+            (
+                serde_json::json!([{"trace": "logo-mark", "step": 2}]),
+                "give fill",
+            ),
+            (
+                serde_json::json!([{"trace": "logo", "step": 2, "fill": 4}]),
+                "no picture called \"logo\" (traced: logo-mark)",
+            ),
+            (
+                serde_json::json!([{"trace": "logo-mark", "step": 3, "fill": 4}]),
+                "has steps 1 to 2",
+            ),
+            (
+                serde_json::json!([{"trace": "logo-mark", "step": 1, "fill": 4, "rect": [0, 0, 5, 5]}]),
+                "on its own",
+            ),
+        ] {
+            let out = e.call_tool(
+                "draw",
+                serde_json::json!({"app": "TextEdit", "canvas": canvas, "strokes": strokes}),
+            );
+            assert!(
+                out.is_error && out.text.contains(want),
+                "{want}: {}",
+                out.text
+            );
+        }
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit",
+                "strokes": [{"trace": "logo-mark", "step": 1, "fill": 4}]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("needs canvas or element_index"),
+            "{}",
+            out.text
+        );
+
+        // Compared with the canvas: grey where white should be.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas, "compare": "logo-mark"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Compared with \"logo-mark\": "),
+            "{}",
+            out.text
+        );
+        // Grey canvas: nothing alike, the red disc's cells most of all.
+        assert!(
+            out.text.contains("0 of 64 cells look alike")
+                && out.text.contains(
+                    "Most different: x 150 to 200, y 75 to 100 should be #DC1E1E but is "
+                ),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "compare": "logo-mark"}),
+        );
+        assert!(
+            out.is_error && out.text.contains("compare needs canvas"),
+            "{}",
+            out.text
+        );
+
+        // What a window shows can be traced too.
+        let out = e.call_tool(
+            "trace_image",
+            serde_json::json!({"app": "TextEdit", "box": [0, 450, 800, 600], "name": "Strip"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Traced \"strip\" (TextEdit window"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("800 x 150 px"), "{}", out.text);
+        let out = e.call_tool(
+            "trace_image",
+            serde_json::json!({"path": dir.join("nope.png").to_string_lossy()}),
+        );
+        assert!(
+            out.is_error && out.text.contains("can't read"),
+            "{}",
+            out.text
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -118,6 +118,9 @@ pub struct MockBackend {
     pub fill: u8,
     /// A screen area drawn in another brightness (a local change).
     pub patch: Option<(Rect, u8)>,
+    /// Strokes drawn so far (screen points): later captures show them as
+    /// dark lines, like a paint app's canvas.
+    pub ink: Vec<Vec<Point>>,
     /// What the built-in OCR "reads" (None = no built-in OCR), and how
     /// often it ran.
     pub ocr_text: Option<Vec<OcrLine>>,
@@ -264,6 +267,18 @@ impl MockBackend {
                     }
                 }
             }
+        }
+        let (b, sx, sy) = (
+            cap.bounds,
+            f64::from(cap.width) / cap.bounds.width.max(1e-9),
+            f64::from(cap.height) / cap.bounds.height.max(1e-9),
+        );
+        for stroke in &self.ink {
+            let pts: Vec<(f64, f64)> = stroke
+                .iter()
+                .map(|p| ((p.x - b.x) * sx, (p.y - b.y) * sy))
+                .collect();
+            crate::imaging::draw_path(&mut cap, &pts, [20, 20, 20], 2);
         }
         cap
     }
@@ -633,6 +648,7 @@ impl Backend for MockBackend {
                 last = p;
             }
             self.events.push(Event::PointerUp(pid, last, button));
+            self.ink.push(stroke.clone());
         }
         Ok(())
     }

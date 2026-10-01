@@ -53,7 +53,9 @@ Follow the steps in order; after each numbered step, run the checks in
 
    `preview: true` first, with the same `canvas`.
 4. Fill each closed outline with the bucket at the point the `draw` result
-   gave for its stroke. Check each with `pick`.
+   gave for its stroke (one per piece if it says the shape is cut). Check
+   each with `pick`. Shapes that overlap others: paint them with `fill`
+   instead, back to front.
 5. Text box last. Save as PNG.
 
 ## A badge or emblem (Paint, Photoshop, GIMP, Krita)
@@ -133,7 +135,9 @@ Spec example, 1000 x 1000 canvas: a ring, a star in it, 12 dots round it.
    then check the framing with a screenshot.
 6. `F12` to render, save the image, `cmd+s` for the `.blend`.
 
-## Copying a reference image
+## Copying a design (logo, poster, UI)
+
+Flat designs with exact shapes and text:
 
 1. Open the reference on screen. Measure it as in
    [reference-images.md](reference-images.md): its box, every element's box,
@@ -141,3 +145,34 @@ Spec example, 1000 x 1000 canvas: a ring, a star in it, 12 dots round it.
 2. Write the spec from those numbers, converted to the canvas size.
 3. Either build from the spec (preferred) or trace over it at low opacity.
 4. Compare side by side at the end; fix the largest difference first.
+
+## Copying a photo (Paint, Photoshop, GIMP, Krita)
+
+A photo has light, shade and texture: shapes drawn by eye come out as a
+generic cartoon. Let `trace_image` turn it into flat colours instead.
+Example: a photo of a cat, 960 x 960, copied into Paint.
+
+1. Canvas with the photo's proportions: 800 x 800. Zoom to fit and read
+   the canvas box off a grid screenshot.
+2. `trace_image(path="C:/Users/me/Pictures/cat.jpg", detail="high")`.
+   Look at the picture it returns:
+   - a feature you need is missing: trace again with more `colors` (up to
+     16);
+   - too busy: fewer colours, or `detail: "medium"`.
+3. Brush: a round brush or the pencil, about 1% of the canvas (8 px on
+   800), smaller for small features. In Paint use `speed` 2500.
+4. Step 1 is the background ("all of it"): set colour 1 to its hex and
+   click the empty canvas with the bucket.
+5. Each next step, in order:
+   1. Set colour 1 to the step's hex.
+   2. `draw(app, canvas={"box": [...], "size": [800, 800]},
+      strokes=[{"trace": "cat", "step": n, "fill": 8}], speed=2500)`.
+6. `screenshot(app, canvas=..., compare="cat")`. Each place it lists names
+   the colour it should be: a step was missed, or a colour is wrong. Redo
+   that step.
+7. Save as PNG.
+
+In Photoshop, GIMP and Krita, turn brush smoothing off and use `speed`
+300–500, or 1000+ if the app keeps up. Vector apps have their own tracing,
+which gives cleaner paths: Illustrator's Object ▸ Image Trace, Inkscape's
+Path ▸ Trace Bitmap.

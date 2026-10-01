@@ -65,7 +65,8 @@ Every result stays in the conversation, so ask only for what you need:
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
 - [reference/drawing.md](reference/drawing.md): `draw`: lines, shapes,
-  stars, curves, function plots with axes, repeats, and previews.
+  stars, curves, function plots with axes, repeats, solid fills,
+  previews, and copying a picture with `trace_image`.
 - Shortcuts and quirks of common apps:
   [browsers](reference/apps/browsers.md), [office](reference/apps/office.md),
   [mail and chat](reference/apps/mail-and-chat.md),
