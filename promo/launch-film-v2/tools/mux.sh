@@ -9,6 +9,6 @@ OUT="${2:-renders/zero-use-computer-film2-1080p60.mp4}"
 ffmpeg -hide_banner -loglevel error -y -i "$IN" -i assets/audio/score.wav \
   -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 320k -ar 48000 \
   -movflags +faststart -metadata title="Zero Use Computer — open source (film 2)" \
-  -metadata comment="github.com/mhrsdev/zero-use-computer" -shortest "$OUT"
+  -metadata comment="github.com/mhrsdev/zero-use-computer · Music: Vibe Ace by Kevin MacLeod (incompetech.com), CC BY 4.0, edited" -shortest "$OUT"
 ffprobe -v error -show_entries format=duration,size:stream=codec_name,width,height,r_frame_rate,sample_rate,channels -of compact "$OUT"
 ffmpeg -hide_banner -nostats -i "$OUT" -af ebur128=peak=true -f null - 2>&1 | grep -A14 Summary | grep -E "I:|LRA:|Peak:"

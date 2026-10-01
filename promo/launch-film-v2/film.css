@@ -216,6 +216,9 @@ body {
 .row.sel {
   background: #222833;
 }
+.row.sel em {
+  color: #d6dade;
+}
 .read {
   flex: 1;
   position: relative;
@@ -1223,6 +1226,16 @@ body {
   font: 500 32px/1 "JetBrains Mono";
   color: var(--paper);
   opacity: 0;
+}
+#credit {
+  position: absolute;
+  left: 0;
+  top: 1000px;
+  width: 1920px;
+  text-align: center;
+  font: 400 20px/1 "JetBrains Mono";
+  color: #9aa4ae;
+  letter-spacing: 0.01em;
 }
 #repo .lic {
   color: #8c96a1;

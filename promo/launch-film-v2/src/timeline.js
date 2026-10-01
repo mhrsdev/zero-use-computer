@@ -1,6 +1,6 @@
 // Zero Use Computer — film 2. One paused, seekable GSAP timeline.
-// Every event is placed in BEATS (cues.json, 128 BPM) so picture and music
-// share one grid. Layout is measured once after fonts load.
+// Every event is placed in BEATS (cues.json) on the grid of the music, a real
+// track at 130 BPM, so picture and music share one grid. Layout is measured once after fonts load.
 (function () {
   const C = window.CUES;
   const S = window.SCENE;
@@ -97,7 +97,7 @@
     set("#glow", { opacity: 0, "--st": COL.work }, 0);
     set(".lbl", { xPercent: -50, opacity: 0 }, 0);
     set("#idlebar i", { scaleX: 0 }, 0);
-    set([".k", ".m", "#chip .c", "#keys", "#ticker", "#cards", "#dd", "#tools", "#os3", "#clients", "#mark", "#wm-name", "#repo", "#freedoms span"], { opacity: 0 }, 0);
+    set([".k", ".m", "#chip .c", "#keys", "#ticker", "#cards", "#dd", "#tools", "#os3", "#clients", "#mark", "#wm-name", "#repo", "#credit", "#freedoms span"], { opacity: 0 }, 0);
     set("#os span", { y: 130 }, 0);
     set("#maskbar", { x: card.x - 3, y: card.y - 2, width: card.w + 6, height: card.h + 4, background: "#808080", scaleX: 0, opacity: 0 }, 0);
 
@@ -447,6 +447,8 @@
     to("#os span", { y: 0, duration: 0.3, ease: "expo.out" }, C.opensource);
     ["#f1", "#f2", "#f3", "#f4"].forEach((f, i) => ft(f, { opacity: 0, scale: 1.25 }, { opacity: 1, scale: 1, duration: 0.15, ease: "power4.out" }, [C.read, C.run, C.change, C.ship][i]));
     ft("#repo", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power3.out" }, C.repo);
+    // the music's licence asks for credit; it sits under the repository line
+    ft("#credit", { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power1.out" }, C.repo + 0.5);
     to("#fade", { opacity: 1, duration: B(C.duration_beats - C.end_fade), ease: "power1.in" }, C.end_fade);
 
     // deliberate layering, marked for the layout audit

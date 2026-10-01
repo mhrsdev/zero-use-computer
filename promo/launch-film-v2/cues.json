@@ -1,7 +1,7 @@
 {
-  "_doc": "Film 2 timing, in BEATS at 128 BPM (1 beat = 0.46875 s). Read by src/cues.js (picture) and audio/synth.py (sound). seconds = beat * 60 / bpm.",
-  "bpm": 128,
-  "duration_beats": 66.15,
+  "_doc": "Film 2 timing, in BEATS at the music's tempo: 130 BPM, the grid of Kevin MacLeod's \"Vibe Ace\" (1 beat = 0.461538 s). Read by src/cues.js (picture) and audio/score.py (sound). seconds = beat * 60 / bpm.",
+  "bpm": 130,
+  "duration_beats": 66.19,
 
   "intro_tick": 0,
   "w_aican": 1,
@@ -59,7 +59,7 @@
   "call_search": 40,
   "user_in": 40.25,
   "pause": 40.5,
-  "user_stop": 40.8,
+  "user_stop": 40.75,
   "resume": 44,
   "keys": 45,
   "stop": 45.5,
