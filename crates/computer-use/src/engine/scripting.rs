@@ -250,6 +250,11 @@ impl<B: Backend> Engine<B> {
             match running.rx.recv_timeout(wait) {
                 Ok(Msg::Ask(req)) => {
                     let reply = self.script_request(req, &mut images, &mut shown);
+                    // Raised before the reply, which the script reads first:
+                    // a stop during its last tool call ends it as stopped.
+                    if self.halted() {
+                        halt.store(true, Ordering::SeqCst);
+                    }
                     let _ = running.tx.send(reply);
                 }
                 Ok(Msg::Done(o)) => break o,

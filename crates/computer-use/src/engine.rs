@@ -126,8 +126,9 @@ pub struct Engine<B: Backend> {
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
-    /// Set when the client cancels the call in progress (or goes away): it
-    /// ends as the stop key would end it, and is cleared when the call ends.
+    /// Set when the client cancels the call in progress: it ends as the stop
+    /// key would end it, and is cleared when the call ends. (A client that
+    /// goes away closes the server's input; MCP then ends the server.)
     cancel: Arc<AtomicBool>,
     /// When the engine's own synthesized input last ended, so the system
     /// idle time isn't mistaken for the user's input.
@@ -184,6 +185,16 @@ type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
 /// every call only costs tokens.
 #[derive(Default)]
 struct Hints(std::cell::RefCell<HashSet<&'static str>>);
+
+/// What the model had been shown before a call ([`Engine::shown`]).
+pub struct Shown {
+    hints: HashSet<&'static str>,
+    /// Per app: the screen the model knows, and the screenshot coordinates
+    /// it works from.
+    apps: HashMap<u32, (Option<Screen>, Option<CoordMap>)>,
+    screen_shot: Option<(PixelSig, CoordMap)>,
+    partial: Option<(u32, u32, u64, usize)>,
+}
 
 impl Hints {
     /// Whether `key` is being explained for the first time (it then counts
@@ -1227,8 +1238,13 @@ impl<B: Backend> Engine<B> {
                 k.origin = origin;
             }
             _ => {
-                // Where the window was when the model last saw it.
-                let before = st.known.as_ref().map(|k| (k.origin, k.size));
+                // Where the window was when the model last saw it (another
+                // window's place says nothing about this one).
+                let before = st
+                    .known
+                    .as_ref()
+                    .filter(|k| k.window == window.id)
+                    .map(|k| (k.origin, k.size));
                 let mut next = self
                     .memory
                     .take(st.screen)
@@ -1711,6 +1727,8 @@ impl<B: Backend> Engine<B> {
                 self.ocr_reuse = false;
                 self.pending_images.clear();
                 self.pending_screen_shot = None;
+                self.partial_report = None;
+                self.cancel.store(false, Ordering::SeqCst);
                 self.epoch += 1;
                 self.overlay_send(OverlayCmd::End { ok: false });
                 ToolOutput::error(&Error::Internal(format!(
@@ -3672,7 +3690,13 @@ impl<B: Backend> Engine<B> {
                 )
             } else {
                 format!(
-                    "{} area{} of {} (within {tol}), biggest first: {}{}.",
+                    "{}{} area{} of {} (within {tol}), biggest first: {}{}.",
+                    // Only the biggest are kept of a picture full of specks.
+                    if blobs.len() >= crate::target::MAX_BLOBS {
+                        "At least "
+                    } else {
+                        ""
+                    },
                     blobs.len(),
                     if blobs.len() == 1 { "" } else { "s" },
                     crate::design::hex(colour),
@@ -4089,6 +4113,13 @@ impl<B: Backend> Engine<B> {
 
     /// Type `text` into the app's focused element (newlines press Return).
     fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
+        // Every path that types (set_value's fallback too) has the limit.
+        let count = text.chars().count();
+        if count > MAX_TYPED_CHARS {
+            return Err(Error::InvalidArgs(format!(
+                "{count} characters is too many to type; at most {MAX_TYPED_CHARS} (paste long text: set_clipboard, then press_key ctrl+v / cmd+v)"
+            )));
+        }
         let target = self.input_target(app)?;
         // A Windows line break is one Return, not two.
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -4678,6 +4709,37 @@ impl<B: Backend> Engine<B> {
 
     /// What the model has seen of each app, to put back after calls whose
     /// trees it never saw (batch steps, a script's tool calls).
+    /// What the model has been shown so far, to put back with
+    /// [`Self::not_delivered`] if the answer to the next call never reaches
+    /// it (the client cancelled the call).
+    pub fn shown(&self) -> Shown {
+        Shown {
+            hints: self.hints.0.borrow().clone(),
+            apps: self
+                .states
+                .iter()
+                .map(|(pid, st)| (*pid, (st.known.clone(), st.coord)))
+                .collect(),
+            screen_shot: self.screen_shot.clone(),
+            partial: self.partial_report,
+        }
+    }
+
+    /// The answer to the last call never reached the model: what it has
+    /// seen is what it had seen before (`shown`), so the next look sends
+    /// in full what that call would have shown, and no explanation counts
+    /// as given.
+    pub fn not_delivered(&mut self, shown: Shown) {
+        *self.hints.0.borrow_mut() = shown.hints;
+        self.partial_report = shown.partial;
+        self.screen_shot = shown.screen_shot;
+        for (pid, st) in self.states.iter_mut() {
+            let (known, coord) = shown.apps.get(pid).cloned().unwrap_or_default();
+            st.known = known;
+            st.coord = coord;
+        }
+    }
+
     fn known_screens(&self) -> HashMap<u32, Option<Screen>> {
         self.states
             .iter()
@@ -5995,6 +6057,75 @@ mod tests {
             ),
             "{:?}",
             e.backend().events.last()
+        );
+    }
+
+    #[test]
+    fn looking_at_another_window_leaves_the_screenshot_coordinates_alone() {
+        let mut e = engine();
+        {
+            let app = e.backend_mut().app_mut(4242).unwrap();
+            let mut other = app.windows[0].clone();
+            other.id = 2;
+            other.title = "Other".into();
+            other.root = 99;
+            other.focused = false;
+            other.bounds.x += 300.0;
+            other.bounds.y += 200.0;
+            app.elements
+                .push(MockElement::new(99, "window", "Other", other.bounds));
+            app.windows.push(other);
+        }
+        let look = |window: &str, shot: bool| {
+            ToolCall::GetAppState(GetAppStateArgs {
+                app: "TextEdit".into(),
+                window: Some(window.into()),
+                screenshot: Some(shot),
+                ..Default::default()
+            })
+        };
+        let out = e.call(look("Untitled", true)).unwrap();
+        assert!(out.image.is_some(), "{}", out.text);
+        e.call(look("Other", false)).unwrap();
+        // x/y still mean the picture of "Untitled".
+        e.call(ToolCall::Click(ClickArgs {
+            app: "TextEdit".into(),
+            x: Some(400.0),
+            y: Some(300.0),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                e.backend().events.last().unwrap(),
+                Event::Click(4242, p, _, _) if (p.x - 400.0).abs() < 1.0 && (p.y - 300.0).abs() < 1.0
+            ),
+            "{:?}",
+            e.backend().events.last()
+        );
+    }
+
+    #[test]
+    fn a_call_whose_answer_was_dropped_counts_as_unseen() {
+        let mut backend = MockBackend::new();
+        backend.add_app(page_a(7));
+        backend.on_press.insert(20, page_b(7));
+        let mut cfg = Config::default();
+        cfg.tree.report_changes_max_lines = 4;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        // The client cancels the click; its answer never reaches the model.
+        let shown = e.shown();
+        press_named(&mut e, 7, "Next");
+        e.not_delivered(shown);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(!out.text.contains("the rest:"), "{}", out.text);
+        assert!(out.text.contains("button \"Back\""), "{}", out.text);
+        assert!(
+            out.image.is_some(),
+            "the model has no picture of it: {}",
+            out.text
         );
     }
 

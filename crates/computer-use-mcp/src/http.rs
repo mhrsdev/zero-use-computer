@@ -8,6 +8,7 @@
 
 use std::io::Read as _;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use computer_use::Backend;
 use computer_use::engine::Engine;
@@ -19,6 +20,8 @@ use crate::server::{instructions, negotiate_protocol, unknown_tool};
 
 /// Largest request body accepted (a JSON-RPC message is far smaller).
 const MAX_BODY: u64 = 4 * 1024 * 1024;
+/// Refused requests answered on threads of their own at once, at most.
+const MAX_REFUSING: usize = 16;
 
 /// Serve MCP over HTTP until the process is stopped. `token` is required.
 pub fn serve(mut engine: Engine<Box<dyn Backend>>, addr: &str, token: &str) -> anyhow::Result<()> {
@@ -145,12 +148,23 @@ fn respond(request: Request, status: u16, body: Value) {
     };
     // A refused request may still be sending its body, which tiny_http
     // reads to the end once it is answered: that happens on a thread of its
-    // own, so a client sending gigabytes can't hold up the others.
-    if status >= 400 {
-        let _ = std::thread::Builder::new()
+    // own, so a client sending gigabytes can't hold up the others. At most
+    // a few such threads at once; past that, refusals wait their turn.
+    static REFUSING: AtomicUsize = AtomicUsize::new(0);
+    if status >= 400 && REFUSING.fetch_add(1, Ordering::SeqCst) < MAX_REFUSING {
+        let spawned = std::thread::Builder::new()
             .name("http-refuse".into())
-            .spawn(send);
+            .spawn(move || {
+                send();
+                REFUSING.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            REFUSING.fetch_sub(1, Ordering::SeqCst);
+        }
     } else {
+        if status >= 400 {
+            REFUSING.fetch_sub(1, Ordering::SeqCst);
+        }
         send();
     }
 }

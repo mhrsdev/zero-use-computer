@@ -759,13 +759,14 @@ pub fn draw_grid(
 }
 
 /// Draw a path (capture pixels) `width` pixels wide. Each stamp is clipped
-/// to the picture, the width to its diagonal, and a wide brush is stamped
+/// to the picture, the width to twice its diagonal (a stamp centred on any
+/// point of it still covers all of it), and a wide brush is stamped
 /// every quarter of its width: the work grows with the width, not its
 /// square (a brush thousands of pixels wide stays quick).
 pub fn draw_path(cap: &mut Capture, pts: &[(f64, f64)], rgb: [u8; 3], width: i64) {
     let (cw, ch) = (i64::from(cap.width), i64::from(cap.height));
     let diagonal = (cw as f64).hypot(ch as f64).ceil() as i64;
-    let width = width.clamp(1, diagonal.max(1));
+    let width = width.clamp(1, 2 * diagonal + 2);
     let dot = |cap: &mut Capture, x: f64, y: f64| {
         let (x, y) = (x.round() as i64 - width / 2, y.round() as i64 - width / 2);
         let (xa, xb) = (x.max(0), x.saturating_add(width).min(cw));
@@ -947,6 +948,10 @@ mod tests {
             10_000_000,
         );
         assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+        assert!(cap.rgba.chunks(4).all(|p| p[..3] == [0, 0, 0]));
+        // One dot in a corner, wider than the picture: all of it too.
+        let mut cap = solid(200, 100, [255, 255, 255]);
+        draw_path(&mut cap, &[(0.0, 0.0)], [0, 0, 0], 10_000);
         assert!(cap.rgba.chunks(4).all(|p| p[..3] == [0, 0, 0]));
         // A thin line still leaves no gaps.
         let mut cap = solid(100, 10, [255, 255, 255]);

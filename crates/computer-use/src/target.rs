@@ -350,7 +350,7 @@ pub fn colour_blobs(cap: &Capture, area: Rect, colour: [u8; 3], tol: i32) -> Vec
 }
 
 /// Most areas `colour_blobs` returns.
-const MAX_BLOBS: usize = 10_000;
+pub const MAX_BLOBS: usize = 10_000;
 
 /// A place that looks like the template.
 #[derive(Debug, Clone, PartialEq)]

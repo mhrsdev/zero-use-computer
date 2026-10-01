@@ -471,6 +471,11 @@ impl Design {
             }
         }
         for m in args.mirror.iter().flatten() {
+            if self.layers.len() >= MAX_LAYERS {
+                return Err(format!(
+                    "a page holds at most {MAX_LAYERS} layers: remove some, or start another design"
+                ));
+            }
             let i = self.index(&m.id)?;
             if self.index(&m.copy).is_ok() {
                 return Err(format!("there is already a layer \"{}\"", m.copy));
@@ -1731,6 +1736,27 @@ mod tests {
             let e = d.clone().apply(&args, &mut fonts).unwrap_err();
             assert!(e.contains(want), "{e}");
         }
+    }
+
+    #[test]
+    fn mirrors_count_towards_the_layer_limit() {
+        let many: Vec<serde_json::Value> = (0..MAX_LAYERS)
+            .map(|i| serde_json::json!({"id": format!("l{i}"), "rect": [1, 1, 2, 2]}))
+            .collect();
+        let (mut d, mut fonts) = design(many);
+        let args = DesignArgs {
+            name: "t".into(),
+            mirror: Some(vec![DesignMirror {
+                id: "l0".into(),
+                copy: "l0-copy".into(),
+                axis: None,
+                line: None,
+            }]),
+            ..DesignArgs::default()
+        };
+        let e = d.apply(&args, &mut fonts).unwrap_err();
+        assert!(e.contains("at most"), "{e}");
+        assert_eq!(d.layers.len(), MAX_LAYERS);
     }
 
     #[test]

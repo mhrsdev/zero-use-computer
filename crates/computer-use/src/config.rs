@@ -1071,13 +1071,19 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
 
 /// Write `text` to `path` all at once: a reader (the server reloading its
 /// settings) sees the old file or the new one, never half of it.
+/// A settings file that is a link is written where it points (the link
+/// stays), and keeps its permissions (it may hold `server.http_token`).
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
     let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text).map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    if let Ok(meta) = std::fs::metadata(&path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         fail(e)
     })
@@ -1202,6 +1208,35 @@ mod tests {
                 assert!(in_template.contains(&key), "template is missing `{key}`");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_keeps_the_link_and_the_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("cu-edit-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.toml");
+        std::fs::write(&real, "[server]\nhttp_token = \"secret\"\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        edit_file(&link, "tree.max_nodes", Edit::Set("300".into())).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(&real)
+                .unwrap()
+                .contains("max_nodes = 300")
+        );
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

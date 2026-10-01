@@ -241,10 +241,16 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         if !cancels.begin(&id, engine_cancel) {
             return Ok(());
         }
+        // What the model had seen: if this answer is dropped, it still has.
+        let shown = (method == "tools/call")
+            .then(|| self.engine.as_ref().map(|e| e.shown()))
+            .flatten();
         let response = self.handle_request(&method, params, id.clone());
-        if !cancels.end()
-            && let Some(resp) = response
-        {
+        if cancels.end() {
+            if let (Some(shown), Some(engine)) = (shown, self.engine.as_mut()) {
+                engine.not_delivered(shown);
+            }
+        } else if let Some(resp) = response {
             self.write_msg(&resp)?;
         }
         // A hot-reloaded config can change which tools exist; tell the client.
