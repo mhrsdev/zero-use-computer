@@ -48,23 +48,30 @@ dbus-run-session -- bash -c '
   WAYLAND_DISPLAY="$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-[0-9] | head -1)")"
   SWAYSOCK="$(ls "$XDG_RUNTIME_DIR"/sway-ipc.* | head -1)"
   export WAYLAND_DISPLAY SWAYSOCK
-  # XWayland starts on demand; its DISPLAY is in the sway log.
-  export DISPLAY="${DISPLAY:-:0}"
+  # This sway'"'"'s own XWayland display (sway gives it to what it starts).
+  swaymsg -q exec "printenv DISPLAY > $XDG_RUNTIME_DIR/display"
+  for _ in $(seq 50); do [ -s "$XDG_RUNTIME_DIR/display" ] && break; sleep 0.1; done
+  DISPLAY="$(cat "$XDG_RUNTIME_DIR/display" 2>/dev/null || true)"
+  export DISPLAY
+  pids=()
   for c in /usr/libexec/at-spi-bus-launcher /usr/lib/at-spi2-core/at-spi-bus-launcher; do
-    [ -x "$c" ] && { "$c" --launch-immediately >/tmp/cu-atspi.log 2>&1 & break; }
+    [ -x "$c" ] && { "$c" --launch-immediately >"$XDG_RUNTIME_DIR/atspi.log" 2>&1 & pids+=($!); break; }
   done
   for r in /usr/libexec/at-spi2-registryd /usr/lib/at-spi2-core/at-spi2-registryd; do
-    [ -x "$r" ] && { "$r" >/tmp/cu-atspi-reg.log 2>&1 & break; }
+    [ -x "$r" ] && { "$r" >"$XDG_RUNTIME_DIR/atspi-reg.log" 2>&1 & pids+=($!); break; }
   done
   sleep 1
   IFS=";" read -ra apps <<< "$CU_APPS"
+  n=0
   for a in "${apps[@]}"; do
-    [ -n "$a" ] && { bash -c "$a" >/tmp/cu-app.log 2>&1 & }
+    n=$((n + 1))
+    [ -n "$a" ] && { bash -c "$a" >"$XDG_RUNTIME_DIR/app$n.log" 2>&1 & pids+=($!); }
   done
   sleep "$CU_SETTLE"
   shift
   status=0
   "$@" || status=$?
+  kill "${pids[@]}" 2>/dev/null || true
   kill "$(cat "$XDG_RUNTIME_DIR/sway.pid")" 2>/dev/null || true
   exit $status
 ' "$conf" _ "$@" 2> >(grep -v "dbus-daemon" >&2)
