@@ -6,7 +6,7 @@
 #   review/audio.png           waveform + spectrogram of the mixed track
 set -euo pipefail
 cd "$(dirname "$0")/.."
-IN="${1:-renders/zmcp-launch-1080p60.mp4}"
+IN="${1:-renders/zero-use-computer-launch-1080p60.mp4}"
 OUT=review
 mkdir -p "$OUT/frames" "$OUT/transitions"
 ffmpeg -hide_banner -loglevel error -y -i "$IN" \

@@ -2,13 +2,13 @@
 format: 1920x1080
 fps: 60
 duration: 44s
-message: "An agent shouldn't just receive screenshots. Z-MCP sees, understands, acts, verifies and stays under your control — and it's open source."
+message: "An agent shouldn't just receive screenshots. Zero Use Computer sees, understands, acts, verifies and stays under your control — and it's open source."
 arc: Hook → See → Understand → Act (dive) → Verify → Control → Remember (screen memory) → Pull back → Open source
 audience: developers who build or use coding agents
 mode: autonomous
 ---
 
-# Z-MCP — launch film beat sheet
+# Zero Use Computer — launch film beat sheet
 
 One continuous canvas. The frame **is** the user's screen until the final
 pull-back. Every transition is caused by something the system really does.
@@ -65,7 +65,7 @@ live, operable screen (the glow, `border_target = "screen"` default).
 ## Frame 7 — Open source
 
 - duration: 8.2s (35.8–44.0)
-- scene: Everything collapses into the centre: the screen glow becomes a ring, Zero's cursor docks inside it — the strongest hit of the film. "Z-MCP" / "ZERO · USE COMPUTER". "OPEN SOURCE." "Read it. Run it. Change it. Ship it." "Apache-2.0 · github.com/mhrsdev/zero-use-computer". Hold.
+- scene: Everything collapses into the centre: the screen glow becomes a ring, Zero's cursor docks inside it — the strongest hit of the film. "Zero Use Computer". "OPEN SOURCE." "Read it. Run it. Change it. Ship it." "Apache-2.0 · github.com/mhrsdev/zero-use-computer". Hold.
 - status: animated
 
 ## Sound map
@@ -97,7 +97,7 @@ live, operable screen (the glow, `border_target = "screen"` default).
 | 31.8 | done (green) | gentle resolve chord |
 | 33.4–35.6 | pull back | rising air |
 | 35.8 | collapse | inward suck |
-| 36.3 | mark + Z-MCP | strongest hit (sub + chord bloom) |
+| 36.3 | mark + Zero Use Computer | strongest hit (sub + chord bloom) |
 | 38.0 | OPEN SOURCE | second, lighter hit |
 | 40.4 | URL | tick |
 | 40.4–44.0 | hold | tail decays to silence |

@@ -1,4 +1,4 @@
-# VERIFIED_FEATURES — Z-MCP / Zero Use Computer (repo `mhrsdev/zero-use-computer`, v2.6.0)
+# VERIFIED_FEATURES — Zero Use Computer (repo `mhrsdev/zero-use-computer`, v2.6.0)
 
 Audited at commit `37278f3`. A feature is **IMPLEMENTED** only where the code
 that does it was read (and, where one exists, the test that exercises it).
@@ -66,7 +66,7 @@ Only rows marked IMPLEMENTED may appear in the film as existing behaviour.
 | Page map / regions | None. What exists: the numbered tree, set-of-marks screenshots (red `#FF2828` boxes), grids, cells, `locate`. The film's hairline element boxes are a visualisation of the numbered tree, not a product feature. |
 | Dedicated browser automation (CDP/WebDriver) | None; browsers are operated as ordinary apps. Not mentioned in the film. |
 | Authentication gateway | None beyond the HTTP bearer token + Origin check. Not mentioned in the film. |
-| A logo, "Z-MCP" or "Use Computer" in the repo | None. "Z-MCP / Zero Use Computer" is the launch name given in the brief; the film's mark is new and built from the real overlay (cursor + ring). |
+| A logo, or "Use Computer" as a phrase in the repo | None. "Zero Use Computer" is the product name, taken from the repository name `zero-use-computer`; the film's mark is new and built from the real overlay (cursor + ring). |
 
 ## Verbatim strings used on screen
 

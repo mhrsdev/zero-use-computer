@@ -1,4 +1,4 @@
-"""Procedural sound design for the Z-MCP launch film.
+"""Procedural sound design for the Zero Use Computer launch film.
 
 Every sound in the film is generated here from code (no samples, no
 third-party audio), so the mix is fully licensable with the project.

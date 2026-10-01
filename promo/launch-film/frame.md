@@ -1,5 +1,5 @@
 ---
-name: Z-MCP launch film — graphite
+name: Zero Use Computer launch film — graphite
 canvas: 1920x1080
 fps: 60
 colors:

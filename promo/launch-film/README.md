@@ -1,12 +1,12 @@
-# Z-MCP — open-source launch film
+# Zero Use Computer — open-source launch film
 
-A 44-second, 1920×1080, 60 fps motion film announcing that Z-MCP / Zero
-Use Computer is open source. It is built with
+A 44-second, 1920×1080, 60 fps motion film announcing that Zero Use
+Computer is open source. It is built with
 [HyperFrames](https://github.com/heygen-com/hyperframes) (HTML + GSAP,
 rendered headless). The sound is synthesized from code. Nothing in the
 product was changed; everything lives in this folder.
 
-**Final master:** `renders/zmcp-launch-1080p60.mp4` (H.264, 60 fps, AAC 48 kHz).
+**Final master:** `renders/zero-use-computer-launch-1080p60.mp4` (H.264, 60 fps, AAC 48 kHz).
 
 ## What is in here
 
@@ -38,7 +38,7 @@ python3 tools/sync-cues.py            # cues.json -> src/cues.js
 ./audio/master.sh                     # cues.json -> assets/audio/score.wav
 npx hyperframes@0.8.105 check .       # lint, runtime, layout, motion, contrast
 npx hyperframes@0.8.105 preview       # Studio
-npx hyperframes@0.8.105 render -f 60 -q high -o renders/zmcp-launch-1080p60.mp4
+npx hyperframes@0.8.105 render -f 60 -q high -o renders/zero-use-computer-launch-1080p60.mp4
 ```
 
 The two model-view thumbnails are captured from the composition itself

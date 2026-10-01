@@ -2,7 +2,7 @@
 workflow: general-video
 flow: automation
 storyboard: no
-message: "An agent shouldn't just receive screenshots: Z-MCP lets it see, understand, act, verify and stay under your control — and it's open source."
+message: "An agent shouldn't just receive screenshots: Zero Use Computer lets it see, understand, act, verify and stay under your control — and it's open source."
 destination: web-launch
 aspect: 1920x1080
 language: en
@@ -13,8 +13,8 @@ angle: the computer itself is the canvas; Zero's real overlay cursor is the prot
 
 ## Intent
 
-A 35–45 s cinematic motion-graphics launch film announcing that Z-MCP /
-Zero Use Computer (github.com/mhrsdev/zero-use-computer) is open source.
+A 35–45 s cinematic motion-graphics launch film announcing that Zero Use
+Computer (github.com/mhrsdev/zero-use-computer) is open source.
 Progression: SEE → UNDERSTAND → ACT → CONTROL → VERIFY → OPEN SOURCE, each
 shown through the system itself (Zero's overlay cursor, glow and label;
 the numbered accessibility tree; the change report; screen memory), never
@@ -36,8 +36,10 @@ intimidating; dark graphite with restrained Zero blue.
 
 ## Notes
 
-- Do not modify the Z-MCP product; all production files live in
+- Do not modify the product; all production files live in
   `promo/launch-film/`.
+- The name on screen is "Zero Use Computer" (from the repository name), not
+  "Z-MCP" — changed at the user's request after the first cut.
 - License wording must match Apache-2.0 (no "free for anything").
 - Banned: AI brains, purple gradients, glass cards, particles, code rain,
   HUD chrome, fake terminals, fake benchmarks, fake comparisons.

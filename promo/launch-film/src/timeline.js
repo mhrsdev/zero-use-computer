@@ -1,4 +1,4 @@
-// Z-MCP launch film — one paused, seekable GSAP timeline built from cues.json.
+// Zero Use Computer launch film — one paused, seekable GSAP timeline built from cues.json.
 // Layout is measured once (after fonts load, camera at identity); every tween
 // then uses those constants, never tween-time DOM reads.
 (function () {
@@ -102,7 +102,7 @@
     set(["#os span"], { y: 124 }, 0);
     set(["#freedoms span"], { y: 64 }, 0);
     set("#repo", { opacity: 0, y: 12 }, 0);
-    set(["#wm-name", "#wm-sub"], { opacity: 0 }, 0);
+    set("#wm-name", { opacity: 0 }, 0);
     set("#mark", { opacity: 0 }, 0);
     set("#maskbar", { x: card.x - 3, y: card.y - 2, width: card.w + 6, height: card.h + 4, background: "#808080", scaleX: 0, opacity: 0 }, 0);
 
@@ -636,7 +636,6 @@
     to("#m-glow", { opacity: 0.55, scale: 1, duration: 0.8, ease: "power2.out" }, C.hit_final + 0.25);
     to("#lockup", { x: 0, duration: 0.75, ease: "power3.inOut" }, C.lock_slide);
     ft("#wm-name", { opacity: 0, x: 50 }, { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, C.lock_slide + 0.12);
-    ft("#wm-sub", { opacity: 0, letterSpacing: "0.7em" }, { opacity: 1, letterSpacing: "0.32em", duration: 0.8, ease: "power3.out" }, C.wm_sub);
     to("#os span", { y: 0, duration: 0.7, ease: "power4.out" }, C.os);
     to("#freedoms span", { y: 0, duration: 0.6, ease: "power4.out" }, C.freedoms);
     to("#repo", { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, C.repo);
