@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN,
@@ -41,6 +42,31 @@ fn mouse_input(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> INPUT {
     }
 }
 
+/// The point is on a display. Off every display, absolute input would be
+/// clamped to the desktop's edge and land on whatever window is there.
+fn on_screen(p: Point) -> Result<()> {
+    let pt = POINT {
+        // `as` saturates (NaN gives 0).
+        x: p.x.round() as i32,
+        y: p.y.round() as i32,
+    };
+    // SAFETY: a pure lookup.
+    if unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) }.is_invalid() {
+        return Err(Error::ActionFailed(format!(
+            "({:.0}, {:.0}) is not on any display; use a point inside the window",
+            p.x, p.y
+        )));
+    }
+    Ok(())
+}
+
+/// An empty input event: no movement, no button, no key. It changes
+/// nothing, but makes this process the one that sent the last input, which
+/// Windows asks of a program that brings a window to the front.
+pub(super) fn empty_event() -> Result<()> {
+    send(&[mouse_input(MOUSE_EVENT_FLAGS(0), 0, 0, 0)])
+}
+
 /// Normalize a screen point to the 0..65535 absolute range over the virtual
 /// desktop, for MOUSEEVENTF_ABSOLUTE.
 fn normalize(p: Point) -> (i32, i32) {
@@ -70,6 +96,21 @@ pub fn set_restore_pointer(on: bool) {
     RESTORE_POINTER.store(on, Ordering::Relaxed);
 }
 
+/// Pause before putting the pointer back, so the app has handled the click
+/// (or wheel) where it happened before the pointer leaves: some apps look
+/// at the pointer's position when the event arrives, not where it was sent.
+const RESTORE_DELAY: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Put the pointer back (see [`home`]), on its own after a short pause.
+fn restore(back: Option<INPUT>) {
+    if let Some(b) = back {
+        std::thread::sleep(RESTORE_DELAY);
+        if let Err(e) = send(&[b]) {
+            log::debug!("could not put the pointer back: {e}");
+        }
+    }
+}
+
 /// A move back to where the user's cursor is now, if it should be restored.
 fn home() -> Option<INPUT> {
     if !RESTORE_POINTER.load(Ordering::Relaxed) {
@@ -90,6 +131,7 @@ fn button_flags(button: MouseButton) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
 }
 
 pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
+    on_screen(at)?;
     let (down, up) = button_flags(button);
     let back = home();
     let mut inputs = vec![move_to(at)];
@@ -97,8 +139,9 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
         inputs.push(mouse_input(down, 0, 0, 0));
         inputs.push(mouse_input(up, 0, 0, 0));
     }
-    inputs.extend(back);
-    send(&inputs)
+    let sent = send(&inputs);
+    restore(back);
+    sent
 }
 
 /// Pace of synthesized drag steps: apps that start a drag on a timer or a
@@ -106,6 +149,8 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
 const DRAG_STEP: std::time::Duration = std::time::Duration::from_millis(12);
 
 pub fn drag(from: Point, to: Point) -> Result<()> {
+    on_screen(from)?;
+    on_screen(to)?;
     let back = home();
     let mut pressed = false;
     let dragged = drag_steps(from, to, &mut pressed);
@@ -113,9 +158,7 @@ pub fn drag(from: Point, to: Point) -> Result<()> {
         // Never leave the button held down.
         let _ = send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
     }
-    if let Some(b) = back {
-        let _ = send(&[b]);
-    }
+    restore(back);
     dragged
 }
 
@@ -141,6 +184,7 @@ fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
 
 /// Move the pointer to `at`; where it was, if it should go back.
 pub fn move_pointer(at: Point) -> Result<Option<Point>> {
+    on_screen(at)?;
     let back = if RESTORE_POINTER.load(Ordering::Relaxed) {
         let mut p = POINT::default();
         // SAFETY: reading the cursor position into a local.
@@ -168,9 +212,7 @@ pub fn draw(
         // Never leave the button held down.
         let _ = send(&[mouse_input(up, 0, 0, 0)]);
     }
-    if let Some(b) = back {
-        let _ = send(&[b]);
-    }
+    restore(back);
     drawn
 }
 
@@ -204,18 +246,33 @@ fn draw_strokes(
     Ok(())
 }
 
+/// Most wheel notches one scroll sends (50 pages of 3 lines).
+const MAX_WHEEL_NOTCHES: i32 = 150;
+
 pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
     const WHEEL_DELTA: i32 = 120;
+    on_screen(at)?;
+    // Clamped first, so the wheel delta can't overflow.
+    let delta = |n: i32| {
+        n.clamp(-MAX_WHEEL_NOTCHES, MAX_WHEEL_NOTCHES)
+            .saturating_mul(WHEEL_DELTA)
+    };
     let back = home();
     let mut inputs = vec![move_to(at)];
     if dy != 0 {
-        inputs.push(mouse_input(MOUSEEVENTF_WHEEL, 0, 0, -dy * WHEEL_DELTA));
+        inputs.push(mouse_input(
+            MOUSEEVENTF_WHEEL,
+            0,
+            0,
+            delta(dy).saturating_neg(),
+        ));
     }
     if dx != 0 {
-        inputs.push(mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, dx * WHEEL_DELTA));
+        inputs.push(mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, delta(dx)));
     }
-    inputs.extend(back);
-    send(&inputs)
+    let sent = send(&inputs);
+    restore(back);
+    sent
 }
 
 /// The keyboard layout of the window that receives the keys (the

@@ -3,6 +3,10 @@
 //! user once whether this program may read them (Settings > Privacy >
 //! Notifications); without that permission nothing is read.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
 use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
@@ -22,6 +26,34 @@ fn unix(t: i64) -> Option<u64> {
     u64::try_from(t / 10_000_000 - EPOCH_DIFF).ok()
 }
 
+/// How long to wait for Windows to answer one request (the access prompt,
+/// the notification list).
+const ASYNC_WAIT: Duration = Duration::from_secs(10);
+/// How long `recent` waits for the reading thread as a whole.
+const READ_WAIT: Duration = Duration::from_secs(25);
+
+/// Wait for an asynchronous operation to finish, polling its status (an
+/// IAsyncInfo status: 0 is "started"), up to `limit`; cancelled if it
+/// doesn't. Whether it finished.
+fn finished(
+    status: impl Fn() -> windows::core::Result<i32>,
+    cancel: impl Fn(),
+    limit: Duration,
+) -> bool {
+    let start = Instant::now();
+    loop {
+        // Done, failed or cancelled (GetResults then reports the error).
+        if !matches!(status(), Ok(0)) {
+            return true;
+        }
+        if start.elapsed() >= limit {
+            cancel();
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn read() -> Result<Vec<Notification>> {
     // SAFETY: joins (or creates) this thread's multithreaded apartment.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -30,24 +62,45 @@ fn read() -> Result<Vec<Notification>> {
             "Windows doesn't offer notification access to this program ({e})"
         ))
     })?;
+    let denied = || {
+        Error::Permission(
+            "reading notifications isn't allowed; turn on notification access for this program in Settings > Privacy & security > Notifications".into(),
+        )
+    };
     let mut status = listener.GetAccessStatus().map_err(wine)?;
     if status == UserNotificationListenerAccessStatus::Unspecified {
-        status = listener
-            .RequestAccessAsync()
-            .map_err(wine)?
-            .join()
-            .map_err(wine)?;
+        // Ask once; the prompt may never show (no window to show it on),
+        // so the wait is bounded.
+        let op = listener.RequestAccessAsync().map_err(wine)?;
+        if !finished(
+            || op.Status().map(|s| s.0),
+            || {
+                let _ = op.Cancel();
+            },
+            ASYNC_WAIT,
+        ) {
+            return Err(denied());
+        }
+        status = op.GetResults().map_err(wine)?;
     }
     if status != UserNotificationListenerAccessStatus::Allowed {
-        return Err(Error::Permission(
-            "reading notifications isn't allowed; turn on notification access for this program in Settings > Privacy & security > Notifications".into(),
+        return Err(denied());
+    }
+    let op = listener
+        .GetNotificationsAsync(NotificationKinds::Toast)
+        .map_err(wine)?;
+    if !finished(
+        || op.Status().map(|s| s.0),
+        || {
+            let _ = op.Cancel();
+        },
+        ASYNC_WAIT,
+    ) {
+        return Err(Error::Platform(
+            "Windows didn't list the notifications in time".into(),
         ));
     }
-    let list = listener
-        .GetNotificationsAsync(NotificationKinds::Toast)
-        .map_err(wine)?
-        .join()
-        .map_err(wine)?;
+    let list = op.GetResults().map_err(wine)?;
     let generic = KnownNotificationBindings::ToastGeneric().map_err(wine)?;
     let mut out = Vec::new();
     for i in 0..list.Size().map_err(wine)? {
@@ -87,13 +140,44 @@ fn read() -> Result<Vec<Notification>> {
     Ok(out)
 }
 
+/// A reading thread that hasn't finished (stuck in a Windows call): no
+/// second one is started while it is.
+static READING: AtomicBool = AtomicBool::new(false);
+
+/// Marks the reading thread as done when dropped (even if it panics).
+struct Reading;
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READING.store(false, Ordering::Release);
+    }
+}
+
 pub fn recent() -> Result<Vec<Notification>> {
+    if READING.swap(true, Ordering::AcqRel) {
+        return Err(Error::Platform(
+            "Windows hasn't answered an earlier request for the notifications yet; try again later"
+                .into(),
+        ));
+    }
+    let reading = Reading;
+    let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("notifications".into())
-        .spawn(read)
-        .map_err(|e| Error::Platform(format!("notification thread: {e}")))?
-        .join()
-        .map_err(|_| Error::Platform("the notification thread failed".into()))?
+        .spawn(move || {
+            let _reading = reading;
+            let _ = tx.send(read());
+        })
+        .map_err(|e| Error::Platform(format!("notification thread: {e}")))?;
+    match rx.recv_timeout(READ_WAIT) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::Platform(
+            "Windows didn't answer the request for the notifications in time".into(),
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(Error::Platform("the notification thread failed".into()))
+        }
+    }
 }
 
 #[cfg(test)]

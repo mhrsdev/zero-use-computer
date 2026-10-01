@@ -13,23 +13,28 @@ mod notify;
 mod ocr;
 mod wm;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, RPC_E_TIMEOUT};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::System::Variant::{
-    VARIANT, VariantToBoolean, VariantToInt32, VariantToInt32Array, VariantToStringAlloc,
+    VARIANT, VariantClear, VariantToBoolean, VariantToInt32, VariantToInt32Array,
+    VariantToStringAlloc,
 };
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GA_ROOT, GetAncestor, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow,
+    GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible, WINDOW_EX_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, BSTR, Interface, PWSTR};
 
@@ -52,9 +57,10 @@ pub struct WindowsBackend {
     /// Walk with a CacheRequest (one cross-process call per window).
     use_cache_request: bool,
     cache_request: Option<IUIAutomationCacheRequest>,
-    /// Apps whose subtree cache request failed or timed out (huge or hung
-    /// trees): walked node by node, within the snapshot limits, instead.
-    uncached_pids: HashSet<u32>,
+    /// Apps whose subtree cache request timed out (huge or hung trees), and
+    /// when: walked node by node, within the snapshot limits, until
+    /// [`UNCACHED_RETRY`] has passed.
+    uncached_pids: HashMap<u32, Instant>,
 }
 
 /// Upper bound for one UI Automation cross-process transaction (a subtree
@@ -62,6 +68,19 @@ pub struct WindowsBackend {
 /// instead of blocking.
 const UIA_TRANSACTION_TIMEOUT_MS: u32 = 5_000;
 const UIA_CONNECTION_TIMEOUT_MS: u32 = 3_000;
+/// The longest one snapshot may take: past it, the tree read so far is
+/// returned (a node-by-node walk makes some twenty cross-process calls per
+/// element).
+const SNAPSHOT_BUDGET: Duration = Duration::from_secs(10);
+/// How long an app whose cache request timed out is walked node by node
+/// before the (much faster) cache request is tried again.
+const UNCACHED_RETRY: Duration = Duration::from_secs(60);
+/// Time for the lookups an element action makes before it is sent.
+const ACTION_BUDGET: Duration = Duration::from_secs(10);
+/// Most UI Automation scroll steps (pages) one call makes.
+const MAX_SCROLL_PAGES: i32 = 50;
+/// The window class of this server's overlay (see `overlay/windows.rs`).
+const OVERLAY_CLASS: &str = "ComputerUseOverlay";
 
 /// Properties prefetched for every element by the cache request.
 const CACHED_PROPS: [UIA_PROPERTY_ID; 22] = [
@@ -107,15 +126,112 @@ pub(crate) fn make_dpi_aware() {
     }
 }
 
+/// A VARIANT received from UI Automation. The `windows` crate's `VARIANT`
+/// has no destructor: what it holds (a BSTR, which for an edit control's
+/// value is the whole document, or a SAFEARRAY of runtime ids) is freed
+/// here, when the guard is dropped.
+struct Var(VARIANT);
+
+impl Var {
+    fn new(v: windows::core::Result<VARIANT>) -> Option<Self> {
+        v.ok().map(Self)
+    }
+
+    fn bool(&self) -> Option<bool> {
+        // SAFETY: reads a VARIANT we own.
+        unsafe { VariantToBoolean(&self.0) }
+            .ok()
+            .map(|b| b.as_bool())
+    }
+
+    fn i32(&self) -> Option<i32> {
+        // SAFETY: as above.
+        unsafe { VariantToInt32(&self.0) }.ok()
+    }
+
+    fn string(&self) -> Option<String> {
+        // SAFETY: as above; the string it allocates is freed here.
+        unsafe {
+            let p = VariantToStringAlloc(&self.0).ok()?;
+            if p.is_null() {
+                return None;
+            }
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const std::ffi::c_void));
+            s
+        }
+    }
+}
+
+impl Drop for Var {
+    fn drop(&mut self) {
+        // SAFETY: the VARIANT was handed to us by UI Automation and is
+        // cleared exactly once, here.
+        let _ = unsafe { VariantClear(&mut self.0) };
+    }
+}
+
+/// UI Automation gave up waiting for the app: UIA_E_TIMEOUT (its
+/// transaction or connection timeout), or an RPC or Win32 timeout.
+fn is_timeout(e: &windows::core::Error) -> bool {
+    /// HRESULT_FROM_WIN32(ERROR_TIMEOUT).
+    const WIN32_TIMEOUT: u32 = 0x8007_05B4;
+    let code = e.code();
+    matches!(code.0 as u32, UIA_E_TIMEOUT | WIN32_TIMEOUT) || code == RPC_E_TIMEOUT
+}
+
+/// What one snapshot (or one action's lookups) may spend on cross-process
+/// UI Automation calls: a deadline, and a stop at the first call the app
+/// didn't answer in time, since every later call to a hung app would wait
+/// out the timeout again.
+struct Budget {
+    deadline: Instant,
+    timed_out: Cell<bool>,
+}
+
+impl Budget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + limit,
+            timed_out: Cell::new(false),
+        }
+    }
+
+    /// Out of time, or the app stopped answering.
+    fn over(&self) -> bool {
+        self.timed_out.get() || Instant::now() >= self.deadline
+    }
+
+    fn timed_out(&self) -> bool {
+        self.timed_out.get()
+    }
+
+    /// Make one call, unless the budget is spent; a timeout spends it.
+    fn call<T>(&self, f: impl FnOnce() -> windows::core::Result<T>) -> Option<T> {
+        if self.over() {
+            return None;
+        }
+        match f() {
+            Ok(v) => Some(v),
+            Err(e) => {
+                if is_timeout(&e) {
+                    self.timed_out.set(true);
+                }
+                None
+            }
+        }
+    }
+}
+
 /// UI Automation's runtime id, as an identity key: it stays the same for
 /// as long as the element exists, so an element index can't move to a
 /// look-alike element (the next row's "Delete") when one disappears.
-fn runtime_key(v: windows::core::Result<VARIANT>) -> Option<String> {
-    let v = v.ok()?;
+fn runtime_key(v: Option<Var>) -> Option<String> {
+    let v = v?;
     let mut ids = [0i32; 16];
     let mut n = 0u32;
     // SAFETY: reads an int array out of a VARIANT into a local buffer.
-    unsafe { VariantToInt32Array(&v, &mut ids, &mut n) }.ok()?;
+    unsafe { VariantToInt32Array(&v.0, &mut ids, &mut n) }.ok()?;
     let ids = ids.get(..n as usize).filter(|s| !s.is_empty())?;
     Some(format!(
         "uia:{}",
@@ -127,16 +243,41 @@ impl WindowsBackend {
     pub fn new() -> Result<Self> {
         make_dpi_aware();
         unsafe {
-            // Ignore RPC_E_CHANGED_MODE if COM is already initialized.
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            // The multithreaded apartment, as Microsoft recommends for UI
+            // Automation clients: this thread never pumps messages, which an
+            // STA would need. (Nothing else on it needs an STA; opening a
+            // Start Menu shortcut gets an STA thread of its own.) Ignore
+            // RPC_E_CHANGED_MODE if COM is already initialized.
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            // CUIAutomation8 (Windows 8+) is the object that implements
+            // IUIAutomation2 and its timeouts; CUIAutomation doesn't.
             let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|e| {
-                    Error::Platform(format!("CoCreateInstance(CUIAutomation): {e}"))
-                })?;
-            // Bound every cross-process call (Windows 8+).
-            if let Ok(a2) = automation.cast::<IUIAutomation2>() {
-                let _ = a2.SetTransactionTimeout(UIA_TRANSACTION_TIMEOUT_MS);
-                let _ = a2.SetConnectionTimeout(UIA_CONNECTION_TIMEOUT_MS);
+                CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
+                    .or_else(|e| {
+                        log::info!("CUIAutomation8 unavailable ({e}); using CUIAutomation");
+                        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    })
+                    .map_err(|e| {
+                        Error::Platform(format!("CoCreateInstance(CUIAutomation): {e}"))
+                    })?;
+            // Bound every cross-process call, so a hung app can't block.
+            match automation.cast::<IUIAutomation2>() {
+                Ok(a2) => {
+                    let t = a2.SetTransactionTimeout(UIA_TRANSACTION_TIMEOUT_MS);
+                    let c = a2.SetConnectionTimeout(UIA_CONNECTION_TIMEOUT_MS);
+                    if t.is_ok() && c.is_ok() {
+                        log::info!(
+                            "UI Automation timeouts set: {UIA_TRANSACTION_TIMEOUT_MS} ms per call, {UIA_CONNECTION_TIMEOUT_MS} ms to connect"
+                        );
+                    } else {
+                        log::warn!(
+                            "UI Automation timeouts not set (transaction: {t:?}, connection: {c:?}); a hung app may block calls"
+                        );
+                    }
+                }
+                Err(_) => log::warn!(
+                    "UI Automation timeouts unavailable (no IUIAutomation2); a hung app may block calls"
+                ),
             }
             let walker = automation
                 .ControlViewWalker()
@@ -150,8 +291,70 @@ impl WindowsBackend {
                 next_handle: 1,
                 use_cache_request: true,
                 cache_request: None,
-                uncached_pids: HashSet::new(),
+                uncached_pids: HashMap::new(),
             })
+        }
+    }
+
+    /// The name of the app an element belongs to, for messages.
+    fn owner_name(&self, handle: ElementHandle) -> String {
+        self.handles
+            .get(&handle)
+            .or_else(|| self.window_handles.get(&handle))
+            .and_then(|(pid, _)| process_image(*pid).1)
+            .unwrap_or_else(|| "the app".into())
+    }
+
+    /// The app didn't answer the lookups an action needs: nothing was sent.
+    fn not_answering(&self, handle: ElementHandle) -> Error {
+        Error::ActionFailed(format!(
+            "{} didn't answer UI Automation in time, so nothing was sent; it may be busy or not responding. Look again (get_app_state) in a moment.",
+            self.owner_name(handle)
+        ))
+    }
+
+    /// The outcome of a sent action: a timeout means it was sent, but the
+    /// app didn't answer (it may or may not have happened).
+    fn sent(&self, handle: ElementHandle, r: windows::core::Result<()>) -> Result<()> {
+        r.map_err(|e| {
+            if is_timeout(&e) {
+                Error::Unanswered(self.owner_name(handle))
+            } else {
+                Error::action(e)
+            }
+        })
+    }
+
+    /// Forget element and window handles of apps that are no longer
+    /// running. `listed` are the pids known to be alive.
+    fn prune_exited(&mut self, listed: &HashSet<u32>) {
+        let known: HashSet<u32> = self
+            .handles
+            .values()
+            .chain(self.window_handles.values())
+            .map(|(pid, _)| *pid)
+            .chain(self.uncached_pids.keys().copied())
+            .filter(|pid| !listed.contains(pid))
+            .collect();
+        let exited: HashSet<u32> = known
+            .into_iter()
+            .filter(|pid| !crate::overlay::process_alive(*pid))
+            .collect();
+        self.uncached_pids
+            .retain(|pid, since| !exited.contains(pid) && since.elapsed() < UNCACHED_RETRY);
+        if exited.is_empty() {
+            return;
+        }
+        self.handles.retain(|_, (pid, _)| !exited.contains(pid));
+        let gone: Vec<ElementHandle> = self
+            .window_handles
+            .iter()
+            .filter(|(_, (pid, _))| exited.contains(pid))
+            .map(|(h, _)| *h)
+            .collect();
+        for h in gone {
+            self.window_handles.remove(&h);
+            self.hwnds.remove(&h);
         }
     }
 
@@ -183,6 +386,7 @@ impl WindowsBackend {
             .filter(|&h| unsafe { IsWindowVisible(h).as_bool() })
             .filter(|&h| unsafe { GetAncestor(h, GA_ROOT) } == h)
             .filter(|&h| unsafe { GetWindowTextLengthW(h) } > 0)
+            .filter(|&h| !ghost(h))
             .collect()
     }
 
@@ -198,47 +402,57 @@ impl WindowsBackend {
         }
     }
 
+    /// Build a node with live (cross-process) calls, each within `b`.
     fn build_node(
         &mut self,
+        b: &Budget,
         pid: u32,
         el: &IUIAutomationElement,
         parent: Option<usize>,
     ) -> RawNode {
-        let control_type = unsafe { el.CurrentControlType() }.map(|c| c.0).unwrap_or(0);
-        let password = unsafe { el.CurrentIsPassword() }.is_ok_and(|b| b.as_bool());
+        // SAFETY (every `unsafe` below): COM calls on a live element and
+        // its patterns.
+        let text = |r: Option<BSTR>| r.map(|s| s.to_string());
+        let control_type = b
+            .call(|| unsafe { el.CurrentControlType() })
+            .map(|c| c.0)
+            .unwrap_or(0);
+        let password = b
+            .call(|| unsafe { el.CurrentIsPassword() })
+            .is_some_and(|x| x.as_bool());
         let role = if password {
             "secure text field".to_string()
         } else {
             roles::from_uia(control_type)
         };
-        let name = bstr(unsafe { el.CurrentName() });
-        let automation_id = bstr(unsafe { el.CurrentAutomationId() });
-        let class = bstr(unsafe { el.CurrentClassName() });
+        let name = text(b.call(|| unsafe { el.CurrentName() }));
+        let automation_id = text(b.call(|| unsafe { el.CurrentAutomationId() }));
+        let class = text(b.call(|| unsafe { el.CurrentClassName() }));
 
-        let bounds = unsafe { el.CurrentBoundingRectangle() }
-            .ok()
+        let bounds = b
+            .call(|| unsafe { el.CurrentBoundingRectangle() })
             .map(rect_to_bounds);
-        let enabled = unsafe { el.CurrentIsEnabled() }
-            .map(|b| b.as_bool())
-            .unwrap_or(true);
-        let focused = unsafe { el.CurrentHasKeyboardFocus() }
-            .map(|b| b.as_bool())
-            .unwrap_or(false);
-        let offscreen = unsafe { el.CurrentIsOffscreen() }
-            .map(|b| b.as_bool())
-            .unwrap_or(false);
+        let enabled = b
+            .call(|| unsafe { el.CurrentIsEnabled() })
+            .is_none_or(|x| x.as_bool());
+        let focused = b
+            .call(|| unsafe { el.CurrentHasKeyboardFocus() })
+            .is_some_and(|x| x.as_bool());
+        let offscreen = b
+            .call(|| unsafe { el.CurrentIsOffscreen() })
+            .is_some_and(|x| x.as_bool());
 
         // Value pattern → text value / editability.
-        let value_pat = self.value_pattern(el);
+        let value_pat = value_pattern(b, el);
         let (mut value, mut editable, mut value_settable) = (None, false, false);
         if let Some(v) = &value_pat {
             // Never read a password field's contents.
             value = (!password)
-                .then(|| bstr(unsafe { v.CurrentValue() }))
+                .then(|| text(b.call(|| unsafe { v.CurrentValue() })))
                 .flatten();
-            let readonly = unsafe { v.CurrentIsReadOnly() }
-                .map(|b| b.as_bool())
-                .unwrap_or(true);
+            let readonly = b
+                .call(|| unsafe { v.CurrentIsReadOnly() })
+                .is_none_or(|x| x.as_bool());
             value_settable = !readonly;
             editable = !readonly;
         }
@@ -250,52 +464,49 @@ impl WindowsBackend {
         }
 
         // Toggle → checked.
+        let can_toggle = available(b, el, UIA_IsTogglePatternAvailablePropertyId);
         let mut checked = None;
-        if available(el, UIA_IsTogglePatternAvailablePropertyId)
-            && let Some(t) = self.toggle_pattern(el)
-        {
+        if can_toggle && let Some(t) = toggle_pattern(b, el) {
             checked = Some(
-                unsafe { t.CurrentToggleState() }
-                    .map(|s| s == ToggleState_On)
-                    .unwrap_or(false),
+                b.call(|| unsafe { t.CurrentToggleState() })
+                    .is_some_and(|s| s == ToggleState_On),
             );
             value = None;
         }
 
         // Expand/collapse → expanded.
+        let can_expand = available(b, el, UIA_IsExpandCollapsePatternAvailablePropertyId);
         let mut expanded = None;
-        if available(el, UIA_IsExpandCollapsePatternAvailablePropertyId)
-            && let Some(ec) = self.expand_pattern(el)
-        {
-            expanded = unsafe { ec.CurrentExpandCollapseState() }
-                .ok()
+        if can_expand && let Some(ec) = expand_pattern(b, el) {
+            expanded = b
+                .call(|| unsafe { ec.CurrentExpandCollapseState() })
                 .map(|s| s == ExpandCollapseState_Expanded);
         }
 
-        let selected = self
-            .selection_item(el)
-            .and_then(|s| unsafe { s.CurrentIsSelected() }.ok())
-            .map(|b| b.as_bool())
-            .unwrap_or(false);
+        let can_select = available(b, el, UIA_IsSelectionItemPatternAvailablePropertyId);
+        let selected = can_select
+            && pattern::<IUIAutomationSelectionItemPattern>(b, el, UIA_SelectionItemPatternId)
+                .and_then(|s| b.call(|| unsafe { s.CurrentIsSelected() }))
+                .is_some_and(|x| x.as_bool());
 
         let mut actions = Vec::new();
-        if available(el, UIA_IsInvokePatternAvailablePropertyId) {
+        if available(b, el, UIA_IsInvokePatternAvailablePropertyId) {
             actions.push(ActionDesc::new("press", "Invoke"));
         }
-        if available(el, UIA_IsTogglePatternAvailablePropertyId) {
+        if can_toggle {
             actions.push(ActionDesc::new("toggle", "Toggle"));
         }
-        if available(el, UIA_IsExpandCollapsePatternAvailablePropertyId) {
+        if can_expand {
             actions.push(ActionDesc::new("expand", "Expand"));
             actions.push(ActionDesc::new("collapse", "Collapse"));
         }
-        if available(el, UIA_IsSelectionItemPatternAvailablePropertyId) {
+        if can_select {
             actions.push(ActionDesc::new("select", "Select"));
         }
-        if let Some(leg) = self.legacy_pattern(el)
-            && let Some(default) = bstr(unsafe { leg.CurrentDefaultAction() })
+        if !actions.iter().any(|a| a.name == "press")
+            && let Some(leg) = legacy_pattern(b, el)
+            && let Some(default) = text(b.call(|| unsafe { leg.CurrentDefaultAction() }))
             && !default.is_empty()
-            && !actions.iter().any(|a| a.name == "press")
         {
             actions.push(ActionDesc::new(default.to_lowercase(), "DoDefaultAction"));
         }
@@ -304,7 +515,10 @@ impl WindowsBackend {
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
 
-        let key = runtime_key(unsafe { el.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId) });
+        let key = runtime_key(
+            b.call(|| unsafe { el.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId) })
+                .map(Var),
+        );
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
@@ -332,8 +546,12 @@ impl WindowsBackend {
         }
     }
 
+    /// Walk node by node (cross-process calls) until the limits or the
+    /// budget run out.
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         &mut self,
+        b: &Budget,
         pid: u32,
         el: &IUIAutomationElement,
         parent: Option<usize>,
@@ -341,25 +559,30 @@ impl WindowsBackend {
         opts: &SnapshotOptions,
         out: &mut Vec<RawNode>,
     ) {
-        if out.len() >= opts.max_nodes || depth > opts.max_depth {
+        if out.len() >= opts.max_nodes || depth > opts.max_depth || b.over() {
             return;
         }
         let idx = out.len();
-        let node = self.build_node(pid, el, parent);
+        let node = self.build_node(b, pid, el, parent);
+        if b.over() && parent.is_some() {
+            return; // cut short: leave it out rather than half-read
+        }
         out.push(node);
         if depth >= opts.max_depth {
             return; // children would be cut anyway: don't enumerate them
         }
         // Bounded even if a provider reports a sibling cycle.
         let mut siblings = 0;
-        let mut child = unsafe { self.walker.GetFirstChildElement(el) }.ok();
+        // SAFETY: tree-walker calls on live elements.
+        let mut child = b.call(|| unsafe { self.walker.GetFirstChildElement(el) });
         while let Some(c) = child {
-            if out.len() >= opts.max_nodes || siblings >= opts.max_nodes {
+            if out.len() >= opts.max_nodes || siblings >= opts.max_nodes || b.over() {
                 break;
             }
             siblings += 1;
-            self.walk(pid, &c, Some(idx), depth + 1, opts, out);
-            child = unsafe { self.walker.GetNextSiblingElement(&c) }.ok();
+            self.walk(b, pid, &c, Some(idx), depth + 1, opts, out);
+            // SAFETY: as above.
+            child = b.call(|| unsafe { self.walker.GetNextSiblingElement(&c) });
         }
     }
 
@@ -463,7 +686,9 @@ impl WindowsBackend {
         let identifier = automation_id
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
-        let key = runtime_key(unsafe { el.GetCachedPropertyValue(UIA_RuntimeIdPropertyId) });
+        let key = runtime_key(Var::new(unsafe {
+            el.GetCachedPropertyValue(UIA_RuntimeIdPropertyId)
+        }));
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
@@ -522,46 +747,45 @@ impl WindowsBackend {
             }
         }
     }
+}
 
-    // -- pattern getters ---------------------------------------------------
+// -- pattern getters (each call within a budget) ----------------------------
 
-    fn get_pattern<T: Interface>(
-        &self,
-        el: &IUIAutomationElement,
-        id: UIA_PATTERN_ID,
-    ) -> Option<T> {
-        unsafe { el.GetCurrentPattern(id).ok()?.cast::<T>().ok() }
-    }
-    fn value_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
-        available(el, UIA_IsValuePatternAvailablePropertyId)
-            .then(|| self.get_pattern(el, UIA_ValuePatternId))
-            .flatten()
-    }
-    fn toggle_pattern(&self, el: &IUIAutomationElement) -> Option<IUIAutomationTogglePattern> {
-        self.get_pattern(el, UIA_TogglePatternId)
-    }
-    fn expand_pattern(
-        &self,
-        el: &IUIAutomationElement,
-    ) -> Option<IUIAutomationExpandCollapsePattern> {
-        self.get_pattern(el, UIA_ExpandCollapsePatternId)
-    }
-    fn selection_item(
-        &self,
-        el: &IUIAutomationElement,
-    ) -> Option<IUIAutomationSelectionItemPattern> {
-        available(el, UIA_IsSelectionItemPatternAvailablePropertyId)
-            .then(|| self.get_pattern(el, UIA_SelectionItemPatternId))
-            .flatten()
-    }
-    fn legacy_pattern(
-        &self,
-        el: &IUIAutomationElement,
-    ) -> Option<IUIAutomationLegacyIAccessiblePattern> {
-        available(el, UIA_IsLegacyIAccessiblePatternAvailablePropertyId)
-            .then(|| self.get_pattern(el, UIA_LegacyIAccessiblePatternId))
-            .flatten()
-    }
+fn pattern<T: Interface>(b: &Budget, el: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
+    // SAFETY: a COM call on a live element.
+    b.call(|| unsafe { el.GetCurrentPattern(id) })?
+        .cast::<T>()
+        .ok()
+}
+fn value_pattern(b: &Budget, el: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
+    available(b, el, UIA_IsValuePatternAvailablePropertyId)
+        .then(|| pattern(b, el, UIA_ValuePatternId))
+        .flatten()
+}
+fn toggle_pattern(b: &Budget, el: &IUIAutomationElement) -> Option<IUIAutomationTogglePattern> {
+    pattern(b, el, UIA_TogglePatternId)
+}
+fn expand_pattern(
+    b: &Budget,
+    el: &IUIAutomationElement,
+) -> Option<IUIAutomationExpandCollapsePattern> {
+    pattern(b, el, UIA_ExpandCollapsePatternId)
+}
+fn selection_item(
+    b: &Budget,
+    el: &IUIAutomationElement,
+) -> Option<IUIAutomationSelectionItemPattern> {
+    available(b, el, UIA_IsSelectionItemPatternAvailablePropertyId)
+        .then(|| pattern(b, el, UIA_SelectionItemPatternId))
+        .flatten()
+}
+fn legacy_pattern(
+    b: &Budget,
+    el: &IUIAutomationElement,
+) -> Option<IUIAutomationLegacyIAccessiblePattern> {
+    available(b, el, UIA_IsLegacyIAccessiblePatternAvailablePropertyId)
+        .then(|| pattern(b, el, UIA_LegacyIAccessiblePatternId))
+        .flatten()
 }
 
 impl Backend for WindowsBackend {
@@ -600,6 +824,8 @@ impl Backend for WindowsBackend {
                 entry.name = title;
             }
         }
+        // Handles of apps that have quit go (each holds a COM reference).
+        self.prune_exited(&by_pid.keys().copied().collect());
         Ok(by_pid.into_values().collect())
     }
 
@@ -707,8 +933,13 @@ impl Backend for WindowsBackend {
         // Element handles of the app's previous views go; its window
         // handles (kept apart) stay valid.
         self.handles.retain(|_, (p, _)| *p != app.pid);
+        let budget = Budget::new(SNAPSHOT_BUDGET);
         let mut out = Vec::new();
-        if self.use_cache_request && !self.uncached_pids.contains(&app.pid) {
+        let try_cache = self
+            .uncached_pids
+            .get(&app.pid)
+            .is_none_or(|since| since.elapsed() >= UNCACHED_RETRY);
+        if self.use_cache_request && try_cache {
             // One cross-process call fetches the whole subtree's properties
             // (bounded by the UIA transaction timeout).
             let cached = self
@@ -716,18 +947,38 @@ impl Backend for WindowsBackend {
                 .and_then(|cr| unsafe { root.BuildUpdatedCache(&cr) });
             match cached {
                 Ok(cached_root) => {
+                    self.uncached_pids.remove(&app.pid);
                     self.walk_cached(app.pid, &cached_root, None, 0, opts, &mut out);
                     return Ok(out);
                 }
-                Err(e) => {
-                    // Too big or too slow for one request: from now on walk
-                    // this app within the node/depth limits instead.
-                    log::warn!("UIA cache request failed ({e}); walking uncached");
-                    self.uncached_pids.insert(app.pid);
+                Err(e) if is_timeout(&e) => {
+                    // Too big or too slow for one request: for a while,
+                    // walk this app within the node/depth limits instead.
+                    log::warn!(
+                        "UIA cache request for {} timed out; walking it node by node for {}s",
+                        app.name,
+                        UNCACHED_RETRY.as_secs()
+                    );
+                    self.uncached_pids.insert(app.pid, Instant::now());
                 }
+                Err(e) => log::warn!("UIA cache request failed ({e}); walking uncached"),
             }
         }
-        self.walk(app.pid, &root, None, 0, opts, &mut out);
+        self.walk(&budget, app.pid, &root, None, 0, opts, &mut out);
+        if budget.timed_out() {
+            log::warn!(
+                "{} stopped answering UI Automation; returning the {} elements read so far",
+                app.name,
+                out.len()
+            );
+        } else if budget.over() {
+            log::warn!(
+                "reading {}'s tree took over {}s; returning the {} elements read so far",
+                app.name,
+                SNAPSHOT_BUDGET.as_secs(),
+                out.len()
+            );
+        }
         Ok(out)
     }
 
@@ -736,14 +987,14 @@ impl Backend for WindowsBackend {
         input::set_restore_pointer(cfg.restore_pointer);
     }
 
-    fn capture(&mut self, _app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
+    fn capture(&mut self, app: &AppInfo, window: &WindowInfo) -> Result<Capture> {
         let hwnd = self
             .hwnds
             .get(&window.handle)
             .copied()
             .map(|h| HWND(h as *mut _))
             .ok_or_else(|| Error::Platform("no window handle to capture".into()))?;
-        capture::capture_window(hwnd)
+        capture::capture_window(hwnd, &app.name)
     }
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
@@ -763,7 +1014,7 @@ impl Backend for WindowsBackend {
     }
 
     fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
-        wm::apply(HWND(window.id as usize as *mut _), app.pid, op)
+        wm::apply(HWND(window.id as usize as *mut _), app, op)
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {
@@ -791,26 +1042,28 @@ impl Backend for WindowsBackend {
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {
         let el = self.resolve(element)?;
-        let ok = unsafe {
+        let b = Budget::new(ACTION_BUDGET);
+        // SAFETY: COM calls on a live element and its patterns.
+        let sent = unsafe {
             match native_action {
-                "Invoke" => self
-                    .get_pattern::<IUIAutomationInvokePattern>(&el, UIA_InvokePatternId)
-                    .map(|p| p.Invoke().is_ok()),
-                "Toggle" => self.toggle_pattern(&el).map(|p| p.Toggle().is_ok()),
-                "Expand" => self.expand_pattern(&el).map(|p| p.Expand().is_ok()),
-                "Collapse" => self.expand_pattern(&el).map(|p| p.Collapse().is_ok()),
-                "Select" => self.selection_item(&el).map(|p| p.Select().is_ok()),
-                "DoDefaultAction" => self
-                    .legacy_pattern(&el)
-                    .map(|p| p.DoDefaultAction().is_ok()),
+                "Invoke" => pattern::<IUIAutomationInvokePattern>(&b, &el, UIA_InvokePatternId)
+                    .map(|p| p.Invoke()),
+                "Toggle" => toggle_pattern(&b, &el).map(|p| p.Toggle()),
+                "Expand" => expand_pattern(&b, &el).map(|p| p.Expand()),
+                "Collapse" => expand_pattern(&b, &el).map(|p| p.Collapse()),
+                "Select" => selection_item(&b, &el).map(|p| p.Select()),
+                "DoDefaultAction" => legacy_pattern(&b, &el).map(|p| p.DoDefaultAction()),
                 _ => None,
             }
         };
-        match ok {
-            Some(true) => Ok(()),
-            Some(false) => Err(Error::ActionFailed(format!(
-                "action `{native_action}` failed"
+        match sent {
+            Some(Ok(())) => Ok(()),
+            // Sent, but the app didn't answer in time.
+            Some(Err(e)) if is_timeout(&e) => Err(Error::Unanswered(self.owner_name(element))),
+            Some(Err(e)) => Err(Error::ActionFailed(format!(
+                "action `{native_action}` failed: {e}"
             ))),
+            None if b.timed_out() => Err(self.not_answering(element)),
             None => Err(Error::ActionFailed(format!(
                 "element no longer supports action `{native_action}`"
             ))),
@@ -819,29 +1072,38 @@ impl Backend for WindowsBackend {
 
     fn set_value(&mut self, element: ElementHandle, value: &str) -> Result<()> {
         let el = self.resolve(element)?;
+        let b = Budget::new(ACTION_BUDGET);
         // Toggle controls: flip to the requested boolean.
-        if let Some(t) = self.toggle_pattern(&el) {
+        if let Some(t) = toggle_pattern(&b, &el) {
             let want = matches!(
                 value.trim().to_lowercase().as_str(),
                 "true" | "1" | "on" | "yes" | "checked"
             );
-            let is = unsafe { t.CurrentToggleState() }
-                .map(|s| s == ToggleState_On)
-                .unwrap_or(false);
+            // SAFETY: COM calls on a live pattern.
+            let is = b
+                .call(|| unsafe { t.CurrentToggleState() })
+                .is_some_and(|s| s == ToggleState_On);
+            if b.timed_out() {
+                return Err(self.not_answering(element));
+            }
             if is != want {
-                unsafe { t.Toggle() }.map_err(Error::action)?;
+                // SAFETY: as above.
+                self.sent(element, unsafe { t.Toggle() })?;
             }
             return Ok(());
         }
-        if let Some(v) = self.value_pattern(&el) {
+        if let Some(v) = value_pattern(&b, &el) {
             let bstr = BSTR::from(value);
-            unsafe { v.SetValue(&bstr) }.map_err(Error::action)?;
-            return Ok(());
+            // SAFETY: as above.
+            return self.sent(element, unsafe { v.SetValue(&bstr) });
         }
-        if let Some(leg) = self.legacy_pattern(&el) {
+        if let Some(leg) = legacy_pattern(&b, &el) {
             let bstr = BSTR::from(value);
-            unsafe { leg.SetValue(&bstr) }.map_err(Error::action)?;
-            return Ok(());
+            // SAFETY: as above.
+            return self.sent(element, unsafe { leg.SetValue(&bstr) });
+        }
+        if b.timed_out() {
+            return Err(self.not_answering(element));
         }
         Err(Error::ActionFailed(
             "this element does not accept a value directly".into(),
@@ -855,9 +1117,15 @@ impl Backend for WindowsBackend {
         occurrence: usize,
     ) -> Result<()> {
         let el = self.resolve(element)?;
-        let text_pat: IUIAutomationTextPattern = self
-            .get_pattern(&el, UIA_TextPatternId)
-            .ok_or_else(|| Error::ActionFailed("element has no selectable text".into()))?;
+        let b = Budget::new(ACTION_BUDGET);
+        let text_pat: IUIAutomationTextPattern =
+            pattern(&b, &el, UIA_TextPatternId).ok_or_else(|| {
+                if b.timed_out() {
+                    self.not_answering(element)
+                } else {
+                    Error::ActionFailed("element has no selectable text".into())
+                }
+            })?;
         let range = unsafe { text_pat.DocumentRange() }.map_err(Error::action)?;
         match text {
             None => unsafe { range.Select() }.map_err(Error::action)?,
@@ -901,8 +1169,12 @@ impl Backend for WindowsBackend {
         pages: f64,
     ) -> Result<Native> {
         let el = self.resolve(element)?;
-        let Some(scroll) = self.get_pattern::<IUIAutomationScrollPattern>(&el, UIA_ScrollPatternId)
+        let b = Budget::new(ACTION_BUDGET);
+        let Some(scroll) = pattern::<IUIAutomationScrollPattern>(&b, &el, UIA_ScrollPatternId)
         else {
+            if b.timed_out() {
+                return Err(self.not_answering(element));
+            }
             return Ok(Native::Unsupported);
         };
         let none = ScrollAmount_NoAmount;
@@ -912,10 +1184,21 @@ impl Backend for WindowsBackend {
             ScrollDirection::Right => (ScrollAmount_LargeIncrement, none),
             ScrollDirection::Left => (ScrollAmount_LargeDecrement, none),
         };
-        let count = pages.round().max(1.0) as i32;
-        for _ in 0..count {
-            if unsafe { scroll.Scroll(h, v) }.is_err() {
-                return Ok(Native::Unsupported);
+        // `as` saturates (and NaN gives 1): at most MAX_SCROLL_PAGES calls.
+        let count = (pages.round().max(1.0) as i32).min(MAX_SCROLL_PAGES);
+        for i in 0..count {
+            // SAFETY: a COM call on a live pattern.
+            if let Err(e) = unsafe { scroll.Scroll(h, v) } {
+                if is_timeout(&e) {
+                    return Err(Error::Unanswered(self.owner_name(element)));
+                }
+                // The first step failing leaves it to the mouse wheel; a
+                // later one means it went as far as it goes.
+                return Ok(if i == 0 {
+                    Native::Unsupported
+                } else {
+                    Native::Done("scrolled".into())
+                });
             }
         }
         Ok(Native::Done("scrolled".into()))
@@ -1019,9 +1302,47 @@ fn app_path(name: &str) -> Option<String> {
     None
 }
 
+/// How long opening a Start Menu shortcut may take before giving up waiting.
+const SHELL_OPEN_WAIT: Duration = Duration::from_secs(30);
+
 /// Open a file the backend found itself (a Start Menu shortcut) the way
 /// Explorer does. Never called with anything the agent typed.
+///
+/// The shell extensions this may load can need a single-threaded
+/// apartment, which the backend's thread isn't: it runs on a short-lived
+/// STA thread of its own.
 fn shell_open(file: &std::path::Path) -> Result<()> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoUninitialize};
+    let path = file.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("shell-open".into())
+        .spawn(move || {
+            // SAFETY: this new thread's own COM initialization, undone
+            // before it ends.
+            let init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let r = shell_execute(&path);
+            if init.is_ok() {
+                // SAFETY: balances the successful CoInitializeEx above.
+                unsafe { CoUninitialize() };
+            }
+            let _ = tx.send(r);
+        })
+        .map_err(|e| Error::Platform(format!("could not start a thread to open a file: {e}")))?;
+    match rx.recv_timeout(SHELL_OPEN_WAIT) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Error::ActionFailed(format!(
+            "Windows didn't finish opening {} in time; it may still open (check list_apps)",
+            file.display()
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Error::Platform(format!(
+            "opening {} failed unexpectedly",
+            file.display()
+        ))),
+    }
+}
+
+fn shell_execute(file: &std::path::Path) -> Result<()> {
     use windows::Win32::UI::Shell::{
         SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
     };
@@ -1049,41 +1370,63 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     BOOL(1)
 }
 
-fn available(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> bool {
-    unsafe {
-        el.GetCurrentPropertyValue(prop)
-            .ok()
-            .and_then(|v| VariantToBoolean(&v).ok())
-            .map(|b| b.as_bool())
-            .unwrap_or(false)
+/// A window that is "visible" without being an app window the user sees:
+/// cloaked by DWM (on another virtual desktop, a suspended store app, a
+/// shell window kept for later), this server's own overlay, or another
+/// popup that is both a tool window and never activated (overlays, toasts).
+fn ghost(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: DWM writes one DWORD into `cloaked`.
+    let is_cloaked = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
     }
+    .is_ok()
+        && cloaked != 0;
+    if is_cloaked {
+        return true;
+    }
+    // SAFETY: plain window queries.
+    let ex = WINDOW_EX_STYLE(unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32);
+    if ex.contains(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) {
+        return true;
+    }
+    let mut class = [0u16; 64];
+    // SAFETY: as above; writes at most `class.len()` units.
+    let n = unsafe { GetClassNameW(hwnd, &mut class) };
+    class
+        .get(..n.max(0) as usize)
+        .is_some_and(|c| String::from_utf16_lossy(c) == OVERLAY_CLASS)
+}
+
+/// Whether a pattern is available (live call within the budget).
+fn available(b: &Budget, el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> bool {
+    // SAFETY: a COM call on a live element.
+    b.call(|| unsafe { el.GetCurrentPropertyValue(prop) })
+        .map(Var)
+        .and_then(|v| v.bool())
+        .unwrap_or(false)
+}
+
+fn cached(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<Var> {
+    // SAFETY: reads the element's cache (no cross-process call).
+    Var::new(unsafe { el.GetCachedPropertyValue(prop) })
 }
 
 fn cached_bool(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<bool> {
-    unsafe {
-        let v = el.GetCachedPropertyValue(prop).ok()?;
-        VariantToBoolean(&v).ok().map(|b| b.as_bool())
-    }
+    cached(el, prop)?.bool()
 }
 
 fn cached_i32(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<i32> {
-    unsafe {
-        let v = el.GetCachedPropertyValue(prop).ok()?;
-        VariantToInt32(&v).ok()
-    }
+    cached(el, prop)?.i32()
 }
 
 fn cached_string(el: &IUIAutomationElement, prop: UIA_PROPERTY_ID) -> Option<String> {
-    unsafe {
-        let v = el.GetCachedPropertyValue(prop).ok()?;
-        let p = VariantToStringAlloc(&v).ok()?;
-        if p.is_null() {
-            return None;
-        }
-        let s = p.to_string().ok();
-        CoTaskMemFree(Some(p.0 as *const std::ffi::c_void));
-        s.filter(|s| !s.is_empty())
-    }
+    cached(el, prop)?.string().filter(|s| !s.is_empty())
 }
 
 fn bstr(v: windows::core::Result<BSTR>) -> Option<String> {
@@ -1091,11 +1434,12 @@ fn bstr(v: windows::core::Result<BSTR>) -> Option<String> {
 }
 
 fn rect_to_bounds(r: RECT) -> Rect {
+    // In f64: a bogus rectangle from a provider can't overflow.
     Rect::new(
         f64::from(r.left),
         f64::from(r.top),
-        f64::from(r.right - r.left),
-        f64::from(r.bottom - r.top),
+        f64::from(r.right) - f64::from(r.left),
+        f64::from(r.bottom) - f64::from(r.top),
     )
 }
 
