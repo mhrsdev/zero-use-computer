@@ -8,6 +8,7 @@
 mod atspi;
 mod clipboard;
 mod notify;
+pub(crate) mod wayland;
 mod wm;
 pub(crate) mod x11;
 
@@ -914,8 +915,7 @@ fn proc_info(pid: u32) -> (Option<String>, Option<String>) {
 /// Whether the desktop session is Wayland: XTest input and X11 captures then
 /// only reach apps running under XWayland, not native Wayland apps.
 fn wayland_session() -> bool {
-    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.eq_ignore_ascii_case("wayland"))
-        || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
+    wayland::session()
 }
 
 #[cfg(test)]
