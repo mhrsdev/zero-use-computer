@@ -146,6 +146,10 @@ pub struct Engine<B: Backend> {
     /// Why OCR isn't available, once found out (told to the model once).
     ocr_note: Option<String>,
     ocr_note_shown: bool,
+    /// The start of a tree an action's result showed (cut short): its app,
+    /// screen, a hash of the whole text and the lines shown. If the next
+    /// get_app_state renders the same text, those lines aren't sent again.
+    partial_report: Option<(u32, u32, u64, usize)>,
     /// A window capture taken for OCR at this epoch, reused as the screenshot.
     last_capture: Option<(u32, u64, u64, Capture)>,
     /// Config file modification time, for hot reload.
@@ -261,6 +265,7 @@ impl<B: Backend> Engine<B> {
             in_script: false,
             ocr_note: None,
             ocr_note_shown: false,
+            partial_report: None,
             last_capture: None,
             config_mtime,
             config_retry: false,
@@ -1852,7 +1857,24 @@ impl<B: Backend> Engine<B> {
         let observed = self.observe(&app, &window, args.ocr);
         self.force_ocr = false;
         observed?;
-        let r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
+        let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
+        // The action before this one showed the start of this very tree:
+        // only the rest is sent.
+        if let Some((pid, screen, hash, shown)) = self.partial_report.take()
+            && !args.disable_diff
+            && self.depth == 1
+            && pid == app.pid
+            && screen == r.screen
+            && hash == text_hash(&r.text)
+        {
+            let rest: Vec<&str> = r.text.lines().skip(shown).collect();
+            let intro = self.explain(
+                "partial-rest",
+                "The first lines of this tree are as the action's result showed them (unchanged since); the rest:",
+                "Rest of the tree (the start is as the action's result showed it):",
+            );
+            r.text = format!("{intro}\n{}\n", rest.join("\n"));
+        }
         let size_changed = self.commit(app.pid, &window);
 
         let mut header = format!(
@@ -1873,13 +1895,17 @@ impl<B: Backend> Engine<B> {
         }
         let ocr_lines = self.state(app.pid).map(|s| s.ocr_lines).unwrap_or(0);
         if ocr_lines > 0 {
-            let how =
-                "\"ocr text\" elements: click them by element_index; they can't be set or selected";
+            // What OCR elements are is said once.
+            let how = self.explain(
+                "ocr-elements",
+                " (\"ocr text\" elements: click them by element_index; they can't be set or selected)",
+                " (\"ocr text\")",
+            );
             header.push_str(&if args.ocr {
-                format!("\nRead {ocr_lines} more line(s) of text off the screen ({how}).")
+                format!("\nRead {ocr_lines} more line(s) of text off the screen{how}.")
             } else {
                 format!(
-                    "\nThis window has little accessibility information, so {ocr_lines} line(s) of text were read off the screen ({how})."
+                    "\nThis window has little accessibility information, so {ocr_lines} line(s) of text were read off the screen{how}."
                 )
             });
         }
@@ -3076,8 +3102,14 @@ impl<B: Backend> Engine<B> {
                     format!("{} {} {how} ({})", k + 1, hex(st.color), ids.join(", "))
                 })
                 .collect();
+            // How to paint it is said once; then only the steps.
+            let how = self.explain(
+                "design-paint",
+                " Each: set the colour, then draw(strokes=[{\"design\": <name>, \"step\": n, \"fill\": <brush size>}], canvas=...); a lines step uses a brush that wide; type text steps with the text tool. Or export=\"svg\" / \"png\" and import the file.",
+                "",
+            );
             text.push_str(&format!(
-                "\nTo paint it in an app: background {} first, then steps {}. Each: set the colour, then draw(strokes=[{{\"design\": \"{key}\", \"step\": n, \"fill\": <brush size>}}], canvas=...); a lines step uses a brush that wide; type text steps with the text tool. Or export=\"svg\" / \"png\" and import the file.",
+                "\nTo paint it in an app: background {} first, then steps {}.{how}",
                 hex(d.background),
                 list.join("; ")
             ));
@@ -3402,10 +3434,18 @@ impl<B: Backend> Engine<B> {
                 text.push_str(" (all of it: on an empty canvas one bucket click does this step)");
             }
         }
-        text.push_str(&format!(
-            "\nEach step: draw(app, canvas=<the document's box and size>, strokes=[{{\"trace\": \"{name}\", \"step\": n, \"fill\": <the app's brush size>}}]). The picture keeps its proportions ({} x {}): give the canvas the same, or it is centred with margins. Afterwards screenshot(app, canvas=..., compare=\"{name}\") shows where the canvas still differs.",
-            t.width, t.height
-        ));
+        // How to paint and check it is said once; then only the call.
+        if self.explain_first("trace-paint") {
+            text.push_str(&format!(
+                "\nEach step: draw(app, canvas=<the document's box and size>, strokes=[{{\"trace\": \"{name}\", \"step\": n, \"fill\": <the app's brush size>}}]). The picture keeps its proportions ({} x {}): give the canvas the same, or it is centred with margins. Afterwards screenshot(app, canvas=..., compare=\"{name}\") shows where the canvas still differs.",
+                t.width, t.height
+            ));
+        } else {
+            text.push_str(&format!(
+                "\nEach step: draw strokes=[{{\"trace\": \"{name}\", \"step\": n, \"fill\": ...}}] on a {} x {} canvas; check with compare=\"{name}\".",
+                t.width, t.height
+            ));
+        }
         let cfg = self.store.config.screenshot.clone();
         let (pw, ph) = imaging::fit(t.width, t.height, 512);
         let picture = crate::paint::render(&t, pw, ph);
@@ -5028,7 +5068,12 @@ impl<B: Backend> Engine<B> {
                 lines.len() - max
             ));
             // The model hasn't seen all of it: the next get_app_state
-            // reports against what it had seen before.
+            // reports against what it had seen before, and sends only the
+            // rest if nothing changed (when the model reads this result
+            // itself, not a script).
+            if self.depth == 1 && !self.in_script {
+                self.partial_report = Some((app.pid, r.screen, text_hash(&r.text), max));
+            }
         } else {
             out.text.push_str(r.text.trim_end());
             self.commit(app.pid, &window);
@@ -5629,6 +5674,14 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
     }
+}
+
+/// A hash of a rendered tree, to tell whether it is the same text.
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
 }
 
 /// Give memory freed by a big call back to the system. glibc keeps freed
@@ -6434,6 +6487,50 @@ mod tests {
     fn press_named(e: &mut Engine<MockBackend>, pid: u32, name: &str) -> ToolOutput {
         let i = index_named(e, pid, name);
         press(e, i)
+    }
+
+    #[test]
+    fn lines_an_action_already_showed_are_not_sent_again() {
+        let mut backend = MockBackend::new();
+        backend.add_app(page_a(7));
+        backend.on_press.insert(20, page_b(7));
+        let mut cfg = Config::default();
+        cfg.tree.report_changes_max_lines = 4;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let out = press_named(&mut e, 7, "Next");
+        assert!(
+            out.text.contains("more lines; call get_app_state"),
+            "{}",
+            out.text
+        );
+        let shown: Vec<String> = out
+            .text
+            .lines()
+            .skip_while(|l| !l.starts_with("State after the action"))
+            .skip(1)
+            .take(4)
+            .map(String::from)
+            .collect();
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("the rest:"), "{}", out.text);
+        for line in &shown {
+            assert!(
+                !out.text.contains(line.as_str()),
+                "{line} again:\n{}",
+                out.text
+            );
+        }
+        assert!(out.text.contains("Result 3"), "{}", out.text);
+
+        // Asked for in full, or changed meanwhile: all of it.
+        let mut e2 = nav_engine(true);
+        e2.store.config.tree.report_changes_max_lines = 4;
+        state_of(&mut e2, serde_json::json!({}));
+        press_named(&mut e2, 7, "Next");
+        let out = state_of(&mut e2, serde_json::json!({"disable_diff": true}));
+        assert!(!out.text.contains("the rest:"), "{}", out.text);
     }
 
     #[test]

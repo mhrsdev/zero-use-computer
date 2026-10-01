@@ -41,10 +41,14 @@ impl Totals {
 
 fn call(engine: &mut Eng, t: &mut Totals, tool: &str, args: Value) -> String {
     let t0 = Instant::now();
-    let out = engine.call_tool(tool, args);
+    let out = engine.call_tool(tool, args.clone());
     let took = t0.elapsed();
     if out.is_error {
         eprintln!("  ! {tool}: {}", out.text);
+    }
+    // COMPARE_DUMP=1 prints every result (to see where the tokens go).
+    if std::env::var_os("COMPARE_DUMP").is_some() {
+        eprintln!("--- {tool} {args}\n{}", out.text);
     }
     t.calls += 1;
     t.time += took;

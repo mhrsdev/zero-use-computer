@@ -691,7 +691,7 @@ pub fn change_count(old: &[Node], new: &[Node]) -> usize {
 }
 
 /// Intro line of a diff against the previous get_app_state.
-pub const DIFF_INTRO: &str = "Changes since the previous get_app_state (+ added, ~ changed, - removed). Unchanged elements keep their indices.";
+pub const DIFF_INTRO: &str = "Changes since the previous get_app_state (+ added, ~ changed, - removed; a changed line ends with what it was, … standing for the start it kept). Unchanged elements keep their indices.";
 
 pub fn render_diff(d: &Diff, new: &[Node]) -> String {
     if d.is_empty() {
@@ -715,7 +715,12 @@ pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str) -> String {
     }
     for (pos, old_line) in &d.changed {
         let n = &new[*pos];
-        out.push_str(&format!("~ {} {}  (was: {})\n", n.index, n.line, old_line));
+        out.push_str(&format!(
+            "~ {} {}  (was: {})\n",
+            n.index,
+            n.line,
+            was(old_line, &n.line)
+        ));
     }
     for (idx, old_line) in &d.removed {
         out.push_str(&format!("- {idx} {old_line}\n"));
@@ -723,10 +728,58 @@ pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str) -> String {
     out
 }
 
+/// What a changed line was, without the start it shares with what it is
+/// now (`…` stands for that): `button "Bold" (checked)` that was
+/// `button "Bold" (unchecked)` shows `…(unchecked)`.
+fn was(old: &str, new: &str) -> String {
+    let same = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(old.len().min(new.len()), |((i, _), _)| i);
+    // Cut after a space, quote, bracket or `=`, never inside a word.
+    let cut = old[..same]
+        .rfind([' ', '"', '(', '[', '='])
+        .map_or(0, |i| i + 1);
+    if cut < 8 || cut >= old.len() {
+        return old.to_string();
+    }
+    format!("…{}", &old[cut..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::NodeStates;
+
+    #[test]
+    fn a_changed_line_shows_only_what_was_different() {
+        assert_eq!(
+            was("button \"Bold\" (unchecked)", "button \"Bold\" (checked)"),
+            "…unchecked)"
+        );
+        assert_eq!(
+            was(
+                "text field \"To\" (editable)",
+                "text field \"To\" value=\"bob\" (focused, editable)"
+            ),
+            "…(editable)"
+        );
+        assert_eq!(
+            was(
+                "text area value=\"hello world\"",
+                "text area value=\"hello there\""
+            ),
+            "…world\""
+        );
+        // Little in common: all of it.
+        assert_eq!(was("link \"A\"", "button \"B\""), "link \"A\"");
+        // The old line is the start of the new one: all of it.
+        assert_eq!(
+            was("button \"Bold\"", "button \"Bold\" (checked)"),
+            "button \"Bold\""
+        );
+    }
 
     fn node(parent: Option<usize>, role: &str, name: &str) -> RawNode {
         RawNode {
