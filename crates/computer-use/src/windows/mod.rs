@@ -23,7 +23,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::System::Variant::{VariantToBoolean, VariantToInt32, VariantToStringAlloc};
+use windows::Win32::System::Variant::{
+    VARIANT, VariantToBoolean, VariantToInt32, VariantToInt32Array, VariantToStringAlloc,
+};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GetAncestor, GetWindowTextLengthW, GetWindowTextW,
@@ -49,7 +51,8 @@ pub struct WindowsBackend {
 }
 
 /// Properties prefetched for every element by the cache request.
-const CACHED_PROPS: [UIA_PROPERTY_ID; 21] = [
+const CACHED_PROPS: [UIA_PROPERTY_ID; 22] = [
+    UIA_RuntimeIdPropertyId,
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_AutomationIdPropertyId,
@@ -73,8 +76,43 @@ const CACHED_PROPS: [UIA_PROPERTY_ID; 21] = [
     UIA_IsPasswordPropertyId,
 ];
 
+/// Work in physical pixels, as UI Automation does. Without this, at 125%
+/// or 150% display scaling Windows gives this process scaled window
+/// rectangles, screen sizes and screen captures: screenshots come out
+/// cropped or blurred and clicks land off target.
+pub(crate) fn make_dpi_aware() {
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // SAFETY: process-wide settings, made before any window or metric is read.
+    unsafe {
+        if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_err() {
+            // Already set (a manifest, an earlier call) or Windows before
+            // 10 1703: at least system-DPI awareness.
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+        }
+    }
+}
+
+/// UI Automation's runtime id, as an identity key: it stays the same for
+/// as long as the element exists, so an element index can't move to a
+/// look-alike element (the next row's "Delete") when one disappears.
+fn runtime_key(v: windows::core::Result<VARIANT>) -> Option<String> {
+    let v = v.ok()?;
+    let mut ids = [0i32; 16];
+    let mut n = 0u32;
+    // SAFETY: reads an int array out of a VARIANT into a local buffer.
+    unsafe { VariantToInt32Array(&v, &mut ids, &mut n) }.ok()?;
+    let ids = ids.get(..n as usize).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "uia:{}",
+        ids.iter().map(i32::to_string).collect::<Vec<_>>().join(".")
+    ))
+}
+
 impl WindowsBackend {
     pub fn new() -> Result<Self> {
+        make_dpi_aware();
         unsafe {
             // Ignore RPC_E_CHANGED_MODE if COM is already initialized.
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -245,11 +283,12 @@ impl WindowsBackend {
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
 
+        let key = runtime_key(unsafe { el.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId) });
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
             parent,
-            key: None,
+            key,
             role,
             native_role: control_type.to_string(),
             name: name.filter(|s| !s.is_empty()),
@@ -397,11 +436,12 @@ impl WindowsBackend {
         let identifier = automation_id
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
+        let key = runtime_key(unsafe { el.GetCachedPropertyValue(UIA_RuntimeIdPropertyId) });
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
             parent,
-            key: None,
+            key,
             role,
             native_role: control_type.to_string(),
             name: name.filter(|s| !s.is_empty()),

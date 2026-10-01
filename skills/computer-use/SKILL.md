@@ -53,9 +53,10 @@ you from re-reading and re-analysing:
   screenshot, if attached).
 - `screen #N (seen before)` / "back on screen #N" — you were here earlier (you
   went back a page, a dialog closed, a panel reopened). **Don't re-analyse it:**
-  your earlier understanding of screen #N still holds, its element indices are
-  exactly the ones you saw then, and your earlier screenshot of it still
-  applies. Only the listed changes (if any) are new.
+  your earlier understanding of screen #N still holds and its element indices
+  are exactly the ones you saw then. Only the listed changes (if any) are
+  new; if its pixels changed, a new screenshot (or the changed part) comes
+  with it.
 - When an action opens a dialog or menu, the report after it switches to that
   window automatically ("now on screen #N (new), window …"); act on it, and
   when it closes you'll be told which screen you're back on.
@@ -117,7 +118,8 @@ running (then `get_app_state`).
 - Action results are checked for you. If one says "Nothing on screen
   changed after it", look (`get_app_state` with `screenshot: true`) before
   trying again; don't just repeat it. A note that a value or typed text
-  didn't take means check the field before going on.
+  didn't take means check the field before going on: never type the same
+  text again without looking, or it may be entered twice.
 - **The user can stop you at any moment** (an emergency stop key). If a call
   fails saying the user stopped the agent, stop: don't retry or work around
   it; ask the user what to do. If a result says the stop key is not working,

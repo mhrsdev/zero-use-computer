@@ -28,8 +28,10 @@ pub struct X11 {
     ctrl: u8,
     alt: u8,
     meta: u8,
-    /// A keycode we can rebind on the fly for characters not on the keyboard.
+    /// A keycode we can rebind on the fly for characters not on the keyboard,
+    /// and the keysym it is bound to now.
     spare: u8,
+    spare_sym: u32,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -75,6 +77,7 @@ impl X11 {
             alt: 0,
             meta: 0,
             spare: 0,
+            spare_sym: 0,
             red_mask,
             green_mask,
             blue_mask,
@@ -220,7 +223,7 @@ impl X11 {
         self.flush()
     }
 
-    /// Type a run of text as key events (fallback; AT-SPI insert is preferred).
+    /// Type a run of text as key events.
     pub fn type_text(&mut self, text: &str) -> Result<()> {
         for c in text.chars() {
             if c == '\n' {
@@ -272,20 +275,25 @@ impl X11 {
         if let Some((kc, sh)) = self.keymap.get(&keysym) {
             return Ok((*kc, *sh));
         }
-        // Remap the spare keycode to this keysym for one press.
+        // Characters not on the keyboard (another script, a symbol): bind
+        // the spare keycode to this one for the press. The binding is not
+        // remembered as the character's key: the next such character
+        // rebinds the same keycode, and an old entry would type that one.
         if self.spare == 0 {
             return Err(Error::ActionFailed(
                 "no free keycode to type this character".into(),
             ));
         }
-        let syms = [keysym, keysym];
-        // .check() round-trips so the mapping is live before the fake key event.
-        self.conn
-            .change_keyboard_mapping(1, self.spare, 2, &syms)
-            .map_err(xe)?
-            .check()
-            .map_err(xe)?;
-        self.keymap.insert(keysym, (self.spare, false));
+        if self.spare_sym != keysym {
+            let syms = [keysym, keysym];
+            // .check() round-trips so the mapping is live before the key event.
+            self.conn
+                .change_keyboard_mapping(1, self.spare, 2, &syms)
+                .map_err(xe)?
+                .check()
+                .map_err(xe)?;
+            self.spare_sym = keysym;
+        }
         Ok((self.spare, false))
     }
 

@@ -658,13 +658,13 @@ impl<B: Backend> Engine<B> {
         );
         let remembered = state.window_id;
         if let Some(q) = query {
-            let ql = q.to_lowercase();
+            let ql = crate::text::fold(q);
             if let Some(w) = windows.iter().find(|w| w.id.to_string() == q) {
                 return Ok(w.clone());
             }
             let matches: Vec<&WindowInfo> = windows
                 .iter()
-                .filter(|w| w.title.to_lowercase().contains(&ql))
+                .filter(|w| crate::text::fold(&w.title).contains(&ql))
                 .collect();
             return match matches.as_slice() {
                 [w] => Ok((*w).clone()),
@@ -1246,8 +1246,18 @@ impl<B: Backend> Engine<B> {
     /// re-read the app until two reads in a row agree — the UI has finished
     /// reacting — or `settle_max_ms` passes. Leaves a fresh snapshot for
     /// verification and the change report.
+    ///
+    /// Reads that still show exactly what was there before the action are
+    /// not trusted at once: many apps (browsers, Electron apps) report a
+    /// change a little after making it. Only after `NO_CHANGE_GRACE` of
+    /// reads like that does the action count as having changed nothing.
     fn settle_on(&mut self, app: &AppInfo) {
         use crate::config::SettleMode;
+        /// How long reads may keep showing the old state before "nothing
+        /// changed" is believed.
+        const NO_CHANGE_GRACE: Duration = Duration::from_millis(500);
+        // The latest read is still the one from before the action.
+        let before = self.tree_fingerprint(app.pid);
         self.settle();
         let cfg = &self.store.config;
         let adaptive = cfg.timing.settle == SettleMode::Adaptive;
@@ -1258,6 +1268,8 @@ impl<B: Backend> Engine<B> {
         let poll = Duration::from_millis(cfg.timing.settle_poll_ms.max(5));
         let deadline = (self.clock)() + max;
         let mut last = None;
+        // Time waited, counted in poll intervals (independent of the clock).
+        let mut waited = Duration::from_millis(cfg.timing.settle_ms);
         // Text read off the screen isn't read again for every look.
         let reuse = std::mem::replace(&mut self.ocr_reuse, true);
         while let Ok(window) = self.pick_window(app, None, true) {
@@ -1266,14 +1278,16 @@ impl<B: Backend> Engine<B> {
             }
             self.settled = Some(self.epoch);
             let now = self.tree_fingerprint(app.pid);
-            if !adaptive || (now.is_some() && now == last) {
+            let steady = now.is_some() && now == last;
+            if !adaptive || (steady && (now != before || waited >= NO_CHANGE_GRACE)) {
                 break;
             }
             last = now;
-            if self.is_stopped() || (self.clock)() >= deadline {
+            if self.is_stopped() || (self.clock)() >= deadline || waited >= max {
                 break;
             }
             (self.sleep)(poll);
+            waited += poll;
         }
         self.ocr_reuse = reuse;
     }
@@ -1614,6 +1628,12 @@ impl<B: Backend> Engine<B> {
                         || r.large_change
                         || size_changed
                         || r.interactive < shot.auto_sparse_threshold
+                        // Something changed, or the app came back to an
+                        // earlier screen: look at the pixels rather than
+                        // assume the model's picture still fits (an
+                        // unchanged picture isn't sent again).
+                        || r.changes > 0
+                        || r.seen == Seen::Revisit
                 }
             });
         let (dedupe, grid, tolerance) = (
@@ -1623,8 +1643,7 @@ impl<B: Backend> Engine<B> {
         );
         // Pixel fingerprints tell unchanged pictures and changed parts apart.
         let fingerprint = cache.dedupe_screenshots || shot.scope == crate::config::ShotScope::Auto;
-        let (known_pixels, known_coord, known_shot) =
-            (known.pixels.clone(), known.coord, known.shot);
+        let (known_pixels, known_coord) = (known.pixels.clone(), known.coord);
 
         let mut image = None;
         if want {
@@ -1643,6 +1662,11 @@ impl<B: Backend> Engine<B> {
             };
             match captured {
                 Ok(mut cap) => {
+                    if imaging::uniform(&cap) {
+                        header.push_str(
+                            "\n[The screenshot is one flat colour: the app may not draw while its window is in the background or minimized. Use the tree, or bring it forward (window action=focus) and look again.]",
+                        );
+                    }
                     let redacted = self.redact_capture(&mut cap);
                     if redacted > 0 {
                         header.push_str(&format!(
@@ -1718,11 +1742,6 @@ impl<B: Backend> Engine<B> {
                     header.push_str(&format!("\n[screenshot unavailable: {e}]"));
                 }
             }
-        } else if allowed && r.seen == Seen::Revisit && known_shot && known_coord.is_some() {
-            header.push_str(&format!(
-                "\nScreenshot: not re-sent (your earlier one of screen #{} still applies).",
-                r.screen
-            ));
         } else if allowed {
             header.push_str("\nScreenshot: not attached (pass screenshot=true for one).");
         }
@@ -2098,31 +2117,11 @@ impl<B: Backend> Engine<B> {
                     .ok()
                     .is_some_and(|n| n.value.is_some() && n.value == node.value)
             };
+            // Never typed again automatically: many apps update what they
+            // report a moment late, and typing twice would enter the text
+            // twice (or send a message twice).
             if unchanged(self) {
-                let fresh = self.node_by_index(&app, i).ok().cloned();
-                let point = fresh
-                    .as_ref()
-                    .and_then(|n| n.bounds)
-                    .filter(|b| !b.is_empty())
-                    .map(|b| b.center());
-                if self.store.config.verify.retry
-                    && let Some(p) = point
-                {
-                    // Click into the field and type again.
-                    let target = self.input_target(&app)?;
-                    self.backend.click(&target, p, MouseButton::Left, 1)?;
-                    self.settle();
-                    self.type_into_focus(&app, &args.text)?;
-                    self.settle_on(&app);
-                    msg.push_str(
-                        " The text didn't land in the field at first, so it was clicked and the text typed again (the first attempt may have gone to another element).",
-                    );
-                }
-                if self.verified() && unchanged(self) {
-                    msg.push_str(
-                        " Note: the field's text didn't change; the typing may have gone elsewhere. Check with get_app_state.",
-                    );
-                }
+                msg.push_str(TYPED_UNCONFIRMED_NOTE);
             }
         }
         Ok(ToolOutput::text(msg))
@@ -2131,6 +2130,8 @@ impl<B: Backend> Engine<B> {
     /// Type `text` into the app's focused element (newlines press Return).
     fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
         let target = self.input_target(app)?;
+        // A Windows line break is one Return, not two.
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
         // Split on newlines so each becomes a Return press (works everywhere).
         let mut first = true;
         for segment in text.split('\n') {
@@ -2227,8 +2228,8 @@ impl<B: Backend> Engine<B> {
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.observe(&app, &window, false)?;
         let role = args.role.map(|r| r.to_lowercase());
-        let name = args.name.map(|n| n.to_lowercase());
-        let text = args.text.map(|t| t.to_lowercase());
+        let name = args.name.map(|n| crate::text::fold(&n));
+        let text = args.text.map(|t| crate::text::fold(&t));
         let state = self.state(app.pid)?;
         let mut hits: Vec<&Node> = state
             .nodes
@@ -2238,7 +2239,7 @@ impl<B: Backend> Engine<B> {
                     && name.as_deref().is_none_or(|q| {
                         n.name
                             .as_deref()
-                            .is_some_and(|nm| nm.to_lowercase().contains(q))
+                            .is_some_and(|nm| crate::text::fold(nm).contains(q))
                     })
                     && text.as_deref().is_none_or(|q| node_text(n).contains(q))
                     && (!args.editable || n.states.editable)
@@ -2261,10 +2262,14 @@ impl<B: Backend> Engine<B> {
     fn wait_for(&mut self, args: WaitForArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
         let role = args.role.clone().map(|r| r.to_lowercase());
-        let name = args.name.clone().map(|n| n.to_lowercase());
-        let text = args.text.clone().map(|t| t.to_lowercase());
+        let name = args.name.clone().map(|n| crate::text::fold(&n));
+        let text = args.text.clone().map(|t| crate::text::fold(&t));
         let timing = &self.store.config.timing;
-        let timeout_ms = args.timeout_ms.unwrap_or(timing.wait_timeout_ms).max(1);
+        // At most two minutes: the server answers nothing else while it waits.
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(timing.wait_timeout_ms)
+            .clamp(1, 120_000);
         let poll = Duration::from_millis(
             args.poll_ms
                 .unwrap_or(timing.wait_poll_ms)
@@ -2283,7 +2288,7 @@ impl<B: Backend> Engine<B> {
                         && name.as_deref().is_none_or(|q| {
                             n.name
                                 .as_deref()
-                                .is_some_and(|nm| nm.to_lowercase().contains(q))
+                                .is_some_and(|nm| crate::text::fold(nm).contains(q))
                         })
                         && text.as_deref().is_none_or(|q| node_text(n).contains(q))
                         && state_matches(n, args.state)
@@ -2476,6 +2481,14 @@ impl<B: Backend> Engine<B> {
         let mut report = String::new();
         let mut last_image = None;
         let mut any_error = false;
+        // The report shows one line per step, so the trees the steps render
+        // never reach the model: what it has seen of each app stays what it
+        // saw before the batch (restored below).
+        let seen_before: HashMap<u32, Option<Screen>> = self
+            .states
+            .iter()
+            .map(|(pid, st)| (*pid, st.known.clone()))
+            .collect();
         for (i, step) in args.steps.iter().enumerate() {
             // Inject the default app when the step omits one.
             let mut step_args = match &step.arguments {
@@ -2523,6 +2536,24 @@ impl<B: Backend> Engine<B> {
                     }
                 }
             }
+        }
+        for (pid, st) in self.states.iter_mut() {
+            let before = seen_before.get(pid).cloned().flatten();
+            st.known = match (before, st.known.take()) {
+                // Same screen: the model's tree is the one from before; the
+                // screenshot state (only the returned image counts) is kept.
+                (Some(b), Some(mut now)) if b.id == now.id => {
+                    now.view = b.view;
+                    Some(now)
+                }
+                // A screen reached in the batch: its tree hasn't been shown,
+                // so the next look sends all of it.
+                (_, Some(mut now)) => {
+                    now.view = crate::screens::View::default();
+                    Some(now)
+                }
+                (before, None) => before,
+            };
         }
         Ok(ToolOutput {
             text: format!("Ran {} step(s):\n{report}", args.steps.len()),
@@ -2934,6 +2965,9 @@ fn ocr_can_only_be_clicked(handle: ElementHandle, tool: &str) -> Result<()> {
     Ok(())
 }
 
+/// Appended when typed text doesn't show in the field (yet).
+const TYPED_UNCONFIRMED_NOTE: &str = " Note: the field doesn't show the new text yet. Look (get_app_state) before typing again: typing again could enter the text twice.";
+
 /// Appended when an action changed nothing that can be seen.
 const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
 
@@ -2963,13 +2997,14 @@ fn shape_similarity(nodes: &[Node], shapes: &HashSet<u64>) -> f64 {
 }
 
 /// Lowercased name + value of a node, for text matching.
+/// An element's name and value, [folded](crate::text::fold) for matching.
 fn node_text(n: &Node) -> String {
     let mut s = n.name.clone().unwrap_or_default();
     if let Some(v) = &n.value {
         s.push(' ');
         s.push_str(v);
     }
-    s.to_lowercase()
+    crate::text::fold(&s)
 }
 
 fn state_matches(n: &Node, want: crate::tools::ElementState) -> bool {
@@ -3073,7 +3108,10 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     // Substring on name/id.
     let sub: Vec<&AppInfo> = apps
         .iter()
-        .filter(|a| a.name.to_lowercase().contains(&ql) || a.id.to_lowercase().contains(&ql))
+        .filter(|a| {
+            let q = crate::text::fold(&ql);
+            crate::text::fold(&a.name).contains(&q) || a.id.to_lowercase().contains(&ql)
+        })
         .collect();
     match sub.as_slice() {
         [a] => Ok((*a).clone()),
@@ -3654,6 +3692,22 @@ mod tests {
     }
 
     #[test]
+    fn a_returning_screen_that_looks_different_gets_a_new_picture() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let next = index_named(&e, 7, "Next");
+        press(&mut e, next);
+        state_of(&mut e, serde_json::json!({}));
+        let back = index_named(&e, 7, "Back");
+        press(&mut e, back);
+        // Same elements as before, different pixels (say, a new image).
+        e.backend_mut().fill = 40;
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("screen #1 (seen before)"), "{}", out.text);
+        assert!(out.image.is_some(), "{}", out.text);
+    }
+
+    #[test]
     fn returning_to_a_seen_screen_skips_tree_and_screenshot() {
         let mut e = nav_engine(false);
         let out = state_of(&mut e, serde_json::json!({}));
@@ -3684,8 +3738,14 @@ mod tests {
             "no tree re-sent: {}",
             out.text
         );
+        // The pixels are checked, not assumed: the same picture isn't sent.
         assert!(out.image.is_none(), "no screenshot re-sent");
-        assert_eq!(e.backend().captures, captures, "not even captured");
+        assert_eq!(e.backend().captures, captures + 1, "checked once");
+        assert!(
+            out.text.contains("unchanged since you last saw it"),
+            "{}",
+            out.text
+        );
         // The indices the model analysed are back.
         assert_eq!(index_named(&e, 7, "Document"), doc);
         assert_eq!(index_named(&e, 7, "Next"), next);
@@ -3881,7 +3941,7 @@ mod tests {
         assert_eq!(e.backend().window_lists, lists, "window list reused");
         // An action makes them stale: settling reads the app until two reads
         // agree, and the next get_app_state reuses the last of them.
-        press_named(&mut e, 7, "Bold");
+        press_named(&mut e, 7, "Next");
         state_of(&mut e, serde_json::json!({}));
         assert_eq!(e.backend().snapshots, snaps + 2);
         // Turned off: every call reads again.
@@ -4152,7 +4212,9 @@ mod tests {
     fn own_input_is_not_taken_for_the_user() {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        // Only the pause for the user is measured here, not settling.
+        cfg.timing.settle = crate::config::SettleMode::Fixed;
         let (mut e, clock) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
         let press = |e: &mut Engine<MockBackend>| {
@@ -4410,20 +4472,53 @@ mod tests {
     }
 
     #[test]
-    fn typing_that_does_not_land_clicks_the_field_and_types_again() {
+    fn typing_that_does_not_show_is_never_typed_twice() {
         let mut e = engine();
         let out = state_of(&mut e, serde_json::json!({}));
         let doc = index_of_name(&out.text, "\"Document\"");
-        // Focus claims success but does nothing: the text goes nowhere.
+        // Focus claims success but does nothing: the field doesn't change.
         e.backend_mut().fake_focus.insert(5);
         let out = e.call_tool(
             "type_text",
-            serde_json::json!({"app": "TextEdit", "element_index": doc, "text": " world"}),
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "text": "y"}),
         );
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.contains("didn't land"), "{}", out.text);
-        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
-        assert!(out.text.contains("Hello world"), "{}", out.text);
+        assert!(
+            out.text.contains("could enter the text twice"),
+            "{}",
+            out.text
+        );
+        let typed = e
+            .backend()
+            .events
+            .iter()
+            .filter(|ev| matches!(ev, Event::Type(..)))
+            .count();
+        assert_eq!(typed, 1, "typed once, never again on its own");
+    }
+
+    #[test]
+    fn a_change_reported_late_is_not_taken_for_no_change() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        // The app shows the change only after a few reads.
+        e.backend_mut().snapshot_script.extend([
+            (5, "Hello".to_string()),
+            (5, "Hello".to_string()),
+            (5, "Hello".to_string()),
+            (5, "Changed".to_string()),
+        ]);
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            !out.text.contains("Nothing on screen changed"),
+            "{}",
+            out.text
+        );
     }
 
     // -- smart screenshots ----------------------------------------------------

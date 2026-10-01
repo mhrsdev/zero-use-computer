@@ -10,8 +10,6 @@ It is a standalone building block: run it as an **MCP server** (works with
 Codex, Claude Code, or any MCP-capable agent), or embed the **library** in your
 own agent.
 
-> فارسی: راهنمای فارسی در [README.fa.md](README.fa.md).
-
 ## Why it mirrors Codex
 
 Codex's computer use is accessibility-first: it reads an app's accessibility
@@ -28,7 +26,8 @@ This project follows the same architecture and behaviour:
 - **Screen memory (beyond Codex).** When the app returns to a screen the model
   has already seen — it went back a page, closed a dialog, reopened a panel —
   the engine recognises it, gives back the element indices the model saw then,
-  and sends only what changed: no new tree, no new screenshot to re-analyse.
+  and sends only what changed: no new tree, and a new screenshot only if the
+  pixels differ from the one the model has.
   See [Screen memory & caching](#screen-memory--caching).
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
@@ -126,9 +125,12 @@ How it works:
 - **Dialogs are followed.** When an action opens a new window (a dialog, a
   menu), the change report and the next `get_app_state` switch to it
   (`follow_new_windows`); when it closes, the window below is recognised.
-- **Screenshots stay valid.** A returning screen's old screenshot keeps working
-  for `x`/`y` clicks (shifted if the window moved; dropped, and a new one sent,
-  if the window changed size).
+- **Screenshots are checked, not assumed.** When the tree changed, or the app
+  came back to an earlier screen, the window is captured and compared with
+  the picture the model has: the same picture isn't sent again, a different
+  one is (or just the part that changed). The model's screenshot keeps
+  working for `x`/`y` clicks (shifted if the window moved; replaced if the
+  window changed size).
 
 Measured on `gtk3-widget-factory` switching between two pages (`BENCH_NAV`,
 below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
@@ -157,7 +159,7 @@ text (`[privacy]`).
 | Vision framework (`VNRecognizeTextRequest`, accurate) | macOS |
 | Tesseract (`tesseract` on `PATH`, `ocr.tesseract_path`) | Linux, and anywhere the built-in engine is missing |
 
-`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "fa"]`).
+`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "de"]`).
 If no engine is available, the agent is told once.
 
 ### Notifications
@@ -327,8 +329,10 @@ task is complete) can say so with a JSON-RPC notification:
   time. It re-reads the app until two reads in a row agree (the UI has
   finished reacting), up to `timing.settle_max_ms`. That is
   `timing.settle = "adaptive"`; `"fixed"` goes back to a plain `settle_ms`
-  pause. The last read is reused for the change report, so it costs about one
-  extra read per action.
+  pause. Reads that still show exactly the state from before the action are
+  trusted only after half a second: many apps (browsers, Electron apps)
+  report a change a moment after making it. The last read is reused for the
+  change report.
 - **Verification** (`[verify]`). Each action's result is checked. If a value
   didn't take, typed text didn't land in the field, or nothing changed after a
   press, the model is told so ("Nothing on screen changed after it; check
@@ -338,12 +342,13 @@ task is complete) can say so with a JSON-RPC notification:
   | Failure | Retry |
   |---|---|
   | an accessibility press errors | a mouse click on the element |
-  | a value didn't take | focus, select all, type |
-  | typed text went nowhere | click into the field and type again |
+  | a value didn't take | focus, select all, type (replaces the value) |
   | a scroll didn't move | the mouse wheel |
   | a field won't take focus | click it |
 
-  A press that simply changed nothing is not repeated unless
+  Typed text is **never** typed again on its own (that would enter it
+  twice); if the field doesn't show it, the model is told to look first. A
+  press that simply changed nothing is not repeated unless
   `verify.retry_on_no_change = true` (off by default: a send or a payment can
   show its effect late, and must not be repeated).
 
@@ -576,12 +581,18 @@ compares coming back to a screen with the screen memory off and on.
 - **macOS** — grant the host app **Accessibility** and **Screen Recording** in
   System Settings ▸ Privacy & Security. Input is posted to the target process,
   so the user's cursor doesn't move.
-- **Windows** — no special permission for UI Automation; coordinate input uses
-  `SendInput` on the active desktop.
+- **Windows** — no special permission for UI Automation. The server runs
+  per-monitor DPI aware, so screenshots and clicks are right at any display
+  scaling. Keyboard input uses `SendInput`: text as Unicode characters
+  (independent of the keyboard layout), shortcuts as virtual keys with their
+  scan codes, sent in short batches so slow apps and remote sessions keep up.
+  Windows silently drops input to apps running as administrator unless the
+  server runs as administrator too.
 - **Linux** — needs an AT-SPI2 accessibility bus and an X11 display. Enable
   accessibility for your toolkit (e.g. GTK loads the at-spi bridge when the a11y
-  bus is present). Wayland isn't supported for synthesized input/capture; use an
-  X11 (or XWayland) session.
+  bus is present). Wayland isn't supported for synthesized input/capture: in
+  a Wayland session they only reach XWayland apps (`doctor` says so); log in
+  to an X11 ("Xorg") session.
 
 ## Safety
 

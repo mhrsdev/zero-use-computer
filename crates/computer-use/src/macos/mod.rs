@@ -282,6 +282,13 @@ impl Backend for MacBackend {
     }
 
     fn list_apps(&mut self) -> Result<Vec<AppInfo>> {
+        // NSWorkspace updates its list of running apps from notifications
+        // delivered on this thread's run loop, which nothing else runs here
+        // (the server waits on stdin): let them in, or apps launched or
+        // quit since the first call would never show.
+        objc2_foundation::NSRunLoop::currentRunLoop().runUntilDate(
+            &objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.01),
+        );
         let ws = NSWorkspace::sharedWorkspace();
         let running = ws.runningApplications();
         let mut out = Vec::new();

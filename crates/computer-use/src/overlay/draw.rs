@@ -472,7 +472,7 @@ mod tests {
             ("working", "#1E88E5", "Zero is using the computer"),
             ("error", "#E53935", "Zero hit an error"),
             ("done", "#2E7D32", "Zero is done"),
-            ("fa", "#1E88E5", "زیرو در حال استفاده از رایانه است"),
+            ("rtl", "#1E88E5", "\u{05E9}\u{05DC}\u{05D5}\u{05DD} 123"),
         ];
         for (name, color, text_str) in states {
             let c = parse_color(color).unwrap();

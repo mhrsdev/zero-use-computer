@@ -377,7 +377,7 @@ pub struct OcrConfig {
     pub engine: OcrEngineChoice,
     /// In `auto`, windows with fewer interactive elements than this.
     pub sparse_threshold: usize,
-    /// Languages to read ("en", "fa", …); [] = the user's languages
+    /// Languages to read ("en", "de", …); [] = the user's languages
     /// (Tesseract: English).
     pub languages: Vec<String>,
     /// Lines recognised with less confidence (0–1) are left out.

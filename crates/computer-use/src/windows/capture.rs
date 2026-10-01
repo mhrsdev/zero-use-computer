@@ -4,7 +4,8 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
@@ -12,8 +13,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, GetWindowRect, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN,
+    GA_ROOT, GetAncestor, GetSystemMetrics, GetWindowRect, IsIconic, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WindowFromPoint,
 };
 
 use crate::error::{Error, Result};
@@ -96,10 +97,19 @@ fn with_dib(
     }
 }
 
+/// Capture one window: what it draws (`PrintWindow`), cut to the frame the
+/// user sees. Windows 10/11 frames have invisible resize borders a few
+/// pixels wide around them, which `GetWindowRect` includes.
+///
+/// GPU-drawn windows (browsers, Electron, store apps) sometimes give
+/// `PrintWindow` nothing but a blank image. When that happens and the
+/// window is the one showing on screen there, the screen itself is captured
+/// instead.
 pub fn capture_window(hwnd: HWND) -> Result<Capture> {
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
         .map_err(|e| Error::Platform(format!("GetWindowRect: {e}")))?;
+    let frame = visible_frame(hwnd).unwrap_or(rect);
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let bounds = Rect::new(
@@ -108,9 +118,65 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
         f64::from(width.max(1)),
         f64::from(height.max(1)),
     );
-    with_dib(width, height, bounds, |dc| unsafe {
+    let full = with_dib(width, height, bounds, |dc| unsafe {
         PrintWindow(hwnd, dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool()
-    })
+    })?;
+    // Cut off the invisible borders.
+    let (dx, dy) = (
+        (frame.left - rect.left).max(0),
+        (frame.top - rect.top).max(0),
+    );
+    let (fw, fh) = (frame.right - frame.left, frame.bottom - frame.top);
+    let cap = if (dx, dy, fw, fh) != (0, 0, width, height) && fw > 0 && fh > 0 {
+        crate::imaging::crop(&full, (dx as u32, dy as u32, fw as u32, fh as u32))
+    } else {
+        full
+    };
+    if crate::imaging::uniform(&cap) && on_top(hwnd, &frame) {
+        let r = Rect::new(
+            f64::from(frame.left),
+            f64::from(frame.top),
+            f64::from(fw.max(1)),
+            f64::from(fh.max(1)),
+        );
+        if let Ok(shot) = capture_screen(Some(r)) {
+            return Ok(shot);
+        }
+    }
+    Ok(cap)
+}
+
+/// The window's frame without its invisible resize borders.
+fn visible_frame(hwnd: HWND) -> Option<RECT> {
+    let mut r = RECT::default();
+    // SAFETY: DWM writes a RECT of exactly this size.
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut r as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    }
+    .ok()?;
+    (r.right > r.left && r.bottom > r.top).then_some(r)
+}
+
+/// The window is on screen and on top at its centre, so a screen capture of
+/// its frame shows it.
+fn on_top(hwnd: HWND, frame: &RECT) -> bool {
+    let centre = POINT {
+        x: frame.left + (frame.right - frame.left) / 2,
+        y: frame.top + (frame.bottom - frame.top) / 2,
+    };
+    // SAFETY: plain window queries.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            return false;
+        }
+        let at = WindowFromPoint(centre);
+        !at.0.is_null() && GetAncestor(at, GA_ROOT) == hwnd
+    }
 }
 
 /// Capture the whole virtual desktop, or a screen-space rectangle of it.

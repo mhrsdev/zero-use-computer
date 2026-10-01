@@ -120,13 +120,39 @@ pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
     Ok(())
 }
 
+/// Longest string one keyboard event carries: apps drop what's beyond it.
+const UNITS_PER_EVENT: usize = 20;
+
 pub fn type_text(pid: u32, text: &str) -> Result<()> {
     let src = source()?;
-    // A keyboard event carrying the unicode string types verbatim.
-    let event =
-        CGEvent::new_keyboard_event(src, 0, true).map_err(|_| Error::action("keyboard event"))?;
-    event.set_string(text);
-    post(pid, &event);
+    // Keyboard events carrying a unicode string type it verbatim, in any
+    // language. Each carries at most UNITS_PER_EVENT UTF-16 units (cut
+    // between characters), and every key-down gets its key-up.
+    let mut chunk = String::new();
+    let mut units = 0;
+    let mut chunks = Vec::new();
+    for c in text.chars() {
+        if units + c.len_utf16() > UNITS_PER_EVENT && !chunk.is_empty() {
+            chunks.push(std::mem::take(&mut chunk));
+            units = 0;
+        }
+        units += c.len_utf16();
+        chunk.push(c);
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    for (i, part) in chunks.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        for down in [true, false] {
+            let event = CGEvent::new_keyboard_event(src.clone(), 0, down)
+                .map_err(|_| Error::action("keyboard event"))?;
+            event.set_string(part);
+            post(pid, &event);
+        }
+    }
     Ok(())
 }
 

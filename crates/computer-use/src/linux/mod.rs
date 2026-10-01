@@ -213,8 +213,10 @@ impl Backend for LinuxBackend {
             },
             PermissionStatus {
                 name: "X11 input/capture".into(),
-                granted: self.x11.is_some(),
-                detail: if self.x11.is_some() {
+                granted: self.x11.is_some() && !wayland_session(),
+                detail: if wayland_session() {
+                    "Wayland session: keys, clicks and screenshots only reach X11 (XWayland) apps; log in to an X11 (\"Xorg\") session for the rest".into()
+                } else if self.x11.is_some() {
                     "connected".into()
                 } else {
                     "no X11 connection (DISPLAY unset or unreachable)".into()
@@ -557,6 +559,13 @@ fn proc_info(pid: u32) -> (Option<String>, Option<String>) {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     (exe, comm)
+}
+
+/// Whether the desktop session is Wayland: XTest input and X11 captures then
+/// only reach apps running under XWayland, not native Wayland apps.
+fn wayland_session() -> bool {
+    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.eq_ignore_ascii_case("wayland"))
+        || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
 }
 
 #[cfg(test)]

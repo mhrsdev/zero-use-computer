@@ -147,7 +147,7 @@ command = ""                 # helper program for library embedders
 mode = "auto"               # "auto" (sparse trees only), "always" or "off"
 engine = "auto"             # "auto" (the OS's own, else Tesseract), "native", "tesseract"
 sparse_threshold = 3        # auto: fewer interactive elements than this
-languages = []              # e.g. ["en", "fa"]; [] = your languages (Tesseract: English)
+languages = []              # e.g. ["en", "de"]; [] = your languages (Tesseract: English)
 min_confidence = 0.4        # leave out lines recognised with less confidence (0–1)
 max_lines = 150
 tesseract_path = "tesseract"

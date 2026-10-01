@@ -85,7 +85,7 @@ pub trait Backend {
     }
 
     /// Read the text in a capture with the OS's own OCR, as lines in screen
-    /// coordinates. `languages` are BCP-47 / ISO codes ("en", "fa"); empty
+    /// coordinates. `languages` are BCP-47 / ISO codes ("en", "de"); empty
     /// means the user's languages. Unsupported where the OS has none (the
     /// engine then uses Tesseract).
     fn ocr(&mut self, _cap: &Capture, _languages: &[String]) -> Result<Vec<OcrLine>> {

@@ -5,6 +5,7 @@
 use std::ops::Range;
 
 use crate::config::PrivacyConfig;
+use crate::text::{decimal_digit, is_digit};
 use crate::types::{RawNode, Rect};
 
 /// The masking character.
@@ -30,36 +31,44 @@ fn luhn(digits: &[u8]) -> bool {
     sum % 10 == 0
 }
 
-/// Byte ranges of payment card numbers in `s`: 13–19 digits, optionally
-/// grouped by single spaces or dashes, that pass the Luhn check.
+/// Byte ranges of payment card numbers in `s`: 13–19 digits (in any
+/// script), optionally grouped by single spaces or dashes, that pass the
+/// Luhn check.
 pub fn card_numbers(s: &str) -> Vec<Range<usize>> {
-    let b = s.as_bytes();
+    let chars: Vec<(usize, char)> = s.char_indices().collect();
     let mut out = Vec::new();
     let mut i = 0;
-    while i < b.len() {
-        if !b[i].is_ascii_digit() {
+    while i < chars.len() {
+        if !is_digit(chars[i].1) {
             i += 1;
             continue;
         }
-        let start = i;
+        let start = chars[i].0;
         let mut digits = Vec::new();
         let mut j = i;
-        while j < b.len() {
-            if b[j].is_ascii_digit() {
-                digits.push(b[j] - b'0');
+        while j < chars.len() {
+            let c = chars[j].1;
+            if let Some(d) = decimal_digit(c) {
+                digits.push(d);
                 j += 1;
-            } else if matches!(b[j], b' ' | b'-') && b.get(j + 1).is_some_and(u8::is_ascii_digit) {
+            } else if is_group_separator(c) && chars.get(j + 1).is_some_and(|(_, n)| is_digit(*n)) {
                 j += 1;
             } else {
                 break;
             }
         }
+        let end = chars.get(j).map_or(s.len(), |(b, _)| *b);
         if (13..=19).contains(&digits.len()) && luhn(&digits) {
-            out.push(start..j);
+            out.push(start..end);
         }
         i = j;
     }
     out
+}
+
+/// What may separate groups of digits in a card number or a code.
+fn is_group_separator(c: char) -> bool {
+    matches!(c, ' ' | '-' | '\u{00A0}')
 }
 
 /// `s` with every card number masked except its last four digits.
@@ -73,10 +82,10 @@ pub fn mask_card_numbers(s: &str) -> Option<String> {
     for r in found {
         out.push_str(&s[last..r.start]);
         let run = &s[r.clone()];
-        let total = run.bytes().filter(u8::is_ascii_digit).count();
+        let total = run.chars().filter(|c| is_digit(*c)).count();
         let mut seen = 0;
         for c in run.chars() {
-            if c.is_ascii_digit() {
+            if is_digit(c) {
                 seen += 1;
                 out.push(if seen + 4 > total { c } else { MASK });
             } else {
@@ -90,10 +99,12 @@ pub fn mask_card_numbers(s: &str) -> Option<String> {
 }
 
 /// `s` with what looks like a one-time / verification code masked: a
-/// standalone 4–8 digit number (or two groups like "123 456") in text that
-/// talks about a code, PIN or password.
+/// standalone number of 5–8 digits (in any script, possibly split once by
+/// a space or dash, as in "123 456"), or of 4 digits in text that mentions
+/// a code, PIN or password. It doesn't depend on the language of the text
+/// around it; English words only widen it to 4-digit codes.
 pub fn mask_codes(s: &str) -> Option<String> {
-    const WORDS: [&str; 10] = [
+    const WORDS: [&str; 8] = [
         "code",
         "otp",
         "pin",
@@ -102,29 +113,29 @@ pub fn mask_codes(s: &str) -> Option<String> {
         "verification",
         "verify",
         "2fa",
-        "کد",
-        "رمز",
     ];
     let low = s.to_lowercase();
-    if !WORDS.iter().any(|w| low.contains(w)) {
-        return None;
-    }
+    let min_digits = if WORDS.iter().any(|w| low.contains(w)) {
+        4
+    } else {
+        5
+    };
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut changed = false;
     let mut i = 0;
     while i < chars.len() {
-        if chars[i].is_ascii_digit() && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+        if is_digit(chars[i]) && (i == 0 || !chars[i - 1].is_alphanumeric()) {
             // A run of digits, allowing one space or dash inside.
             let mut j = i;
             let mut digits = 0;
             let mut seps = 0;
             while j < chars.len() {
-                if chars[j].is_ascii_digit() {
+                if is_digit(chars[j]) {
                     digits += 1;
-                } else if matches!(chars[j], ' ' | '-')
+                } else if is_group_separator(chars[j])
                     && seps == 0
-                    && chars.get(j + 1).is_some_and(char::is_ascii_digit)
+                    && chars.get(j + 1).is_some_and(|c| is_digit(*c))
                 {
                     seps += 1;
                 } else {
@@ -133,9 +144,9 @@ pub fn mask_codes(s: &str) -> Option<String> {
                 j += 1;
             }
             let standalone = chars.get(j).is_none_or(|c| !c.is_alphanumeric());
-            if (4..=8).contains(&digits) && standalone {
+            if (min_digits..=8).contains(&digits) && standalone {
                 for c in &chars[i..j] {
-                    out.push(if c.is_ascii_digit() { MASK } else { *c });
+                    out.push(if is_digit(*c) { MASK } else { *c });
                 }
                 changed = true;
             } else {
@@ -222,9 +233,14 @@ mod tests {
             mask_codes("Your verification code is 482913").as_deref(),
             Some("Your verification code is ••••••")
         );
+        // Whatever the language: a 5–8 digit code, in any script's digits.
         assert_eq!(
-            mask_codes("کد ورود شما: 123 456").as_deref(),
-            Some("کد ورود شما: ••• •••")
+            mask_codes("Sign-in: 123 456").as_deref(),
+            Some("Sign-in: ••• •••")
+        );
+        assert_eq!(
+            mask_codes("\u{06F4}\u{06F8}\u{06F2}\u{06F9}\u{06F1}\u{06F3}").as_deref(),
+            Some("••••••")
         );
         assert_eq!(mask_codes("Meeting at 1530 in room 4"), None);
         assert_eq!(mask_codes("code v2.1 released"), None);
@@ -250,6 +266,20 @@ mod tests {
         assert!(card_numbers("order 123456789012").is_empty());
         assert!(card_numbers("12345678901234567890123").is_empty());
         assert!(mask_card_numbers("nothing here").is_none());
+        // The same card number written in Extended Arabic-Indic digits.
+        let ext: String = "4111 1111 1111 1111"
+            .chars()
+            .map(|c| match c.to_digit(10) {
+                Some(d) => char::from_u32(0x06F0 + d).unwrap(),
+                None => c,
+            })
+            .collect();
+        let masked = mask_card_numbers(&ext).unwrap();
+        assert!(masked.starts_with("•••• •••• •••• "), "{masked}");
+        assert!(
+            !masked.ends_with("1111"),
+            "the last four stay in their script"
+        );
     }
 
     fn node(role: &str, name: &str, value: Option<&str>) -> RawNode {

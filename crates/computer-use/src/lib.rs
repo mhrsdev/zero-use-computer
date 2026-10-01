@@ -59,6 +59,7 @@ pub mod overlay;
 pub mod privacy;
 pub mod roles;
 pub mod screens;
+pub mod text;
 pub mod tools;
 pub mod tree;
 pub mod types;

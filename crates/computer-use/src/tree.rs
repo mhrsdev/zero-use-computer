@@ -114,6 +114,10 @@ pub fn clean_text(s: &str, max: usize) -> String {
     let mut prev_space = false;
     for c in s.trim().chars() {
         match c {
+            // Invisible direction marks only reorder the display of mixed
+            // left-to-right / right-to-left text; the model reads the text
+            // in its stored order.
+            c if crate::text::is_bidi_control(c) => {}
             '\n' => {
                 out.push_str("\\n");
                 prev_space = false;
