@@ -86,6 +86,10 @@ pub enum Event {
     ScrollElement(ElementHandle, ScrollDirection, f64),
     Click(u32, Point, MouseButton, u8),
     Drag(u32, Point, Point),
+    /// A `draw` gesture: button down, pointer moves, button up.
+    PointerDown(u32, Point, MouseButton),
+    PointerMove(u32, Point),
+    PointerUp(u32, Point, MouseButton),
     ScrollWheel(u32, Point, i32, i32),
     Key(u32, String),
     Type(u32, String),
@@ -593,6 +597,33 @@ impl Backend for MockBackend {
 
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
         self.events.push(Event::Drag(target.pid, from, to));
+        Ok(())
+    }
+
+    fn draw(
+        &mut self,
+        target: &InputTarget,
+        strokes: &[Vec<Point>],
+        button: MouseButton,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        let pid = target.pid;
+        for stroke in strokes {
+            let Some(&first) = stroke.first() else {
+                continue;
+            };
+            self.events.push(Event::PointerDown(pid, first, button));
+            let mut last = first;
+            for &p in &stroke[1..] {
+                if let Err(e) = pace((p.x - last.x).hypot(p.y - last.y)) {
+                    self.events.push(Event::PointerUp(pid, last, button));
+                    return Err(e);
+                }
+                self.events.push(Event::PointerMove(pid, p));
+                last = p;
+            }
+            self.events.push(Event::PointerUp(pid, last, button));
+        }
         Ok(())
     }
 

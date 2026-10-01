@@ -66,6 +66,18 @@ struct PendingImage {
 /// trying (until the server restarts).
 const MAX_OVERLAY_FAILURES: u32 = 5;
 
+/// `draw`: the farthest the pointer moves in one step (screen units), so
+/// apps see a continuous line.
+const DRAW_STEP: f64 = 3.0;
+/// `draw`: most pointer positions in one call.
+const DRAW_MAX_POINTS: usize = 40_000;
+/// `draw`: most strokes in one call.
+const DRAW_MAX_STROKES: usize = 500;
+/// `draw`: default pointer speed, screen units per second.
+const DRAW_SPEED: f64 = 800.0;
+/// `draw`: longest drawing in one call.
+const DRAW_MAX_SECS: f64 = 120.0;
+
 pub struct Engine<B: Backend> {
     backend: B,
     store: ConfigStore,
@@ -451,12 +463,17 @@ impl<B: Backend> Engine<B> {
     }
 
     fn stopped_error(&self) -> Error {
+        Error::Stopped(self.stop_control_name())
+    }
+
+    /// The stop key as the user knows it ("Ctrl+Alt+Esc").
+    fn stop_control_name(&self) -> String {
         let key = self.store.config.control.stop_hotkey.trim();
-        Error::Stopped(if key.is_empty() {
+        if key.is_empty() {
             "the host's stop control".into()
         } else {
             crate::overlay::helper::pretty_key(key)
-        })
+        }
     }
 
     /// Before an action: wait while the user is using the mouse or keyboard
@@ -1485,6 +1502,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::SelectText(a) => self.select_text(a),
             ToolCall::Scroll(a) => self.scroll(a),
             ToolCall::Drag(a) => self.drag(a),
+            ToolCall::Draw(a) => self.draw(a),
             ToolCall::PressKey(a) => self.press_key(a),
             ToolCall::TypeText(a) => self.type_text(a),
             ToolCall::FindElement(a) => self.find_element(a),
@@ -2218,6 +2236,123 @@ impl<B: Backend> Engine<B> {
         if self.verified() && self.tree_fingerprint(app.pid) == before {
             msg.push_str(NO_CHANGE_NOTE);
         }
+        Ok(ToolOutput::text(msg))
+    }
+
+    fn draw(&mut self, args: DrawArgs) -> Result<ToolOutput> {
+        let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
+        if args.strokes.is_empty() || args.strokes.len() > DRAW_MAX_STROKES {
+            return Err(Error::InvalidArgs(format!(
+                "`strokes` needs 1 to {DRAW_MAX_STROKES} strokes"
+            )));
+        }
+        let shapes = args
+            .strokes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                draw_shape(s).map_err(|e| Error::InvalidArgs(format!("stroke {}: {e}", i + 1)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (frame, area) = match args.element_index {
+            Some(i) => {
+                let h = self.element_by_index(&app, i)?;
+                let b = self
+                    .state(app.pid)
+                    .ok()
+                    .and_then(|s| s.bounds.get(&h))
+                    .copied()
+                    .filter(|b| !b.is_empty())
+                    .ok_or_else(|| {
+                        Error::ActionFailed("this element has no on-screen box to draw in".into())
+                    })?;
+                (crate::draw::Frame::fractions(b), "the element")
+            }
+            None => {
+                let map = self.state(app.pid).ok().and_then(|s| s.coord).ok_or_else(|| {
+                    Error::InvalidArgs(
+                        "no current screenshot to draw on: call get_app_state first, or pass element_index".into(),
+                    )
+                })?;
+                (
+                    crate::draw::Frame::pixels(map.bounds, map.width, map.height),
+                    "the screenshot",
+                )
+            }
+        };
+        let plan = crate::draw::plan(&shapes, &frame, DRAW_STEP, DRAW_MAX_POINTS)
+            .map_err(Error::InvalidArgs)?;
+        let speed = args
+            .speed
+            .filter(|s| s.is_finite())
+            .unwrap_or(DRAW_SPEED)
+            .clamp(50.0, 5000.0);
+        let secs = plan.length / speed;
+        if secs > DRAW_MAX_SECS {
+            return Err(Error::InvalidArgs(format!(
+                "this drawing would take about {secs:.0} s at {speed:.0} pixels per second; raise speed or draw it in parts"
+            )));
+        }
+        let (Some(first), Some(last)) = (
+            plan.strokes.first().and_then(|s| s.first()).copied(),
+            plan.strokes.last().and_then(|s| s.last()).copied(),
+        ) else {
+            return Err(Error::InvalidArgs("nothing to draw".into()));
+        };
+
+        self.overlay_point(first, true);
+        let target = self.input_target(&app)?;
+        // Paced to `speed`, and stoppable between any two moves: the stop
+        // key ends the drawing (the backend lets go of the button).
+        let stop = self.stop.clone();
+        let stop_name = self.stop_control_name();
+        let sleep = &self.sleep;
+        let mut owed = 0.0f64;
+        let mut pace = |d: f64| -> Result<()> {
+            if stop.load(Ordering::SeqCst) {
+                return Err(Error::Stopped(stop_name.clone()));
+            }
+            owed += d / speed;
+            if owed >= 0.004 {
+                sleep(Duration::from_secs_f64(owed.min(0.25)));
+                owed = 0.0;
+            }
+            Ok(())
+        };
+        let drawn = self
+            .backend
+            .draw(&target, &plan.strokes, args.button, &mut pace);
+        self.last_input = Some((self.clock)());
+        self.overlay_point(last, false);
+        drawn?;
+        self.settle_on(&app);
+
+        // Where it went, in the coordinates the model used.
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in plan.strokes.iter().flatten() {
+            let (x, y) = frame.to_frame(*p);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        let digits = if area == "the element" { 2 } else { 0 };
+        let n = plan.strokes.len();
+        let mut msg = format!(
+            "Drew {n} stroke{} ({} pointer positions, {:.0} px of line) on {area}: x {x0:.digits$} to {x1:.digits$}, y {y0:.digits$} to {y1:.digits$}.",
+            if n == 1 { "" } else { "s" },
+            plan.points(),
+            plan.length,
+        );
+        if plan.skipped > 0 {
+            msg.push_str(&format!(
+                " {} sample(s) of a curve were outside {area} and were not drawn.",
+                plan.skipped
+            ));
+        }
+        msg.push_str(self.explain(
+            "draw-check",
+            " Drawing changes pixels, which the accessibility tree doesn't show: check the result with a screenshot (screenshot: true).",
+            " Check it with a screenshot.",
+        ));
         Ok(ToolOutput::text(msg))
     }
 
@@ -3138,6 +3273,49 @@ const TYPED_UNCONFIRMED_NOTE: &str = " Note: the field doesn't show the new text
 /// Appended when an action changed nothing that can be seen.
 const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
 
+/// A `draw` stroke as the drawing module takes it.
+fn draw_shape(s: &DrawStroke) -> std::result::Result<crate::draw::Shape, String> {
+    use crate::draw::{Expr, Shape};
+    match (&s.points, &s.x, &s.y) {
+        (Some(points), None, None) => Ok(Shape::Points {
+            points: points.iter().map(|p| p.xy()).collect(),
+            closed: s.closed,
+            smooth: s.smooth,
+        }),
+        (None, Some(x), Some(y)) => {
+            let bound = |v: &DrawNumber, which: &str| -> std::result::Result<f64, String> {
+                match v {
+                    DrawNumber::Num(n) => Ok(*n),
+                    DrawNumber::Expr(e) => Expr::parse(e)
+                        .map(|e| e.eval(0.0))
+                        .map_err(|err| format!("t {which}: {err}")),
+                }
+            };
+            let (t0, t1) = match &s.t {
+                Some([a, b]) => (bound(a, "from")?, bound(b, "to")?),
+                None => (0.0, 1.0),
+            };
+            if let Some(n) = s.steps
+                && !(1..=10_000).contains(&n)
+            {
+                return Err("steps must be 1 to 10000".into());
+            }
+            Ok(Shape::Curve {
+                x: Expr::parse(x).map_err(|e| format!("x: {e}"))?,
+                y: Expr::parse(y).map_err(|e| format!("y: {e}"))?,
+                t0,
+                t1,
+                steps: s.steps,
+            })
+        }
+        (Some(_), _, _) => Err("give either points or x and y, not both".into()),
+        (None, Some(_), None) | (None, None, Some(_)) => {
+            Err("a curve needs both x and y (expressions in t)".into())
+        }
+        (None, None, None) => Err("give points, or x and y expressions in t".into()),
+    }
+}
+
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
 fn mutating_app(call: &ToolCall) -> Option<String> {
     match call {
@@ -3147,6 +3325,7 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::SelectText(a) => Some(a.app.clone()),
         ToolCall::Scroll(a) => Some(a.app.clone()),
         ToolCall::Drag(a) => Some(a.app.clone()),
+        ToolCall::Draw(a) => Some(a.app.clone()),
         ToolCall::PressKey(a) => Some(a.app.clone()),
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
@@ -4032,6 +4211,152 @@ mod tests {
         let out = state_of(&mut e, serde_json::json!({}));
         assert!(out.text.contains("No changes"), "{}", out.text);
         assert!(out.image.is_none());
+    }
+
+    fn pointer_events(e: &Engine<MockBackend>) -> Vec<Event> {
+        e.backend()
+            .events
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    Event::PointerDown(..) | Event::PointerMove(..) | Event::PointerUp(..)
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn draw_follows_a_parametric_curve() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [
+                {"x": "400 + 100*cos(t)", "y": "300 + 100*sin(t)", "t": [0, "2*pi"]}
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("Drew 1 stroke ("), "{}", out.text);
+        assert!(
+            out.text.contains("x 300 to 500, y 200 to 400"),
+            "{}",
+            out.text
+        );
+        let events = pointer_events(&e);
+        let Event::PointerDown(4242, start, MouseButton::Left) = events[0] else {
+            panic!("{:?}", events[0]);
+        };
+        assert!((start.x - 500.0).abs() < 1e-6 && (start.y - 300.0).abs() < 1e-6);
+        let Event::PointerUp(_, end, _) = events.last().unwrap() else {
+            panic!("ends with the button up");
+        };
+        assert!((end.x - start.x).abs() < 1e-6 && (end.y - start.y).abs() < 1e-6);
+        let moves: Vec<Point> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::PointerMove(_, p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert!(moves.len() > 150, "{}", moves.len());
+        for p in &moves {
+            let r = (p.x - 400.0).hypot(p.y - 300.0);
+            assert!((r - 100.0).abs() < 0.5, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn draw_in_an_element_uses_fractions_of_its_box() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let doc = index_named(&e, 4242, "Document");
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "button": "right",
+                "strokes": [{"points": [[0, 0], {"x": 1, "y": 1}]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let events = pointer_events(&e);
+        // The text area is (0, 40, 800, 560) on screen.
+        assert_eq!(
+            events[0],
+            Event::PointerDown(4242, Point::new(0.0, 40.0), MouseButton::Right)
+        );
+        assert_eq!(
+            *events.last().unwrap(),
+            Event::PointerUp(4242, Point::new(800.0, 600.0), MouseButton::Right)
+        );
+        assert!(out.text.contains("x 0.00 to 1.00"), "{}", out.text);
+    }
+
+    #[test]
+    fn the_stop_key_ends_a_drawing_with_the_button_up() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // The first pause in the drawing is when the user presses stop.
+        let stop = e.stop_handle();
+        let mut e = e.with_time(Instant::now, move |_| stop.store(true, Ordering::SeqCst));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "speed": 50,
+                "strokes": [{"points": [[10, 100], [700, 100]]}]}),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.to_lowercase().contains("stop"), "{}", out.text);
+        let events = pointer_events(&e);
+        assert!(events.len() < 20, "stopped early: {}", events.len());
+        assert!(
+            matches!(events.last(), Some(Event::PointerUp(..))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn bad_drawings_are_explained() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [{"points": [[1, 1]]}]}),
+        );
+        assert!(
+            out.text.contains("call get_app_state first"),
+            "{}",
+            out.text
+        );
+        state_of(&mut e, serde_json::json!({}));
+        for (stroke, want) in [
+            (
+                serde_json::json!({"x": "foo(t)", "y": "t"}),
+                "stroke 1: x: unknown name `foo`",
+            ),
+            (serde_json::json!({"x": "t"}), "needs both x and y"),
+            (serde_json::json!({}), "give points, or x and y"),
+            (
+                serde_json::json!({"points": [[1, 1]], "x": "t", "y": "t"}),
+                "not both",
+            ),
+            (
+                serde_json::json!({"points": [[1, 1], [5000, 1]]}),
+                "outside the drawing area",
+            ),
+            (
+                serde_json::json!({"x": "t", "y": "t", "t": [0, "2*pie"]}),
+                "t to: unknown name",
+            ),
+        ] {
+            let out = e.call_tool(
+                "draw",
+                serde_json::json!({"app": "TextEdit", "strokes": [stroke]}),
+            );
+            assert!(
+                out.is_error && out.text.contains(want),
+                "{want}: {}",
+                out.text
+            );
+        }
+        assert!(pointer_events(&e).is_empty(), "nothing was drawn");
     }
 
     #[test]

@@ -31,7 +31,8 @@ This project follows the same architecture and behaviour:
   See [Screen memory & caching](#screen-memory--caching).
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
-  `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`.
+  `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`
+  and `draw` (shapes and parametric curves with the mouse held down).
 - **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
   screen and a status label in state colours, click-through and invisible to
   the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
@@ -57,6 +58,7 @@ This project follows the same architecture and behaviour:
 | `select_text` | Select a substring (or all) in a text element. |
 | `scroll` | Scroll an element or the area at a point. |
 | `drag` | Drag between elements or points. |
+| `draw` | Draw with the mouse held down: lines, polygons, smooth freehand strokes, or parametric curves `x(t)`, `y(t)` (circles, spirals, function plots), in screenshot pixels or an element's box. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`. |
 | `type_text` | Type into the focused element. |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |

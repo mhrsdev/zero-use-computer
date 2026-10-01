@@ -19,7 +19,7 @@ its rules are yours to follow.
    checkboxes; prefer it over typing), `type_text` (`\n` presses Return),
    `press_key` (`"Return"`, `"cmd+s"`: Cmd on a Mac, Ctrl elsewhere),
    `perform_secondary_action` (an entry of `actions=[…]`), `select_text`,
-   `scroll`, `drag`.
+   `scroll`, `drag`, `draw` (shapes and curves with the mouse held down).
 3. Read the "state after the action" each action returns; call
    `get_app_state` only when you need more. Later calls return a diff.
 
@@ -63,6 +63,8 @@ Every result stays in the conversation, so ask only for what you need:
 - [reference/special-content.md](reference/special-content.md): apps with
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
+- [reference/drawing.md](reference/drawing.md): `draw`: lines, shapes,
+  parametric curves and function plots.
 - Shortcuts and quirks of common apps:
   [browsers](reference/apps/browsers.md), [office](reference/apps/office.md),
   [mail and chat](reference/apps/mail-and-chat.md),

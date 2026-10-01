@@ -81,12 +81,16 @@ fn home() -> Option<INPUT> {
     Some(move_to(Point::new(f64::from(p.x), f64::from(p.y))))
 }
 
-pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
-    let (down, up) = match button {
+fn button_flags(button: MouseButton) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
+    match button {
         MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
         MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-    };
+    }
+}
+
+pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
+    let (down, up) = button_flags(button);
     let back = home();
     let mut inputs = vec![move_to(at)];
     for _ in 0..count.max(1) {
@@ -133,6 +137,56 @@ fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
         )))?;
     }
     send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)])
+}
+
+/// Draw `strokes` with `button` held (see `Backend::draw`).
+pub fn draw(
+    strokes: &[Vec<Point>],
+    button: MouseButton,
+    pace: &mut dyn FnMut(f64) -> Result<()>,
+) -> Result<()> {
+    let (_, up) = button_flags(button);
+    let back = home();
+    let mut held = false;
+    let drawn = draw_strokes(strokes, button, pace, &mut held);
+    if held {
+        // Never leave the button held down.
+        let _ = send(&[mouse_input(up, 0, 0, 0)]);
+    }
+    if let Some(b) = back {
+        let _ = send(&[b]);
+    }
+    drawn
+}
+
+fn draw_strokes(
+    strokes: &[Vec<Point>],
+    button: MouseButton,
+    pace: &mut dyn FnMut(f64) -> Result<()>,
+    held: &mut bool,
+) -> Result<()> {
+    let (down, up) = button_flags(button);
+    for stroke in strokes {
+        let Some(&first) = stroke.first() else {
+            continue;
+        };
+        pace(0.0)?;
+        send(&[move_to(first)])?;
+        std::thread::sleep(DRAG_STEP);
+        send(&[mouse_input(down, 0, 0, 0)])?;
+        *held = true;
+        std::thread::sleep(DRAG_STEP);
+        let mut last = first;
+        for &p in &stroke[1..] {
+            pace((p.x - last.x).hypot(p.y - last.y))?;
+            send(&[move_to(p)])?;
+            last = p;
+        }
+        std::thread::sleep(DRAG_STEP);
+        send(&[mouse_input(up, 0, 0, 0)])?;
+        *held = false;
+    }
+    Ok(())
 }
 
 pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {

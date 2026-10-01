@@ -243,6 +243,66 @@ impl X11 {
         self.flush()
     }
 
+    /// Draw `strokes` with `button` (1 left, 2 middle, 3 right) held (see
+    /// `Backend::draw`).
+    pub fn draw(
+        &self,
+        strokes: &[Vec<(i32, i32)>],
+        button: u8,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        let home = self.pointer();
+        let mut held = None;
+        let drawn = self.draw_strokes(strokes, button, pace, &mut held);
+        if let Some((x, y)) = held {
+            // Never leave the button held down.
+            let _ = self.fake(BUTTON_RELEASE, button, x as i16, y as i16);
+        }
+        let back = self.put_back(home);
+        let flushed = self.flush();
+        drawn.and(back).and(flushed)
+    }
+
+    fn draw_strokes(
+        &self,
+        strokes: &[Vec<(i32, i32)>],
+        button: u8,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+        held: &mut Option<(i32, i32)>,
+    ) -> Result<()> {
+        for stroke in strokes {
+            let Some(&(x, y)) = stroke.first() else {
+                continue;
+            };
+            pace(0.0)?;
+            self.warp(x, y)?;
+            self.fake(6, 0, x as i16, y as i16)?;
+            self.flush()?;
+            std::thread::sleep(DRAG_STEP);
+            self.fake(BUTTON_PRESS, button, x as i16, y as i16)?;
+            *held = Some((x, y));
+            self.flush()?;
+            std::thread::sleep(DRAG_STEP);
+            let mut last = (x, y);
+            for &(px, py) in &stroke[1..] {
+                pace(f64::from(px - last.0).hypot(f64::from(py - last.1)))?;
+                if (px, py) == last {
+                    continue;
+                }
+                self.warp(px, py)?;
+                self.fake(6, 0, px as i16, py as i16)?;
+                self.flush()?;
+                last = (px, py);
+                *held = Some(last);
+            }
+            std::thread::sleep(DRAG_STEP);
+            self.fake(BUTTON_RELEASE, button, last.0 as i16, last.1 as i16)?;
+            *held = None;
+            self.flush()?;
+        }
+        Ok(())
+    }
+
     /// Type a run of text as key events.
     pub fn type_text(&mut self, text: &str) -> Result<()> {
         for c in text.chars() {

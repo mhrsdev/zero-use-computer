@@ -574,6 +574,29 @@ impl Backend for LinuxBackend {
             .drag((from.x as i32, from.y as i32), (to.x as i32, to.y as i32))
     }
 
+    fn draw(
+        &mut self,
+        _target: &InputTarget,
+        strokes: &[Vec<Point>],
+        button: MouseButton,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        let b = match button {
+            MouseButton::Left => 1,
+            MouseButton::Middle => 2,
+            MouseButton::Right => 3,
+        };
+        let strokes: Vec<Vec<(i32, i32)>> = strokes
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|p| (p.x.round() as i32, p.y.round() as i32))
+                    .collect()
+            })
+            .collect();
+        self.x11()?.draw(&strokes, b, pace)
+    }
+
     fn scroll_wheel(&mut self, _target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
         self.x11()?.scroll(at.x as i32, at.y as i32, dx, dy)
     }

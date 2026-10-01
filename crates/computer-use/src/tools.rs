@@ -1,6 +1,7 @@
 //! The tool surface: the same ten tools Codex's Computer Use plugin exposes
 //! (list_apps, get_app_state, click, perform_secondary_action, set_value,
-//! select_text, scroll, drag, press_key, type_text) plus launch_app.
+//! select_text, scroll, drag, press_key, type_text) plus launch_app, draw
+//! and helpers.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -239,6 +240,82 @@ pub struct DragArgs {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DrawArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    pub strokes: Vec<DrawStroke>,
+    /// Coordinates are fractions of this element's box instead of
+    /// screenshot pixels.
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub element_index: Option<u32>,
+    #[serde(default)]
+    pub button: MouseButton,
+    /// Pointer speed while drawing, in screen pixels per second.
+    #[serde(default)]
+    pub speed: Option<f64>,
+}
+
+/// One press-move-release of a `draw`: points, or a parametric curve.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DrawStroke {
+    #[serde(default)]
+    pub points: Option<Vec<DrawPoint>>,
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub smooth: bool,
+    #[serde(default, deserialize_with = "de_opt_expr")]
+    pub x: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_expr")]
+    pub y: Option<String>,
+    /// `[from, to]`: numbers or expressions such as "2*pi".
+    #[serde(default)]
+    pub t: Option<[DrawNumber; 2]>,
+    #[serde(default)]
+    pub steps: Option<u32>,
+}
+
+/// A point as `[x, y]` or `{"x": .., "y": ..}`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum DrawPoint {
+    Pair([f64; 2]),
+    Named { x: f64, y: f64 },
+}
+
+impl DrawPoint {
+    pub fn xy(self) -> (f64, f64) {
+        match self {
+            DrawPoint::Pair([x, y]) | DrawPoint::Named { x, y } => (x, y),
+        }
+    }
+}
+
+/// A number, or an expression that gives one (`"2*pi"`).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum DrawNumber {
+    Num(f64),
+    Expr(String),
+}
+
+/// An expression given as a string or a plain number.
+fn de_opt_expr<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "x and y must be expressions in t (strings), got {other}"
+            )));
+        }
+    })
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct PressKeyArgs {
     pub app: String,
     #[serde(default, deserialize_with = "de_opt_string")]
@@ -452,6 +529,7 @@ pub enum ToolCall {
     SelectText(SelectTextArgs),
     Scroll(ScrollArgs),
     Drag(DragArgs),
+    Draw(DrawArgs),
     PressKey(PressKeyArgs),
     TypeText(TypeTextArgs),
     FindElement(FindElementArgs),
@@ -481,6 +559,7 @@ impl ToolCall {
             "select_text" => ToolCall::SelectText(parse_args(name, args)?),
             "scroll" => ToolCall::Scroll(parse_args(name, args)?),
             "drag" => ToolCall::Drag(parse_args(name, args)?),
+            "draw" => ToolCall::Draw(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
             "find_element" => ToolCall::FindElement(parse_args(name, args)?),
@@ -506,6 +585,7 @@ impl ToolCall {
             ToolCall::SelectText(_) => "select_text",
             ToolCall::Scroll(_) => "scroll",
             ToolCall::Drag(_) => "drag",
+            ToolCall::Draw(_) => "draw",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
             ToolCall::FindElement(_) => "find_element",
@@ -695,6 +775,39 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Drag"),
         },
         ToolDefinition {
+            name: "draw",
+            title: "Draw",
+            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is either points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them) or a parametric curve: x and y are expressions in t (+ - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e...) from t[0] to t[1] (default 0 to 1); steps=n draws n straight pieces instead (polygons, stars). Circle: {\"x\": \"400+90*cos(t)\", \"y\": \"300+90*sin(t)\", \"t\": [0, \"2*pi\"]}. Coordinates are screenshot pixels like click's x/y or, with element_index, fractions of that element's box (0,0 top-left, 1,1 bottom-right). Parts of a curve outside that area are not drawn. The stop key ends a drawing midway.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "strokes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "One press-move-release each.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]"},
+                                "closed": {"type": "boolean"},
+                                "smooth": {"type": "boolean"},
+                                "x": {"type": "string", "description": "x(t)"},
+                                "y": {"type": "string", "description": "y(t)"},
+                                "t": {"type": "array", "items": {"type": ["number", "string"]}, "description": "[from, to]: numbers or expressions like \"2*pi\"."},
+                                "steps": {"type": "integer", "minimum": 1}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
+                    "button": {"type": "string", "enum": ["left", "right", "middle"]},
+                    "speed": {"type": "number", "minimum": 50, "description": "Pointer speed in pixels per second (default 800)."}
+                }),
+                &["strokes"],
+            ),
+            annotations: acting("Draw"),
+        },
+        ToolDefinition {
             name: "press_key",
             title: "Press key",
             description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
@@ -882,6 +995,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "select_text" => "Select the given text (or all text) in a text element.",
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => "Drag from an element/point to another element/point.",
+        "draw" => {
+            "Draw with the mouse held down along strokes: points=[[x,y],...] (closed, smooth) or a curve x, y = expressions in t over t=[from,to] (e.g. x \"400+90*cos(t)\", y \"300+90*sin(t)\", t [0,\"2*pi\"]; steps=n for straight pieces). Screenshot pixels, or fractions of element_index's box."
+        }
         "press_key" => "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\".",
         "type_text" => "Type text into the focused element (element_index focuses first).",
         "find_element" => "Find elements by role/name/text; returns their indices.",
@@ -990,7 +1106,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 19);
+        assert_eq!(defs.len(), 20);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1026,7 +1142,9 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}]
+            "steps": [{"tool": "list_apps"}], "speed": 300,
+            "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},
+                        {"x": "t", "y": 5, "t": [0, "2*pi"], "steps": 6}]
             }"#,
         )
         .unwrap();
@@ -1047,7 +1165,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 19);
+        assert_eq!(compact.len(), 20);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

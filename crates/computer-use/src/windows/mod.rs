@@ -935,6 +935,16 @@ impl Backend for WindowsBackend {
         input::drag(from, to)
     }
 
+    fn draw(
+        &mut self,
+        _target: &InputTarget,
+        strokes: &[Vec<Point>],
+        button: MouseButton,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        input::draw(strokes, button, pace)
+    }
+
     fn scroll_wheel(&mut self, _target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
         input::scroll(at, dx, dy)
     }

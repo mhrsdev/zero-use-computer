@@ -49,6 +49,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod draw;
 pub mod engine;
 pub mod error;
 pub mod imaging;
@@ -228,6 +229,15 @@ impl Backend for Box<dyn Backend> {
         to: types::Point,
     ) -> Result<()> {
         (**self).drag(target, from, to)
+    }
+    fn draw(
+        &mut self,
+        target: &types::InputTarget,
+        strokes: &[Vec<types::Point>],
+        button: types::MouseButton,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        (**self).draw(target, strokes, button, pace)
     }
     fn scroll_wheel(
         &mut self,

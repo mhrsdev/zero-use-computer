@@ -112,6 +112,69 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
     Ok(())
 }
 
+/// Draw `strokes` with `button` held (see `Backend::draw`). Posted to the
+/// app's process, so the user's cursor doesn't move.
+pub fn draw(
+    pid: u32,
+    strokes: &[Vec<CGPoint>],
+    button: MouseButton,
+    pace: &mut dyn FnMut(f64) -> Result<()>,
+) -> Result<()> {
+    let src = source()?;
+    let (down, dragged, up, cg_btn) = match button {
+        MouseButton::Left => (
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseDragged,
+            CGEventType::LeftMouseUp,
+            CGMouseButton::Left,
+        ),
+        MouseButton::Right => (
+            CGEventType::RightMouseDown,
+            CGEventType::RightMouseDragged,
+            CGEventType::RightMouseUp,
+            CGMouseButton::Right,
+        ),
+        MouseButton::Middle => (
+            CGEventType::OtherMouseDown,
+            CGEventType::OtherMouseDragged,
+            CGEventType::OtherMouseUp,
+            CGMouseButton::Center,
+        ),
+    };
+    let send = |ty: CGEventType, p: CGPoint| -> Result<()> {
+        let e = CGEvent::new_mouse_event(src.clone(), ty, p, cg_btn)
+            .map_err(|_| Error::action("mouse event"))?;
+        e.set_flags(CGEventFlags::empty());
+        post(pid, &e);
+        Ok(())
+    };
+    for stroke in strokes {
+        let Some(&first) = stroke.first() else {
+            continue;
+        };
+        pace(0.0)?;
+        send(CGEventType::MouseMoved, first)?;
+        std::thread::sleep(DRAG_STEP);
+        send(down, first)?;
+        std::thread::sleep(DRAG_STEP);
+        let mut last = first;
+        let mut moved = Ok(());
+        for &p in &stroke[1..] {
+            moved = pace((p.x - last.x).hypot(p.y - last.y)).and_then(|()| send(dragged, p));
+            if moved.is_err() {
+                break;
+            }
+            last = p;
+        }
+        std::thread::sleep(DRAG_STEP);
+        // Never leave the button held down, whatever stopped the stroke.
+        let released = send(up, last);
+        moved?;
+        released?;
+    }
+    Ok(())
+}
+
 pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
     let src = source()?;
     if let Ok(mv) = CGEvent::new_mouse_event(

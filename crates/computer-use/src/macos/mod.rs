@@ -560,6 +560,20 @@ impl Backend for MacBackend {
         )
     }
 
+    fn draw(
+        &mut self,
+        target: &InputTarget,
+        strokes: &[Vec<Point>],
+        button: MouseButton,
+        pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        let strokes: Vec<Vec<CGPoint>> = strokes
+            .iter()
+            .map(|s| s.iter().map(|p| CGPoint { x: p.x, y: p.y }).collect())
+            .collect();
+        cg::draw(target.pid, &strokes, button, pace)
+    }
+
     fn scroll_wheel(&mut self, target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
         cg::scroll(target.pid, CGPoint { x: at.x, y: at.y }, dx, dy)
     }

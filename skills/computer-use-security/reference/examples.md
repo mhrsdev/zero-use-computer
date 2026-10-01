@@ -28,7 +28,7 @@
 | money | Pay, Buy, Order, Checkout, Place order, Transfer, Subscribe, Upgrade, Donate |
 | deletes or overwrites | Delete, Remove, Discard, Empty trash, Erase, Format, Replace, Overwrite, "Don't save", Reset |
 | accounts and system | Sign out, Change password, Install, Uninstall, Update, Accept terms, Allow / Grant access, Restart, Shut down |
-| in someone's name | accepting or declining invitations, approving requests, changing shared documents |
+| in someone's name | accepting or declining invitations, approving requests, changing shared documents, signing (typed or drawn) |
 
 Ways an action is triggered without a button click: Return in a form or chat
 box, `type_text` ending in `\n`, Cmd/Ctrl+Enter, Cmd/Ctrl+S over an existing

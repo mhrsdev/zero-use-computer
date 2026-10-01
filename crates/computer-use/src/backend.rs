@@ -192,6 +192,24 @@ pub trait Backend {
     /// Synthesized mouse drag between two screen points.
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()>;
 
+    /// Synthesized drawing (`draw`): for each stroke, press `button` at its
+    /// first screen point, move through the others with it held, release
+    /// at the last. `pace` is called with the distance of each move before
+    /// making it (it waits to keep the speed, and fails when the user
+    /// stopped the agent): on any error the button is released before
+    /// returning it, never left down.
+    fn draw(
+        &mut self,
+        _target: &InputTarget,
+        _strokes: &[Vec<Point>],
+        _button: MouseButton,
+        _pace: &mut dyn FnMut(f64) -> Result<()>,
+    ) -> Result<()> {
+        Err(crate::error::Error::Unsupported(
+            "drawing with the mouse is not implemented on this platform".into(),
+        ))
+    }
+
     /// Synthesized scroll-wheel input at a screen point, in wheel lines.
     fn scroll_wheel(&mut self, target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()>;
 
