@@ -2,3 +2,4 @@
 Cargo.lock merge=binary
 *.swp
 /dist
+/.claude/worktrees/
