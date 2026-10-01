@@ -3,6 +3,8 @@
 //! select_text, scroll, drag, press_key, type_text) plus launch_app, draw
 //! and helpers.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
@@ -13,9 +15,9 @@ use crate::types::{MouseButton, ScrollDirection};
 /// A tool definition in MCP shape (`name`, `description`, `inputSchema`).
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
-    pub name: &'static str,
-    pub title: &'static str,
-    pub description: &'static str,
+    pub name: Cow<'static, str>,
+    pub title: Cow<'static, str>,
+    pub description: Cow<'static, str>,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
     pub annotations: Value,
@@ -299,6 +301,10 @@ pub struct DrawArgs {
     /// Show the strokes over a screenshot instead of drawing them.
     #[serde(default)]
     pub preview: bool,
+    /// The named cells' size in the canvas's units (default: sized to the
+    /// drawing).
+    #[serde(default)]
+    pub cell_size: Option<f64>,
     /// Pointer speed while drawing, in screen pixels per second.
     #[serde(default)]
     pub speed: Option<f64>,
@@ -579,6 +585,9 @@ pub struct ScreenshotArgs {
     /// Just this cell of the canvas, magnified ("C4").
     #[serde(default, deserialize_with = "de_opt_string")]
     pub cell: Option<String>,
+    /// The cells' size in the canvas's units (default: about 8 across).
+    #[serde(default)]
+    pub cell_size: Option<f64>,
     /// Magnify around this point (screenshot pixels of a window), to aim.
     #[serde(default)]
     pub zoom: Option<DrawPoint>,
@@ -601,6 +610,9 @@ pub struct DesignArgs {
     /// Space kept clear at the edges (default 5% of the short side).
     #[serde(default)]
     pub margin: Option<f64>,
+    /// The cells' size in the design's units (0: about eight across).
+    #[serde(default)]
+    pub cell_size: Option<f64>,
     #[serde(default)]
     pub add: Option<Vec<DesignLayer>>,
     #[serde(default)]
@@ -982,6 +994,41 @@ pub struct BatchArgs {
     pub continue_on_error: bool,
 }
 
+/// Run a script, or keep, show, list and delete saved ones.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptArgs {
+    /// The script to run (or, with `save`, to keep).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub code: Option<String>,
+    /// Run this saved script.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub run: Option<String>,
+    /// `args` in the script.
+    #[serde(default)]
+    pub args: Option<Value>,
+    /// `data` in the script: anything the model hands it.
+    #[serde(default)]
+    pub data: Option<Value>,
+    /// Keep `code` under this name: a script to run again, and a tool.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub save: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub description: Option<String>,
+    /// The saved script's arguments, as JSON-schema properties.
+    #[serde(default)]
+    pub params: Option<Value>,
+    #[serde(default)]
+    pub list: bool,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub show: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub delete: Option<String>,
+    /// Every function scripts have.
+    #[serde(default)]
+    pub help: bool,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct NotificationsArgs {
     /// Only this app's notifications (name substring).
@@ -1078,7 +1125,37 @@ pub enum ToolCall {
     SetClipboard(SetClipboardArgs),
     Window(WindowArgs),
     GetNotifications(NotificationsArgs),
+    Script(ScriptArgs),
 }
+
+/// The names of the built-in tools (saved scripts may not take them).
+pub const BUILTIN: [&str; 25] = [
+    "list_apps",
+    "launch_app",
+    "get_app_state",
+    "click",
+    "perform_secondary_action",
+    "set_value",
+    "select_text",
+    "scroll",
+    "drag",
+    "draw",
+    "trace_image",
+    "design",
+    "scene",
+    "locate",
+    "press_key",
+    "type_text",
+    "find_element",
+    "wait_for",
+    "screenshot",
+    "batch",
+    "get_clipboard",
+    "set_clipboard",
+    "window",
+    "get_notifications",
+    "script",
+];
 
 fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
     let args = if args.is_null() { json!({}) } else { args };
@@ -1112,6 +1189,7 @@ impl ToolCall {
             "set_clipboard" => ToolCall::SetClipboard(parse_args(name, args)?),
             "window" => ToolCall::Window(parse_args(name, args)?),
             "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
+            "script" => ToolCall::Script(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
         })
     }
@@ -1142,6 +1220,7 @@ impl ToolCall {
             ToolCall::SetClipboard(_) => "set_clipboard",
             ToolCall::Window(_) => "window",
             ToolCall::GetNotifications(_) => "get_notifications",
+            ToolCall::Script(_) => "script",
         }
     }
 }
@@ -1314,16 +1393,16 @@ fn acting(title: &str) -> Value {
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "list_apps",
-            title: "List apps",
-            description: "List running desktop apps with their ids, pids and window counts. Use it to find the exact app to pass to other tools.",
+            name: "list_apps".into(),
+            title: "List apps".into(),
+            description: "List running desktop apps with their ids, pids and window counts. Use it to find the exact app to pass to other tools.".into(),
             input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
             annotations: read_only("List apps"),
         },
         ToolDefinition {
-            name: "launch_app",
-            title: "Launch app",
-            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.",
+            name: "launch_app".into(),
+            title: "Launch app".into(),
+            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments)."}},
@@ -1333,9 +1412,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Launch app"),
         },
         ToolDefinition {
-            name: "get_app_state",
-            title: "Get app state",
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.",
+            name: "get_app_state".into(),
+            title: "Get app state".into(),
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1349,9 +1428,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Get app state"),
         },
         ToolDefinition {
-            name: "click",
-            title: "Click",
-            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background) or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.",
+            name: "click".into(),
+            title: "Click".into(),
+            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background) or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1368,9 +1447,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Click"),
         },
         ToolDefinition {
-            name: "perform_secondary_action",
-            title: "Perform secondary action",
-            description: "Perform a named accessibility action on an element, other than a plain click: one of the actions listed for that element in get_app_state (e.g. show_menu, increment, decrement, confirm, cancel, raise, expand, collapse, toggle, pick).",
+            name: "perform_secondary_action".into(),
+            title: "Perform secondary action".into(),
+            description: "Perform a named accessibility action on an element, other than a plain click: one of the actions listed for that element in get_app_state (e.g. show_menu, increment, decrement, confirm, cancel, raise, expand, collapse, toggle, pick).".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1382,9 +1461,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Perform secondary action"),
         },
         ToolDefinition {
-            name: "set_value",
-            title: "Set value",
-            description: "Set an element's value directly: replace a text field's contents, move a slider, or set a checkbox/switch (\"true\"/\"false\"). Prefer this over typing when the element is marked editable or settable.",
+            name: "set_value".into(),
+            title: "Set value".into(),
+            description: "Set an element's value directly: replace a text field's contents, move a slider, or set a checkbox/switch (\"true\"/\"false\"). Prefer this over typing when the element is marked editable or settable.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1396,9 +1475,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Set value"),
         },
         ToolDefinition {
-            name: "select_text",
-            title: "Select text",
-            description: "Select text inside a text element: the given substring (its nth occurrence), or all text if `text` is omitted. Follow with type_text to replace it or press_key to act on it.",
+            name: "select_text".into(),
+            title: "Select text".into(),
+            description: "Select text inside a text element: the given substring (its nth occurrence), or all text if `text` is omitted. Follow with type_text to replace it or press_key to act on it.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1411,9 +1490,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Select text"),
         },
         ToolDefinition {
-            name: "scroll",
-            title: "Scroll",
-            description: "Scroll the content of an element (a scroll area, list, web area…) or the area under x/y screenshot coordinates. amount is in pages (viewport sizes); fractions allowed.",
+            name: "scroll".into(),
+            title: "Scroll".into(),
+            description: "Scroll the content of an element (a scroll area, list, web area…) or the area under x/y screenshot coordinates. amount is in pages (viewport sizes); fractions allowed.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1428,9 +1507,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Scroll"),
         },
         ToolDefinition {
-            name: "drag",
-            title: "Drag",
-            description: "Drag from one element or point to another (move items, resize, reorder, select ranges). Each end is either an element index or x/y screenshot coordinates.",
+            name: "drag".into(),
+            title: "Drag".into(),
+            description: "Drag from one element or point to another (move items, resize, reorder, select ranges). Each end is either an element index or x/y screenshot coordinates.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1448,9 +1527,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Drag"),
         },
         ToolDefinition {
-            name: "draw",
-            title: "Draw",
-            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is a shape (rect [x,y,w,h(,radius)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,from°,to°], bezier [[x,y],...]), points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them), a parametric curve (x and y are expressions in t: + - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e... from t[0] to t[1], default 0 to 1; steps=n draws n straight pieces) or a function plot (only y, in x: {\"y\": \"sin(x)\"}). Any stroke can be turned (rotate, about) and repeated (repeat: count, offset, rotate, about). Coordinates are screenshot pixels like click's x/y; with element_index, fractions of that element's box; with canvas, a document's own units (box + size) or math coordinates with y up (box + range, where axes [xstep, ystep] draws axes and ticks). fill=w paints a closed shape solid with a brush w wide instead of its outline (no bucket needed; later shapes cover earlier ones). trace + step draws one colour step of a picture traced with trace_image, design + step one of a design board picture. preview=true shows the strokes over a screenshot without drawing, on named cells (A1 top-left, sized to what is drawn), and the result says which cells the drawing covers. Parts of a curve outside the area are not drawn. Closed outlines come back with where a bucket click fills each (one click per piece when other lines cut it, or where a fill would leak out through a gap). The stop key ends a drawing midway.",
+            name: "draw".into(),
+            title: "Draw".into(),
+            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is a shape (rect [x,y,w,h(,radius)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,from°,to°], bezier [[x,y],...]), points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them), a parametric curve (x and y are expressions in t: + - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e... from t[0] to t[1], default 0 to 1; steps=n draws n straight pieces) or a function plot (only y, in x: {\"y\": \"sin(x)\"}). Any stroke can be turned (rotate, about) and repeated (repeat: count, offset, rotate, about). Coordinates are screenshot pixels like click's x/y; with element_index, fractions of that element's box; with canvas, a document's own units (box + size) or math coordinates with y up (box + range, where axes [xstep, ystep] draws axes and ticks). fill=w paints a closed shape solid with a brush w wide instead of its outline (no bucket needed; later shapes cover earlier ones). trace + step draws one colour step of a picture traced with trace_image, design + step one of a design board picture. preview=true shows the strokes over a screenshot without drawing, on named cells (A1 top-left, sized to what is drawn), and the result says which cells the drawing covers. Parts of a curve outside the area are not drawn. Closed outlines come back with where a bucket click fills each (one click per piece when other lines cut it, or where a fill would leak out through a gap). The stop key ends a drawing midway.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1467,6 +1546,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
                     "canvas": canvas_prop(),
                     "preview": {"type": "boolean", "description": "Show the strokes in red over a screenshot, with a grid in the same coordinates; nothing is drawn."},
+                    "cell_size": {"type": "number", "description": "The named cells' size in the canvas's units (default: sized to the drawing), to name the same cells as a design or a script's page."},
                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                     "speed": {"type": "number", "minimum": 50, "description": "Pointer speed in pixels per second (default 800)."}
                 }),
@@ -1475,9 +1555,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Draw"),
         },
         ToolDefinition {
-            name: "trace_image",
-            title: "Trace a picture",
-            description: "Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes to paint back to front, for copying it in a paint app. Returns the steps (one colour each, in painting order) and a picture of the result. Then, per step: set the app's colour to the step's hex and draw with strokes=[{trace: name, step: n, fill: brush width}] and the canvas. screenshot with compare=name shows where the canvas still differs.",
+            name: "trace_image".into(),
+            title: "Trace a picture".into(),
+            description: "Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes to paint back to front, for copying it in a paint app. Returns the steps (one colour each, in painting order) and a picture of the result. Then, per step: set the app's colour to the step's hex and draw with strokes=[{trace: name, step: n, fill: brush width}] and the canvas. screenshot with compare=name shows where the canvas still differs.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1495,9 +1575,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Trace a picture"),
         },
         ToolDefinition {
-            name: "locate",
-            title: "Locate exactly",
-            description: "Find exact places in a window, in the x/y click takes: color=\"#RRGGBB\" (every area of that colour, with its centre and box), like=[l,t,r,b] (every other place that looks like that part of the window: the same icon, button or marker), or near=[x,y] with feature corner/edge/center (the exact point next to a rough one). box limits where to look. Use it before clicking small or custom-drawn targets.",
+            name: "locate".into(),
+            title: "Locate exactly".into(),
+            description: "Find exact places in a window, in the x/y click takes: color=\"#RRGGBB\" (every area of that colour, with its centre and box), like=[l,t,r,b] (every other place that looks like that part of the window: the same icon, button or marker), or near=[x,y] with feature corner/edge/center (the exact point next to a rough one). box limits where to look. Use it before clicking small or custom-drawn targets.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1514,9 +1594,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Locate exactly"),
         },
         ToolDefinition {
-            name: "design",
-            title: "Design board",
-            description: "A design board, like Canva: compose a picture from layers (shapes as draw takes them, and text) and see it rendered before anything is drawn in an app. Each call can add, change, remove, mirror (a symmetric copy: the other eye or ear), align, distribute and reorder layers; it returns the picture, the layers with their boxes and colours, checks (off the page, almost centred, pairs not quite symmetric, hard-to-read text) and the steps to paint it. Then put it into an app: export=\"svg\" or \"png\" (a temporary file to import), the layers' numbers for the app's fields, or draw with strokes=[{design, step, fill}]. Coordinates are the design's units (pixels of the result), y down. Start with name and size; later calls with the same name change it.",
+            name: "design".into(),
+            title: "Design board".into(),
+            description: "A design board, like Canva: compose a picture from layers (shapes as draw takes them, and text) and see it rendered before anything is drawn in an app. Each call can add, change, remove, mirror (a symmetric copy: the other eye or ear), align, distribute and reorder layers; it returns the picture, the layers with their boxes and colours, checks (off the page, almost centred, pairs not quite symmetric, hard-to-read text) and the steps to paint it. Then put it into an app: export=\"svg\" or \"png\" (a temporary file to import), the layers' numbers for the app's fields, or draw with strokes=[{design, step, fill}]. Coordinates are the design's units (pixels of the result), y down. Start with name and size; later calls with the same name change it.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1524,6 +1604,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "size": {"type": "array", "items": {"type": "number"}, "description": "[width, height]: starts the design (or resizes it)."},
                     "background": {"type": "string", "description": "\"#RRGGBB\"."},
                     "margin": {"type": "number", "description": "Space to keep clear at the edges (default 5% of the short side)."},
+                    "cell_size": {"type": "number", "minimum": 0, "description": "The named cells' size in the design's units, e.g. 100 for an 8 x 8 board on 800 x 800 (default 0: about eight across)."},
                     "add": {"type": "array", "items": layer_props(), "description": "New layers, on top (or below/above a layer)."},
                     "change": {"type": "array", "items": layer_props(), "description": "Layers to change, by id: new colours, text, place (move, to) or a new shape."},
                     "remove": {"type": "array", "items": {"type": "string"}},
@@ -1540,9 +1621,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Design board"),
         },
         ToolDefinition {
-            name: "scene",
-            title: "3D scene",
-            description: "Plan a 3D model as solids before building it in a 3D app: boxes, cylinders, spheres, cones, tori and planes with exact sizes, centres and rotations, in metres (or any one unit), Z up, the ground at z 0. Each call can add, change, remove, mirror (the other leg or wing) and repeat (in a row, or around an axis) objects; it returns one picture with the front (x right, z up), right (y right, z up) and top (x right, y up) views to one scale with a grid, and a perspective view with shadows straight down; the objects with their extents; checks (parts that float, sink below the ground or run into each other, with how far); and how to build it. Then build it: Location = at, Rotation = rotate, Dimensions = size in Blender's sidebar (the same numbers in other apps), or export=\"obj\" (a temporary file to import). Start with name and add; later calls with the same name change it.",
+            name: "scene".into(),
+            title: "3D scene".into(),
+            description: "Plan a 3D model as solids before building it in a 3D app: boxes, cylinders, spheres, cones, tori and planes with exact sizes, centres and rotations, in metres (or any one unit), Z up, the ground at z 0. Each call can add, change, remove, mirror (the other leg or wing) and repeat (in a row, or around an axis) objects; it returns one picture with the front (x right, z up), right (y right, z up) and top (x right, y up) views to one scale with a grid, and a perspective view with shadows straight down; the objects with their extents; checks (parts that float, sink below the ground or run into each other, with how far); and how to build it. Then build it: Location = at, Rotation = rotate, Dimensions = size in Blender's sidebar (the same numbers in other apps), or export=\"obj\" (a temporary file to import). Start with name and add; later calls with the same name change it.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1564,9 +1645,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("3D scene"),
         },
         ToolDefinition {
-            name: "press_key",
-            title: "Press key",
-            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
+            name: "press_key".into(),
+            title: "Press key".into(),
+            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1580,9 +1661,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Press key"),
         },
         ToolDefinition {
-            name: "type_text",
-            title: "Type text",
-            description: "Type text into the app's focused element, as keyboard input. Optionally focus element_index first. For replacing a field's whole contents prefer set_value.",
+            name: "type_text".into(),
+            title: "Type text".into(),
+            description: "Type text into the app's focused element, as keyboard input. Optionally focus element_index first. For replacing a field's whole contents prefer set_value.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1596,9 +1677,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Type text"),
         },
         ToolDefinition {
-            name: "find_element",
-            title: "Find element",
-            description: "Search the app's current accessibility tree for elements matching a role and/or a name/text substring, and return them with their element_index. Cheaper than reading the whole tree. Refreshes state, so the returned indices are current.",
+            name: "find_element".into(),
+            title: "Find element".into(),
+            description: "Search the app's current accessibility tree for elements matching a role and/or a name/text substring, and return them with their element_index. Cheaper than reading the whole tree. Refreshes state, so the returned indices are current.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1613,9 +1694,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Find element"),
         },
         ToolDefinition {
-            name: "wait_for",
-            title: "Wait for element",
-            description: "Poll the app until an element matching the given role/name/text (and optional state) appears, then return it. Use after actions that take time (loading, dialogs). Fails when the timeout elapses.",
+            name: "wait_for".into(),
+            title: "Wait for element".into(),
+            description: "Poll the app until an element matching the given role/name/text (and optional state) appears, then return it. Use after actions that take time (loading, dialogs). Fails when the timeout elapses.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1631,9 +1712,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Wait for element"),
         },
         ToolDefinition {
-            name: "screenshot",
-            title: "Screenshot",
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most. zoom=[x,y] magnifies around a point to aim a click exactly.",
+            name: "screenshot".into(),
+            title: "Screenshot".into(),
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most. zoom=[x,y] magnifies around a point to aim a click exactly.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1654,16 +1735,17 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "zoom": {"type": "array", "items": {"type": "number"}, "description": "[x, y] (window shots): a magnified view around this point, each screen pixel a square, with a crosshair on it and a grid in the x/y click takes. To aim exactly."},
                     "radius": {"type": "number", "description": "How far around the zoom point, in screen pixels (default 12)."},
                     "cells": {"type": "boolean", "description": "With canvas: named cells over the document (graph paper: columns A, B…, rows 1, 2…, about 8 across)."},
-                    "cell": {"type": "string", "description": "With canvas: just this cell (\"C4\"), magnified, with a fine grid and its colours."}
+                    "cell": {"type": "string", "description": "With canvas: just this cell (\"C4\"), magnified, with a fine grid and its colours."},
+                    "cell_size": {"type": "number", "description": "With cells or cell: the cells' size in the canvas's units (default: about 8 across)."}
                 },
                 "additionalProperties": false
             }),
             annotations: read_only("Screenshot"),
         },
         ToolDefinition {
-            name: "batch",
-            title: "Batch actions",
-            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit). Each step is {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true. Steps missing `app` inherit the top-level app.",
+            name: "batch".into(),
+            title: "Batch actions".into(),
+            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit). Each step is {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true. Steps missing `app` inherit the top-level app.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1689,9 +1771,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Batch actions"),
         },
         ToolDefinition {
-            name: "window",
-            title: "Manage windows",
-            description: "Arrange app windows and see the screens. action: displays (the screens and virtual desktops; no app needed), list (the app's windows with position, size and state), focus, move (x, y and optionally width, height), resize (width, height), maximize, minimize, restore, fullscreen, exit_fullscreen, close, tile_left / tile_right / tile_top / tile_bottom (half of a display), center, move_to_display (display), move_to_desktop (desktop). Positions and sizes are screen coordinates (as in get_app_state's window line), not screenshot pixels.",
+            name: "window".into(),
+            title: "Manage windows".into(),
+            description: "Arrange app windows and see the screens. action: displays (the screens and virtual desktops; no app needed), list (the app's windows with position, size and state), focus, move (x, y and optionally width, height), resize (width, height), maximize, minimize, restore, fullscreen, exit_fullscreen, close, tile_left / tile_right / tile_top / tile_bottom (half of a display), center, move_to_display (display), move_to_desktop (desktop). Positions and sizes are screen coordinates (as in get_app_state's window line), not screenshot pixels.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1711,9 +1793,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Manage windows"),
         },
         ToolDefinition {
-            name: "get_notifications",
-            title: "Read notifications",
-            description: "Read the user's recent desktop notifications (app, title, text, how long ago), newest last. Codes and card numbers in them are masked, and notifications from apps the user blocked are left out.",
+            name: "get_notifications".into(),
+            title: "Read notifications".into(),
+            description: "Read the user's recent desktop notifications (app, title, text, how long ago), newest last. Codes and card numbers in them are masked, and notifications from apps the user blocked are left out.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1725,16 +1807,39 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: read_only("Read notifications"),
         },
         ToolDefinition {
-            name: "get_clipboard",
-            title: "Get clipboard",
-            description: "Read the system clipboard as text.",
+            name: "script".into(),
+            title: "Run a script".into(),
+            description: "Write and run a script: a small program the server runs (Rhai, like JavaScript: let, if/else, for x in list or range(a, b), while, fn name(a) {...}, closures |x| ..., arrays [..], maps #{key: value}, `text ${x}`), for what the other tools can't do in one call: loops and conditions over tool calls, maths, data from files or the web, pictures on graph paper. In a script: tool(name, #{...}) runs any tool and returns its text (a failure stops the script; try_tool(name, #{...}) returns #{ok, text, image} instead); set_app(name) fills in app; elements(app, #{role, name, text}) gives the matching elements as maps (index, role, name, value, states, x, y, w, h); colors(app, [[x, y], ...]) exact colours; page(name, width, height, #{cell: size}) is a graph-paper page (a design-board design, cells A1 top-left) with p.rect, circle, ellipse, line, path, polygon, star, arc, curve, text, layer, fill_cell(\"C4\", colour), text_in(\"C4\", text), p.cell(\"C4\") and p.at(x, y), p.show() (the last page touched is shown anyway), p.steps(), p.export(\"png\"); cells(w, h, size) gives the same cells for any canvas; read_text/read_json/read_csv and write_text/write_json (relative paths: the scripts' own folder), fetch/fetch_json/download (http), parse_json, to_json, regex_find, numbers(text), remember/recall (kept between runs), random, now, sleep; print() writes to the result; data and args hold what you pass. help=true lists every function. save=name (with description and params) keeps the script: run=name runs it, and it becomes a tool of its own; list, show and delete manage saved scripts. A script's tool calls are ordinary calls: the stop key and the pause while the user works apply.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "The script (Rhai). It runs now, or with save is kept."},
+                    "run": {"type": "string", "description": "Run this saved script."},
+                    "args": {"type": "object", "description": "Arguments: `args` in the script."},
+                    "data": {"description": "Any JSON the script needs: `data` in it (a table, points, text...)."},
+                    "save": {"type": "string", "description": "Keep code under this name (lowercase letters, digits, _ and -): run it later by name, and as a tool of its own."},
+                    "description": {"type": "string", "description": "With save: what it does (the tool's description)."},
+                    "params": {"type": "object", "description": "With save: its arguments as JSON-schema properties, e.g. {\"size\": {\"type\": \"number\"}}."},
+                    "list": {"type": "boolean", "description": "List the saved scripts."},
+                    "show": {"type": "string", "description": "A saved script's code."},
+                    "delete": {"type": "string", "description": "Delete a saved script."},
+                    "help": {"type": "boolean", "description": "Every function scripts have, with examples."}
+                },
+                "additionalProperties": false
+            }),
+            annotations: acting("Run a script"),
+        },
+        ToolDefinition {
+            name: "get_clipboard".into(),
+            title: "Get clipboard".into(),
+            description: "Read the system clipboard as text.".into(),
             input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
             annotations: read_only("Get clipboard"),
         },
         ToolDefinition {
-            name: "set_clipboard",
-            title: "Set clipboard",
-            description: "Write text to the system clipboard (e.g. to paste it into an app with press_key cmd+v / ctrl+v).",
+            name: "set_clipboard".into(),
+            title: "Set clipboard".into(),
+            description: "Write text to the system clipboard (e.g. to paste it into an app with press_key cmd+v / ctrl+v).".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {"text": {"type": "string"}},
@@ -1797,6 +1902,9 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
         }
         "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
+        "script" => {
+            "Run a script (Rhai, like JavaScript: let, if, for x in range(a, b), fn, |x| closures, [arrays], #{maps}) for loops over tools, maths, file or web data and graph-paper pictures. tool(name, #{args}) → text (try_tool() → #{ok, text, image}); set_app; elements(app, #{role, name, text}) → maps; colors(app, [[x,y]]); page(name, w, h, #{cell}) → p.rect/circle/line/path/polygon/text/fill_cell(\"C4\", colour)/text_in/cell(\"C4\")/at(x,y)/show/steps/export; cells(w, h, size); read_text/read_json/read_csv/write_text, fetch/fetch_json/download, remember/recall, regex_find, numbers, random, sleep, print; data/args = what you pass. help=true: every function. save=name (+description, params) keeps it as a tool of its own; run=name, list, show, delete."
+        }
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
         _ => return None,
@@ -1859,7 +1967,7 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
     let screenshots = config.screenshot.enabled && !config.text_only;
     definitions_for(&config.tools)
         .into_iter()
-        .filter(|d| match d.name {
+        .filter(|d| match &*d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
@@ -1873,11 +1981,11 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
     let compact = cfg.descriptions == crate::config::DescriptionStyle::Compact;
     definitions()
         .into_iter()
-        .filter(|d| cfg.is_enabled(d.name))
+        .filter(|d| cfg.is_enabled(&d.name))
         .map(|mut d| {
             if compact {
-                if let Some(short) = short_description(d.name) {
-                    d.description = short;
+                if let Some(short) = short_description(&d.name) {
+                    d.description = short.into();
                 }
                 strip_descriptions(&mut d.input_schema);
             }
@@ -1893,7 +2001,12 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 24);
+        assert_eq!(defs.len(), 25);
+        let mut names: Vec<&str> = defs.iter().map(|d| &*d.name).collect();
+        let mut builtin = BUILTIN.to_vec();
+        names.sort_unstable();
+        builtin.sort_unstable();
+        assert_eq!(names, builtin, "BUILTIN lists every tool");
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1909,7 +2022,7 @@ mod tests {
             }
             // Every definition parses a call.
             assert!(!matches!(
-                ToolCall::parse(d.name, json!({})),
+                ToolCall::parse(&d.name, json!({})),
                 Err(Error::UnknownTool(_))
             ));
         }
@@ -1950,7 +2063,7 @@ mod tests {
             "show": {"grid": true, "ids": true, "guides": true}, "export": "svg",
             "snap": "corner", "snap_radius": 8, "zoom": [5, 5], "radius": 10,
             "color": "00ff00", "tolerance": 20, "like": [0, 0, 5, 5], "near": [3, 3],
-            "feature": "edge", "cells": true, "cell": "B2"
+            "feature": "edge", "cells": true, "cell": "B2", "cell_size": 50
             }"#,
         )
         .unwrap();
@@ -1965,13 +2078,23 @@ mod tests {
             "repeat": [{"id": "a", "count": 3, "offset": [1, 0, 0]},
                        {"id": "b", "count": 4, "around": [0, 0], "angle": 180}]
         });
+        // The script's show is a name, not the design's picture options.
+        let script = json!({
+            "code": "1 + 1", "run": "x", "args": {"a": 1}, "data": [1, 2], "save": "x",
+            "description": "d", "params": {"a": {"type": "number"}}, "list": true,
+            "show": "x", "delete": "x", "help": true
+        });
         for d in definitions() {
-            let sample = if d.name == "scene" { &scene } else { &full };
+            let sample = match &*d.name {
+                "scene" => &scene,
+                "script" => &script,
+                _ => &full,
+            };
             let mut args = serde_json::Map::new();
             for (k, _) in d.input_schema["properties"].as_object().unwrap() {
                 args.insert(k.clone(), sample[k].clone());
             }
-            ToolCall::parse(d.name, Value::Object(args))
+            ToolCall::parse(&d.name, Value::Object(args))
                 .unwrap_or_else(|e| panic!("{}: {e}", d.name));
         }
     }
@@ -1983,7 +2106,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 24);
+        assert_eq!(compact.len(), 25);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,
@@ -1991,15 +2114,18 @@ mod tests {
         );
         // Every tool has a short description, and schemas keep their types.
         for d in &compact {
-            assert!(short_description(d.name).is_some(), "{}", d.name);
+            assert!(short_description(&d.name).is_some(), "{}", d.name);
             assert_eq!(d.input_schema["type"], "object");
         }
         let cfg = ToolsConfig {
             disabled: vec!["drag".into(), "batch".into()],
             ..Default::default()
         };
-        let names: Vec<_> = definitions_for(&cfg).iter().map(|d| d.name).collect();
-        assert!(!names.contains(&"drag") && !names.contains(&"batch"));
+        let names: Vec<String> = definitions_for(&cfg)
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n == "drag" || n == "batch"));
         let cfg = ToolsConfig {
             enabled: vec!["list_apps".into(), "get_app_state".into()],
             ..Default::default()

@@ -20,6 +20,8 @@ use crate::tools::*;
 use crate::tree::{self, IndexAllocator, Node};
 use crate::types::*;
 
+mod scripting;
+
 /// Cached state for one app between tool calls.
 #[derive(Default)]
 struct AppState {
@@ -144,6 +146,8 @@ pub struct Engine<B: Backend> {
     fonts: crate::design::FontCache,
     /// Exported files (temporary).
     exports: crate::design::TempFiles,
+    /// Saved scripts.
+    scripts: crate::script::Library,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -202,6 +206,7 @@ impl<B: Backend> Engine<B> {
     pub fn new(mut backend: B, store: ConfigStore) -> Self {
         backend.configure(&store.config);
         let config_mtime = store.path.as_deref().and_then(file_mtime);
+        let scripts = crate::script::Library::new(store.config.script.library());
         Self {
             backend,
             store,
@@ -231,6 +236,7 @@ impl<B: Backend> Engine<B> {
             scenes: Vec::new(),
             fonts: crate::design::FontCache::default(),
             exports: crate::design::TempFiles::default(),
+            scripts,
             ocr_note: None,
             ocr_note_shown: false,
             last_capture: None,
@@ -266,6 +272,7 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.backend.configure(&store.config);
                 self.store = store;
+                self.scripts.set_dir(self.store.config.script.library());
                 self.epoch += 1;
                 self.overlay_reconfigure();
             }
@@ -298,6 +305,7 @@ impl<B: Backend> Engine<B> {
         }
         self.backend.configure(&store.config);
         self.store = store;
+        self.scripts.set_dir(self.store.config.script.library());
         self.epoch += 1;
         self.overlay_reconfigure();
     }
@@ -1531,6 +1539,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::SetClipboard(a) => self.set_clipboard(a),
             ToolCall::Window(a) => self.window_tool(a),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
+            ToolCall::Script(a) => self.script(a),
         };
         if mutating {
             self.last_input = Some((self.clock)());
@@ -1548,7 +1557,16 @@ impl<B: Backend> Engine<B> {
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
         // A bug in one tool call must not take the whole server down.
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ToolCall::parse(name, args).and_then(|c| self.call(c))
+            // A saved script is a tool of its own.
+            let call = match self.saved_tool(name) {
+                Some(_) => Ok(ToolCall::Script(ScriptArgs {
+                    run: Some(name.to_string()),
+                    args: Some(args),
+                    ..Default::default()
+                })),
+                None => ToolCall::parse(name, args),
+            };
+            call.and_then(|c| self.call(c))
         }));
         let mut out = match run {
             Ok(Ok(out)) => out,
@@ -2388,6 +2406,8 @@ impl<B: Backend> Engine<B> {
             )));
         }
         let (frame, area) = self.draw_frame(&app, args.element_index, args.canvas.as_ref())?;
+        // A cell size the model chose is checked before anything is drawn.
+        frame_cells(&frame, None, args.cell_size)?;
         let mut shapes: Vec<(String, crate::draw::Shape)> = Vec::new();
         // Per shape: painted solid with a brush this wide on screen, and
         // how far past its edge (traces go about one of their pixels past,
@@ -2498,7 +2518,7 @@ impl<B: Backend> Engine<B> {
         ) else {
             return Err(Error::InvalidArgs("nothing to draw".into()));
         };
-        let mut summary = self.draw_summary(&frame, area, &plan);
+        let mut summary = self.draw_summary(&frame, area, &plan, args.cell_size);
         if let Some(w) = fills.iter().flatten().map(|f| f.0).min_by(f64::total_cmp) {
             summary.push_str(&format!(
                 " Solid shapes are painted for a brush {w:.0} px wide on screen; a smaller brush leaves stripes."
@@ -2514,7 +2534,13 @@ impl<B: Backend> Engine<B> {
         if args.preview {
             let cap = self.window_capture(&app, args.window.as_deref())?;
             let fill_note = self.fill_report(&app, cap.clone(), &plan, &shapes, &fills, true);
-            return self.draw_preview(cap, &frame, &plan, format!("{summary}{fill_note}"));
+            return self.draw_preview(
+                cap,
+                &frame,
+                &plan,
+                args.cell_size,
+                format!("{summary}{fill_note}"),
+            );
         }
 
         self.overlay_point(first, true);
@@ -2565,6 +2591,7 @@ impl<B: Backend> Engine<B> {
         frame: &crate::draw::Frame,
         area: &str,
         plan: &crate::draw::Plan,
+        cell_size: Option<f64>,
     ) -> String {
         // Where it goes, in the coordinates the model used.
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -2584,7 +2611,7 @@ impl<B: Backend> Engine<B> {
             plan.length,
         );
         if let Some(t) = plan_span(frame, plan) {
-            let (cells, _) = drawing_cells(frame, Some(t));
+            let (cells, _) = drawing_cells(frame, Some(t), cell_size);
             msg.push_str(&format!(
                 " It covers cells {} (cells of {}, A1 top-left).",
                 cells.covering(t),
@@ -3677,6 +3704,7 @@ impl<B: Backend> Engine<B> {
         cap: Option<Capture>,
         frame: &crate::draw::Frame,
         plan: &crate::draw::Plan,
+        cell_size: Option<f64>,
         summary: String,
     ) -> Result<ToolOutput> {
         let text = format!(
@@ -3701,7 +3729,7 @@ impl<B: Backend> Engine<B> {
         let (ax, ay) = LabelSpace::Frame(*frame).axes(&cap, out_w);
         // Graph paper sized to the drawing: over it (and a cell round it)
         // when it is small in the area, else over the whole area.
-        let (cells, sized) = drawing_cells(frame, plan_span(frame, plan));
+        let (cells, sized) = drawing_cells(frame, plan_span(frame, plan), cell_size);
         let mut clip = Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0);
         if let (true, Some(t)) = (sized, plan_span(frame, plan)) {
             let e = cells.step;
@@ -4242,7 +4270,7 @@ impl<B: Backend> Engine<B> {
                     "cells need canvas: where the document is on screen".into(),
                 ));
             };
-            let c = crate::cells::Cells::new(f.x0, f.x1, f.y0, f.y1, f.y_up(), None);
+            let c = frame_cells(&f, None, args.cell_size)?;
             if let Some(name) = &args.cell {
                 let (col, row) = c.parse(name).map_err(Error::InvalidArgs)?;
                 let (pic, text) = cell_view(&capture, ax, ay, &c, col, row)?;
@@ -4343,11 +4371,7 @@ impl<B: Backend> Engine<B> {
         // The report shows one line per step, so the trees the steps render
         // never reach the model: what it has seen of each app stays what it
         // saw before the batch (restored below).
-        let seen_before: HashMap<u32, Option<Screen>> = self
-            .states
-            .iter()
-            .map(|(pid, st)| (*pid, st.known.clone()))
-            .collect();
+        let seen_before = self.known_screens();
         for (i, step) in args.steps.iter().enumerate() {
             // Inject the default app when the step omits one.
             let mut step_args = match &step.arguments {
@@ -4403,6 +4427,24 @@ impl<B: Backend> Engine<B> {
                 }
             }
         }
+        self.restore_known(seen_before);
+        Ok(ToolOutput {
+            text: format!("Ran {} step(s):\n{report}", args.steps.len()),
+            image: last_image,
+            is_error: any_error,
+        })
+    }
+
+    /// What the model has seen of each app, to put back after calls whose
+    /// trees it never saw (batch steps, a script's tool calls).
+    fn known_screens(&self) -> HashMap<u32, Option<Screen>> {
+        self.states
+            .iter()
+            .map(|(pid, st)| (*pid, st.known.clone()))
+            .collect()
+    }
+
+    fn restore_known(&mut self, seen_before: HashMap<u32, Option<Screen>>) {
         for (pid, st) in self.states.iter_mut() {
             let before = seen_before.get(pid).cloned().flatten();
             st.known = match (before, st.known.take()) {
@@ -4412,8 +4454,8 @@ impl<B: Backend> Engine<B> {
                     now.view = b.view;
                     Some(now)
                 }
-                // A screen reached in the batch: its tree hasn't been shown,
-                // so the next look sends all of it.
+                // A screen reached meanwhile: its tree hasn't been shown, so
+                // the next look sends all of it.
                 (_, Some(mut now)) => {
                     now.view = crate::screens::View::default();
                     Some(now)
@@ -4421,11 +4463,6 @@ impl<B: Backend> Engine<B> {
                 (before, None) => before,
             };
         }
-        Ok(ToolOutput {
-            text: format!("Ran {} step(s):\n{report}", args.steps.len()),
-            image: last_image,
-            is_error: any_error,
-        })
     }
 
     fn window_tool(&mut self, args: WindowArgs) -> Result<ToolOutput> {
@@ -5153,7 +5190,14 @@ fn plan_span(frame: &crate::draw::Frame, plan: &crate::draw::Plan) -> Option<cra
 fn drawing_cells(
     frame: &crate::draw::Frame,
     target: Option<crate::cells::Span>,
+    cell_size: Option<f64>,
 ) -> (crate::cells::Cells, bool) {
+    // The size the model chose (checked before drawing) is kept as is.
+    if let Ok(c) = frame_cells(frame, None, cell_size)
+        && cell_size.is_some()
+    {
+        return (c, false);
+    }
     let (w, h) = ((frame.x1 - frame.x0).abs(), (frame.y1 - frame.y0).abs());
     let small = target.filter(|t| {
         let (tw, th) = (t.x1 - t.x0, t.y1 - t.y0);
@@ -5163,6 +5207,39 @@ fn drawing_cells(
         crate::cells::Cells::new(frame.x0, frame.x1, frame.y0, frame.y1, frame.y_up(), small),
         small.is_some(),
     )
+}
+
+/// Cells over a drawing area: `cell_size` units square when given, else
+/// about eight across `target` (or the whole area).
+fn frame_cells(
+    frame: &crate::draw::Frame,
+    target: Option<crate::cells::Span>,
+    cell_size: Option<f64>,
+) -> Result<crate::cells::Cells> {
+    let Some(s) = cell_size else {
+        return Ok(crate::cells::Cells::new(
+            frame.x0,
+            frame.x1,
+            frame.y0,
+            frame.y1,
+            frame.y_up(),
+            target,
+        ));
+    };
+    if !(s.is_finite() && s > 0.0) {
+        return Err(Error::InvalidArgs(
+            "cell_size is the cells' size in the canvas's units, above 0".into(),
+        ));
+    }
+    let c = crate::cells::Cells::with_step(frame.x0, frame.x1, frame.y0, frame.y1, frame.y_up(), s);
+    let most = crate::design::MAX_CELLS;
+    if c.cols as f64 > most || c.rows as f64 > most {
+        return Err(Error::InvalidArgs(format!(
+            "cells of {s} make {} x {} over the canvas; at most {most} across (give a bigger cell_size)",
+            c.cols, c.rows
+        )));
+    }
+    Ok(c)
 }
 
 /// A screen rectangle in a capture's pixels.

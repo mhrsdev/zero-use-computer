@@ -72,11 +72,51 @@ This project follows the same architecture and behaviour:
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does, **cells** lays named graph paper over the document and `cell` magnifies one cell. `zoom` magnifies around a point to aim exactly. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
+| `script` | Run a small program inside the server for what the tools can't do in one call: loops and conditions over any tool, maths, data from files or the web, pictures built on a graph-paper page. `save` keeps a script as a **new tool** of its own. See [Scripts](#scripts). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
 Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
-region/full `screenshot`, clipboard) cut round-trips and token use, and an
-optional **audit log** records every call.
+`script`, region/full `screenshot`, clipboard) cut round-trips and token
+use, and an optional **audit log** records every call.
+
+### Scripts
+
+The tools cover what most tasks need; `script` covers the rest. The model
+writes a short program (in [Rhai](https://rhai.rs), a sandboxed language
+that reads like JavaScript) and the server runs it:
+
+- **Any tool, with logic around it.** `tool("click", #{app: "Paint", x:
+  10, y: 20})` runs a tool and gives its text; loops, conditions, retries
+  and waits go around it. `elements(app, #{role: "button"})` gives the
+  matching elements as data, and `colors(app, points)` the exact pixel
+  colours. Every call is an ordinary tool call: the stop key, the pause
+  while you work and the masking of private data all apply.
+- **The graph-paper page.** `page("chess", 800, 800, #{cell: 100})` is a
+  design on the design board with named cells (A1 to H8 here). A script
+  fills, labels and measures cells by name (`p.fill_cell("C4",
+  "#222222")`, `p.cell("C4")`) and adds any shape or text. The picture
+  comes back with the result, and the page can be exported or painted into
+  an app step by step like any design. `cells(w, h, size)` gives the same
+  cells for any canvas, and `cell_size` on `design`, `draw` and `screenshot`
+  makes them all name the same cells.
+- **Data.** Whatever the model passes in `data` and `args`; files (CSV,
+  JSON, text: read anywhere, written in the scripts' own folder by
+  default); the web through `curl` (`fetch`, `fetch_json`, `download`);
+  values remembered between runs; regular expressions, maths, random
+  numbers, colours and dates.
+- **New tools.** `script(save="chessboard", code=..., description=...,
+  params=...)` keeps a script in `~/.computer-use/scripts/chessboard.rhai`.
+  From then on it is a tool of its own (the server tells the client its
+  tool list changed), it can be run by name, and other scripts can run it.
+  The files are plain text you can read and edit.
+
+A script can't reach the system except through these functions. Each run
+has a time limit (`[script] max_seconds`, 5 minutes by default), and the
+stop key ends it at once. `[script]` also sets which files scripts may use
+(`none`, `workspace`, `read` or `all`) and whether they may use the web.
+The function reference is
+[`skills/computer-use/reference/scripts.md`](skills/computer-use/reference/scripts.md),
+also returned by `script(help=true)`.
 
 Files that `design` and `scene` export are temporary. They go to a
 `computer-use-exports` folder in the system's temp directory and are
@@ -553,6 +593,7 @@ applying after a reload. The agent has no tool to change settings.
 | `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
 | `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings |
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window |
+| `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | log level, HTTP address and token |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
@@ -686,6 +727,12 @@ What the server still guarantees, because an agent can't do it for itself:
 - **The user can stop the agent** with the emergency stop key; if it can't be
   registered, the agent is told so it can tell the user, and `doctor` checks
   it. The agent also waits while the user is using the computer.
+- **Scripts get no more than the tools.** A script reaches the computer only
+  through the tools and the functions listed for it; its tool calls are
+  ordinary calls (stop key, pause while you work, masking). It has a time
+  limit, the stop key ends it even inside `try`, and `[script]` decides
+  which files it may read and write and whether it may use the web. It
+  never writes to the server's stdout.
 - **One bad call doesn't take the server down**: a failing tool call becomes
   an error result.
 - An optional **audit log** records every call.

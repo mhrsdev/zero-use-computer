@@ -6,8 +6,8 @@
 
 use std::io::{BufRead, Write};
 
+use computer_use::Backend;
 use computer_use::engine::Engine;
-use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 
 use crate::jsonrpc::*;
@@ -25,10 +25,11 @@ pub(crate) fn negotiate_protocol(requested: Option<&str>) -> &'static str {
         .unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
-/// The error for a `tools/call` naming no tool this build has (a protocol
-/// error, unlike a tool that fails or is switched off in the settings).
-pub(crate) fn unknown_tool(name: &str) -> Option<String> {
-    (!tools::definitions().iter().any(|d| d.name == name)).then(|| format!("unknown tool: {name}"))
+/// The error for a `tools/call` naming no tool (a protocol error, unlike a
+/// tool that fails or is switched off in the settings). Saved scripts are
+/// tools too.
+pub(crate) fn unknown_tool<B: Backend>(engine: &mut Engine<B>, name: &str) -> Option<String> {
+    (!engine.has_tool(name)).then(|| format!("unknown tool: {name}"))
 }
 
 pub struct Server<R: BufRead, W: Write, B: Backend> {
@@ -198,9 +199,10 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         })
     }
 
-    fn tools_signature(&self) -> String {
-        let engine = self.engine.as_ref().expect("engine present");
-        tools::definitions_from(&engine.store().config)
+    fn tools_signature(&mut self) -> String {
+        let engine = self.engine.as_mut().expect("engine present");
+        engine
+            .tool_definitions()
             .iter()
             .map(|d| format!("{}:{}", d.name, d.description))
             .collect::<Vec<_>>()
@@ -214,7 +216,8 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             .reload_if_changed();
         self.tools_sig = Some(self.tools_signature());
         let engine = self.engine.as_mut().expect("engine present");
-        let tools: Vec<Value> = tools::definitions_from(&engine.store().config)
+        let tools: Vec<Value> = engine
+            .tool_definitions()
             .into_iter()
             .map(|d| {
                 json!({
@@ -234,12 +237,11 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             Some(n) => n.to_string(),
             None => return Response::err(id, INVALID_PARAMS, "tools/call requires `name`"),
         };
-        if let Some(e) = unknown_tool(&name) {
+        let engine = self.engine.as_mut().expect("engine present");
+        if let Some(e) = unknown_tool(engine, &name) {
             return Response::err(id, INVALID_PARAMS, e);
         }
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
-
-        let engine = self.engine.as_mut().expect("engine present");
         let out = engine.call_tool(&name, args);
         Response::ok(id, out.to_mcp_result())
     }
@@ -259,7 +261,10 @@ pub(crate) fn instructions() -> String {
      tree, batch to run several actions at once, screenshot for a full/region/\
      window image, and get_clipboard/set_clipboard for text. To save tokens, \
      search with find_element rather than re-reading trees (it also finds \
-     items of folded lists), and pass screenshot=true only to read details.\n\n\
+     items of folded lists), and pass screenshot=true only to read details. \
+     For loops over tools, maths, file or web data and graph-paper pages, \
+     write a script (script help=true lists its functions); a saved script \
+     becomes a tool of its own.\n\n\
      This server does not ask the user for permission: you are responsible for \
      safety (full rules: the computer-use-security skill). Only use apps the task \
      needs. Do not operate terminals, shells, Run dialogs, password managers, \
@@ -285,9 +290,16 @@ mod tests {
     use std::io::Cursor;
 
     fn engine() -> Engine<MockBackend> {
+        engine_with_scripts(&std::env::temp_dir().join("cu-server-tests-no-scripts"))
+    }
+
+    /// An engine whose saved scripts live in `dir` (never the user's own).
+    fn engine_with_scripts(dir: &std::path::Path) -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        Engine::new(backend, ConfigStore::in_memory(Config::default()))
+        let mut config = Config::default();
+        config.script.dir = Some(dir.to_path_buf());
+        Engine::new(backend, ConfigStore::in_memory(config))
             .with_time(std::time::Instant::now, |_| {})
     }
 
@@ -447,6 +459,58 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert!(!names.contains(&"drag"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_saved_script_becomes_a_tool_and_the_client_is_told() {
+        let dir = std::env::temp_dir().join(format!("cu-server-saved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let input = format!(
+            "{}{}{}{}{}",
+            line("initialize", 1, json!({"capabilities":{}})),
+            line("tools/list", 2, json!({})),
+            line(
+                "tools/call",
+                3,
+                json!({"name": "script", "arguments": {
+                    "save": "double", "description": "Twice a number",
+                    "params": {"n": {"type": "number"}}, "code": "args.n * 2"
+                }})
+            ),
+            line("tools/list", 4, json!({})),
+            line(
+                "tools/call",
+                5,
+                json!({"name": "double", "arguments": {"n": 21}})
+            ),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut server = Server::new(engine_with_scripts(&dir), Cursor::new(input), &mut out);
+            server.run().unwrap();
+        }
+        let msgs: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m["method"] == "notifications/tools/list_changed"),
+            "{msgs:#?}"
+        );
+        let listed = msgs.iter().find(|m| m["id"] == 4).unwrap();
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "double")
+            .expect("the saved script is listed");
+        assert_eq!(tool["inputSchema"]["properties"]["n"]["type"], "number");
+        let ran = msgs.iter().find(|m| m["id"] == 5).unwrap();
+        let text = ran["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Result: 42"), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

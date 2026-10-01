@@ -177,6 +177,21 @@ apps = []                   # only these apps ([] = any app)
 mask_codes = true           # mask one-time / verification codes
 keep = 50                   # how many are kept (Linux)
 
+# Scripts (the script tool): small programs the agent writes and the server
+# runs, for what the other tools can't do in one call — loops over tool
+# calls, maths, data from files or the web, pictures built on the graph-paper
+# page. Every tool call a script makes is an ordinary tool call: the stop
+# key, the pause while you work and the masking all apply. Saved scripts are
+# kept in `dir` (default ~/.computer-use/scripts) and can be edited by hand.
+[script]
+saved_as_tools = true       # each saved script is also a tool of its own
+# Files scripts may use: "none", "workspace" (only <dir>/files), "read"
+# (read any file, write only in <dir>/files) or "all" (read and write any).
+files = "read"
+web = true                  # fetch() and download() over http(s), with curl
+max_seconds = 300           # longest run of one script, tool calls included
+# dir = "/path/to/scripts"
+
 # Checking that actions worked.
 [verify]
 enabled = true              # check each action's result; tell the agent when it didn't work

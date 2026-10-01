@@ -1,5 +1,73 @@
 # Changelog
 
+## v2.6.0
+
+Scripts: the model writes a small program and the server runs it, for
+what the tools can't do in one call, on the graph-paper page or anywhere
+else; and a saved script becomes a tool of its own
+([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.5.7...v2.6.0)).
+
+### New
+
+- **`script`** runs a program in [Rhai](https://rhai.rs), a sandboxed
+  language that reads like JavaScript. A script can:
+  - run any tool with logic around it: `tool(name, #{...})` gives the
+    tool's text and stops the script on a failure, `try_tool` gives
+    `#{ok, text, image}`, `set_app` fills in the app;
+  - read the screen as data: `elements(app, #{role, name, text})` gives
+    the matching elements with their states and boxes, `colors(app,
+    points)` the exact pixel colours;
+  - draw on **the graph-paper page**: `page(name, w, h, #{cell: size})`
+    is a design-board design with named cells. `p.fill_cell("C4",
+    colour)`, `p.text_in("C4", text)`, `p.cell("C4")`, `p.at(x, y)` and
+    every shape and text the board has (`rect`, `circle`, `line`, `path`,
+    `polygon`, `star`, `arc`, `curve`, `text`, `layer`). The picture comes
+    back with the result, and `p.steps()` and `p.export("png")` take it
+    into an app. `cells(w, h, size)` gives the same cells for any canvas;
+  - use data: `data` and `args` from the model; files (`read_text`,
+    `read_json`, `read_csv`, `write_text`, `write_json`, `write_csv`,
+    `list_files`); the web through `curl` (`fetch`, `fetch_json`,
+    `download`); `remember`/`recall` between runs; JSON and CSV, regular
+    expressions, `numbers(text)`, maths that takes whole numbers too,
+    random numbers, colours (`rgb`, `hsl`, `mix`) and dates;
+  - run saved scripts (`run(name, args)`) and import them as libraries.
+- **Saved scripts are new tools.** `script(save=name, code, description,
+  params)` checks the script and keeps it in
+  `~/.computer-use/scripts/<name>.rhai`, plain text the user can edit. It
+  is then a tool of its own with its own arguments (the server tells the
+  client its tool list changed), and `run`, `list`, `show` and `delete`
+  manage saved scripts.
+- **Errors say where.** A script that doesn't parse is refused before
+  anything runs; misspelt variables are caught then too. A failure gives
+  the line and its code, and what the script printed before it.
+- **`cell_size`** on `design`, `draw` and `screenshot` fixes the cells'
+  size, so all of them (and a script's page) name the same cells: an 800 x
+  800 board with `cell_size: 100` is a chessboard, A1 to H8.
+- **`[script]` settings**: saved scripts as tools on or off; which files
+  scripts may use (`none`, `workspace`, `read` — the default: read any
+  file, write in the scripts' own folder — or `all`); web access; the
+  time limit (`max_seconds`, 300); the scripts' folder.
+
+### Safety
+
+- A script reaches the computer only through the tools and its listed
+  functions. Its tool calls are ordinary calls: the stop key, the pause
+  while the user works and private-data masking apply. The stop key and
+  the time limit end a script even inside `try`, and a script never
+  writes to the server's stdout.
+- The security skill covers scripts: read only the files the task needs,
+  write in the scripts' folder unless asked, fetch only what the task
+  needs and never send the user's data to a site unless that is the task,
+  no secrets in saved scripts or memory, and a loop of consequential
+  actions still needs the user's go-ahead.
+
+### Docs
+
+- New reference: `skills/computer-use/reference/scripts.md` (also
+  `script(help=true)` and an MCP resource): the language in short, every
+  function, the page, saving tools, examples and rules. The README, the
+  skills and the server's MCP instructions mention scripts.
+
 ## v2.5.7
 
 See a drawing before it is built: a design board for 2D, a scene for 3D,

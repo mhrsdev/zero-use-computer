@@ -64,7 +64,13 @@ checks. Details and examples: [reference/board.md](reference/board.md).
   other eye), align, distribute and reorder them. The checks catch shapes
   off the page or nearly centred, pairs that are not quite symmetric, text
   that is hard to read or overlaps. The picture has named cells (A1
-  top-left); `show: {"cell": "C4"}` magnifies one.
+  top-left; `cell_size` sets their size); `show: {"cell": "C4"}`
+  magnifies one.
+- **Many parts that follow a rule** (a chessboard, pixel art, a chart from
+  data, a pattern, a dial's ticks): write a `script` that builds the
+  design as a page, cell by cell or by maths, instead of listing every
+  layer by hand. It is the same design afterwards (see the computer-use
+  skill's reference/scripts.md).
 - **`scene`** is solids in metres, Z up, the ground at z 0: box, cylinder,
   sphere, cone, torus, plane, each with `size`, `at` (its centre) and
   `rotate`. `on: "seat"` sets an object on top of another; `mirror` and

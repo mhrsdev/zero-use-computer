@@ -145,6 +145,12 @@ gets small cells.
   `cell="C4"` shows one cell magnified, with a fine grid in the
   document's units and its main colours.
 - `design` shows them on its picture; `show: {"cell": "C4"}` magnifies one.
+- `cell_size` (on `design`, `draw` and `screenshot`) fixes their size in
+  the document's units, so all three name the same cells: an 800 x 800
+  board with `cell_size: 100` is an 8 x 8 chessboard, A1 to H8.
+- A `script` page is a design whose cells it can fill and label by name
+  (`p.fill_cell("C4", "#222222")`, `p.cell("C4")`), for drawings that
+  follow a rule: pixel art, boards, charts, patterns.
 
 Use them to talk about places ("the ear in C2 is too low") and to check a
 drawing one cell at a time where precision matters: an eye, a joint, a

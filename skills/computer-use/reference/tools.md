@@ -28,8 +28,9 @@
   - `compare: "name"` (with `canvas`): how the document differs from a
     picture traced with `trace_image`.
   - `cells: true` (with `canvas`): graph paper over the document, columns
-    A, B… and rows 1, 2… (about 8 across). `cell: "C4"` shows that cell
-    magnified with a fine grid in the document's units and its colours.
+    A, B… and rows 1, 2… (about 8 across; `cell_size` sets their size in
+    the document's units). `cell: "C4"` shows that cell magnified with a
+    fine grid in the document's units and its colours.
   - `zoom: [x, y]` (window shots): a magnified view around a point, each
     screen pixel a square, with a crosshair and a grid in click
     coordinates. Use it to aim at something small.
@@ -48,6 +49,9 @@
 - `design` (a 2D picture from layers) and `scene` (a 3D model from
   solids): plan and see a drawing before building it in an app. See
   [drawing.md](drawing.md) and the computer-use-design skill.
+- `script(code, args, data)`: a small program run in the server, for
+  loops over tool calls, maths, data and graph-paper pages; `save` keeps
+  one as a tool of its own. See [scripts.md](scripts.md).
 - `window(app, action)`: `list`, `focus`, `move` (x, y, optional width and
   height), `resize`, `maximize`, `minimize`, `restore`, `fullscreen`,
   `exit_fullscreen`, `close`, `tile_left` / `tile_right` / `tile_top` /

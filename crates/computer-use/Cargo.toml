@@ -12,6 +12,8 @@ base64.workspace = true
 dirs.workspace = true
 image.workspace = true
 log.workspace = true
+regex = "1"
+rhai = { version = "1.26", features = ["serde", "only_i64", "no_custom_syntax"] }
 rustybuzz = "0.20"
 serde.workspace = true
 serde_json.workspace = true

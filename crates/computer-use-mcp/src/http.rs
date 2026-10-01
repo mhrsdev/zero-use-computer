@@ -9,8 +9,8 @@
 use std::io::Read as _;
 use std::net::SocketAddr;
 
+use computer_use::Backend;
 use computer_use::engine::Engine;
-use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -194,7 +194,8 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
         "ping" => reply(id, json!({})),
         "tools/list" => {
             engine.reload_if_changed();
-            let list: Vec<Value> = tools::definitions_from(&engine.store().config)
+            let list: Vec<Value> = engine
+                .tool_definitions()
                 .into_iter()
                 .map(|d| {
                     json!({
@@ -209,7 +210,7 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             reply(id, json!({"tools": list}))
         }
         "tools/call" => match params.get("name").and_then(Value::as_str) {
-            Some(name) if unknown_tool(name).is_some() => {
+            Some(name) if unknown_tool(engine, name).is_some() => {
                 error(id, INVALID_PARAMS, &format!("unknown tool: {name}"))
             }
             Some(name) => {

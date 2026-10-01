@@ -380,6 +380,60 @@ impl Default for NotificationsConfig {
     }
 }
 
+/// Which files scripts may read and write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptFiles {
+    /// No files at all.
+    None,
+    /// Only the scripts' own folder (`<home>/scripts/files`).
+    Workspace,
+    /// Read any file; write only in the scripts' own folder.
+    #[default]
+    Read,
+    /// Read and write any file.
+    All,
+}
+
+/// The `script` tool: programs the agent writes and runs inside the server,
+/// and saved scripts that become tools of their own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptConfig {
+    /// Saved scripts are listed as tools of their own (the tool list changes
+    /// when one is saved or deleted).
+    pub saved_as_tools: bool,
+    /// Files scripts may use.
+    pub files: ScriptFiles,
+    /// fetch() and download(): web pages and data over http(s).
+    pub web: bool,
+    /// Longest run of one script, in seconds (its tool calls included).
+    pub max_seconds: u64,
+    /// Where saved scripts live (default `<home>/scripts`).
+    pub dir: Option<PathBuf>,
+}
+
+impl Default for ScriptConfig {
+    fn default() -> Self {
+        Self {
+            saved_as_tools: true,
+            files: ScriptFiles::Read,
+            web: true,
+            max_seconds: 300,
+            dir: None,
+        }
+    }
+}
+
+impl ScriptConfig {
+    /// The folder of saved scripts.
+    pub fn library(&self) -> PathBuf {
+        self.dir
+            .clone()
+            .unwrap_or_else(|| home_dir().join("scripts"))
+    }
+}
+
 /// When text is read off the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -723,6 +777,7 @@ pub struct Config {
     pub verify: VerifyConfig,
     pub ocr: OcrConfig,
     pub notifications: NotificationsConfig,
+    pub script: ScriptConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -758,6 +813,7 @@ impl Default for Config {
             verify: VerifyConfig::default(),
             ocr: OcrConfig::default(),
             notifications: NotificationsConfig::default(),
+            script: ScriptConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -834,6 +890,7 @@ impl Config {
                 120.0,
             ),
             ("tree.diff_full_ratio", self.tree.diff_full_ratio, 1.0),
+            ("script.max_seconds", self.script.max_seconds as f64, 3600.0),
         ] {
             if !(0.0..=max).contains(&value) {
                 return Err(format!("{key} must be between 0 and {max} (got {value})"));
@@ -869,7 +926,7 @@ pub const TEMPLATE: &str = include_str!("config_template.toml");
 
 /// Keys that are valid even though they don't appear in a serialized default
 /// config (optional values that default to unset).
-const OPTIONAL_KEYS: &[&str] = &["audit.path"];
+const OPTIONAL_KEYS: &[&str] = &["audit.path", "script.dir"];
 
 fn collect_keys(prefix: &str, table: &toml::Table, out: &mut Vec<String>) {
     for (k, v) in table {

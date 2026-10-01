@@ -84,7 +84,8 @@ Expressions:
   screenshot, on named cells: columns A, B… and rows 1, 2… from the top
   left, their lines labelled in the coordinates you used. The cells are
   sized so the drawing spans about eight of them (a small drawing gets
-  small cells). Check the placement, then call again without it.
+  small cells), or `cell_size` units each, to match a design or a
+  script's page. Check the placement, then call again without it.
 - Every result says which cells the drawing covers ("It covers cells B2
   to D3"). After drawing, `screenshot(app, canvas=..., cells=true)` shows
   the same cells over the document and `cell="C4"` magnifies one.

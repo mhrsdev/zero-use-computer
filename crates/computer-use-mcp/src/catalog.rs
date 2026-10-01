@@ -52,6 +52,11 @@ const FILES: &[File] = &[
     },
     File {
         skill: "computer-use",
+        path: "reference/scripts.md",
+        raw: include_str!("../../../skills/computer-use/reference/scripts.md"),
+    },
+    File {
+        skill: "computer-use",
         path: "reference/special-content.md",
         raw: include_str!("../../../skills/computer-use/reference/special-content.md"),
     },

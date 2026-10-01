@@ -53,6 +53,9 @@ Every result stays in the conversation, so ask only for what you need:
 - Don't pass `disable_diff: true` unless a diff confused you.
 - Use `wait_for` instead of polling, and `batch` for a known sequence of
   steps (then call `get_app_state`: a batch shows one line per step).
+- Work that repeats or branches (every row of a table, retry until
+  something appears, positions to compute) is one `script` call instead
+  of many turns.
 - Trust `screen #N (seen before)`: what you learnt about it still holds.
 
 ## More, only when you need it
@@ -65,6 +68,10 @@ Every result stays in the conversation, so ask only for what you need:
 - [reference/special-content.md](reference/special-content.md): apps with
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
+- [reference/scripts.md](reference/scripts.md): `script`: a small
+  program for what the tools can't do in one call (loops over tool calls,
+  maths, data from files or the web, pictures on a graph-paper page), and
+  saved scripts as new tools.
 - [reference/drawing.md](reference/drawing.md): `draw`: lines, shapes,
   stars, curves, function plots with axes, repeats, solid fills,
   previews on named cells, planning with `design` and `scene`, and

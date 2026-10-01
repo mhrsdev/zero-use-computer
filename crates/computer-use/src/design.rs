@@ -15,6 +15,9 @@ use crate::types::{Capture, Point, Rect};
 
 pub type Rgb = [u8; 3];
 
+/// Most cells across a page (when the cell size is given).
+pub const MAX_CELLS: f64 = 200.0;
+
 /// "#RRGGBB" (or "#RGB"); "none" is no colour.
 pub fn parse_colour(s: &str) -> Result<Option<Rgb>, String> {
     let t = s.trim();
@@ -242,6 +245,8 @@ pub struct Design {
     pub height: f64,
     pub background: Rgb,
     pub margin: f64,
+    /// The graph paper's cell size (None: about eight across the page).
+    pub cell: Option<f64>,
     pub layers: Vec<Layer>,
 }
 
@@ -262,6 +267,7 @@ impl Design {
             height,
             background: [255, 255, 255],
             margin: (width.min(height) * 0.05).round(),
+            cell: None,
             layers: Vec::new(),
         }
     }
@@ -381,6 +387,20 @@ impl Design {
                 return Err("margin must be 0 or more".into());
             }
             self.margin = m;
+        }
+        if let Some(c) = args.cell_size {
+            if !(c.is_finite() && c >= 0.0) {
+                return Err("cell_size must be 0 (cells sized for the page) or more".into());
+            }
+            self.cell = (c > 0.0).then_some(c);
+        }
+        if let Some(c) = self.cell {
+            let most = (self.width / c).ceil().max((self.height / c).ceil());
+            if most > MAX_CELLS {
+                return Err(format!(
+                    "cells of {c} make {most} across the page; at most {MAX_CELLS} (give a bigger cell_size)"
+                ));
+            }
         }
         for id in args.remove.iter().flatten() {
             let i = self.index(id)?;
@@ -831,9 +851,13 @@ impl Design {
         Ok(cap)
     }
 
-    /// The design's cells: about eight across the page.
+    /// The design's cells: `cell` units square, or about eight across the
+    /// page.
     pub fn cells(&self) -> crate::cells::Cells {
-        crate::cells::Cells::new(0.0, self.width, 0.0, self.height, false, None)
+        match self.cell {
+            Some(c) => crate::cells::Cells::with_step(0.0, self.width, 0.0, self.height, false, c),
+            None => crate::cells::Cells::new(0.0, self.width, 0.0, self.height, false, None),
+        }
     }
 
     /// One cell magnified, with a fine grid in the design's units, and

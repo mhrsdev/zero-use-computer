@@ -38,17 +38,27 @@ impl Cells {
     /// `target` (a part of the area: what is being drawn), or for the
     /// whole area.
     pub fn new(x0: f64, x1: f64, y0: f64, y1: f64, y_up: bool, target: Option<Span>) -> Cells {
-        let (ax0, ax1) = (x0.min(x1), x0.max(x1));
-        let (ay0, ay1) = (y0.min(y1), y0.max(y1));
         let t = target.unwrap_or(Span {
-            x0: ax0,
-            x1: ax1,
-            y0: ay0,
-            y1: ay1,
+            x0: x0.min(x1),
+            x1: x0.max(x1),
+            y0: y0.min(y1),
+            y1: y0.max(y1),
         });
         let span = (t.x1 - t.x0).abs().max((t.y1 - t.y0).abs());
         let step = if span > 0.0 && span.is_finite() {
             imaging::nice_step(span, ACROSS)
+        } else {
+            1.0
+        };
+        Self::with_step(x0, x1, y0, y1, y_up, step)
+    }
+
+    /// Cells of `step` units over the area (lines on its multiples).
+    pub fn with_step(x0: f64, x1: f64, y0: f64, y1: f64, y_up: bool, step: f64) -> Cells {
+        let (ax0, ax1) = (x0.min(x1), x0.max(x1));
+        let (ay0, ay1) = (y0.min(y1), y0.max(y1));
+        let step = if step > 0.0 && step.is_finite() {
+            step
         } else {
             1.0
         };

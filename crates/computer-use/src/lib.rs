@@ -26,6 +26,9 @@
 //!   the agent's own cursor, a glow and a status label in state colours;
 //!   it is click-through, left out of screenshots, and gone the moment the
 //!   work ends or the process dies. The real mouse is never taken.
+//! * **Scripts.** The `script` tool runs small programs (Rhai, sandboxed)
+//!   for loops over tools, maths, data and graph-paper pages; saved ones
+//!   become tools of their own (see [`script`]).
 //! * **No access control.** The engine does not decide which apps or actions
 //!   are allowed; that is up to the agent (see the security skill in
 //!   `skills/computer-use-security`) or the embedding host.
@@ -65,6 +68,7 @@ pub mod privacy;
 pub mod roles;
 pub mod scene;
 pub mod screens;
+pub mod script;
 pub mod target;
 pub mod text;
 pub mod tools;
