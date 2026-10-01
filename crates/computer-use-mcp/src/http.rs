@@ -187,7 +187,7 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             json!({
                 "protocolVersion": negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str)),
                 "capabilities": crate::catalog::capabilities(false),
-                "serverInfo": {"name": "computer-use", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "computer-use", "title": "computer-use (mhrsdev)", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": instructions(),
             }),
         ),

@@ -69,7 +69,7 @@ pub fn hash_str(s: &str) -> u64 {
 }
 
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
-const ROOT_SHAPE: u64 = 0xcbf2_9ce4_8422_2325;
+const ROOT_SHAPE: u64 = 0x006d_6872_7364_6576;
 
 /// Fold a value into a hash (FNV-1a over its bytes).
 fn mix(mut h: u64, v: u64) -> u64 {

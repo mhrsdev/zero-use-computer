@@ -29,7 +29,7 @@ cp "$rel/$exe" "$out/"
 cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/install.cmd scripts/claude-code/README.txt "$out/"
 cp -r examples "$out/"
 cp docs/CONNECT.md "$out/docs/"
-cp README.md LICENSE "$out/"
+cp README.md LICENSE NOTICE "$out/"
 # plugin-files.sh also copies the skills/ folder (computer-use, computer-use-security).
 bash scripts/claude-code/plugin-files.sh "$out" "$exe"
 chmod +x "$out/$exe" "$out/install.sh" 2>/dev/null || true

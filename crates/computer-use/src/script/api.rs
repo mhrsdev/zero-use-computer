@@ -568,7 +568,7 @@ pub(super) fn run(
 ) -> Outcome {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0x9e37_79b9, |d| d.as_nanos() as u64)
+        .map_or(0x6d68_7273, |d| d.as_nanos() as u64)
         | 1;
     let ctx = Rc::new(Ctx {
         env: job.env.clone(),

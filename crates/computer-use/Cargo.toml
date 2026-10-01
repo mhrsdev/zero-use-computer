@@ -4,6 +4,8 @@ description = "Codex-style computer use for any agent: accessibility-tree + scre
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 

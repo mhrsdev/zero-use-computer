@@ -182,7 +182,14 @@ fn curl(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<Command,
         .args(["--proto", "=http,https", "--proto-redir", "=http,https"])
         .args(["--max-time", &format!("{secs:.0}")])
         .args(["--max-filesize", &MAX_FETCH.to_string()])
-        .args(["-A", concat!("computer-use/", env!("CARGO_PKG_VERSION"))]);
+        .args([
+            "-A",
+            concat!(
+                "computer-use/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/mhrsdev/zero-use-computer)"
+            ),
+        ]);
     if let Some(m) = &req.method {
         let m = m.trim().to_uppercase();
         if !m.chars().all(|c| c.is_ascii_uppercase()) || m.is_empty() {

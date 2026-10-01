@@ -946,6 +946,7 @@ impl Design {
         let scale = if side > 4096.0 { 4096.0 / side } else { 1.0 };
         self.paint(scale, fonts)?
             .encode_png()
+            .map(crate::imaging::signed_png)
             .map_err(|e| format!("could not write the PNG: {e}"))
     }
 
@@ -967,7 +968,7 @@ impl Design {
                 .replace('"', "&quot;")
         };
         let mut out = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\n<rect id=\"background\" width=\"{w}\" height=\"{h}\" fill=\"{}\"/>\n",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\n<metadata>computer-use design board, by mhrsdev (github.com/mhrsdev/zero-use-computer)</metadata>\n<rect id=\"background\" width=\"{w}\" height=\"{h}\" fill=\"{}\"/>\n",
             hex(self.background),
             w = n(self.width),
             h = n(self.height)

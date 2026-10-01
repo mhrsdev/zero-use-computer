@@ -2820,6 +2820,7 @@ impl<B: Backend> Engine<B> {
                     pm.data_mut().copy_from_slice(&pic.rgba);
                     let bytes = pm
                         .encode_png()
+                        .map(imaging::signed_png)
                         .map_err(|e| Error::InvalidArgs(format!("could not write the PNG: {e}")))?;
                     let path = self
                         .exports

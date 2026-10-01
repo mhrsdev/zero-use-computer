@@ -5,7 +5,7 @@
 Scripts: the model writes a small program and the server runs it, for
 what the tools can't do in one call, on the graph-paper page or anywhere
 else; and a saved script becomes a tool of its own
-([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.5.7...v2.6.0)).
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v2.5.7...v2.6.0)).
 
 ### New
 
@@ -63,8 +63,13 @@ else; and a saved script becomes a tool of its own
 
 ### Other
 
-- **License: Apache-2.0** (it was MIT or Apache-2.0). The release zips now
-  include the license file.
+- **License: Apache-2.0** (it was MIT or Apache-2.0), with a NOTICE file
+  that copies and derivative works must keep. The release zips include
+  both. The project now lives at
+  [github.com/mhrsdev/zero-use-computer](https://github.com/mhrsdev/zero-use-computer).
+- What the server writes says where it comes from: exported SVG, PNG and
+  OBJ files name computer-use, as do `--help`, `doctor`, the MCP server
+  title and the web requests scripts make.
 - `examples/compare.rs` measures one agent session in Codex's behaviour
   and with this server's defaults: over 10 round trips the model gets
   ~85% fewer tokens (6.6x) and 2 screenshots instead of 21 (README,
@@ -82,7 +87,7 @@ else; and a saved script becomes a tool of its own
 See a drawing before it is built: a design board for 2D, a scene for 3D,
 graph-paper cells to place and check every part, and exact aiming at small
 targets
-([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.5.1...v2.5.7)).
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v2.5.1...v2.5.7)).
 
 ### New
 
@@ -154,7 +159,7 @@ targets
 
 Better drawing and copying of pictures, from a test where a smaller model
 copied a photo of a cat in Paint
-([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.5.0...v2.5.1)).
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v2.5.0...v2.5.1)).
 
 ### New
 
@@ -189,7 +194,7 @@ copied a photo of a cat in Paint
 ## v2.5.0
 
 Compared with v2.0.0
-([all commits](https://github.com/mhrsdev/zero-use-computer-/compare/v2.0.0...v2.5.0)).
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v2.0.0...v2.5.0)).
 
 ### New
 

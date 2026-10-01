@@ -23,7 +23,8 @@ use server::Server;
 #[command(
     name = "computer-use-mcp",
     version,
-    about = "Codex-style computer use over MCP: control desktop apps via their accessibility tree + screenshots."
+    about = "Codex-style computer use over MCP: control desktop apps via their accessibility tree + screenshots.",
+    after_help = "computer-use by mhrsdev: https://github.com/mhrsdev/zero-use-computer"
 )]
 struct Cli {
     #[command(flatten)]
@@ -442,7 +443,10 @@ fn state(
 }
 
 fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
-    println!("computer-use-mcp {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "computer-use-mcp {} (mhrsdev/zero-use-computer)",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("platform: {}", computer_use::PLATFORM);
     let cfg_path = config_path(common);
     let exists = cfg_path.exists();

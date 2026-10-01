@@ -4,6 +4,8 @@ description = "MCP stdio server and CLI exposing Codex-style computer use to any
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 

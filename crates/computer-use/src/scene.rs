@@ -5,6 +5,8 @@
 //! picture, to one scale with a grid; it is checked for parts that float,
 //! sink or run into each other; and it is written out as the numbers to
 //! build it in a 3D app, or as an OBJ file to import.
+//!
+//! Written by mhrsdev — https://github.com/mhrsdev/zero-use-computer
 
 use std::f64::consts::TAU;
 
@@ -1039,9 +1041,9 @@ impl Scene {
     /// the MTL file it names.
     pub fn obj(&self, name: &str, mtl_file: &str) -> (String, String) {
         let mut obj = format!(
-            "# Scene \"{name}\": metres, Z up in the scene (OBJ's Y up here).\nmtllib {mtl_file}\n"
+            "# Scene \"{name}\": metres, Z up in the scene (OBJ's Y up here).\n# Planned with computer-use (mhrsdev/zero-use-computer on GitHub).\nmtllib {mtl_file}\n"
         );
-        let mut mtl = String::new();
+        let mut mtl = String::from("# computer-use scene colours (by mhrsdev)\n\n");
         let mut colours: Vec<Rgb> = Vec::new();
         let mut next = 1usize;
         for o in &self.objects {

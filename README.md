@@ -782,4 +782,6 @@ cargo check -p computer-use --target x86_64-pc-windows-msvc
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the [Apache License, Version 2.0](LICENSE); copies and
+derivative works must keep the [NOTICE](NOTICE). Made by
+[mhrsdev](https://github.com/mhrsdev).

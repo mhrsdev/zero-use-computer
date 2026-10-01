@@ -22,8 +22,8 @@ cat > "$dir/.claude-plugin/plugin.json" <<JSON
   "version": "$version",
   "description": "Control desktop apps (Windows, macOS, Linux) through their accessibility tree plus screenshots: an MCP server with an on-screen indicator, an emergency stop key, and skills for using it and for staying safe.",
   "author": { "name": "mhrsdev" },
-  "homepage": "https://github.com/mhrsdev/zero-use-computer-",
-  "repository": "https://github.com/mhrsdev/zero-use-computer-",
+  "homepage": "https://github.com/mhrsdev/zero-use-computer",
+  "repository": "https://github.com/mhrsdev/zero-use-computer",
   "license": "Apache-2.0",
   "keywords": ["mcp", "computer-use", "desktop", "accessibility", "automation"]
 }

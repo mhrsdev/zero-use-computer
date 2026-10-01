@@ -194,7 +194,7 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         json!({
             "protocolVersion": protocol,
             "capabilities": crate::catalog::capabilities(true),
-            "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
+            "serverInfo": {"name": SERVER_NAME, "title": "computer-use (mhrsdev)", "version": env!("CARGO_PKG_VERSION")},
             "instructions": instructions(),
         })
     }

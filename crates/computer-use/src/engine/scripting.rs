@@ -1,5 +1,5 @@
 //! The `script` tool: running scripts and serving what they ask for, and
-//! saved scripts as tools of their own.
+//! saved scripts as tools of their own. (computer-use, by mhrsdev)
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;

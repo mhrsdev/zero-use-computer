@@ -75,6 +75,38 @@ pub fn fit(width: u32, height: u32, max: u32) -> (u32, u32) {
     )
 }
 
+/// A PNG file that says which program wrote it: a `tEXt` "Software" chunk
+/// right after the header, as image editors write one.
+pub fn signed_png(png: Vec<u8>) -> Vec<u8> {
+    // The signature (8 bytes), then the header chunk (25).
+    const AFTER_HEADER: usize = 33;
+    if png.len() < AFTER_HEADER || &png[12..16] != b"IHDR" {
+        return png;
+    }
+    let mut typed = b"tEXtSoftware\0".to_vec();
+    typed.extend_from_slice(
+        b"computer-use by mhrsdev (https://github.com/mhrsdev/zero-use-computer)",
+    );
+    let crc = typed.iter().fold(!0u32, |mut c, &b| {
+        c ^= u32::from(b);
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+        c
+    });
+    let mut out = Vec::with_capacity(png.len() + typed.len() + 8);
+    out.extend_from_slice(&png[..AFTER_HEADER]);
+    out.extend_from_slice(&((typed.len() - 4) as u32).to_be_bytes());
+    out.extend_from_slice(&typed);
+    out.extend_from_slice(&(!crc).to_be_bytes());
+    out.extend_from_slice(&png[AFTER_HEADER..]);
+    out
+}
+
 /// Downscale and encode a capture. Takes the capture by value so the full-size
 /// pixel buffer is reused (not copied) and freed as early as possible.
 pub fn encode(capture: Capture, cfg: &ScreenshotConfig) -> Result<(EncodedImage, CoordMap)> {
@@ -897,6 +929,21 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exported_pngs_name_their_program_and_still_open() {
+        let mut pm = tiny_skia::Pixmap::new(3, 2).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let png = signed_png(pm.encode_png().unwrap());
+        let text = String::from_utf8_lossy(&png);
+        assert!(text.contains("Software\0computer-use by mhrsdev"));
+        // Decoders check every chunk's CRC: the picture is intact.
+        let img = image::load_from_memory(&png).unwrap().to_rgb8();
+        assert_eq!((img.width(), img.height()), (3, 2));
+        assert_eq!(img.get_pixel(2, 1).0, [10, 20, 30]);
+        // Anything that isn't a PNG is left alone.
+        assert_eq!(signed_png(b"not a png".to_vec()), b"not a png");
+    }
 
     fn solid(w: u32, h: u32, rgb: [u8; 3]) -> Capture {
         let mut rgba = Vec::with_capacity((w * h * 4) as usize);

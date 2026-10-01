@@ -9,6 +9,8 @@
 //! ordinary tool call — the stop key, the pause while the user works and
 //! the masking all apply. What a script does alone (maths, text, files, the
 //! web) never touches the engine.
+//!
+//! zero-use-computer · mhrsdev
 
 mod api;
 mod io;
