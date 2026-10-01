@@ -93,7 +93,11 @@ pub fn start_watchdog(parent: Option<u32>) {
                 if !orphaned {
                     since = None;
                 } else if since.get_or_insert_with(Instant::now).elapsed() >= WATCHDOG_GRACE {
-                    std::process::exit(0);
+                    // At once, without exit handlers or destructors: the
+                    // main thread may be stuck inside AppKit holding locks
+                    // they would wait for.
+                    // SAFETY: ends the process; nothing runs after it.
+                    unsafe { libc::_exit(0) };
                 }
             }
         });

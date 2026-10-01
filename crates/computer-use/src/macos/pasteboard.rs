@@ -5,12 +5,10 @@ use objc2_foundation::NSString;
 
 use crate::error::{Error, Result};
 
-/// Marker types (nspasteboard.org) that password managers and the like put
-/// on what they copy: secret, or not meant to be kept or read by others.
-const CONCEALED: [&str; 2] = [
-    "org.nspasteboard.ConcealedType",
-    "org.nspasteboard.TransientType",
-];
+/// The marker type (nspasteboard.org) password managers put on what they
+/// copy: a secret. (TransientType only asks clipboard histories not to keep
+/// it, as text expanders do with everything: that is ordinary text.)
+const CONCEALED: [&str; 1] = ["org.nspasteboard.ConcealedType"];
 
 /// Most clipboard text returned (bytes of UTF-8).
 const MAX_BYTES: usize = 1 << 20;

@@ -29,6 +29,9 @@ use crate::types::{AppInfo, Display, Rect, WindowOp};
 
 /// How long to wait for a posted window change to show.
 const CHANGE_WAIT: Duration = Duration::from_millis(500);
+/// How long a busy app may take to restore a minimized or maximized window
+/// before the window is changed further.
+const RESTORE_WAIT: Duration = Duration::from_secs(3);
 /// How long to wait for each attempt at bringing a window to the front.
 const FRONT_WAIT: Duration = Duration::from_millis(150);
 
@@ -130,7 +133,10 @@ fn in_front(hwnd: HWND) -> bool {
     // SAFETY: read-only queries.
     unsafe {
         let fg = GetForegroundWindow();
-        !fg.0.is_null() && (fg == hwnd || GetAncestor(fg, GA_ROOTOWNER) == hwnd)
+        // A minimized window can be the foreground one, with nothing shown.
+        !fg.0.is_null()
+            && (fg == hwnd || GetAncestor(fg, GA_ROOTOWNER) == hwnd)
+            && !IsIconic(hwnd).as_bool()
     }
 }
 
@@ -197,7 +203,14 @@ pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
             responding()?;
             if iconic() {
                 show_async(hwnd, SW_RESTORE, "restore")?;
-                wait_until(CHANGE_WAIT, || !iconic());
+                // Still minimized, it would "come to the front" with nothing
+                // of it on screen: input would land on what is there instead.
+                if !wait_until(RESTORE_WAIT, || !iconic()) {
+                    return Err(Error::ActionFailed(format!(
+                        "{} hasn't restored its window from the taskbar yet (it may be busy); try again in a moment",
+                        app.name
+                    )));
+                }
             }
             // Raise it, without waiting on its thread.
             let _ = set_pos_async(hwnd, Some(HWND_TOP), (0, 0, 0, 0), SWP_NOMOVE | SWP_NOSIZE);
@@ -212,7 +225,13 @@ pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
             responding()?;
             if zoomed() || iconic() {
                 show_async(hwnd, SW_RESTORE, "restore")?;
-                wait_until(CHANGE_WAIT, || !zoomed() && !iconic());
+                // Moved before the restore lands, the restore would undo it.
+                if !wait_until(RESTORE_WAIT, || !zoomed() && !iconic()) {
+                    return Err(Error::ActionFailed(format!(
+                        "{} hasn't restored its window yet (it may be busy); try again in a moment",
+                        app.name
+                    )));
+                }
             }
             let want = (
                 r.x.round() as i32,

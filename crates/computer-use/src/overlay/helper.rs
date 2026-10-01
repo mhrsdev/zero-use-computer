@@ -40,8 +40,14 @@ pub enum SurfaceEvent {
 pub trait Surface {
     /// Whether screen captures leave the overlay out by themselves.
     fn excluded_from_capture(&self) -> bool;
-    /// The main screen, in screen units.
+    /// The area the overlay covers, in screen units (every monitor, where
+    /// it spans several); everything drawn stays inside it.
     fn screen(&self) -> Rect;
+    /// The screen the glow runs around and the label sits on when there is
+    /// no target window (the primary monitor where `screen` spans several).
+    fn main_screen(&self) -> Rect {
+        self.screen()
+    }
     /// Space taken at the top of the screen by the system (the macOS menu
     /// bar), kept clear of the label.
     fn top_inset(&self) -> f64 {
@@ -665,6 +671,7 @@ impl Painter {
         });
         let ppu = s.px_per_unit().max(0.1);
         let screen = s.screen();
+        let main = s.main_screen();
 
         // Fading: natively where the platform can, else by redrawing.
         let o = (scene.opacity * 48.0).round() / 48.0;
@@ -695,13 +702,13 @@ impl Painter {
         let window_mode = cfg.border_target == crate::config::BorderTarget::Window;
         let area = |target: Option<Rect>| match target {
             Some(r) if window_mode => r,
-            _ => screen,
+            _ => main,
         };
         // Where the label goes: centred on `cx`, above `top` if it fits, else at `inside`.
         let mut place = (
-            screen.x + screen.width / 2.0,
-            screen.y,
-            screen.y + s.top_inset() + core + 10.0,
+            main.x + main.width / 2.0,
+            main.y,
+            main.y + s.top_inset() + core + 10.0,
         );
         let bands = scene.border.map(|(target, color)| {
             let r = area(target);
@@ -712,12 +719,13 @@ impl Painter {
                 screen.y + screen.height,
             );
             let (rr, rb) = (r.x + r.width, r.y + r.height);
-            let edges: [(f64, f64, f64, f64, u8); 4] = if r == screen {
+            let edges: [(f64, f64, f64, f64, u8); 4] = if r == main {
+                let (mx, my, mr, mb) = (main.x, main.y, main.x + main.width, main.y + main.height);
                 [
-                    (sx, sy, screen.width, band, 0),
-                    (sr - band, sy, band, screen.height, 1),
-                    (sx, sb - band, screen.width, band, 2),
-                    (sx, sy, band, screen.height, 3),
+                    (mx, my, main.width, band, 0),
+                    (mr - band, my, band, main.height, 1),
+                    (mx, mb - band, main.width, band, 2),
+                    (mx, my, band, main.height, 3),
                 ]
             } else {
                 let room = |v: f64| v >= band / 2.0;

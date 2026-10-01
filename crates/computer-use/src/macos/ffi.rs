@@ -29,8 +29,27 @@ pub const kAXErrorAPIDisabled: AXError = -25211;
 /// The attribute has no value.
 pub const kAXErrorNoValue: AXError = -25212;
 
+/// `kAXErrorCannotComplete` that came back at once: the app didn't time
+/// out (it may be launching, or this element can't answer through AX, as in
+/// some views hosted by another process), so it says nothing about the next
+/// call. Not a code macOS uses.
+pub const kAXErrorCannotCompleteAtOnce: AXError = -25299;
+
+/// Under this, `kAXErrorCannotComplete` is no timeout.
+const AT_ONCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `err`, with a `kAXErrorCannotComplete` that came back sooner than any
+/// timeout told apart ([`kAXErrorCannotCompleteAtOnce`]).
+fn timed(err: AXError, started: std::time::Instant) -> AXError {
+    if err == kAXErrorCannotComplete && started.elapsed() < AT_ONCE {
+        kAXErrorCannotCompleteAtOnce
+    } else {
+        err
+    }
+}
+
 /// An error after which no further call to the app does better for now:
-/// it isn't answering, or Accessibility access was revoked.
+/// it isn't answering (it timed out), or Accessibility access was revoked.
 pub fn is_fatal(err: AXError) -> bool {
     err == kAXErrorCannotComplete || err == kAXErrorAPIDisabled
 }
@@ -162,10 +181,11 @@ fn as_ref(s: &CFString) -> CFStringRef {
 pub fn try_copy_attr(element: AXUIElementRef, attr: &str) -> Result<CFType, AXError> {
     let name = cfstr(attr);
     let mut out: CFTypeRef = ptr::null();
+    let started = std::time::Instant::now();
     let err = unsafe { AXUIElementCopyAttributeValue(element, as_ref(&name), &mut out) };
     // SAFETY: a +1 reference from a Copy call, released on drop.
     let value = (!out.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(out) });
-    check(err)?;
+    check(timed(err, started))?;
     value.ok_or(kAXErrorNoValue)
 }
 
@@ -327,12 +347,13 @@ pub fn copy_attrs(element: AXUIElementRef, names: &[&str]) -> Result<Vec<Option<
     let cf_names: Vec<CFString> = names.iter().map(|n| cfstr(n)).collect();
     let array = CFArray::from_CFTypes(&cf_names);
     let mut out: CFTypeRef = ptr::null();
+    let started = std::time::Instant::now();
     let err = unsafe {
         AXUIElementCopyMultipleAttributeValues(element, array.as_CFTypeRef(), 0, &mut out)
     };
     // SAFETY: a +1 reference from a Copy call, released on drop.
     let values = (!out.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(out) });
-    check(err)?;
+    check(timed(err, started))?;
     let values = values
         .and_then(|v| v.downcast::<CFArray>())
         .ok_or(kAXErrorNoValue)?;

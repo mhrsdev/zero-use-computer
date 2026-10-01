@@ -514,8 +514,9 @@ impl Backend for MacBackend {
         let focused_id = ffi::copy_single_element(app_el.as_ref(), "AXFocusedWindow")
             .and_then(|f| ffi::window_id(f.as_ref()));
 
-        // This listing replaces the app's previous window handles.
-        self.window_handles.retain(|_, (p, _)| *p != app.pid);
+        // This listing replaces the app's previous window handles, once it
+        // has worked (a failed one leaves them as they were).
+        let mut handles = Vec::new();
         let mut out = Vec::new();
         for win in windows {
             let title = match ffi::read_attr(win.as_ref(), "AXTitle") {
@@ -532,7 +533,7 @@ impl Backend for MacBackend {
                 .unwrap_or_else(|| stable_id(&title, out.len()));
             let handle = self.next_handle;
             self.next_handle += 1;
-            self.window_handles.insert(handle, (app.pid, win.clone()));
+            handles.push((handle, (app.pid, win.clone())));
             out.push(WindowInfo {
                 id,
                 title: if title.is_empty() {
@@ -547,6 +548,8 @@ impl Backend for MacBackend {
                 handle,
             });
         }
+        self.window_handles.retain(|_, (p, _)| *p != app.pid);
+        self.window_handles.extend(handles);
         Ok(out)
     }
 

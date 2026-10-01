@@ -13,8 +13,10 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GA_ROOT, GetAncestor, GetSystemMetrics, GetWindowRect, IsIconic, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WindowFromPoint,
+    GA_ROOT, GW_HWNDPREV, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetSystemMetrics, GetWindow,
+    GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WINDOW_EX_STYLE, WS_EX_TRANSPARENT,
+    WindowFromPoint,
 };
 
 use super::wm::hung;
@@ -130,6 +132,12 @@ pub fn capture_window(hwnd: HWND, app: &str) -> Result<Capture> {
                 "{app} is not responding and its window is minimized, so it can't be captured; wait a moment and try again"
             )));
         }
+        // Off the screen, a window over it would be taken for it.
+        if covered(hwnd, &frame) {
+            return Err(Error::ActionFailed(format!(
+                "{app} is not responding and other windows cover it, so it can't be captured; wait a moment and try again"
+            )));
+        }
         log::info!("{app} is not responding; capturing its window off the screen");
         return capture_screen(Some(frame_rect(&frame)));
     }
@@ -204,6 +212,44 @@ fn on_top(hwnd: HWND, frame: &RECT) -> bool {
         }
         let at = WindowFromPoint(centre);
         !at.0.is_null() && GetAncestor(at, GA_ROOT) == hwnd
+    }
+}
+
+/// Whether a window the user sees lies over part of `frame` (`hwnd`'s).
+/// Walks the windows above it in z-order: no messages are sent, so this
+/// works while `hwnd` hangs. Windows that show nothing of their own are
+/// skipped: cloaked ones, click-through overlays (this server's included)
+/// and the frozen "ghost" copy Windows shows of a hung window.
+fn covered(hwnd: HWND, frame: &RECT) -> bool {
+    // SAFETY: plain window queries; each handle comes from GetWindow.
+    unsafe {
+        let mut h = GetWindow(hwnd, GW_HWNDPREV).unwrap_or_default();
+        for _ in 0..1024 {
+            if h.0.is_null() {
+                return false;
+            }
+            let mut r = RECT::default();
+            let ex = WINDOW_EX_STYLE(GetWindowLongW(h, GWL_EXSTYLE) as u32);
+            let mut class = [0u16; 16];
+            let n = GetClassNameW(h, &mut class).max(0) as usize;
+            let shows = IsWindowVisible(h).as_bool()
+                && !IsIconic(h).as_bool()
+                && !ex.contains(WS_EX_TRANSPARENT)
+                && String::from_utf16_lossy(&class[..n.min(class.len())]) != "Ghost"
+                && !super::ghost(h);
+            if shows
+                && GetWindowRect(h, &mut r).is_ok()
+                && r.left < frame.right
+                && frame.left < r.right
+                && r.top < frame.bottom
+                && frame.top < r.bottom
+            {
+                return true;
+            }
+            h = GetWindow(h, GW_HWNDPREV).unwrap_or_default();
+        }
+        // Too many to tell: say it is covered.
+        true
     }
 }
 

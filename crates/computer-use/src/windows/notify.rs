@@ -79,7 +79,10 @@ fn read() -> Result<Vec<Notification>> {
             },
             ASYNC_WAIT,
         ) {
-            return Err(denied());
+            // Not refused: the user may never have seen the question.
+            return Err(Error::Permission(
+                "Windows didn't answer the request for notification access (its prompt may not have shown); turn on notification access for this program in Settings > Privacy & security > Notifications".into(),
+            ));
         }
         status = op.GetResults().map_err(wine)?;
     }

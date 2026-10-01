@@ -1372,9 +1372,12 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// A window that is "visible" without being an app window the user sees:
 /// cloaked by DWM (on another virtual desktop, a suspended store app, a
-/// shell window kept for later), this server's own overlay, or another
-/// popup that is both a tool window and never activated (overlays, toasts).
-fn ghost(hwnd: HWND) -> bool {
+/// shell window kept for later; clicks there would land on the desktop in
+/// view, so these are left out as Alt+Tab leaves them out), this server's
+/// own overlay, or another untitled popup that is both a tool window and
+/// never activated (overlays, toasts; titled ones, like a meeting's
+/// floating controls, stay).
+pub(super) fn ghost(hwnd: HWND) -> bool {
     let mut cloaked = 0u32;
     // SAFETY: DWM writes one DWORD into `cloaked`.
     let is_cloaked = unsafe {
@@ -1392,7 +1395,10 @@ fn ghost(hwnd: HWND) -> bool {
     }
     // SAFETY: plain window queries.
     let ex = WINDOW_EX_STYLE(unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32);
-    if ex.contains(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) {
+    // SAFETY: plain window query.
+    if ex.contains(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+        && unsafe { GetWindowTextLengthW(hwnd) } == 0
+    {
         return true;
     }
     let mut class = [0u16; 64];
