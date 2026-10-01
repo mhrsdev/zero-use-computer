@@ -1477,6 +1477,17 @@ impl<B: Backend> Engine<B> {
         if self.depth == 1 {
             self.overlay_send(OverlayCmd::Begin);
         }
+        // Calls that make big pictures or run on a thread of their own.
+        let heavy = matches!(
+            call,
+            ToolCall::Design(_)
+                | ToolCall::Scene(_)
+                | ToolCall::TraceImage(_)
+                | ToolCall::Script(_)
+                | ToolCall::Screenshot(_)
+                | ToolCall::Draw(_)
+                | ToolCall::Locate(_)
+        );
         let out = self.dispatch(call);
         if self.depth == 1 && self.overlay.is_some() {
             let ok = out.as_ref().is_ok_and(|o| !o.is_error);
@@ -1485,11 +1496,15 @@ impl<B: Backend> Engine<B> {
         self.depth -= 1;
         if self.depth == 0 {
             // Only the image in the final result reaches the model.
-            if out.as_ref().is_ok_and(|o| o.image.is_some()) {
+            let imaged = out.as_ref().is_ok_and(|o| o.image.is_some());
+            if imaged {
                 self.commit_images();
             } else {
                 self.pending_images.clear();
                 self.pending_screen_shot = None;
+            }
+            if imaged || heavy {
+                trim_heap();
             }
         }
         out
@@ -5428,6 +5443,19 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::PressKey(a) => Some(a.app.clone()),
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
+    }
+}
+
+/// Give memory freed by a big call back to the system. glibc keeps freed
+/// heap (and a finished thread's arena) for reuse, so without this the
+/// server would stay at its largest size; elsewhere the allocator returns
+/// it by itself.
+fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only releases free memory; it is safe to call at
+    // any time.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 

@@ -1945,6 +1945,33 @@ fn strip_descriptions(v: &mut Value) {
     }
 }
 
+/// A property whose schema repeats an earlier one's word for word (a
+/// design's `change` items are its `add` items) is sent as just its type:
+/// the model has the keys already, and they are the biggest part of the
+/// tool list.
+fn share_repeats(schema: &mut Value) {
+    let Some(Value::Object(props)) = schema.get_mut("properties") else {
+        return;
+    };
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (name, prop) in props.iter_mut() {
+        let text = prop.to_string();
+        if text.len() < 200 {
+            continue;
+        }
+        if let Some((first, _)) = seen.iter().find(|(_, t)| *t == text) {
+            let kind = prop.get("type").cloned().unwrap_or(json!("object"));
+            let mut short = json!({"type": kind, "description": format!("Same keys as {first}.")});
+            if kind == "array" {
+                short["items"] = json!({"type": "object"});
+            }
+            *prop = short;
+        } else {
+            seen.push((name.clone(), text));
+        }
+    }
+}
+
 /// Size of what a model actually receives for these tools (name,
 /// description and input schema), in JSON characters.
 pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
@@ -1988,6 +2015,7 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
                     d.description = short.into();
                 }
                 strip_descriptions(&mut d.input_schema);
+                share_repeats(&mut d.input_schema);
             }
             d
         })
@@ -2131,6 +2159,27 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(definitions_for(&cfg).len(), 2);
+    }
+
+    #[test]
+    fn compact_schemas_send_a_repeated_schema_once() {
+        use crate::config::ToolsConfig;
+        let compact = definitions_for(&ToolsConfig::default());
+        for name in ["design", "scene"] {
+            let d = compact.iter().find(|d| d.name == name).unwrap();
+            let props = &d.input_schema["properties"];
+            assert!(props["add"]["items"]["properties"].is_object(), "{name}");
+            assert_eq!(
+                props["change"]["items"],
+                json!({"type": "object"}),
+                "{name}"
+            );
+            assert_eq!(props["change"]["description"], "Same keys as add.");
+        }
+        // Full descriptions keep every schema as it is.
+        let full = definitions();
+        let design = full.iter().find(|d| d.name == "design").unwrap();
+        assert!(design.input_schema["properties"]["change"]["items"]["properties"].is_object());
     }
 
     #[test]

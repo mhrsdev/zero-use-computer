@@ -2,14 +2,40 @@
 //! ordering, so labels in right-to-left scripts (Arabic script, Hebrew) and
 //! mixed-direction text render correctly.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use rustybuzz::ttf_parser::{GlyphId, OutlineBuilder};
 use rustybuzz::{Direction, Face, UnicodeBuffer};
 use tiny_skia::{Path, PathBuilder};
 
+/// A font file mapped into memory: its pages are shared with the system's
+/// file cache and only those in use stay resident (Arial Unicode alone is
+/// 22 MB), and each file is mapped once per process.
+type FontData = Arc<memmap2::Mmap>;
+
+fn open_font(path: &str) -> Option<FontData> {
+    static OPEN: OnceLock<Mutex<HashMap<String, Option<FontData>>>> = OnceLock::new();
+    let mut open = OPEN
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    open.entry(path.to_string())
+        .or_insert_with(|| {
+            let file = std::fs::File::open(path).ok()?;
+            // SAFETY: a font file isn't changed while programs use it; the
+            // map is only read, as every program that maps fonts does.
+            let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+            Face::from_slice(&map, 0)?;
+            Some(Arc::new(map))
+        })
+        .clone()
+}
+
 /// Loaded font files, tried in order for each run of text.
 #[derive(Default)]
 pub struct Fonts {
-    faces: Vec<(Vec<u8>, u32)>,
+    faces: Vec<(FontData, u32)>,
 }
 
 impl Fonts {
@@ -37,12 +63,10 @@ impl Fonts {
             if faces.len() >= 4 {
                 break;
             }
-            let Ok(data) = std::fs::read(&p) else {
+            let Some(data) = open_font(&p) else {
                 continue;
             };
-            if Face::from_slice(&data, 0).is_some()
-                && !faces.iter().any(|(d, _): &(Vec<u8>, u32)| *d == data)
-            {
+            if !faces.iter().any(|(d, _)| Arc::ptr_eq(d, &data)) {
                 faces.push((data, 0));
             }
         }
