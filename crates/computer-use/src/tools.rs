@@ -147,6 +147,13 @@ pub struct ClickArgs {
     pub button: MouseButton,
     #[serde(default = "one", alias = "clicks")]
     pub click_count: u8,
+    /// Move x/y to the nearest "corner", "edge", "center" (of the small
+    /// shape there) or colour ("#RRGGBB") first.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub snap: Option<String>,
+    /// How far to look for it, in screenshot pixels (default 10).
+    #[serde(default)]
+    pub snap_radius: Option<f64>,
 }
 
 fn one() -> u8 {
@@ -237,6 +244,40 @@ pub struct DragArgs {
     pub to_element_index: Option<u32>,
     pub to_x: Option<f64>,
     pub to_y: Option<f64>,
+    /// Snap the x/y ends, as for click.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub snap: Option<String>,
+    #[serde(default)]
+    pub snap_radius: Option<f64>,
+}
+
+/// Find exact places in a window: areas of a colour, look-alikes of a
+/// part of it, or the nearest corner, edge or centre to a point.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocateArgs {
+    pub app: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    /// Where to look: [left, top, right, bottom] in screenshot pixels
+    /// (default: the whole window).
+    #[serde(default, rename = "box")]
+    pub area: Option<[f64; 4]>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub color: Option<String>,
+    /// Largest difference per channel still counted as the colour.
+    #[serde(default)]
+    pub tolerance: Option<f64>,
+    /// [left, top, right, bottom] of something to find again elsewhere.
+    #[serde(default)]
+    pub like: Option<[f64; 4]>,
+    #[serde(default)]
+    pub near: Option<DrawPoint>,
+    /// What to find near the point: "corner", "edge" or "center".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub feature: Option<String>,
+    #[serde(default)]
+    pub radius: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -532,6 +573,12 @@ pub struct ScreenshotArgs {
     /// trace_image: where it differs most.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub compare: Option<String>,
+    /// Magnify around this point (screenshot pixels of a window), to aim.
+    #[serde(default)]
+    pub zoom: Option<DrawPoint>,
+    /// How far around it, in screen pixels (default 12).
+    #[serde(default)]
+    pub radius: Option<f64>,
 }
 
 /// The design board: compose a picture from layers, see it, then put it
@@ -880,6 +927,7 @@ pub enum ToolCall {
     Drag(DragArgs),
     Draw(DrawArgs),
     Design(DesignArgs),
+    Locate(LocateArgs),
     TraceImage(TraceImageArgs),
     PressKey(PressKeyArgs),
     TypeText(TypeTextArgs),
@@ -913,6 +961,7 @@ impl ToolCall {
             "draw" => ToolCall::Draw(parse_args(name, args)?),
             "trace_image" => ToolCall::TraceImage(parse_args(name, args)?),
             "design" => ToolCall::Design(parse_args(name, args)?),
+            "locate" => ToolCall::Locate(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
             "find_element" => ToolCall::FindElement(parse_args(name, args)?),
@@ -941,6 +990,7 @@ impl ToolCall {
             ToolCall::Draw(_) => "draw",
             ToolCall::TraceImage(_) => "trace_image",
             ToolCall::Design(_) => "design",
+            ToolCall::Locate(_) => "locate",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
             ToolCall::FindElement(_) => "find_element",
@@ -1085,6 +1135,10 @@ fn layer_props() -> Value {
     json!({"type": "object", "properties": Value::Object(m), "additionalProperties": false})
 }
 
+fn snap_prop() -> Value {
+    json!({"type": "string", "description": "Move the x/y point to the nearest \"corner\", \"edge\", \"center\" (of the small shape there) or colour \"#RRGGBB\" first, to hit it exactly."})
+}
+
 fn hover_prop(axis: &str) -> Value {
     json!({"type": "number", "description": format!("{axis} in screenshot pixels: point the mouse there first, for apps that send keys to what is under the pointer (Blender, some CAD apps).")})
 }
@@ -1146,7 +1200,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "x": coord_prop("X"),
                     "y": coord_prop("Y"),
                     "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
-                    "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1}
+                    "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
+                    "snap": snap_prop(),
+                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."}
                 }),
                 &[],
             ),
@@ -1224,7 +1280,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "from_y": coord_prop("Start Y"),
                     "to_element_index": index_prop("Drop target element."),
                     "to_x": coord_prop("End X"),
-                    "to_y": coord_prop("End Y")
+                    "to_y": coord_prop("End Y"),
+                    "snap": snap_prop(),
+                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."}
                 }),
                 &[],
             ),
@@ -1276,6 +1334,25 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
             annotations: read_only("Trace a picture"),
+        },
+        ToolDefinition {
+            name: "locate",
+            title: "Locate exactly",
+            description: "Find exact places in a window, in the x/y click takes: color=\"#RRGGBB\" (every area of that colour, with its centre and box), like=[l,t,r,b] (every other place that looks like that part of the window: the same icon, button or marker), or near=[x,y] with feature corner/edge/center (the exact point next to a rough one). box limits where to look. Use it before clicking small or custom-drawn targets.",
+            input_schema: schema(
+                app_props(),
+                json!({
+                    "box": {"type": "array", "items": {"type": "number"}, "description": "[left, top, right, bottom] in screenshot pixels: where to look (default: the whole window)."},
+                    "color": {"type": "string", "description": "\"#RRGGBB\": find the areas of this colour."},
+                    "tolerance": {"type": "number", "description": "Largest difference per colour channel still counted (default 16)."},
+                    "like": {"type": "array", "items": {"type": "number"}, "description": "[left, top, right, bottom] of something to find again."},
+                    "near": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: a rough point."},
+                    "feature": {"type": "string", "enum": ["corner", "edge", "center"], "description": "What to find near the point."},
+                    "radius": {"type": "number", "description": "How far from near to look, in screenshot pixels (default 12)."}
+                }),
+                &[],
+            ),
+            annotations: read_only("Locate exactly"),
         },
         ToolDefinition {
             name: "design",
@@ -1373,7 +1450,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot",
             title: "Screenshot",
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most.",
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most. zoom=[x,y] magnifies around a point to aim a click exactly.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1390,7 +1467,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "palette": {"type": "boolean", "description": "List the image's main colours (hex, share)."},
                     "pick": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]: the exact colour at each point."},
                     "canvas": canvas_prop(),
-                    "compare": {"type": "string", "description": "A trace_image name: compare the canvas with it."}
+                    "compare": {"type": "string", "description": "A trace_image name: compare the canvas with it."},
+                    "zoom": {"type": "array", "items": {"type": "number"}, "description": "[x, y] (window shots): a magnified view around this point, each screen pixel a square, with a crosshair on it and a grid in the x/y click takes. To aim exactly."},
+                    "radius": {"type": "number", "description": "How far around the zoom point, in screen pixels (default 12)."}
                 },
                 "additionalProperties": false
             }),
@@ -1491,7 +1570,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded."
         }
         "click" => {
-            "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double."
+            "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it."
         }
         "perform_secondary_action" => {
             "Run one of an element's listed actions=[...] (not a plain click)."
@@ -1511,6 +1590,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         }
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
+        "locate" => {
+            "Exact places in a window (x/y click takes): color=#hex areas, like=[l,t,r,b] look-alikes, or near=[x,y] + feature corner/edge/center."
+        }
         "design" => {
             "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; returns the picture, layers, checks and paint steps; export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
         }
@@ -1518,7 +1600,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
         }
         "screenshot" => {
-            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs; zoom=[x,y]: magnified view to aim."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
         "window" => {
@@ -1621,7 +1703,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 22);
+        assert_eq!(defs.len(), 23);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1675,7 +1757,10 @@ mod tests {
             "align": [{"ids": ["a"], "x": "center", "y": "middle", "to": "page"}],
             "distribute": [{"ids": ["a", "b", "c"], "axis": "y"}],
             "order": [{"id": "a", "to": "front"}],
-            "show": {"grid": true, "ids": true, "guides": true}, "export": "svg"
+            "show": {"grid": true, "ids": true, "guides": true}, "export": "svg",
+            "snap": "corner", "snap_radius": 8, "zoom": [5, 5], "radius": 10,
+            "color": "00ff00", "tolerance": 20, "like": [0, 0, 5, 5], "near": [3, 3],
+            "feature": "edge"
             }"#,
         )
         .unwrap();
@@ -1696,7 +1781,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 22);
+        assert_eq!(compact.len(), 23);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

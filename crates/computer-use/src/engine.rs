@@ -1516,6 +1516,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Draw(a) => self.draw(a),
             ToolCall::TraceImage(a) => self.trace_image(a),
             ToolCall::Design(a) => self.design(a),
+            ToolCall::Locate(a) => self.locate(a),
             ToolCall::PressKey(a) => self.press_key(a),
             ToolCall::TypeText(a) => self.type_text(a),
             ToolCall::FindElement(a) => self.find_element(a),
@@ -1973,7 +1974,20 @@ impl<B: Backend> Engine<B> {
         let app = self.resolve_app(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let count = args.click_count.clamp(1, 3);
-        let anchor = self.anchor(&app, args.element_index, args.x, args.y, "click")?;
+        let (x, y, snapped) = match &args.snap {
+            None => (args.x, args.y, String::new()),
+            Some(how) => {
+                let (Some(x), Some(y)) = (args.x, args.y) else {
+                    return Err(Error::InvalidArgs(
+                        "snap moves an x/y point: give x and y".into(),
+                    ));
+                };
+                let (nx, ny, note) =
+                    self.snap_xy(&app, args.window.as_deref(), x, y, how, args.snap_radius)?;
+                (Some(nx), Some(ny), note)
+            }
+        };
+        let anchor = self.anchor(&app, args.element_index, x, y, "click")?;
         // What things looked like, to tell whether the click did anything.
         let before = self.tree_fingerprint(app.pid);
         let what = self.describe_anchor(&app, &anchor);
@@ -2044,7 +2058,10 @@ impl<B: Backend> Engine<B> {
             (_, 3) => "Triple-clicked",
             _ => "Clicked",
         };
-        let mut msg = format!("{verb} {what} at ({:.0}, {:.0}).{note}", point.x, point.y);
+        let mut msg = format!(
+            "{verb} {what} at ({:.0}, {:.0}).{note}{snapped}",
+            point.x, point.y
+        );
         if self.verified() && self.tree_fingerprint(app.pid) == before {
             msg.push_str(NO_CHANGE_NOTE);
         }
@@ -2218,20 +2235,27 @@ impl<B: Backend> Engine<B> {
     fn drag(&mut self, args: DragArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
-        let from = self.anchor(
-            &app,
-            args.from_element_index,
-            args.from_x,
-            args.from_y,
-            "drag source",
-        )?;
-        let to = self.anchor(
-            &app,
-            args.to_element_index,
-            args.to_x,
-            args.to_y,
-            "drag target",
-        )?;
+        let (mut fx, mut fy, mut tx, mut ty) = (args.from_x, args.from_y, args.to_x, args.to_y);
+        let mut snapped = String::new();
+        if let Some(how) = &args.snap {
+            let mut any = false;
+            for (x, y, end) in [(&mut fx, &mut fy, "start"), (&mut tx, &mut ty, "end")] {
+                if let (Some(px), Some(py)) = (*x, *y) {
+                    let (nx, ny, note) =
+                        self.snap_xy(&app, args.window.as_deref(), px, py, how, args.snap_radius)?;
+                    (*x, *y) = (Some(nx), Some(ny));
+                    snapped.push_str(&note.replace(" Snapped", &format!(" The {end} snapped")));
+                    any = true;
+                }
+            }
+            if !any {
+                return Err(Error::InvalidArgs(
+                    "snap moves x/y points: give from_x/from_y or to_x/to_y".into(),
+                ));
+            }
+        }
+        let from = self.anchor(&app, args.from_element_index, fx, fy, "drag source")?;
+        let to = self.anchor(&app, args.to_element_index, tx, ty, "drag target")?;
         let (p0, p1) = (
             self.anchor_point(&app, &from)?,
             self.anchor_point(&app, &to)?,
@@ -2243,7 +2267,7 @@ impl<B: Backend> Engine<B> {
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
         let mut msg = format!(
-            "Dragged from ({:.0}, {:.0}) to ({:.0}, {:.0}).",
+            "Dragged from ({:.0}, {:.0}) to ({:.0}, {:.0}).{snapped}",
             p0.x, p0.y, p1.x, p1.y
         );
         if self.verified() && self.tree_fingerprint(app.pid) == before {
@@ -3101,6 +3125,242 @@ impl<B: Backend> Engine<B> {
         Ok(msg)
     }
 
+    /// A fresh, clean picture of the window to aim with, and the map
+    /// between the x/y actions take (the latest get_app_state screenshot)
+    /// and the screen.
+    fn aim_capture(&mut self, app: &AppInfo, window: Option<&str>) -> Result<(Capture, CoordMap)> {
+        if self.store.config.text_only || !self.store.config.screenshot.enabled {
+            return Err(Error::Blocked(
+                "pixel targeting".into(),
+                "it reads the screen, and screenshots are disabled (text_only / screenshot.enabled=false)"
+                    .into(),
+            ));
+        }
+        let map = self
+            .state(app.pid)
+            .ok()
+            .and_then(|s| s.coord)
+            .ok_or_else(|| {
+                Error::InvalidArgs(
+                    "x/y are in the pixels of get_app_state's screenshot: call get_app_state first"
+                        .into(),
+                )
+            })?;
+        let window = self.resolve_window(app, window, false)?;
+        let mut cap = self.capture_clean(|b| b.capture(app, &window))?;
+        self.redact_capture(&mut cap);
+        Ok((cap, map))
+    }
+
+    /// The x/y point snapped to `how` ("corner", "edge", "center", a
+    /// colour) within `radius` screenshot pixels, and a note saying how
+    /// far it moved.
+    fn snap_xy(
+        &mut self,
+        app: &AppInfo,
+        window: Option<&str>,
+        x: f64,
+        y: f64,
+        how: &str,
+        radius: Option<f64>,
+    ) -> Result<(f64, f64, String)> {
+        use crate::target::{Feature, snap};
+        let feature = Feature::parse(how).map_err(Error::InvalidArgs)?;
+        let (cap, map) = self.aim_capture(app, window)?;
+        let r = radius.unwrap_or(10.0).clamp(1.0, 100.0);
+        let at = to_capture(&cap, &map, x, y)?;
+        let per = to_capture(&cap, &map, x + 1.0, y)?.0 - at.0;
+        let found = snap(&cap, at, r * per.abs().max(1e-9), feature).ok_or_else(|| {
+            Error::InvalidArgs(format!(
+                "no {} within {r} pixels of ({x}, {y}), so nothing was done. Look with screenshot(app, zoom=[{x}, {y}]), or leave out snap",
+                feature.name()
+            ))
+        })?;
+        let (nx, ny) = from_capture(&cap, &map, found);
+        Ok((
+            nx,
+            ny,
+            format!(
+                " Snapped to the {} at ({nx:.1}, {ny:.1}), {}.",
+                feature.name(),
+                moved(nx - x, ny - y)
+            ),
+        ))
+    }
+
+    fn locate(&mut self, args: LocateArgs) -> Result<ToolOutput> {
+        use crate::target::{Feature, colour_blobs, look_alikes, snap};
+        let app = self.resolve_app(&args.app)?;
+        self.check_window(&app, args.window.as_deref())?;
+        let asked = [
+            args.color.is_some(),
+            args.like.is_some(),
+            args.near.is_some(),
+        ];
+        if asked.iter().filter(|a| **a).count() != 1 {
+            return Err(Error::InvalidArgs(
+                "give one of color (areas of a colour), like (look-alikes of a box) or near with feature (a corner, edge or centre next to a point)".into(),
+            ));
+        }
+        let (cap, map) = self.aim_capture(&app, args.window.as_deref())?;
+        let whole = Rect::new(0.0, 0.0, f64::from(cap.width), f64::from(cap.height));
+        let to_rect = |b: [f64; 4]| -> Result<Rect> {
+            let [l, t, r, bt] = b;
+            let a = to_capture(&cap, &map, l, t)?;
+            let z = to_capture(&cap, &map, r, bt)?;
+            let rect = Rect::new(
+                a.0.min(z.0),
+                a.1.min(z.1),
+                (z.0 - a.0).abs(),
+                (z.1 - a.1).abs(),
+            );
+            if rect.is_empty() {
+                return Err(Error::InvalidArgs(
+                    "a box is [left, top, right, bottom], right of left and below top".into(),
+                ));
+            }
+            Ok(rect)
+        };
+        let area = match args.area {
+            Some(b) => to_rect(b)?,
+            None => whole,
+        };
+        let back = |p: (f64, f64)| from_capture(&cap, &map, p);
+        let span = |r: Rect| {
+            let (a, z) = (back((r.x, r.y)), back((r.x + r.width, r.y + r.height)));
+            format!("box {:.0},{:.0} to {:.0},{:.0}", a.0, a.1, z.0, z.1)
+        };
+        // Results: (text, screen box to mark).
+        let mut marks: Vec<Rect> = Vec::new();
+        let screen_rect = |r: Rect| {
+            let b = cap.bounds;
+            let (sx, sy) = (
+                f64::from(cap.width) / b.width.max(1e-9),
+                f64::from(cap.height) / b.height.max(1e-9),
+            );
+            Rect::new(b.x + r.x / sx, b.y + r.y / sy, r.width / sx, r.height / sy)
+        };
+        let text = if let Some(c) = &args.color {
+            let colour = crate::design::parse_colour(c)
+                .map_err(Error::InvalidArgs)?
+                .ok_or_else(|| Error::InvalidArgs("color must be a colour, not none".into()))?;
+            let tol = args.tolerance.unwrap_or(16.0).clamp(0.0, 255.0) as i32;
+            let blobs = colour_blobs(&cap, area, colour, tol);
+            let shown: Vec<String> = blobs
+                .iter()
+                .take(10)
+                .enumerate()
+                .map(|(k, b)| {
+                    marks.push(screen_rect(b.bbox));
+                    let (x, y) = back(b.center);
+                    format!("{} at ({x:.1}, {y:.1}), {}", k + 1, span(b.bbox))
+                })
+                .collect();
+            if shown.is_empty() {
+                format!(
+                    "No {} (within {tol} per channel) here.",
+                    crate::design::hex(colour)
+                )
+            } else {
+                format!(
+                    "{} area{} of {} (within {tol}), biggest first: {}{}.",
+                    blobs.len(),
+                    if blobs.len() == 1 { "" } else { "s" },
+                    crate::design::hex(colour),
+                    shown.join("; "),
+                    if blobs.len() > 10 {
+                        "; and smaller ones"
+                    } else {
+                        ""
+                    }
+                )
+            }
+        } else if let Some(b) = args.like {
+            let template = to_rect(b)?;
+            let found = look_alikes(&cap, template, area, 0.85).map_err(Error::InvalidArgs)?;
+            let shown: Vec<String> = found
+                .iter()
+                .enumerate()
+                .map(|(k, m)| {
+                    marks.push(screen_rect(m.bbox));
+                    let (x, y) = back((
+                        m.bbox.x + m.bbox.width / 2.0,
+                        m.bbox.y + m.bbox.height / 2.0,
+                    ));
+                    let same =
+                        (m.bbox.x - template.x).abs() < 2.0 && (m.bbox.y - template.y).abs() < 2.0;
+                    format!(
+                        "{} at ({x:.1}, {y:.1}), match {:.0}%{}",
+                        k + 1,
+                        m.score * 100.0,
+                        if same { " (the one you gave)" } else { "" }
+                    )
+                })
+                .collect();
+            if shown.is_empty() {
+                "Nothing here looks like that box.".to_string()
+            } else {
+                format!(
+                    "{} place{} look like it, best first (centres): {}.",
+                    found.len(),
+                    if found.len() == 1 { "" } else { "s" },
+                    shown.join("; ")
+                )
+            }
+        } else {
+            let p = args.near.map(|p| p.xy()).unwrap_or_default();
+            let feature = Feature::parse(args.feature.as_deref().unwrap_or("center"))
+                .map_err(Error::InvalidArgs)?;
+            let r = args.radius.unwrap_or(12.0).clamp(1.0, 100.0);
+            let at = to_capture(&cap, &map, p.0, p.1)?;
+            let per = to_capture(&cap, &map, p.0 + 1.0, p.1)?.0 - at.0;
+            match snap(&cap, at, r * per.abs().max(1e-9), feature) {
+                Some(q) => {
+                    let (x, y) = back(q);
+                    let mark = 4.0 * per.abs().max(1.0);
+                    marks.push(screen_rect(Rect::new(
+                        q.0 - mark,
+                        q.1 - mark,
+                        2.0 * mark,
+                        2.0 * mark,
+                    )));
+                    format!(
+                        "The {} near ({}, {}): ({x:.1}, {y:.1}), {}.",
+                        feature.name(),
+                        p.0,
+                        p.1,
+                        moved(x - p.0, y - p.1)
+                    )
+                }
+                None => format!(
+                    "No {} within {r} pixels of ({}, {}).",
+                    feature.name(),
+                    p.0,
+                    p.1
+                ),
+            }
+        };
+        let text = format!("{text} Coordinates are the x/y click takes.");
+        let cfg = self.store.config.screenshot.clone();
+        if marks.is_empty() {
+            return Ok(ToolOutput::text(text));
+        }
+        // The window with each place found numbered, to check before acting.
+        let mut shown = cap;
+        let numbered: Vec<(u32, Rect)> = marks
+            .into_iter()
+            .enumerate()
+            .map(|(k, r)| (k as u32 + 1, r))
+            .collect();
+        imaging::annotate(&mut shown, &numbered);
+        let (img, _) = imaging::encode(shown, &cfg)?;
+        Ok(ToolOutput {
+            text,
+            image: Some(img),
+            is_error: false,
+        })
+    }
+
     /// A clean picture of the window (private areas blacked out), or
     /// `None` when screenshots are off.
     fn window_capture(&mut self, app: &AppInfo, window: Option<&str>) -> Result<Option<Capture>> {
@@ -3704,6 +3964,52 @@ impl<B: Backend> Engine<B> {
             image: Some(img),
             is_error: false,
         };
+
+        // A loupe: magnified around a point, to aim.
+        if let Some(z) = args.zoom {
+            let LabelSpace::Map(map) = space else {
+                return Err(Error::InvalidArgs(
+                    "zoom is for a window screenshot (app) after get_app_state: its x/y are in that screenshot's pixels".into(),
+                ));
+            };
+            let (x, y) = z.xy();
+            let at = to_capture(&capture, &map, x, y)?;
+            let per_x = to_capture(&capture, &map, x + 1.0, y)?.0 - at.0;
+            let per_y = to_capture(&capture, &map, x, y + 1.0)?.1 - at.1;
+            if at.0 < 0.0
+                || at.1 < 0.0
+                || at.0 >= f64::from(capture.width)
+                || at.1 >= f64::from(capture.height)
+            {
+                return Err(Error::InvalidArgs(format!(
+                    "({x}, {y}) is outside the window"
+                )));
+            }
+            let per_screen = f64::from(capture.width) / capture.bounds.width.max(1e-9);
+            let r = (args.radius.unwrap_or(12.0).clamp(3.0, 64.0) * per_screen)
+                .round()
+                .max(2.0) as usize;
+            let k = (480 / (2 * r + 1)).clamp(2, 32);
+            let (mut pic, origin) = crate::target::loupe(&capture, at.0, at.1, r, k)
+                .ok_or_else(|| Error::InvalidArgs("nothing to magnify there".into()))?;
+            let (ox, oy) = from_capture(&capture, &map, (origin.0 as f64, origin.1 as f64));
+            let ax = imaging::Axis {
+                offset: ox,
+                scale: 1.0 / (k as f64 * per_x.abs().max(1e-9)),
+            };
+            let ay = imaging::Axis {
+                offset: oy,
+                scale: 1.0 / (k as f64 * per_y.abs().max(1e-9)),
+            };
+            let used = imaging::draw_grid(&mut pic, ax, ay, 0.0, 1.0, None);
+            let under = imaging::color_at(&capture, at.0, at.1).unwrap_or_default();
+            let (img, _) = imaging::encode(pic, &cfg)?;
+            let text = format!(
+                "Magnified around ({x}, {y}) in {label}: each square is one pixel of the screen picture ({:.2} of the x/y click takes); the crosshair is the point, on {under}. The grid is labelled in the x/y click takes, a line every {used}: read an exact point off it.{note}",
+                1.0 / per_x.abs().max(1e-9)
+            );
+            return Ok(image(img, text));
+        }
 
         // Zoomed in on one element, at up to full resolution.
         if let Some(b) = zoom {
@@ -4644,6 +4950,49 @@ pub(crate) fn draw_shapes(
                 .then(frame.rotation(about, k * turn))
         })
         .collect())
+}
+
+/// The capture pixel an x/y point (screenshot pixels) falls on.
+fn to_capture(cap: &Capture, map: &CoordMap, x: f64, y: f64) -> Result<(f64, f64)> {
+    let p = map.to_screen(x, y)?;
+    let b = cap.bounds;
+    Ok((
+        (p.x - b.x) * f64::from(cap.width) / b.width.max(1e-9),
+        (p.y - b.y) * f64::from(cap.height) / b.height.max(1e-9),
+    ))
+}
+
+/// Back from a capture pixel to the x/y actions take.
+fn from_capture(cap: &Capture, map: &CoordMap, p: (f64, f64)) -> (f64, f64) {
+    let b = cap.bounds;
+    map.to_image(Point::new(
+        b.x + p.0 * b.width / f64::from(cap.width.max(1)),
+        b.y + p.1 * b.height / f64::from(cap.height.max(1)),
+    ))
+}
+
+/// "2.5 right and 1.0 up", or "not moved".
+fn moved(dx: f64, dy: f64) -> String {
+    let mut parts = Vec::new();
+    if dx.abs() >= 0.05 {
+        parts.push(format!(
+            "{:.1} {}",
+            dx.abs(),
+            if dx > 0.0 { "right" } else { "left" }
+        ));
+    }
+    if dy.abs() >= 0.05 {
+        parts.push(format!(
+            "{:.1} {}",
+            dy.abs(),
+            if dy > 0.0 { "down" } else { "up" }
+        ));
+    }
+    if parts.is_empty() {
+        "where you pointed".to_string()
+    } else {
+        format!("{} from where you pointed", parts.join(" and "))
+    }
 }
 
 /// Whether a `draw` stroke gives a shape of its own.
@@ -6267,6 +6616,100 @@ mod tests {
         assert!(out.text.contains("It is temporary"), "{}", out.text);
         drop(e);
         assert!(!path.exists(), "deleted with the server");
+    }
+
+    #[test]
+    fn pixel_targeting_snaps_finds_and_magnifies() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // A dark square drawn on the (mock) window: 200..260 x 150..210.
+        e.backend_mut().patch = Some((Rect::new(200.0, 150.0, 60.0, 60.0), 20));
+        // A click near the square's corner lands on it exactly.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 204, "y": 147, "snap": "corner"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Snapped to the corner at ("),
+            "{}",
+            out.text
+        );
+        let clicked = e
+            .backend()
+            .events
+            .iter()
+            .rev()
+            .find_map(|ev| match ev {
+                Event::Click(_, p, _, _) => Some(*p),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (clicked.x - 200.5).abs() <= 1.5 && (clicked.y - 150.5).abs() <= 1.5,
+            "{clicked:?}"
+        );
+        // Nothing to snap to: nothing is clicked.
+        let before = e.backend().events.len();
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 500, "y": 400, "snap": "edge", "snap_radius": 5}),
+        );
+        assert!(
+            out.is_error
+                && out
+                    .text
+                    .contains("no edge within 5 pixels of (500, 400), so nothing was done"),
+            "{}",
+            out.text
+        );
+        assert_eq!(e.backend().events.len(), before);
+
+        // Areas of a colour, look-alikes, and the centre near a point.
+        let out = e.call_tool(
+            "locate",
+            serde_json::json!({"app": "TextEdit", "color": "#141414"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("1 area of #141414 (within 16), biggest first: 1 at (230.0, 180.0), box 200,150 to 260,210"), "{}", out.text);
+        assert!(out.image.is_some());
+        let out = e.call_tool(
+            "locate",
+            serde_json::json!({"app": "TextEdit", "near": [238, 191], "feature": "center", "radius": 40}),
+        );
+        assert!(
+            out.text
+                .contains("The shape centre near (238, 191): (230.0, 180.0), 8.0 left and 11.0 up"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "locate",
+            serde_json::json!({"app": "TextEdit", "color": "#141414", "like": [0, 0, 5, 5]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("give one of"),
+            "{}",
+            out.text
+        );
+
+        // The loupe: a magnified view with a crosshair.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "zoom": [200, 150], "radius": 6}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.starts_with("Magnified around (200, 150)"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("the crosshair is the point, on #141414"),
+            "{}",
+            out.text
+        );
+        assert!(out.image.is_some());
     }
 
     #[test]

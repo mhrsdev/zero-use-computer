@@ -63,6 +63,7 @@ pub mod paint;
 pub mod privacy;
 pub mod roles;
 pub mod screens;
+pub mod target;
 pub mod text;
 pub mod tools;
 pub mod tree;
