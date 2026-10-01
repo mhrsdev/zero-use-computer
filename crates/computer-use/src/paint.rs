@@ -83,7 +83,7 @@ pub fn fill_check(
             let y = (by0 + j as i64) as f64 + 0.5;
             let mut xs = crossings(poly, y, false);
             xs.sort_by(f64::total_cmp);
-            for pair in xs.chunks_exact(2) {
+            for pair in xs.as_chunks::<2>().0 {
                 let i0 = ((pair[0] - 0.5).ceil() as i64 - bx0).max(0);
                 let i1 = ((pair[1] - 0.5).floor() as i64 - bx0).min(bw as i64 - 1);
                 for i in i0..=i1 {
@@ -126,13 +126,10 @@ pub fn fill_check(
     for k in (0..bw * bh).filter(|&k| core[k]) {
         *counts.entry(colour(k)).or_default() += 1;
     }
-    let Some(c0) = counts
+    let c0 = counts
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(c, _)| c)
-    else {
-        return None;
-    };
+        .map(|(c, _)| c)?;
     let kept = core[seed_k] && same(colour(seed_k), c0);
     let seed_k = if kept {
         seed_k
@@ -433,8 +430,8 @@ pub fn trace(src: &Capture, colors: usize, detail: Detail) -> Trace {
         let mut sums = vec![([0.0f32; 3], 0.0f32); 16];
         for (p, &l) in labels.iter().enumerate() {
             let e = &mut sums[usize::from(l)];
-            for c in 0..3 {
-                e.0[c] += labs[p][c];
+            for (acc, v) in e.0.iter_mut().zip(labs[p]) {
+                *acc += v;
             }
             e.1 += 1.0;
         }
@@ -604,7 +601,7 @@ pub fn render(t: &Trace, w: u32, h: u32) -> Capture {
             for j in 0..hu {
                 let mut xs = crossings(&poly, j as f64 + 0.5, false);
                 xs.sort_by(f64::total_cmp);
-                for pair in xs.chunks_exact(2) {
+                for pair in xs.as_chunks::<2>().0 {
                     let i0 = (pair[0] - 0.5).ceil().max(0.0) as usize;
                     let i1 = ((pair[1] - 0.5).floor().min(wu as f64 - 1.0)).max(-1.0);
                     if i1 < 0.0 {
@@ -672,8 +669,8 @@ fn cluster(labs: &[[f32; 3]], k: usize) -> Vec<u8> {
         let key = p.map(|v| (v / 6.0).floor() as i32);
         let e = bins.entry(key).or_insert((0, [0.0; 3]));
         e.0 += 1;
-        for c in 0..3 {
-            e.1[c] += p[c];
+        for (acc, v) in e.1.iter_mut().zip(p) {
+            *acc += v;
         }
     }
     // Common enough to be a region, not a speck or a blended edge.

@@ -955,8 +955,7 @@ pub fn brush_fill(outline: &[Point], width: f64, bleed: f64) -> Vec<Vec<Point>> 
         // Where the brush runs on this row, with the stretch of the row
         // each run stands for (to join it to the row above).
         let mut runs: Vec<((f64, f64), (f64, f64))> = Vec::new();
-        for pair in xs.chunks_exact(2) {
-            let (left, right) = (pair[0], pair[1]);
+        for &[left, right] in xs.as_chunks::<2>().0 {
             if right <= left {
                 continue;
             }
