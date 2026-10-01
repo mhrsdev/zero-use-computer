@@ -48,6 +48,7 @@
 //! MCP-capable agent — Codex, Claude Code, or your own — can use it.
 
 pub mod backend;
+pub mod cells;
 pub mod config;
 pub mod design;
 pub mod draw;

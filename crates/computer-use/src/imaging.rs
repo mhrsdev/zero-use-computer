@@ -422,6 +422,62 @@ impl Axis {
     }
 }
 
+/// Capital letters A to Z, for cell names.
+const LETTERS: [[u8; 15]; 26] = [
+    // A
+    [0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1],
+    // B
+    [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0],
+    // C
+    [0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1],
+    // D
+    [1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0],
+    // E
+    [1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1],
+    // F
+    [1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0],
+    // G
+    [0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1],
+    // H
+    [1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1],
+    // I
+    [1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1],
+    // J
+    [0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0],
+    // K
+    [1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1],
+    // L
+    [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1],
+    // M
+    [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1],
+    // N
+    [1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1],
+    // O
+    [0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0],
+    // P
+    [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0],
+    // Q
+    [0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1],
+    // R
+    [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1],
+    // S
+    [0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0],
+    // T
+    [1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    // U
+    [1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1],
+    // V
+    [1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0],
+    // W
+    [1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+    // X
+    [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1],
+    // Y
+    [1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    // Z
+    [1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1],
+];
+
 /// Glyphs for grid labels besides the digits: a minus sign and a point.
 const MINUS: [u8; 15] = [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0];
 const POINT: [u8; 15] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];
@@ -449,29 +505,80 @@ fn draw_glyph(cap: &mut Capture, pat: &[u8; 15], x: i64, y: i64, scale: i64, rgb
 
 /// `text` (digits and `-`) in a dark box with its top-left at (x, y).
 fn draw_label(cap: &mut Capture, text: &str, x: i64, y: i64, scale: i64) {
-    let w = text.chars().count() as i64 * (3 * scale + scale) + scale;
-    let h = 5 * scale + 2 * scale;
+    draw_tag(cap, text, x, y, scale, [255, 255, 0], [0, 0, 0]);
+}
+
+/// The size of a [`draw_tag`] label: (width, height).
+pub fn tag_size(text: &str, scale: i64) -> (i64, i64) {
+    (
+        text.chars().count() as i64 * (3 * scale + scale) + scale,
+        5 * scale + 2 * scale,
+    )
+}
+
+/// `text` (digits, capital letters, `.` and `-`) in `fg` on a box of
+/// `bg`, with its top-left at (x, y).
+pub fn draw_tag(
+    cap: &mut Capture,
+    text: &str,
+    x: i64,
+    y: i64,
+    scale: i64,
+    fg: [u8; 3],
+    bg: [u8; 3],
+) {
+    let (w, h) = tag_size(text, scale);
     for yy in 0..h {
         for xx in 0..w {
-            put(
-                &mut cap.rgba,
-                cap.width,
-                cap.height,
-                x + xx,
-                y + yy,
-                [0, 0, 0],
-            );
+            put(&mut cap.rgba, cap.width, cap.height, x + xx, y + yy, bg);
         }
     }
     let mut cx = x + scale;
     for c in text.chars() {
-        let pat = match c.to_digit(10) {
-            Some(d) => &DIGITS[d as usize],
-            None if c == '.' => &POINT,
-            None => &MINUS,
+        let pat = match c {
+            '0'..='9' => &DIGITS[c as usize - '0' as usize],
+            'A'..='Z' => &LETTERS[c as usize - 'A' as usize],
+            'a'..='z' => &LETTERS[c as usize - 'a' as usize],
+            '.' => &POINT,
+            _ => &MINUS,
         };
-        draw_glyph(cap, pat, cx, y + scale, scale, [255, 255, 0]);
+        draw_glyph(cap, pat, cx, y + scale, scale, fg);
         cx += 4 * scale;
+    }
+}
+
+/// `cap` blown up `k` times, each pixel a square (no smoothing).
+pub fn magnify(cap: &Capture, k: u32) -> Capture {
+    let k = k.max(1);
+    let (w, h) = (cap.width * k, cap.height * k);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let s = (((y / k) * cap.width + x / k) * 4) as usize;
+            let o = ((y * w + x) * 4) as usize;
+            if s + 4 <= cap.rgba.len() {
+                rgba[o..o + 4].copy_from_slice(&cap.rgba[s..s + 4]);
+            }
+        }
+    }
+    Capture {
+        width: w,
+        height: h,
+        rgba,
+        bounds: cap.bounds,
+    }
+}
+
+/// Mix `rgb` into the pixel at (x, y), `share` of it (0 to 1).
+pub fn blend(cap: &mut Capture, x: i64, y: i64, rgb: [u8; 3], share: f64) {
+    if x < 0 || y < 0 || x >= i64::from(cap.width) || y >= i64::from(cap.height) {
+        return;
+    }
+    let i = ((y as u32 * cap.width + x as u32) * 4) as usize;
+    let s = share.clamp(0.0, 1.0);
+    for (k, c) in rgb.iter().enumerate() {
+        cap.rgba[i + k] =
+            (f64::from(cap.rgba[i + k]) * (1.0 - s) + f64::from(*c) * s).round() as u8;
     }
 }
 
@@ -506,7 +613,7 @@ pub fn nice_step(span: f64, lines: f64) -> f64 {
 
 /// A grid label: whole numbers as such, fractions with just the decimals
 /// the step needs.
-fn grid_label(v: f64, step: f64) -> String {
+pub fn grid_label(v: f64, step: f64) -> String {
     let decimals = if step.fract() == 0.0 {
         0
     } else {

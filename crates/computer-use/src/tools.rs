@@ -573,6 +573,12 @@ pub struct ScreenshotArgs {
     /// trace_image: where it differs most.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub compare: Option<String>,
+    /// The named cells over the canvas (graph paper).
+    #[serde(default)]
+    pub cells: bool,
+    /// Just this cell of the canvas, magnified ("C4").
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub cell: Option<String>,
     /// Magnify around this point (screenshot pixels of a window), to aim.
     #[serde(default)]
     pub zoom: Option<DrawPoint>,
@@ -763,6 +769,12 @@ pub struct DesignShow {
     /// Margins, centre lines and thirds.
     #[serde(default)]
     pub guides: bool,
+    /// The named cells (on unless false).
+    #[serde(default)]
+    pub cells: Option<bool>,
+    /// Show just this cell, magnified ("C4").
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub cell: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -1372,7 +1384,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "align": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "x": {"type": "string", "enum": ["left", "center", "right"]}, "y": {"type": "string", "enum": ["top", "middle", "bottom"]}, "to": {"type": "string", "description": "page (default), margins, each other, or a layer id."}}, "required": ["ids"], "additionalProperties": false}},
                     "distribute": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "axis": {"type": "string", "enum": ["x", "y"]}}, "required": ["ids"], "additionalProperties": false}, "description": "Equal gaps between 3 or more layers."},
                     "order": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "to": {"type": "string", "enum": ["front", "back", "up", "down"]}}, "required": ["id", "to"], "additionalProperties": false}},
-                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}}, "additionalProperties": false, "description": "On the picture: a grid in the design's units, the layers' ids, guides (margins, centre, thirds)."},
+                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}, "cells": {"type": "boolean"}, "cell": {"type": "string"}}, "additionalProperties": false, "description": "On the picture: the named cells (A1 top-left, on unless cells=false), a grid in the design's units, the layers' ids, guides (margins, centre, thirds); cell=\"C4\" shows just that cell, magnified, with the layers in it."},
                     "export": {"type": "string", "enum": ["png", "svg"], "description": "Write a temporary file to import into an app."}
                 },
                 "required": ["name"],
@@ -1469,7 +1481,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "canvas": canvas_prop(),
                     "compare": {"type": "string", "description": "A trace_image name: compare the canvas with it."},
                     "zoom": {"type": "array", "items": {"type": "number"}, "description": "[x, y] (window shots): a magnified view around this point, each screen pixel a square, with a crosshair on it and a grid in the x/y click takes. To aim exactly."},
-                    "radius": {"type": "number", "description": "How far around the zoom point, in screen pixels (default 12)."}
+                    "radius": {"type": "number", "description": "How far around the zoom point, in screen pixels (default 12)."},
+                    "cells": {"type": "boolean", "description": "With canvas: named cells over the document (graph paper: columns A, B…, rows 1, 2…, about 8 across)."},
+                    "cell": {"type": "string", "description": "With canvas: just this cell (\"C4\"), magnified, with a fine grid and its colours."}
                 },
                 "additionalProperties": false
             }),
@@ -1760,7 +1774,7 @@ mod tests {
             "show": {"grid": true, "ids": true, "guides": true}, "export": "svg",
             "snap": "corner", "snap_radius": 8, "zoom": [5, 5], "radius": 10,
             "color": "00ff00", "tolerance": 20, "like": [0, 0, 5, 5], "near": [3, 3],
-            "feature": "edge"
+            "feature": "edge", "cells": true, "cell": "B2"
             }"#,
         )
         .unwrap();

@@ -2579,6 +2579,14 @@ impl<B: Backend> Engine<B> {
             plan.points(),
             plan.length,
         );
+        if let Some(t) = plan_span(frame, plan) {
+            let (cells, _) = drawing_cells(frame, Some(t));
+            msg.push_str(&format!(
+                " It covers cells {} (cells of {}, A1 top-left).",
+                cells.covering(t),
+                imaging::grid_label(cells.step, cells.step)
+            ));
+        }
         if plan.skipped > 0 {
             msg.push_str(&format!(
                 " {} sample(s) of a curve were outside {area} and were not drawn.",
@@ -2778,11 +2786,31 @@ impl<B: Backend> Engine<B> {
             return Ok(ToolOutput::text(text));
         }
         let show = args.show.clone().unwrap_or_default();
+        // One cell, magnified: its picture and what is in it.
+        if let Some(cell) = &show.cell {
+            let (picture, about) = d
+                .render_cell(cell, &mut self.fonts)
+                .map_err(Error::InvalidArgs)?;
+            text.push_str(&format!("\n{about}"));
+            let (img, _) = imaging::encode(picture, &cfg)?;
+            return Ok(ToolOutput {
+                text,
+                image: Some(img),
+                is_error: false,
+            });
+        }
         let extras = Extras {
             grid: show.grid,
             ids: show.ids,
             guides: show.guides,
+            cells: show.cells.unwrap_or(true),
         };
+        if extras.cells {
+            text.push_str(&format!(
+                "\nOn the picture, {} (A1 top-left); show {{\"cell\": \"C4\"}} looks at one closely.",
+                d.cells().describe()
+            ));
+        }
         let picture = d
             .render(cfg.max_dimension.clamp(256, 1024), extras, &mut self.fonts)
             .map_err(Error::InvalidArgs)?;
@@ -3515,7 +3543,7 @@ impl<B: Backend> Engine<B> {
         summary: String,
     ) -> Result<ToolOutput> {
         let text = format!(
-            "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the grid is in the coordinates you gave. Call draw again without preview to draw them."
+            "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the blue cells (A1 top-left, their lines labelled) are in the coordinates you gave. Call draw again without preview to draw them."
         );
         let Some(mut cap) = cap else {
             return Ok(ToolOutput::text(text));
@@ -3534,14 +3562,19 @@ impl<B: Backend> Engine<B> {
         let (cx0, cy0) = to_cap(Point::new(r.x, r.y));
         let (cx1, cy1) = to_cap(Point::new(r.x + r.width, r.y + r.height));
         let (ax, ay) = LabelSpace::Frame(*frame).axes(&cap, out_w);
-        imaging::draw_grid(
-            &mut cap,
-            ax,
-            ay,
-            0.0,
-            out_scale,
-            Some(Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0)),
-        );
+        // Graph paper sized to the drawing: over it (and a cell round it)
+        // when it is small in the area, else over the whole area.
+        let (cells, sized) = drawing_cells(frame, plan_span(frame, plan));
+        let mut clip = Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0);
+        if let (true, Some(t)) = (sized, plan_span(frame, plan)) {
+            let e = cells.step;
+            let a = to_cap(frame.to_screen(t.x0 - e, t.y0 - e));
+            let b = to_cap(frame.to_screen(t.x1 + e, t.y1 + e));
+            let (x0, x1) = (a.0.min(b.0).max(cx0), a.0.max(b.0).min(cx1));
+            let (y0, y1) = (a.1.min(b.1).max(cy0), a.1.max(b.1).min(cy1));
+            clip = Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
+        }
+        cells.draw(&mut cap, ax, ay, out_scale, Some(clip));
         let width = (2.0 * out_scale).round().max(2.0) as i64;
         for stroke in &plan.strokes {
             let pts: Vec<(f64, f64)> = stroke.iter().map(|p| to_cap(*p)).collect();
@@ -4064,6 +4097,23 @@ impl<B: Backend> Engine<B> {
                     .map_err(Error::InvalidArgs)?,
             );
         }
+        // Graph paper over a document: its cells, or one cell up close.
+        let mut cells = None;
+        if args.cells || args.cell.is_some() {
+            let LabelSpace::Frame(f) = space else {
+                return Err(Error::InvalidArgs(
+                    "cells need canvas: where the document is on screen".into(),
+                ));
+            };
+            let c = crate::cells::Cells::new(f.x0, f.x1, f.y0, f.y1, f.y_up(), None);
+            if let Some(name) = &args.cell {
+                let (col, row) = c.parse(name).map_err(Error::InvalidArgs)?;
+                let (pic, text) = cell_view(&capture, ax, ay, &c, col, row)?;
+                let (img, _) = imaging::encode(pic, &cfg)?;
+                return Ok(image(img, format!("{text}{note}")));
+            }
+            cells = Some((c, f));
+        }
         if let Some(marks) = marks {
             imaging::annotate(&mut capture, &marks);
         }
@@ -4071,17 +4121,7 @@ impl<B: Backend> Engine<B> {
             let out_scale = f64::from(capture.width) / f64::from(out_w.max(1));
             // A document's grid covers just the document.
             let clip = match space {
-                LabelSpace::Frame(f) => {
-                    let r = f.screen_rect();
-                    let sx = f64::from(capture.width) / capture.bounds.width.max(1e-9);
-                    let sy = f64::from(capture.height) / capture.bounds.height.max(1e-9);
-                    Some(Rect::new(
-                        (r.x - capture.bounds.x) * sx,
-                        (r.y - capture.bounds.y) * sy,
-                        r.width * sx,
-                        r.height * sy,
-                    ))
-                }
+                LabelSpace::Frame(f) => Some(capture_rect(&capture, f.screen_rect())),
                 _ => None,
             };
             let used = imaging::draw_grid(&mut capture, ax, ay, step, out_scale, clip);
@@ -4089,6 +4129,15 @@ impl<B: Backend> Engine<B> {
                 "\nGrid: a line every {}, labelled in {}.",
                 used,
                 space.describe()
+            ));
+        }
+        if let Some((c, f)) = cells {
+            let out_scale = f64::from(capture.width) / f64::from(out_w.max(1));
+            let clip = capture_rect(&capture, f.screen_rect());
+            c.draw(&mut capture, ax, ay, out_scale, Some(clip));
+            note.push_str(&format!(
+                "\nCells over the document: {} (A1 top-left); cell=\"C4\" looks at one closely.",
+                c.describe()
             ));
         }
 
@@ -4950,6 +4999,135 @@ pub(crate) fn draw_shapes(
                 .then(frame.rotation(about, k * turn))
         })
         .collect())
+}
+
+/// The box a drawing covers, in its frame's units.
+fn plan_span(frame: &crate::draw::Frame, plan: &crate::draw::Plan) -> Option<crate::cells::Span> {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for p in plan.strokes.iter().flatten() {
+        let (x, y) = frame.to_frame(*p);
+        (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+    }
+    (x0 <= x1).then_some(crate::cells::Span { x0, x1, y0, y1 })
+}
+
+/// Cells for a drawing on `frame`: sized to the drawing when it is small
+/// in the area (and then `true`), else to the whole area.
+fn drawing_cells(
+    frame: &crate::draw::Frame,
+    target: Option<crate::cells::Span>,
+) -> (crate::cells::Cells, bool) {
+    let (w, h) = ((frame.x1 - frame.x0).abs(), (frame.y1 - frame.y0).abs());
+    let small = target.filter(|t| {
+        let (tw, th) = (t.x1 - t.x0, t.y1 - t.y0);
+        tw.max(th) > 0.0 && tw < w * 0.35 && th < h * 0.35
+    });
+    (
+        crate::cells::Cells::new(frame.x0, frame.x1, frame.y0, frame.y1, frame.y_up(), small),
+        small.is_some(),
+    )
+}
+
+/// A screen rectangle in a capture's pixels.
+fn capture_rect(cap: &Capture, r: Rect) -> Rect {
+    let sx = f64::from(cap.width) / cap.bounds.width.max(1e-9);
+    let sy = f64::from(cap.height) / cap.bounds.height.max(1e-9);
+    Rect::new(
+        (r.x - cap.bounds.x) * sx,
+        (r.y - cap.bounds.y) * sy,
+        r.width * sx,
+        r.height * sy,
+    )
+}
+
+/// One cell of a document up close: the cell and a little around it,
+/// magnified, with a fine grid in the document's units and the cell's edges
+/// in blue, and what it says about it.
+fn cell_view(
+    cap: &Capture,
+    ax: imaging::Axis,
+    ay: imaging::Axis,
+    cells: &crate::cells::Cells,
+    col: usize,
+    row: usize,
+) -> Result<(Capture, String)> {
+    let sp = cells.span(col, row);
+    let pad = cells.step * 0.15;
+    let px = |a: imaging::Axis, v0: f64, v1: f64| {
+        let (p0, p1) = (a.pixel(v0), a.pixel(v1));
+        (p0.min(p1), p0.max(p1))
+    };
+    let (x0, x1) = px(ax, sp.x0 - pad, sp.x1 + pad);
+    let (y0, y1) = px(ay, sp.y0 - pad, sp.y1 + pad);
+    let (w, h) = (f64::from(cap.width), f64::from(cap.height));
+    let (x0, y0) = (x0.floor().clamp(0.0, w), y0.floor().clamp(0.0, h));
+    let (x1, y1) = (x1.ceil().clamp(0.0, w), y1.ceil().clamp(0.0, h));
+    if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+        return Err(Error::InvalidArgs(format!(
+            "cell {} is not on the screen",
+            crate::cells::Cells::name(col, row)
+        )));
+    }
+    let part = imaging::crop(
+        cap,
+        (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32),
+    );
+    // Its colours, from the cell alone.
+    let (cx0, cx1) = px(ax, sp.x0, sp.x1);
+    let (cy0, cy1) = px(ay, sp.y0, sp.y1);
+    let inner = imaging::crop(
+        cap,
+        (
+            cx0.max(0.0) as u32,
+            cy0.max(0.0) as u32,
+            (cx1 - cx0).max(1.0) as u32,
+            (cy1 - cy0).max(1.0) as u32,
+        ),
+    );
+    let k = (512 / part.width.max(part.height).max(1)).clamp(1, 16);
+    let mut pic = imaging::magnify(&part, k);
+    let kf = f64::from(k);
+    let (bx, by) = (ax.label(x0), ay.label(y0));
+    let (fx, fy) = (
+        imaging::Axis {
+            offset: bx,
+            scale: ax.scale / kf,
+        },
+        imaging::Axis {
+            offset: by,
+            scale: ay.scale / kf,
+        },
+    );
+    let fine = imaging::nice_step(cells.step, 10.0);
+    let used = imaging::draw_grid(&mut pic, fx, fy, fine, 1.0, None);
+    let (ex0, ex1) = px(fx, sp.x0, sp.x1);
+    let (ey0, ey1) = px(fy, sp.y0, sp.y1);
+    for t in 0..2 {
+        for x in ex0 as i64..=ex1 as i64 {
+            imaging::blend(&mut pic, x, ey0 as i64 + t, [40, 100, 210], 0.9);
+            imaging::blend(&mut pic, x, ey1 as i64 - t, [40, 100, 210], 0.9);
+        }
+        for y in ey0 as i64..=ey1 as i64 {
+            imaging::blend(&mut pic, ex0 as i64 + t, y, [40, 100, 210], 0.9);
+            imaging::blend(&mut pic, ex1 as i64 - t, y, [40, 100, 210], 0.9);
+        }
+    }
+    let colours: Vec<String> = imaging::palette(&inner, 5)
+        .iter()
+        .map(|(hex, share)| format!("{hex} {:.0}%", share * 100.0))
+        .collect();
+    let n = |v: f64| imaging::grid_label(v, fine);
+    let text = format!(
+        "Cell {} of the document: x {} to {}, y {} to {} (shown {k} times bigger, a grid line every {}, in the document's units; its edges in blue). Main colours: {}.",
+        crate::cells::Cells::name(col, row),
+        n(sp.x0),
+        n(sp.x1),
+        n(sp.y0),
+        n(sp.y1),
+        n(used),
+        colours.join(", ")
+    );
+    Ok((pic, text))
 }
 
 /// The capture pixel an x/y point (screenshot pixels) falls on.
@@ -6743,6 +6921,114 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    #[test]
+    fn cells_name_the_page_and_show_one_cell_close() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let canvas = serde_json::json!({"box": [0, 0, 800, 600], "size": [800, 600]});
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas, "cells": true}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains(
+                "Cells over the document: cells of 100: columns A to H from x 0, rows 1 to 6 from y 0 down"
+            ),
+            "{}",
+            out.text
+        );
+
+        // One cell up close, with its colours.
+        e.backend_mut().patch = Some((Rect::new(210.0, 110.0, 80.0, 80.0), 20));
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas, "cell": "c2"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.starts_with(
+                "Cell C2 of the document: x 200 to 300, y 100 to 200 (shown 3 times bigger"
+            ),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("#141414 64%"), "{}", out.text);
+        let img = out.image.unwrap();
+        assert!(img.width >= 390 && img.width <= 512, "{}", img.width);
+
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas, "cell": "J9"}),
+        );
+        assert!(
+            out.is_error && out.text.contains("cells are A1 to H6"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "cells": true}),
+        );
+        assert!(
+            out.is_error && out.text.contains("cells need canvas"),
+            "{}",
+            out.text
+        );
+
+        // Drawing says which cells a drawing covers; a small one gets
+        // smaller cells.
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "preview": true, "canvas": canvas,
+                "strokes": [{"rect": [100, 100, 300, 200]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("It covers cells B2 to D3 (cells of 100, A1 top-left)."),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "preview": true, "canvas": canvas,
+                "strokes": [{"rect": [100, 100, 40, 40]}]}),
+        );
+        assert!(
+            out.text.contains("(cells of 5, A1 top-left)"),
+            "{}",
+            out.text
+        );
+
+        // The design board names its cells and opens one.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "card", "size": [400, 200], "background": "#FFFFFF",
+                "add": [{"id": "disc", "ellipse": [100, 100, 60, 60], "fill": "#CC2222"}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains(
+                "On the picture, cells of 50: columns A to H from x 0, rows 1 to 4 from y 0 down"
+            ),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "card", "show": {"cell": "B2"}}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Cell B2: x 50 to 100, y 50 to 100")
+                && out.text.contains("Layers in it, back to front: disc."),
+            "{}",
+            out.text
+        );
+        assert!(out.image.is_some());
     }
 
     #[test]

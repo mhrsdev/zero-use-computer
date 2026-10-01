@@ -1,0 +1,465 @@
+//! Graph paper for drawing: the drawing area cut into square cells named
+//! like a chessboard (columns A, B, C… left to right, rows 1, 2, 3… from
+//! the top), their size a round number of the area's units chosen so that
+//! what is being drawn spans about eight of them. A point is found by
+//! counting cells, and a part of a drawing is checked one cell at a time.
+
+use crate::imaging::{self, Axis};
+use crate::types::{Capture, Rect};
+
+/// About this many cells across what is drawn.
+const ACROSS: f64 = 8.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cells {
+    /// Cell size, in the area's units.
+    pub step: f64,
+    /// Where column A starts (its left), in the area's units.
+    pub left: f64,
+    /// Where row 1 starts (its top), in the area's units.
+    pub top: f64,
+    /// y grows upwards (a math range): row 1 is still the top row.
+    pub y_up: bool,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// A cell's extent in the area's units (`y0` < `y1`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
+}
+
+impl Cells {
+    /// Cells over the area `x0`..`x1`, `y0`..`y1` (its units), sized for
+    /// `target` (a part of the area: what is being drawn), or for the
+    /// whole area.
+    pub fn new(x0: f64, x1: f64, y0: f64, y1: f64, y_up: bool, target: Option<Span>) -> Cells {
+        let (ax0, ax1) = (x0.min(x1), x0.max(x1));
+        let (ay0, ay1) = (y0.min(y1), y0.max(y1));
+        let t = target.unwrap_or(Span {
+            x0: ax0,
+            x1: ax1,
+            y0: ay0,
+            y1: ay1,
+        });
+        let span = (t.x1 - t.x0).abs().max((t.y1 - t.y0).abs());
+        let step = if span > 0.0 && span.is_finite() {
+            imaging::nice_step(span, ACROSS)
+        } else {
+            1.0
+        };
+        let left = (ax0 / step + 1e-9).floor() * step;
+        let cols = ((ax1 - left) / step - 1e-9).ceil().max(1.0) as usize;
+        let (top, rows) = if y_up {
+            let top = (ay1 / step - 1e-9).ceil() * step;
+            (top, ((top - ay0) / step - 1e-9).ceil().max(1.0) as usize)
+        } else {
+            let top = (ay0 / step + 1e-9).floor() * step;
+            (top, ((ay1 - top) / step - 1e-9).ceil().max(1.0) as usize)
+        };
+        Cells {
+            step,
+            left,
+            top,
+            y_up,
+            cols,
+            rows,
+        }
+    }
+
+    /// "A1"; after Z, AA, AB…
+    pub fn name(col: usize, row: usize) -> String {
+        format!("{}{}", Self::column(col), row + 1)
+    }
+
+    pub fn column(col: usize) -> String {
+        let mut n = col + 1;
+        let mut s = Vec::new();
+        while n > 0 {
+            let r = (n - 1) % 26;
+            s.push(b'A' + r as u8);
+            n = (n - 1) / 26;
+        }
+        s.reverse();
+        String::from_utf8(s).unwrap_or_default()
+    }
+
+    /// (column, row) of a cell name such as "C4".
+    pub fn parse(&self, name: &str) -> Result<(usize, usize), String> {
+        let t = name.trim().to_uppercase();
+        let letters: String = t.chars().take_while(|c| c.is_ascii_uppercase()).collect();
+        let digits = &t[letters.len()..];
+        let bad = || {
+            format!(
+                "\"{name}\" is not a cell here: cells are A1 to {}",
+                Self::name(self.cols.saturating_sub(1), self.rows.saturating_sub(1))
+            )
+        };
+        if letters.is_empty() || digits.is_empty() {
+            return Err(bad());
+        }
+        let col = letters
+            .bytes()
+            .fold(0usize, |acc, b| acc * 26 + usize::from(b - b'A' + 1))
+            - 1;
+        let row = digits.parse::<usize>().map_err(|_| bad())?;
+        if row == 0 || col >= self.cols || row > self.rows {
+            return Err(bad());
+        }
+        Ok((col, row - 1))
+    }
+
+    /// Where a cell is, in the area's units.
+    pub fn span(&self, col: usize, row: usize) -> Span {
+        let x0 = self.left + col as f64 * self.step;
+        let (y0, y1) = if self.y_up {
+            let top = self.top - row as f64 * self.step;
+            (top - self.step, top)
+        } else {
+            let top = self.top + row as f64 * self.step;
+            (top, top + self.step)
+        };
+        Span {
+            x0,
+            x1: x0 + self.step,
+            y0,
+            y1,
+        }
+    }
+
+    /// The cell a point is in (it may be outside the grid's columns and
+    /// rows).
+    pub fn at(&self, x: f64, y: f64) -> (i64, i64) {
+        let col = ((x - self.left) / self.step).floor() as i64;
+        let row = if self.y_up {
+            ((self.top - y) / self.step).floor() as i64
+        } else {
+            ((y - self.top) / self.step).floor() as i64
+        };
+        (col, row)
+    }
+
+    /// The cells a box covers, as "C2 to F5" (clipped to the grid).
+    pub fn covering(&self, s: Span) -> String {
+        let clamp = |(c, r): (i64, i64)| {
+            (
+                c.clamp(0, self.cols as i64 - 1) as usize,
+                r.clamp(0, self.rows as i64 - 1) as usize,
+            )
+        };
+        let (y_top, y_bottom) = if self.y_up {
+            (s.y1, s.y0)
+        } else {
+            (s.y0, s.y1)
+        };
+        let a = clamp(self.at(s.x0, y_top));
+        // A box ending exactly on a line doesn't reach the next cell.
+        let e = self.step * 1e-6;
+        let b = clamp(self.at(
+            s.x1 - e,
+            if self.y_up {
+                y_bottom + e
+            } else {
+                y_bottom - e
+            },
+        ));
+        if a == b {
+            Self::name(a.0, a.1)
+        } else {
+            format!("{} to {}", Self::name(a.0, a.1), Self::name(b.0, b.1))
+        }
+    }
+
+    /// "cells of 100: columns A to H from x 0, rows 1 to 6 from y 0 down".
+    pub fn describe(&self) -> String {
+        format!(
+            "cells of {}: columns A to {} from x {}, rows 1 to {} from y {} {}",
+            imaging::grid_label(self.step, self.step),
+            Self::column(self.cols.saturating_sub(1)),
+            imaging::grid_label(self.left, self.step),
+            self.rows,
+            imaging::grid_label(self.top, self.step),
+            if self.y_up { "up" } else { "down" }
+        )
+    }
+
+    /// Draw the cells over `cap` (whose pixels map to the area's units by
+    /// `ax`, `ay`), only within `clip` (capture pixels): blue lines, the
+    /// line values, and the cell names. `out_scale` capture pixels make
+    /// one pixel of the image sent, so lines and names stay readable.
+    pub fn draw(&self, cap: &mut Capture, ax: Axis, ay: Axis, out_scale: f64, clip: Option<Rect>) {
+        if cap.width == 0 || cap.height == 0 || ax.scale == 0.0 || ay.scale == 0.0 {
+            return;
+        }
+        let full = Rect::new(0.0, 0.0, f64::from(cap.width), f64::from(cap.height));
+        let c = clip.unwrap_or(full);
+        let (cx0, cy0) = (c.x.max(0.0), c.y.max(0.0));
+        let (cx1, cy1) = (
+            (c.x + c.width).min(full.width),
+            (c.y + c.height).min(full.height),
+        );
+        if cx1 <= cx0 || cy1 <= cy0 {
+            return;
+        }
+        let o = out_scale.max(1.0);
+        let line = (o.round() as i64).max(1);
+        let blue = [40, 100, 210];
+        // Lines on the cell edges.
+        let xs: Vec<f64> = (0..=self.cols)
+            .map(|k| ax.pixel(self.left + k as f64 * self.step))
+            .collect();
+        let ys: Vec<f64> = (0..=self.rows)
+            .map(|k| {
+                let v = if self.y_up {
+                    self.top - k as f64 * self.step
+                } else {
+                    self.top + k as f64 * self.step
+                };
+                ay.pixel(v)
+            })
+            .collect();
+        let gx0 = xs.iter().copied().fold(f64::MAX, f64::min).max(cx0);
+        let gx1 = xs.iter().copied().fold(f64::MIN, f64::max).min(cx1);
+        let gy0 = ys.iter().copied().fold(f64::MAX, f64::min).max(cy0);
+        let gy1 = ys.iter().copied().fold(f64::MIN, f64::max).min(cy1);
+        for &x in &xs {
+            if x < cx0 - 0.5 || x > cx1 + 0.5 {
+                continue;
+            }
+            for t in 0..line {
+                let px = x.round() as i64 + t;
+                for y in gy0 as i64..gy1 as i64 {
+                    imaging::blend(cap, px, y, blue, 0.65);
+                }
+            }
+        }
+        for &y in &ys {
+            if y < cy0 - 0.5 || y > cy1 + 0.5 {
+                continue;
+            }
+            for t in 0..line {
+                let py = y.round() as i64 + t;
+                for x in gx0 as i64..gx1 as i64 {
+                    imaging::blend(cap, x, py, blue, 0.65);
+                }
+            }
+        }
+        // Names: column letters along the top, row numbers down the left,
+        // and each cell's name in its corner when cells are big enough.
+        let scale = (2.0 * o).round().max(2.0) as i64;
+        let cell_px = (xs.get(1).copied().unwrap_or(0.0) - xs[0]).abs() / o;
+        let white = [255, 255, 255];
+        for col in 0..self.cols {
+            let mid = (xs[col] + xs[col + 1]) / 2.0;
+            if mid < cx0 || mid > cx1 {
+                continue;
+            }
+            let name = Self::column(col);
+            let (w, _) = imaging::tag_size(&name, scale);
+            imaging::draw_tag(
+                cap,
+                &name,
+                mid as i64 - w / 2,
+                gy0 as i64 + line,
+                scale,
+                white,
+                blue,
+            );
+        }
+        for row in 0..self.rows {
+            let mid = (ys[row] + ys[row + 1]) / 2.0;
+            if mid < cy0 || mid > cy1 {
+                continue;
+            }
+            let name = (row + 1).to_string();
+            let (_, h) = imaging::tag_size(&name, scale);
+            imaging::draw_tag(
+                cap,
+                &name,
+                gx0 as i64 + line,
+                mid as i64 - h / 2,
+                scale,
+                white,
+                blue,
+            );
+        }
+        // Line values where they fit (cells at least ~60 pixels wide on
+        // the image sent).
+        if cell_px >= 60.0 {
+            for (k, &x) in xs.iter().enumerate().skip(1) {
+                if x < cx0 || x > cx1 - 4.0 {
+                    continue;
+                }
+                let v = imaging::grid_label(self.left + k as f64 * self.step, self.step);
+                imaging::draw_tag(
+                    cap,
+                    &v,
+                    x as i64 + line + 1,
+                    gy1 as i64 - 7 * scale - line,
+                    scale,
+                    [255, 255, 0],
+                    [0, 0, 0],
+                );
+            }
+            for (k, &y) in ys.iter().enumerate().skip(1) {
+                if y < cy0 + 4.0 || y > cy1 {
+                    continue;
+                }
+                let value = if self.y_up {
+                    self.top - k as f64 * self.step
+                } else {
+                    self.top + k as f64 * self.step
+                };
+                let v = imaging::grid_label(value, self.step);
+                let (w, h) = imaging::tag_size(&v, scale);
+                imaging::draw_tag(
+                    cap,
+                    &v,
+                    gx1 as i64 - w - line,
+                    y as i64 - h - line,
+                    scale,
+                    [255, 255, 0],
+                    [0, 0, 0],
+                );
+            }
+        }
+        if cell_px >= 90.0 {
+            let small = (o.round() as i64).max(1) * 2;
+            for col in 0..self.cols {
+                for row in 0..self.rows {
+                    let (x, y) = (xs[col].min(xs[col + 1]), ys[row].min(ys[row + 1]));
+                    if x < cx0 || y < cy0 || x > cx1 || y > cy1 {
+                        continue;
+                    }
+                    let name = Self::name(col, row);
+                    imaging::draw_tag(
+                        cap,
+                        &name,
+                        x as i64 + 3 * small,
+                        y as i64 + 3 * small,
+                        small,
+                        [40, 100, 210],
+                        [235, 242, 255],
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cells_fit_the_target_and_have_chess_names() {
+        // A 800 x 600 page: cells of 100, A to H, 1 to 6.
+        let c = Cells::new(0.0, 800.0, 0.0, 600.0, false, None);
+        assert_eq!((c.step, c.cols, c.rows), (100.0, 8, 6));
+        assert_eq!(
+            c.describe(),
+            "cells of 100: columns A to H from x 0, rows 1 to 6 from y 0 down"
+        );
+        assert_eq!(c.parse("c4"), Ok((2, 3)));
+        assert_eq!(
+            c.span(2, 3),
+            Span {
+                x0: 200.0,
+                x1: 300.0,
+                y0: 300.0,
+                y1: 400.0
+            }
+        );
+        assert!(c.parse("J1").unwrap_err().contains("cells are A1 to H6"));
+        assert!(c.parse("A0").is_err() && c.parse("4C").is_err());
+        assert_eq!(
+            c.covering(Span {
+                x0: 210.0,
+                x1: 400.0,
+                y0: 150.0,
+                y1: 380.0
+            }),
+            "C2 to D4"
+        );
+        // A small drawing on the same page: finer cells.
+        let small = Cells::new(
+            0.0,
+            800.0,
+            0.0,
+            600.0,
+            false,
+            Some(Span {
+                x0: 100.0,
+                x1: 160.0,
+                y0: 100.0,
+                y1: 140.0,
+            }),
+        );
+        assert_eq!(small.step, 10.0);
+        assert_eq!(small.cols, 80);
+        // A math range: rows count down from the top.
+        let m = Cells::new(-3.0, 3.0, -2.0, 2.0, true, None);
+        assert_eq!(m.step, 1.0);
+        assert_eq!((m.left, m.top, m.cols, m.rows), (-3.0, 2.0, 6, 4));
+        assert_eq!(
+            m.span(0, 0),
+            Span {
+                x0: -3.0,
+                x1: -2.0,
+                y0: 1.0,
+                y1: 2.0
+            }
+        );
+        assert_eq!(m.at(0.5, -0.5), (3, 2));
+        // Columns past Z.
+        assert_eq!(Cells::column(25), "Z");
+        assert_eq!(Cells::column(26), "AA");
+        assert_eq!(Cells::column(27), "AB");
+        assert_eq!(Cells::name(27, 9), "AB10");
+    }
+
+    #[test]
+    fn cells_are_drawn_with_names_inside_the_clip() {
+        let mut cap = Capture {
+            width: 400,
+            height: 300,
+            rgba: vec![255; 400 * 300 * 4],
+            bounds: Rect::new(0.0, 0.0, 400.0, 300.0),
+        };
+        let c = Cells::new(0.0, 800.0, 0.0, 600.0, false, None);
+        let ax = Axis {
+            offset: 0.0,
+            scale: 2.0,
+        };
+        c.draw(&mut cap, ax, ax, 1.0, None);
+        let at = |x: usize, y: usize| {
+            let o = (y * 400 + x) * 4;
+            [cap.rgba[o], cap.rgba[o + 1], cap.rgba[o + 2]]
+        };
+        // A blue line on x 100 (pixel 50); white inside a cell.
+        assert!(at(50, 150)[2] > at(50, 150)[0], "{:?}", at(50, 150));
+        assert_eq!(at(75, 160), [255, 255, 255]);
+        // The column name A sits at the top of the first column.
+        let blue_box = (0..50).any(|x| at(x, 3) == [40, 100, 210]);
+        assert!(blue_box);
+        // Nothing outside a clip.
+        let mut cap2 = Capture {
+            width: 400,
+            height: 300,
+            rgba: vec![255; 400 * 300 * 4],
+            bounds: Rect::new(0.0, 0.0, 400.0, 300.0),
+        };
+        c.draw(
+            &mut cap2,
+            ax,
+            ax,
+            1.0,
+            Some(Rect::new(200.0, 0.0, 200.0, 300.0)),
+        );
+        assert!(cap2.rgba[..4 * 150].iter().all(|v| *v == 255));
+    }
+}

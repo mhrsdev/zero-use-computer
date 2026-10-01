@@ -251,6 +251,8 @@ pub struct Extras {
     pub grid: Option<f64>,
     pub ids: bool,
     pub guides: bool,
+    /// The named cells (graph paper).
+    pub cells: bool,
 }
 
 impl Design {
@@ -657,9 +659,15 @@ impl Design {
 
     /// Paint the design `scale` pixels per unit.
     fn paint(&self, scale: f64, fonts: &mut FontCache) -> Result<Pixmap, String> {
+        self.paint_view(Rect::new(0.0, 0.0, self.width, self.height), scale, fonts)
+    }
+
+    /// Paint the part `view` of the design (its units), `scale` pixels per
+    /// unit.
+    fn paint_view(&self, view: Rect, scale: f64, fonts: &mut FontCache) -> Result<Pixmap, String> {
         let (pw, ph) = (
-            (self.width * scale).round().max(1.0) as u32,
-            (self.height * scale).round().max(1.0) as u32,
+            (view.width * scale).round().max(1.0) as u32,
+            (view.height * scale).round().max(1.0) as u32,
         );
         let mut pix = Pixmap::new(pw, ph).ok_or("the design is too big to show")?;
         let [r, g, b] = self.background;
@@ -675,7 +683,7 @@ impl Design {
             for (pts, closed) in self.lines(l)? {
                 let mut pb = PathBuilder::new();
                 for (k, (x, y)) in pts.iter().enumerate() {
-                    let (x, y) = ((x * scale) as f32, (y * scale) as f32);
+                    let (x, y) = (((x - view.x) * scale) as f32, ((y - view.y) * scale) as f32);
                     if k == 0 {
                         pb.move_to(x, y);
                     } else {
@@ -716,7 +724,10 @@ impl Design {
                             &path,
                             &paint(c),
                             FillRule::Winding,
-                            Transform::from_translate((left * scale) as f32, (top * scale) as f32),
+                            Transform::from_translate(
+                                ((left - view.x) * scale) as f32,
+                                ((top - view.y) * scale) as f32,
+                            ),
                             None,
                         );
                     }
@@ -807,14 +818,101 @@ impl Design {
             rgba: pix.data().to_vec(),
             bounds: Rect::new(0.0, 0.0, f64::from(pix.width()), f64::from(pix.height())),
         };
+        let axis = crate::imaging::Axis {
+            offset: 0.0,
+            scale: 1.0 / scale,
+        };
+        if extras.cells {
+            self.cells().draw(&mut cap, axis, axis, 1.0, None);
+        }
         if let Some(step) = extras.grid {
-            let axis = crate::imaging::Axis {
-                offset: 0.0,
-                scale: 1.0 / scale,
-            };
             crate::imaging::draw_grid(&mut cap, axis, axis, step, 1.0, None);
         }
         Ok(cap)
+    }
+
+    /// The design's cells: about eight across the page.
+    pub fn cells(&self) -> crate::cells::Cells {
+        crate::cells::Cells::new(0.0, self.width, 0.0, self.height, false, None)
+    }
+
+    /// One cell magnified, with a fine grid in the design's units, and
+    /// which layers reach into it.
+    pub fn render_cell(
+        &self,
+        name: &str,
+        fonts: &mut FontCache,
+    ) -> Result<(Capture, String), String> {
+        let cells = self.cells();
+        let (col, row) = cells.parse(name)?;
+        let sp = cells.span(col, row);
+        let pad = cells.step * 0.15;
+        let view = Rect::new(
+            (sp.x0 - pad).max(0.0),
+            (sp.y0 - pad).max(0.0),
+            ((sp.x1 + pad).min(self.width) - (sp.x0 - pad).max(0.0)).max(1e-6),
+            ((sp.y1 + pad).min(self.height) - (sp.y0 - pad).max(0.0)).max(1e-6),
+        );
+        let scale = 512.0 / view.width.max(view.height);
+        let pix = self.paint_view(view, scale, fonts)?;
+        let mut cap = Capture {
+            width: pix.width(),
+            height: pix.height(),
+            rgba: pix.data().to_vec(),
+            bounds: Rect::new(0.0, 0.0, f64::from(pix.width()), f64::from(pix.height())),
+        };
+        let fine = crate::imaging::nice_step(cells.step, 10.0);
+        let (ax, ay) = (
+            crate::imaging::Axis {
+                offset: view.x,
+                scale: 1.0 / scale,
+            },
+            crate::imaging::Axis {
+                offset: view.y,
+                scale: 1.0 / scale,
+            },
+        );
+        let used = crate::imaging::draw_grid(&mut cap, ax, ay, fine, 1.0, None);
+        // The cell's own edges, in the cells' blue.
+        let (x0, x1) = (ax.pixel(sp.x0), ax.pixel(sp.x1));
+        let (y0, y1) = (ay.pixel(sp.y0), ay.pixel(sp.y1));
+        for t in 0..2 {
+            for x in x0 as i64..=x1 as i64 {
+                crate::imaging::blend(&mut cap, x, y0 as i64 + t, [40, 100, 210], 0.9);
+                crate::imaging::blend(&mut cap, x, y1 as i64 - t, [40, 100, 210], 0.9);
+            }
+            for y in y0 as i64..=y1 as i64 {
+                crate::imaging::blend(&mut cap, x0 as i64 + t, y, [40, 100, 210], 0.9);
+                crate::imaging::blend(&mut cap, x1 as i64 - t, y, [40, 100, 210], 0.9);
+            }
+        }
+        let inside: Vec<String> = self
+            .layers
+            .iter()
+            .filter(|l| {
+                self.bbox(l, fonts).is_some_and(|b| {
+                    b.x < sp.x1 && sp.x0 < b.x + b.width && b.y < sp.y1 && sp.y0 < b.y + b.height
+                })
+            })
+            .map(|l| l.id.clone())
+            .collect();
+        let n = |v: f64| crate::imaging::grid_label(v, fine);
+        let text = format!(
+            "Cell {}: x {} to {}, y {} to {} (shown {:.1} times bigger, a grid line every {}). Layers in it, back to front: {}.",
+            crate::cells::Cells::name(col, row),
+            n(sp.x0),
+            n(sp.x1),
+            n(sp.y0),
+            n(sp.y1),
+            scale,
+            n(used),
+            if inside.is_empty() {
+                "none".to_string()
+            } else {
+                inside.join(", ")
+            }
+        );
+        Ok((cap, text))
     }
 
     /// The design as a PNG file's bytes, at its own size (at most 4096
