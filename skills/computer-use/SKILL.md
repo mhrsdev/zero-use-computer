@@ -1,133 +1,64 @@
 ---
 name: computer-use
 description: >-
-  Control desktop apps (macOS, Windows, Linux) through their accessibility tree
-  plus screenshots, the way OpenAI's Codex computer use works. Use when a task
-  needs a GUI app that has no API or CLI path: clicking, typing, reading on-screen
-  state, testing a desktop UI, or a multi-app workflow.
+  Operate desktop apps (macOS, Windows, Linux) through their accessibility
+  tree and screenshots with the computer-use tools. Use when a task needs a
+  GUI app that has no API or CLI path.
 ---
 
 # Computer use
 
-**Also load the `computer-use-security` skill before the first computer-use
-call.** The server does not ask the user for permission or confirm actions;
-its safety rules are yours to follow.
+Load `computer-use-security` too: nothing asks the user for permission, so
+its rules are yours to follow.
 
-You can see and operate graphical desktop apps. Each app is described to you as
-a numbered **accessibility tree** plus a **screenshot**; you act on elements by
-their number. Prefer this over pixel-hunting — it is precise and works even when
-a window is in the background.
+## The loop
 
-## The loop (do this every turn)
+1. `get_app_state(app)`: the app's numbered tree (`<index> <role> "<name>"
+   [flags] [actions]`), plus a screenshot when it adds something.
+2. Act by `element_index`: `click`, `set_value` (fields, sliders,
+   checkboxes; prefer it over typing), `type_text` (`\n` presses Return),
+   `press_key` (`"Return"`, `"cmd+s"`: Cmd on a Mac, Ctrl elsewhere),
+   `perform_secondary_action` (an entry of `actions=[…]`), `select_text`,
+   `scroll`, `drag`.
+3. Read the "state after the action" each action returns; call
+   `get_app_state` only when you need more. Later calls return a diff.
 
-1. **`get_app_state(app)` first.** It returns the app's current tree (each line
-   is `<index> <role> "<name>" [flags] [actions]`), plus a screenshot when one
-   adds information (the first view of a window, a big change, or custom-drawn
-   UI). Pass `screenshot: true` when you need to see the pixels anyway. The
-   element indices it prints are only valid until the **next** `get_app_state`.
-2. **Act** on an element by its `element_index`:
-   - `click` — press a button, focus a field, open a menu item.
-   - `set_value` — replace a text field's contents, set a slider, or set a
-     checkbox/switch (`"true"`/`"false"`). Prefer this over typing for fields
-     marked `editable`/`settable`.
-   - `type_text` — type into the focused element (pass `element_index` to focus
-     first). Newlines press Return.
-   - `press_key` — a key or shortcut: `"Return"`, `"Escape"`, `"cmd+s"`,
-     `"ctrl+shift+t"`, `"Down Down Return"`. `cmd` is Cmd on a Mac and Ctrl
-     elsewhere; `win`/`super` is the Windows/Super key.
-   - `perform_secondary_action` — a non-click action listed for the element in
-     `actions=[…]` (e.g. `show_menu`, `increment`, `expand`, `toggle`).
-   - `select_text` — select a substring (or all) inside a text element.
-   - `scroll` / `drag` — scroll a list/area, or drag between elements/points.
-3. **Re-check.** Mutating tools already append "state after the action" showing
-   what changed, so you usually don't need a separate `get_app_state`. When you
-   do call it, after the first call it returns a **diff** (`+ added`,
-   `~ changed`, `- removed`); pass `disable_diff: true` for the full tree.
-
-## Screens you've already seen
-
-Every view is labelled with a screen number. Trust these labels — they save
-you from re-reading and re-analysing:
-
-- `screen #N (new)` — you haven't seen this one; read the tree (and the
-  screenshot, if attached).
-- `screen #N (seen before)` / "back on screen #N" — you were here earlier (you
-  went back a page, a dialog closed, a panel reopened). **Don't re-analyse it:**
-  your earlier understanding of screen #N still holds and its element indices
-  are exactly the ones you saw then. Only the listed changes (if any) are
-  new; if its pixels changed, a new screenshot (or the changed part) comes
-  with it.
-- When an action opens a dialog or menu, the report after it switches to that
-  window automatically ("now on screen #N (new), window …"); act on it, and
-  when it closes you'll be told which screen you're back on.
-- "Screenshot: unchanged … not re-sent" means the picture you already have is
-  current. Pass `screenshot: true` only if you truly need a fresh image (for
-  example, you no longer have the earlier one).
-- An index from a screen that is gone is refused ("unknown element_index")
-  rather than hitting something else — call `get_app_state` and use the
-  current numbers.
-
-Use `list_apps` to find the exact app, and `launch_app` to start one that isn't
-running (then `get_app_state`).
-
-## Helpers that save turns
-
-- `find_element(app, role/name/text)` — get just the elements you need with
-  their indices, instead of reading the whole tree.
-- `wait_for(app, role/name/text, state, timeout_ms)` — after something that
-  takes time (loading, a dialog opening), wait for the element instead of
-  polling `get_app_state` yourself.
-- `batch(steps=[{tool, arguments}, …])` — run several actions in one call
-  (e.g. focus a field, type, then press a button).
-- `screenshot(mode)` — capture the `full` screen, a `region` (x/y/width/height),
-  or a `window`; add `annotate: true` on a window to see each element's index
-  drawn on the image.
-- A follow-up screenshot may be **only the part that changed**; the text says
-  where it sits in your earlier screenshot, and x/y still refer to that
-  whole screenshot. To read small text, `screenshot(app, element_index)`
-  zooms into one element.
-- In apps with little accessibility info (games, canvases, remote desktops)
-  the tree may contain `ocr text` elements: text read off the screen. Click
-  them by `element_index`; they can't be set or selected. Ask for them in
-  any app with `get_app_state(ocr: true)`.
-- `window(app, action)` — focus, move/resize, maximize/minimize/restore,
-  tile_left/tile_right, move_to_display, close; `window(action="displays")`
-  lists the screens. Positions are screen coordinates (as in the window line
-  of `get_app_state`), not screenshot pixels.
-- `get_notifications(app?, limit?)` — the user's recent notifications, when
-  they have turned it on. Codes in them are masked on purpose.
-- `get_clipboard` / `set_clipboard` — move text between apps (set it, then
-  `press_key` "cmd+v" / "ctrl+v").
+`list_apps` finds an app; `launch_app` opens one by name.
 
 ## Rules
 
-- **Prefer `element_index` over `x`/`y` coordinates.** Coordinates (in
-  screenshot pixels) are a fallback for canvases and custom-drawn UI.
-- **Indices are per-turn.** If an action fails with "unknown element_index",
-  call `get_app_state` again and use the new numbers.
-- **Nothing asks the user for you.** Which apps you may use and which
-  actions need the user's OK is set by the `computer-use-security` skill:
-  follow it.
-- Keyboard input and x/y clicks go to the app's window, which is brought to
-  the front first; if it can't be, nothing is sent and you are told why.
-  Don't try another way: use `element_index` actions or ask the user.
-- `launch_app` opens an app by name; it never runs a command line.
-- The user watches you work through an on-screen indicator (your own cursor,
-  a glow and a status label); their real mouse is never moved, and it is not
-  in your screenshots, so ignore it.
-- Action results are checked for you. If one says "Nothing on screen
-  changed after it", look (`get_app_state` with `screenshot: true`) before
-  trying again; don't just repeat it. A note that a value or typed text
-  didn't take means check the field before going on: never type the same
-  text again without looking, or it may be entered twice.
-- **The user can stop you at any moment** (an emergency stop key). If a call
-  fails saying the user stopped the agent, stop: don't retry or work around
-  it; ask the user what to do. If a result says the stop key is not working,
-  tell the user right away.
-- If an action fails because the user is using the mouse or keyboard, they
-  are busy — wait a little or ask; don't hammer it.
-- Password fields, card numbers and codes are masked (`••••`) and blacked
-  out of screenshots on purpose. Don't try to read them another way; ask the
-  user if you need such a value.
-- Keep tasks narrow; when the tree is ambiguous, ask for a screenshot
-  (`get_app_state` with `screenshot: true`, or the `screenshot` tool).
+- Prefer `element_index` to `x`/`y` (screenshot pixels, for custom-drawn UI).
+- An index unknown or from a screen that's gone is refused: call
+  `get_app_state` and use the new numbers.
+- "Nothing on screen changed" or "the field doesn't show the new text yet":
+  look before acting again. Never type the same text twice without looking.
+- Input refused, app not brought to the front, user busy: don't work around
+  it; wait or ask the user.
+- The user stopped the agent (stop key): stop and ask how to go on. The stop
+  key is not working: tell the user at once.
+- Masked data (`••••`) is masked on purpose: ask the user instead.
+
+## Spend few tokens
+
+Every result stays in the conversation, so ask only for what you need:
+
+- Search with `find_element(role/name/text)` instead of re-reading a tree.
+  Long lists come folded (`[… N more "list item" folded]`): find_element
+  finds the folded items too.
+- Leave `screenshot` unset: one comes when it helps (an overview size). Ask
+  `screenshot: true` only to read details; `screenshot(app, element_index)`
+  zooms into one element for small text.
+- Don't pass `disable_diff: true` unless a diff confused you.
+- Use `wait_for` instead of polling, and `batch` for a known sequence of
+  steps (then call `get_app_state`: a batch shows one line per step).
+- Trust `screen #N (seen before)`: what you learnt about it still holds.
+
+## More, only when you need it
+
+- [reference/screens.md](reference/screens.md): screen numbers, diffs,
+  dialogs, partial and overview screenshots.
+- [reference/tools.md](reference/tools.md): `find_element`, `wait_for`,
+  `batch`, `screenshot` modes, `window`, clipboard, notifications.
+- [reference/special-content.md](reference/special-content.md): apps with
+  little in their tree (OCR text), text in any script or direction, masked
+  data, the on-screen indicator.

@@ -29,6 +29,16 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
+    /// About how many tokens this result costs the model: its text, plus
+    /// an image at roughly width × height / 750.
+    pub fn estimated_tokens(&self) -> usize {
+        crate::text::estimate_tokens(&self.text)
+            + self
+                .image
+                .as_ref()
+                .map_or(0, |i| (i.width as usize * i.height as usize).div_ceil(750))
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),

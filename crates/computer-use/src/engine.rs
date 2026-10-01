@@ -88,6 +88,8 @@ pub struct Engine<B: Backend> {
     overlay_error: Option<String>,
     /// The user was told the stop key doesn't work (told once).
     stop_note_shown: bool,
+    /// Explanations already given in full.
+    hints: Hints,
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
@@ -117,6 +119,25 @@ pub struct Engine<B: Backend> {
 
 /// Host-level settings forced on top of the config file.
 type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
+
+/// Explanations the model gets in full the first time and in a short form
+/// after that: the full one is already in its context, and repeating it on
+/// every call only costs tokens.
+#[derive(Default)]
+struct Hints(std::cell::RefCell<HashSet<&'static str>>);
+
+impl Hints {
+    /// Whether `key` is being explained for the first time (it then counts
+    /// as explained).
+    fn first(&self, key: &'static str) -> bool {
+        self.0.borrow_mut().insert(key)
+    }
+
+    /// `long` the first time, `short` afterwards.
+    fn pick<'a>(&self, key: &'static str, long: &'a str, short: &'a str) -> &'a str {
+        if self.first(key) { long } else { short }
+    }
+}
 
 /// How the current view relates to what the model has seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +192,7 @@ impl<B: Backend> Engine<B> {
             overlay_retry_at: None,
             overlay_error: None,
             stop_note_shown: false,
+            hints: Hints::default(),
             stop: Arc::new(AtomicBool::new(false)),
             last_input: None,
             settled: None,
@@ -962,9 +984,10 @@ impl<B: Backend> Engine<B> {
                 .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
                 .count(),
         };
+        let budget = tcfg.max_tokens;
         match base {
             None => {
-                out.text = tree::render_full(nodes, tcfg.indent);
+                out.text = tree::render_full_within(nodes, tcfg.indent, budget);
                 out.full = true;
             }
             Some(view) => {
@@ -972,22 +995,43 @@ impl<B: Backend> Engine<B> {
                 out.changes = d.len();
                 let large = out.changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64;
                 if full || !tcfg.diff || large {
-                    out.text = tree::render_full(nodes, tcfg.indent);
+                    out.text = tree::render_full_within(nodes, tcfg.indent, budget);
                     out.full = true;
                     out.large_change = large;
                 } else if seen == Seen::Same {
-                    out.text = tree::render_diff(&d, nodes);
+                    out.text = if d.is_empty() {
+                        tree::render_diff(&d, nodes)
+                    } else {
+                        let intro = self.hints.pick(
+                            "diff",
+                            tree::DIFF_INTRO,
+                            "Changes (+ added, ~ changed, - removed):",
+                        );
+                        tree::render_diff_with(&d, nodes, intro)
+                    };
                 } else if d.is_empty() {
-                    out.text = format!(
-                        "Identical to when you last saw screen #{}; element indices are as they were then.\n",
-                        st.screen
-                    );
+                    out.text = if self.hints.first("revisit") {
+                        format!(
+                            "Identical to when you last saw screen #{}; element indices are as they were then.\n",
+                            st.screen
+                        )
+                    } else {
+                        format!("Identical to screen #{} as you saw it.\n", st.screen)
+                    };
                 } else {
-                    let intro = format!(
-                        "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
-                        st.screen
-                    );
+                    let intro = if self.hints.first("revisit") {
+                        format!(
+                            "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
+                            st.screen
+                        )
+                    } else {
+                        format!("Changes since you saw screen #{} (+/~/-):", st.screen)
+                    };
                     out.text = tree::render_diff_with(&d, nodes, &intro);
+                }
+                // A diff gets the same budget as a whole tree.
+                if !out.full && budget > 0 && crate::text::estimate_tokens(&out.text) > budget {
+                    out.text = tree::cut_to_budget(&out.text, budget);
                 }
             }
         }
@@ -1472,6 +1516,8 @@ impl<B: Backend> Engine<B> {
             "tool": tool,
             "app": app,
             "ok": !out.is_error,
+            // Estimated tokens the result costs the model (text + image).
+            "tokens": out.estimated_tokens(),
             "summary": out.text.lines().next().unwrap_or("").chars().take(160).collect::<String>(),
         });
         if let Some(dir) = path.parent() {
@@ -1682,9 +1728,11 @@ impl<B: Backend> Engine<B> {
                         if let Some(st) = self.states.get_mut(&app.pid) {
                             st.coord = known_coord;
                         }
-                        header.push_str(
+                        header.push_str(self.hints.pick(
+                            "shot-unchanged",
                             "\nScreenshot: unchanged since you last saw it, not re-sent (screenshot=true forces one).",
-                        );
+                            "\nScreenshot: unchanged, not re-sent.",
+                        ));
                     } else if let Some(part) = (args.screenshot != Some(true))
                         .then(|| {
                             self.changed_part(
@@ -1701,13 +1749,17 @@ impl<B: Backend> Engine<B> {
                     {
                         // Only the part that changed, placed in the picture
                         // the model already has.
-                        header.push_str(&format!(
-                            "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot).",
-                            w = img.width,
-                            h = img.height,
-                            x1 = ox + img.width,
-                            y1 = oy + img.height,
-                        ));
+                        let (w, h, x1, y1) =
+                            (img.width, img.height, ox + img.width, oy + img.height);
+                        header.push_str(&if self.hints.first("shot-part") {
+                            format!(
+                                "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
+                            )
+                        } else {
+                            format!(
+                                "\nScreenshot: changed part only, x {ox}–{x1}, y {oy}–{y1} of your earlier one."
+                            )
+                        });
                         self.pending_images.push(PendingImage {
                             pid: app.pid,
                             screen: r.screen,
@@ -1716,12 +1768,31 @@ impl<B: Backend> Engine<B> {
                         });
                         image = Some(img);
                     } else {
-                        match imaging::encode(cap, &self.store.config.screenshot) {
+                        // Attached on its own to a window the tree already
+                        // describes well: an overview is enough, and costs a
+                        // fraction of the image tokens.
+                        let mut shot_cfg = self.store.config.screenshot.clone();
+                        let overview = args.screenshot.is_none()
+                            && shot_cfg.overview_max_dimension > 0
+                            && shot_cfg.overview_max_dimension < shot_cfg.max_dimension
+                            && r.interactive >= shot_cfg.auto_sparse_threshold.max(1)
+                            && self.state(app.pid).is_ok_and(|s| s.ocr_lines == 0);
+                        if overview {
+                            shot_cfg.max_dimension = shot_cfg.overview_max_dimension;
+                        }
+                        match imaging::encode(cap, &shot_cfg) {
                             Ok((img, map)) => {
                                 header.push_str(&format!(
                                     "\nScreenshot: {}x{} px.",
                                     img.width, img.height
                                 ));
+                                if overview {
+                                    header.push_str(self.hints.pick(
+                                        "overview",
+                                        " (An overview; pass screenshot=true for full detail, or screenshot(element_index) to zoom into one element.)",
+                                        " (overview)",
+                                    ));
+                                }
                                 self.pending_images.push(PendingImage {
                                     pid: app.pid,
                                     screen: r.screen,
@@ -1743,7 +1814,11 @@ impl<B: Backend> Engine<B> {
                 }
             }
         } else if allowed {
-            header.push_str("\nScreenshot: not attached (pass screenshot=true for one).");
+            header.push_str(self.hints.pick(
+                "shot-none",
+                "\nScreenshot: not attached (pass screenshot=true for one).",
+                "\nScreenshot: not attached.",
+            ));
         }
 
         Ok(ToolOutput {
@@ -2446,13 +2521,16 @@ impl<B: Backend> Engine<B> {
                 }
                 if let Some(part) = self.changed_part(&capture, Some(&sig), Some(old), Some(map)) {
                     let (img, (ox, oy)) = imaging::encode_part(&capture, part, &map, &cfg)?;
-                    let text = format!(
-                        "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}",
-                        w = img.width,
-                        h = img.height,
-                        x1 = ox + img.width,
-                        y1 = oy + img.height,
-                    );
+                    let (w, h, x1, y1) = (img.width, img.height, ox + img.width, oy + img.height);
+                    let text = if self.hints.first("screen-part") {
+                        format!(
+                            "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}"
+                        )
+                    } else {
+                        format!(
+                            "Screenshot: changed part only, x {ox}–{x1}, y {oy}–{y1} of your last full-screen one.{note}"
+                        )
+                    };
                     self.screen_shot = Some((sig, map));
                     return Ok(image(img, text));
                 }
@@ -3138,10 +3216,18 @@ mod tests {
     use crate::config::Config;
     use crate::mock::{Event, MockBackend};
 
+    /// Settings for tests: screenshots at full size, so the mock's 800x600
+    /// window maps 1:1 (overview screenshots have their own test).
+    fn test_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.screenshot.overview_max_dimension = 0;
+        cfg
+    }
+
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
         // Deterministic, instant time.
         e = e.with_time(Instant::now, |_| {});
@@ -3652,7 +3738,7 @@ mod tests {
         backend.add_app(page_a(7));
         backend.on_press.insert(20, page_b(7));
         backend.on_press.insert(30, page_a(7));
-        let mut cfg = Config::default();
+        let mut cfg = test_config();
         cfg.tree.report_changes = report;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
@@ -4526,9 +4612,56 @@ mod tests {
     fn always_shot_engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut cfg = Config::default();
+        let mut cfg = test_config();
         cfg.screenshot.attach = AttachMode::Always;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    #[test]
+    fn auto_screenshots_of_well_described_windows_are_overviews() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {});
+        // Attached on its own: an overview at overview_max_dimension.
+        let out = state_of(&mut e, serde_json::json!({}));
+        let img = out.image.expect("first view");
+        assert_eq!(img.width.max(img.height), 768, "{}", out.text);
+        assert!(out.text.contains("An overview"), "{}", out.text);
+        // Coordinates in the overview still map to the screen.
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 384, "y": 288}),
+        );
+        assert!(matches!(
+            e.backend().events.last().unwrap(),
+            Event::Click(4242, p, _, _) if (p.x - 400.0).abs() < 1.0 && (p.y - 300.0).abs() < 1.0
+        ));
+        // Asked for: full detail.
+        let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+        let img = out.image.expect("asked for");
+        assert_eq!((img.width, img.height), (800, 600));
+    }
+
+    #[test]
+    fn explanations_are_given_once_then_kept_short() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let first = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        assert!(
+            first
+                .text
+                .contains("not attached (pass screenshot=true for one)"),
+            "{}",
+            first.text
+        );
+        let again = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        assert!(
+            again.text.contains("Screenshot: not attached."),
+            "{}",
+            again.text
+        );
+        assert!(again.text.len() < first.text.len());
     }
 
     #[test]

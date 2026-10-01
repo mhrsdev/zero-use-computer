@@ -105,9 +105,31 @@ pub fn contains(haystack: &str, needle: &str) -> bool {
     fold(haystack).contains(&fold(needle))
 }
 
+/// A rough count of the tokens `s` costs a model: about four characters
+/// per token for ASCII, about two for other scripts (they tokenize less
+/// densely). Used to keep tool results inside their token budgets.
+pub fn estimate_tokens(s: &str) -> usize {
+    let (mut ascii, mut other) = (0usize, 0usize);
+    for c in s.chars() {
+        if c.is_ascii() {
+            ascii += 1;
+        } else {
+            other += 1;
+        }
+    }
+    ascii.div_ceil(4) + other.div_ceil(2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_estimates() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+        assert_eq!(estimate_tokens("\u{05E9}\u{05DC}\u{05D5}\u{05DD}"), 2);
+    }
 
     #[test]
     fn digits_of_any_script() {

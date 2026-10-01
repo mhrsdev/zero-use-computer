@@ -454,10 +454,122 @@ impl IndexAllocator {
 pub fn render_full(nodes: &[Node], indent: usize) -> String {
     let mut out = String::new();
     for n in nodes {
-        for _ in 0..n.depth * indent {
-            out.push(' ');
+        push_line(&mut out, n, indent);
+    }
+    out
+}
+
+fn push_line(out: &mut String, n: &Node, indent: usize) {
+    for _ in 0..n.depth * indent {
+        out.push(' ');
+    }
+    out.push_str(&format!("{} {}\n", n.index, n.line));
+}
+
+/// Roles of the items that make long, repetitive lists (rows of a table,
+/// files in a folder, messages in a mailbox): folded first.
+const LIST_ROLES: &[&str] = &[
+    "list item",
+    "row",
+    "tree item",
+    "data item",
+    "cell",
+    "table cell",
+    "menu item",
+];
+
+/// Siblings of one role beyond this many are folded, keeping the first
+/// `FOLD_HEAD` and the last `FOLD_TAIL` of them.
+const FOLD_MIN: usize = 12;
+const FOLD_HEAD: usize = 5;
+const FOLD_TAIL: usize = 2;
+
+/// The whole tree within about `budget` tokens (0 = no limit). When it
+/// doesn't fit, long runs of look-alike siblings are folded (list items
+/// first, then any role) to their first and last few, with a line saying
+/// how many are hidden; if it still doesn't fit, it is cut. Folded and cut
+/// elements keep their indices: `find_element` finds them.
+pub fn render_full_within(nodes: &[Node], indent: usize, budget: usize) -> String {
+    let full = render_full(nodes, indent);
+    if budget == 0 || crate::text::estimate_tokens(&full) <= budget {
+        return full;
+    }
+    let lists = render_folded(nodes, indent, |role| LIST_ROLES.contains(&role));
+    if crate::text::estimate_tokens(&lists) <= budget {
+        return lists;
+    }
+    let any = render_folded(nodes, indent, |_| true);
+    if crate::text::estimate_tokens(&any) <= budget {
+        return any;
+    }
+    cut_to_budget(&any, budget)
+}
+
+/// Render with long sibling runs of the roles `fold` accepts folded.
+fn render_folded(nodes: &[Node], indent: usize, fold: impl Fn(&str) -> bool) -> String {
+    let mut groups: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        if fold(&n.role) {
+            groups
+                .entry((n.parent, n.role.as_str()))
+                .or_default()
+                .push(i);
         }
-        out.push_str(&format!("{} {}\n", n.index, n.line));
+    }
+    // First folded position of each group -> how many are folded there.
+    let mut folded_at: HashMap<usize, usize> = HashMap::new();
+    let mut hidden = vec![false; nodes.len()];
+    for members in groups.values().filter(|m| m.len() > FOLD_MIN) {
+        let fold = &members[FOLD_HEAD..members.len() - FOLD_TAIL];
+        folded_at.insert(fold[0], fold.len());
+        for &i in fold {
+            hidden[i] = true;
+        }
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < nodes.len() {
+        let n = &nodes[i];
+        if !hidden[i] {
+            push_line(&mut out, n, indent);
+            i += 1;
+            continue;
+        }
+        if let Some(count) = folded_at.get(&i) {
+            for _ in 0..n.depth * indent {
+                out.push(' ');
+            }
+            out.push_str(&format!(
+                "[… {count} more \"{}\" folded; find_element finds them]\n",
+                n.role
+            ));
+        }
+        // Skip the folded element and everything inside it.
+        i += 1;
+        while i < nodes.len() && nodes[i].depth > n.depth {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Cut rendered lines at about `budget` tokens, saying how many are left.
+pub fn cut_to_budget(text: &str, budget: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::new();
+    let mut used = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let cost = crate::text::estimate_tokens(line) + 1;
+        if used + cost > budget {
+            out.push_str(&format!(
+                "[… {} more lines not shown (token budget); find_element searches all of them]\n",
+                lines.len() - i
+            ));
+            return out;
+        }
+        used += cost;
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }
@@ -614,6 +726,36 @@ mod tests {
         raw[2].bounds = Some(Rect::new(5000.0, 5000.0, 10.0, 10.0));
         let p = prune(&raw, Some(Rect::new(0.0, 0.0, 100.0, 100.0)), &cfg());
         assert!(!p.nodes.iter().any(|n| n.role == "button"));
+    }
+
+    #[test]
+    fn long_lists_fold_to_fit_the_token_budget() {
+        let mut raw = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
+        for i in 0..200 {
+            raw.push(node(Some(1), "list item", &format!("Message {i}")));
+        }
+        raw.push(node(Some(0), "button", "Send"));
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let full = render_full(&p.nodes, 1);
+        // Plenty of room: nothing changes.
+        assert_eq!(render_full_within(&p.nodes, 1, 0), full);
+        assert_eq!(render_full_within(&p.nodes, 1, 100_000), full);
+        // Tight: the list is folded to its first and last items, the rest of
+        // the window is kept.
+        let folded = render_full_within(&p.nodes, 1, 300);
+        assert!(crate::text::estimate_tokens(&folded) <= 300, "{folded}");
+        assert!(folded.contains("Message 0") && folded.contains("Message 199"));
+        assert!(!folded.contains("Message 100"));
+        assert!(
+            folded.contains("[… 193 more \"list item\" folded"),
+            "{folded}"
+        );
+        assert!(folded.contains("button \"Send\""));
+        // Tighter still: cut, saying so.
+        let cut = render_full_within(&p.nodes, 1, 40);
+        assert!(cut.contains("more lines not shown"), "{cut}");
+        assert!(crate::text::estimate_tokens(&cut) <= 80, "{cut}");
     }
 
     #[test]

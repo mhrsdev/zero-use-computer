@@ -78,6 +78,11 @@ The model should load two skills:
   injection, secrets. The server enforces none of this, so this skill is not
   optional.
 
+Each is a short core the model keeps loaded, plus `reference/` files it reads
+only when a situation calls for them (see [Token use](#token-use)). Install
+them as skills in your agent (for Claude Code: copy `skills/*` into
+`~/.claude/skills/` or the project's `.claude/skills/`).
+
 ## Screen memory & caching
 
 An agent spends most of its tokens and time re-reading screens. The engine
@@ -504,21 +509,25 @@ applying after a reload. The agent has no tool to change settings.
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 
-### Token-saving knobs
+### Token use
 
-- `tools.descriptions = "compact"` (default) — the tool list goes out with every
-  model request; compact cuts it from ~3,300 to ~1,360 tokens. Hiding tools you
-  don't need (`tools.disabled`) saves more.
-- `screenshot.attach = "auto"` (default) — images only for a first view, a large
-  change, or a tree with almost no interactive elements; `get_app_state` diffs on
-  an unchanged window cost ~60 tokens instead of ~1,300.
-- `cache.enabled` + `cache.dedupe_screenshots` (default on) — a screen the
-  model already saw costs ~80 tokens instead of a full tree and image; an
-  unchanged screenshot is never sent twice.
-- `screenshot.max_dimension` — image tokens scale with width × height
-  (1024 px ≈ 36% fewer than 1280 px). `text_only = true` removes images entirely.
-- `tree.max_text_len`, `tree.show_actions`, `tree.show_states`,
-  `tree.report_changes_max_lines` trim the text further.
+Everything a tool returns stays in the model's context for the rest of the
+task, so the server spends tokens only where they buy something:
+
+| Where | What it does | Setting |
+|---|---|---|
+| **Tree budget** | A tree or diff over the budget has its long lists (rows, list items, menu items…) folded to the first and last few, with a line saying how many are hidden; if it's still too big, it is cut. Folded and cut elements keep their indices and `find_element` finds them. A long mailbox or file list then costs a few hundred tokens instead of several thousand; smaller windows are sent whole. | `tree.max_tokens` (3000; 0 = off) |
+| **Overview screenshots** | A screenshot attached on its own to a window whose tree already says what is there is an overview (768 px ≈ 60% fewer image tokens than 1280 px). `screenshot=true`, windows with little in their tree, and OCR'd windows get full size; `screenshot(element_index)` zooms in. | `screenshot.overview_max_dimension` |
+| **Say it once** | Explanations (what a diff, a partial screenshot or a returning screen means) come in full the first time and as a few words after that. | — |
+| **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
+| **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part. | `cache.dedupe_screenshots`, `screenshot.scope` |
+| **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
+| **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (never added or removed on the fly), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled` |
+| **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |
+
+Other knobs: `screenshot.max_dimension` (image tokens scale with width ×
+height), `text_only = true` (no images at all), `tree.max_text_len`,
+`tree.show_actions`, `tree.show_states`, `tree.report_changes_max_lines`.
 
 ### Remote transport (optional)
 
