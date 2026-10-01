@@ -62,6 +62,10 @@
   apps that send keys to what is under the pointer (Blender). Keypad keys:
   `Numpad0`…`Numpad9`, `NumpadDecimal`, `NumpadAdd`, `NumpadSubtract`.
 - `get_clipboard` / `set_clipboard`: move text between apps (set it, then
-  `press_key "cmd+v"`).
+  `press_key "cmd+v"`). Long text goes in faster this way than typed.
+- Limits per call: `type_text` up to 100,000 characters (typed in pieces;
+  the stop key works between them), `press_key` up to 500 presses,
+  `scroll` up to 50 pages; `get_clipboard` returns the first 30,000
+  characters of a longer clipboard.
 - `get_notifications(app?, limit?)`: recent desktop notifications, when the
   user turned it on. Codes in them are masked on purpose.
