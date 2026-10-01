@@ -1,0 +1,1259 @@
+@font-face {
+  font-family: "Archivo";
+  src: url("assets/fonts/archivo-var.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("assets/fonts/jetbrains-mono-var.woff2") format("woff2");
+  font-weight: 100 800;
+}
+
+:root {
+  --ground: #0a0b0d;
+  --s1: #121418;
+  --s2: #181b20;
+  --s3: #20242a;
+  --lead: #2c3138;
+  --lead-strong: #46505b;
+  --gt: #8c96a1;
+  --paper: #eceff2;
+  /* overlay state colours, verbatim from config_template.toml [overlay] */
+  --blue: #1e88e5;
+  --gold: #d4a017;
+  --grey: #78909c;
+  --orange: #ff6d00;
+  --green: #2e7d32;
+  --violet: #9c27b0;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--ground);
+}
+#root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--paper);
+  font-family: "Archivo", sans-serif;
+}
+#stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+#ground {
+  position: absolute;
+  inset: 0;
+  background: var(--ground);
+}
+/* drafting grid: pencil-lead lines, very faint */
+#grid {
+  opacity: 0;
+}
+
+/* ---------------- camera + world ---------------- */
+#camera {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  transform-origin: 0 0;
+}
+#screen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: #0c0d10;
+}
+#desk {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(1500px 1000px at 58% 38%, #171a1f 0%, #101216 55%, #0c0d10 100%);
+}
+
+/* ---------------- the mail app ---------------- */
+.win {
+  position: absolute;
+  left: 250px;
+  top: 128px;
+  width: 1420px;
+  height: 830px;
+  background: var(--s2);
+  border: 1px solid #272b32;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.win-title {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: #1b1e23;
+  border-bottom: 1px solid #23272d;
+}
+.win-dots {
+  position: absolute;
+  left: 18px;
+  top: 17px;
+  display: flex;
+  gap: 9px;
+}
+.win-dots i {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #353a42;
+}
+.win-name {
+  font: 500 17px/1 "Archivo";
+  color: #aab2bb;
+  letter-spacing: 0.01em;
+}
+.win-toolbar {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 22px 0 262px;
+  border-bottom: 1px solid #23272d;
+  background: #1a1d22;
+}
+.tb-btn {
+  font: 500 18px/1 "Archivo";
+  color: #c9d0d7;
+  padding: 11px 18px;
+  border: 1px solid #2c3139;
+  border-radius: 6px;
+  background: #20242a;
+}
+.tb-search {
+  margin-left: auto;
+  width: 300px;
+  font: 400 17px/1 "Archivo";
+  color: #8f99a3;
+  padding: 11px 16px;
+  border: 1px solid #2c3139;
+  border-radius: 6px;
+  background: #15171b;
+}
+.win-body {
+  display: flex;
+  height: 720px;
+}
+.side {
+  width: 240px;
+  padding: 18px 12px;
+  background: #16191d;
+  border-right: 1px solid #23272d;
+}
+.side-item {
+  font: 500 19px/1 "Archivo";
+  color: #b9c0c8;
+  padding: 13px 14px;
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+.side-item.on {
+  background: #23272e;
+  color: #e6e9ed;
+}
+.side-item b {
+  font: 600 16px/1 "JetBrains Mono";
+  color: #b0b8c0;
+}
+.list {
+  width: 560px;
+  border-right: 1px solid #23272d;
+}
+.rowwrap {
+  height: 84px;
+  overflow: hidden;
+}
+.row {
+  height: 84px;
+  padding: 16px 22px;
+  border-bottom: 1px solid #202329;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  row-gap: 8px;
+  overflow: hidden;
+}
+.row b {
+  grid-area: 1 / 1;
+  font: 600 19px/1.1 "Archivo";
+  color: #dfe3e8;
+}
+.row > span {
+  grid-area: 2 / 1 / 3 / 3;
+  font: 400 18px/1.1 "Archivo";
+  color: #a3acb5;
+  white-space: nowrap;
+}
+.row em {
+  grid-area: 1 / 2;
+  font: 400 16px/1 "JetBrains Mono";
+  font-style: normal;
+  color: #a3acb5;
+}
+.row.sel {
+  background: #222833;
+}
+.read {
+  flex: 1;
+  position: relative;
+}
+.read-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+.read-icon {
+  width: 64px;
+  height: 46px;
+  border: 2px solid #2f343c;
+  border-radius: 6px;
+}
+.read-meta {
+  font: 400 19px/1 "JetBrains Mono";
+  color: #a3acb5;
+  height: 20px;
+  white-space: nowrap;
+}
+#read-b {
+  position: absolute;
+  top: calc(50% + 23px);
+  opacity: 0;
+}
+
+/* dialog */
+#dlg-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 7, 9, 0.5);
+  opacity: 0;
+}
+#dlg {
+  position: absolute;
+  left: 430px;
+  top: 290px;
+  width: 560px;
+  height: 250px;
+  background: #1e2228;
+  border: 1px solid #343a43;
+  border-radius: 10px;
+  padding: 28px 30px;
+  opacity: 0;
+}
+.dlg-title {
+  font: 500 16px/1 "JetBrains Mono";
+  color: #8c96a1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.dlg-text {
+  margin-top: 22px;
+  font: 650 30px/1.1 "Archivo";
+  color: #eceff2;
+  letter-spacing: -0.01em;
+}
+.dlg-sub {
+  margin-top: 12px;
+  font: 400 18px/1.2 "Archivo";
+  color: #8f99a3;
+}
+.dlg-btns {
+  position: absolute;
+  right: 26px;
+  bottom: 24px;
+  display: flex;
+  gap: 12px;
+}
+.dlg-btn {
+  font: 500 19px/1 "Archivo";
+  color: #c9d0d7;
+  padding: 12px 26px;
+  border: 1px solid #353b44;
+  border-radius: 6px;
+  background: #262b32;
+}
+.dlg-btn.primary {
+  background: #e7eaee;
+  color: #121418;
+  border-color: #e7eaee;
+}
+
+/* privacy fill + capture frame */
+#maskbar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  background: #000;
+  opacity: 0;
+  z-index: 20;
+  transform-origin: 0 50%;
+}
+#masktag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: 600 15px/1 "JetBrains Mono";
+  color: #0a0b0d;
+  background: #eceff2;
+  padding: 5px 7px;
+  z-index: 20;
+  opacity: 0;
+  white-space: nowrap;
+}
+#capframe {
+  position: absolute;
+  left: 244px;
+  top: 122px;
+  width: 1432px;
+  height: 842px;
+  border: 3px solid #eceff2;
+  border-radius: 14px;
+  opacity: 0;
+  z-index: 21;
+}
+
+/* detection marks */
+#marks {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 22;
+  overflow: visible;
+}
+#marks .mbox {
+  fill: none;
+  stroke: #9aa5b1;
+  stroke-width: 1.6;
+}
+#marks .mtick {
+  fill: none;
+  stroke: #eceff2;
+  stroke-width: 2.6;
+}
+#marks .mtag rect {
+  fill: #eceff2;
+}
+#marks .mtag text {
+  font: 700 17px "JetBrains Mono";
+  fill: #0a0b0d;
+}
+#marks .hot .mbox {
+  stroke: var(--blue);
+  stroke-width: 3;
+}
+#marks .hot .mtag rect {
+  fill: var(--blue);
+}
+#marks .hot .mtag text {
+  fill: #fff;
+}
+
+/* ======================================================================
+   Zero's overlay, rebuilt from crates/computer-use/src/overlay/draw.rs
+   ====================================================================== */
+#glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  opacity: 0;
+  --st: #1e88e5;
+}
+#glow i {
+  position: absolute;
+  display: block;
+}
+/* edge(): alpha 1 at the edge, 0.92 at the 3 px core, then 0.45 / 0.14 / 0 */
+#glow .gt,
+#glow .gb {
+  left: 0;
+  width: 100%;
+  height: 54px;
+}
+#glow .gl,
+#glow .gr {
+  top: 0;
+  height: 100%;
+  width: 54px;
+}
+#glow .gt {
+  top: 0;
+  background: linear-gradient(to bottom, var(--st) 0, color-mix(in srgb, var(--st) 92%, transparent) 4.5px, color-mix(in srgb, var(--st) 45%, transparent) 11px, color-mix(in srgb, var(--st) 14%, transparent) 29px, transparent 54px);
+}
+#glow .gb {
+  bottom: 0;
+  background: linear-gradient(to top, var(--st) 0, color-mix(in srgb, var(--st) 92%, transparent) 4.5px, color-mix(in srgb, var(--st) 45%, transparent) 11px, color-mix(in srgb, var(--st) 14%, transparent) 29px, transparent 54px);
+}
+#glow .gl {
+  left: 0;
+  background: linear-gradient(to right, var(--st) 0, color-mix(in srgb, var(--st) 92%, transparent) 4.5px, color-mix(in srgb, var(--st) 45%, transparent) 11px, color-mix(in srgb, var(--st) 14%, transparent) 29px, transparent 54px);
+}
+#glow .gr {
+  right: 0;
+  background: linear-gradient(to left, var(--st) 0, color-mix(in srgb, var(--st) 92%, transparent) 4.5px, color-mix(in srgb, var(--st) 45%, transparent) 11px, color-mix(in srgb, var(--st) 14%, transparent) 29px, transparent 54px);
+}
+
+/* label(): pill, 1.5 px state outline, dot, text 13.5 px (all x1.8) */
+#label {
+  position: absolute;
+  left: 0;
+  top: 30px;
+  width: 1920px;
+  height: 50px;
+  z-index: 45;
+  pointer-events: none;
+}
+.lbl {
+  position: absolute;
+  left: 960px;
+  top: 0;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 24px 0 21px;
+  border-radius: 25px;
+  background: rgba(22, 22, 28, 0.91);
+  border: 2.7px solid var(--st);
+  white-space: nowrap;
+  opacity: 0;
+}
+.lbl .dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--st);
+}
+.lbl span {
+  font: 500 24px/1 "Archivo";
+  color: #fff;
+}
+#idlebar {
+  position: absolute;
+  left: 50px;
+  right: 26px;
+  bottom: 8px;
+  height: 2px;
+  display: block;
+  background: rgba(255, 255, 255, 0.14);
+}
+#idlebar i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 2px;
+  width: 100%;
+  display: block;
+  background: #fff;
+  transform-origin: 0 50%;
+}
+
+/* cursors */
+.zc,
+.uc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.zc {
+  z-index: 50;
+  --ring: #1e88e5;
+}
+.uc {
+  z-index: 49;
+}
+.zc svg {
+  position: absolute;
+  left: -96px;
+  top: -96px;
+  width: 360px;
+  height: 300px;
+  overflow: visible;
+}
+.uc svg {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 44px;
+  height: 64px;
+  overflow: visible;
+}
+.zring-stroke {
+  stroke: var(--ring);
+}
+.zring-fill {
+  fill: var(--ring);
+}
+.zg0 {
+  stop-color: var(--ring);
+  stop-opacity: 0.6;
+}
+.zg1 {
+  stop-color: var(--ring);
+  stop-opacity: 0.28;
+}
+.zg2 {
+  stop-color: var(--ring);
+  stop-opacity: 0;
+}
+.ztag-text {
+  font: 500 10.5px "Archivo";
+  fill: #fff;
+}
+
+/* ---------------- panels beside the screen (world units) ---------------- */
+
+/* screen memory cards */
+
+/* ---------------- the call path (screen space) ---------------- */
+
+/* ---------------- tool call chip ---------------- */
+
+/* ---------------- statement words ---------------- */
+
+/* ---------------- hook ---------------- */
+
+/* ---------------- stop key ---------------- */
+
+/* ---------------- tagline ---------------- */
+
+/* ---------------- final lockup ---------------- */
+#wordmark {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---------------- texture + fades ---------------- */
+#grain {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  opacity: 0.06;
+  background-image: url("assets/grain.png");
+  background-size: 256px 256px;
+}
+#fade {
+  position: absolute;
+  inset: 0;
+  z-index: 95;
+  background: #000;
+  pointer-events: none;
+}
+
+/* ---------------- additions ---------------- */
+#screen {
+  box-shadow: 0 0 0 2px #2c3138;
+}
+.cnt {
+  position: relative;
+  display: inline-block;
+  min-width: 22px;
+  text-align: right;
+}
+#inbox-b {
+  position: absolute;
+  right: 0;
+  top: 0;
+  opacity: 0;
+}
+#dim {
+  position: absolute;
+  inset: 0;
+  background: #050506;
+  z-index: 30;
+}
+#shot1 {
+  position: absolute;
+  inset: 10px;
+  border: 4px solid #eceff2;
+  z-index: 31;
+  opacity: 0;
+}
+#flash1,
+#flash2 {
+  position: absolute;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+#flash1 {
+  inset: 0;
+  z-index: 32;
+}
+#flash2 {
+  left: 250px;
+  top: 128px;
+  width: 1420px;
+  height: 830px;
+  border-radius: 10px;
+  z-index: 19;
+}
+.mk-tag rect {
+  fill: #eceff2;
+}
+.mk-tag text {
+  font: 700 17px "JetBrains Mono";
+  fill: #0a0b0d;
+}
+.mk-tag.blue rect {
+  fill: #1e88e5;
+}
+.mk-tag.blue text {
+  fill: #fff;
+}
+
+
+/* ======================================================================
+   Film 2 — kinetic layers
+   ====================================================================== */
+#grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background-image:
+    linear-gradient(to right, rgba(140, 150, 161, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(140, 150, 161, 0.06) 1px, transparent 1px);
+  background-size: 120px 120px;
+}
+#wash {
+  position: absolute;
+  inset: 0;
+  z-index: 55;
+  background: #78909c;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* kinetic words: centred, giant, Archivo's width axis does the work */
+#type {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+}
+.k {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 900 300px/1 "Archivo";
+  letter-spacing: -0.04em;
+  color: var(--paper);
+  white-space: nowrap;
+  opacity: 0;
+}
+.k.over {
+  text-shadow: 0 10px 60px rgba(0, 0, 0, 0.55);
+}
+#k-aican {
+  font-size: 250px;
+  font-stretch: 112%;
+}
+#k-see0 {
+  font-size: 520px;
+  font-stretch: 125%;
+}
+#k-your {
+  font-size: 210px;
+  font-stretch: 90%;
+}
+#k-seeing {
+  font-size: 330px;
+  font-stretch: 125%;
+}
+#k-isnt {
+  font-size: 420px;
+  font-stretch: 62%;
+}
+#k-using-a,
+#k-using-b {
+  font-size: 380px;
+  font-stretch: 100%;
+}
+#k-using-a {
+  clip-path: inset(0 0 50% 0);
+}
+#k-using-b {
+  clip-path: inset(50% 0 0 0);
+}
+#k-see {
+  font-size: 460px;
+  font-stretch: 125%;
+}
+#k-und {
+  font-size: 230px;
+  font-stretch: 100%;
+}
+#k-act {
+  font-size: 480px;
+  font-stretch: 125%;
+}
+#k-ver {
+  font-size: 330px;
+  font-stretch: 110%;
+}
+#k-paused {
+  font-size: 300px;
+  font-stretch: 118%;
+}
+#k-stopped {
+  font-size: 260px;
+  font-stretch: 112%;
+}
+#k-rem {
+  font-size: 250px;
+  font-stretch: 100%;
+}
+
+/* the system's own words, big */
+#mono {
+  position: absolute;
+  inset: 0;
+  z-index: 71;
+  pointer-events: none;
+}
+.m {
+  position: absolute;
+  left: 0;
+  top: 470px;
+  width: 1920px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 500 58px/1 "JetBrains Mono";
+  color: var(--paper);
+  background: rgba(10, 11, 13, 0.92);
+  border-top: 2px solid #2c3138;
+  border-bottom: 2px solid #2c3138;
+  white-space: pre;
+  opacity: 0;
+}
+.m em {
+  font-style: normal;
+  color: #64aef0;
+}
+
+/* tool call chip, bottom right */
+#chip {
+  position: absolute;
+  left: 0;
+  bottom: 60px;
+  width: 1840px;
+  height: 52px;
+  z-index: 72;
+}
+#chip .c {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font: 500 34px/1 "JetBrains Mono";
+  color: var(--paper);
+  white-space: nowrap;
+  opacity: 0;
+  padding: 0 22px;
+  background: rgba(10, 11, 13, 0.82);
+}
+#chip .c i {
+  display: block;
+  width: 14px;
+  height: 14px;
+  background: #1e88e5;
+}
+#chip .c .arg {
+  color: #8c96a1;
+  font-weight: 400;
+}
+#chip .c.user {
+  font-weight: 400;
+  color: #dfe3e8;
+}
+#chip .c.user i {
+  background: transparent;
+  border: 2px solid #dfe3e8;
+}
+#caret {
+  display: block;
+  width: 3px;
+  height: 38px;
+  background: #dfe3e8;
+}
+
+/* ticker */
+#ticker {
+  position: absolute;
+  inset: 0;
+  z-index: 56;
+  background: #0a0b0d;
+  overflow: hidden;
+  opacity: 0;
+}
+#tk-col {
+  position: absolute;
+  left: 240px;
+  top: 0;
+  font: 400 60px/84px "JetBrains Mono";
+  color: #9aa5b1;
+  white-space: pre;
+}
+#tk-col .ln {
+  height: 84px;
+}
+#tk-col .ix {
+  color: var(--paper);
+  font-weight: 700;
+}
+#tk-bar {
+  position: absolute;
+  left: 200px;
+  top: 498px;
+  width: 1560px;
+  height: 84px;
+  background: rgba(30, 136, 229, 0.25);
+  border-left: 8px solid #1e88e5;
+  transform-origin: 0 50%;
+}
+
+/* the call path */
+#path {
+  position: absolute;
+  inset: 0;
+  z-index: 57;
+  background: #0a0b0d;
+  overflow: hidden;
+  clip-path: circle(0px at 960px 540px);
+}
+#path-strip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 1080px;
+}
+.pg {
+  position: absolute;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-left: 220px;
+}
+.pg .t {
+  font: 700 150px/1 "JetBrains Mono";
+  color: var(--paper);
+  letter-spacing: -0.02em;
+}
+.pg .s {
+  margin-top: 34px;
+  font: 400 48px/1.3 "JetBrains Mono";
+  color: #8c96a1;
+}
+.pg .s b {
+  color: #dfe3e8;
+  font-weight: 500;
+}
+.pg .lane {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 300px;
+  height: 2px;
+  background: #2c3138;
+}
+.pg .tri {
+  display: flex;
+  gap: 90px;
+}
+.pg .tri div {
+  font: 700 92px/1.1 "JetBrains Mono";
+  color: var(--paper);
+}
+.pg .tri div i {
+  display: block;
+  font: 400 44px/1.4 "JetBrains Mono";
+  font-style: normal;
+  color: #8c96a1;
+  margin-top: 12px;
+}
+.pg .btn {
+  align-self: flex-start;
+  font: 500 150px/1 "Archivo";
+  color: #c9d0d7;
+  padding: 60px 110px;
+  border: 5px solid #2c3139;
+  border-radius: 32px;
+  background: #20242a;
+}
+.pg .ret {
+  font: 500 62px/1.45 "JetBrains Mono";
+  color: #6f7882;
+}
+.pg .ret div {
+  opacity: 0.25;
+}
+.pg .ret b {
+  color: var(--paper);
+  font-weight: 700;
+}
+#path-pkt {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  background: #1e88e5;
+}
+
+/* screens the model has seen */
+#cards {
+  position: absolute;
+  inset: 0;
+  z-index: 56;
+  background: #0a0b0d;
+  opacity: 0;
+}
+.card {
+  position: absolute;
+  left: 400px;
+  top: 190px;
+  width: 1120px;
+  height: 630px;
+  border: 4px solid #46505b;
+  background: #0f1114;
+}
+.card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.card b {
+  position: absolute;
+  left: 0;
+  top: -70px;
+  font: 600 44px/1 "JetBrains Mono";
+  color: var(--paper);
+}
+
+/* the dedupe beat */
+#dd {
+  position: absolute;
+  inset: 0;
+  z-index: 58;
+  background: #0a0b0d;
+  opacity: 0;
+}
+#dd-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+#dd-line {
+  fill: none;
+  stroke: #46505b;
+  stroke-width: 4;
+}
+#dd-ghost rect {
+  fill: none;
+  stroke: #8c96a1;
+  stroke-width: 4;
+  stroke-dasharray: 18 12;
+}
+#dd-ghost text {
+  font: 400 50px "JetBrains Mono";
+  fill: #9aa5b1;
+  text-anchor: middle;
+}
+#dd-pkt {
+  fill: #1e88e5;
+}
+#dd-out {
+  position: absolute;
+  left: 1000px;
+  top: 690px;
+  font: 600 60px/1.2 "JetBrains Mono";
+  color: var(--paper);
+  opacity: 0;
+}
+#dd-out i {
+  display: block;
+  font: 400 40px/1.4 "JetBrains Mono";
+  font-style: normal;
+  color: #8c96a1;
+}
+
+/* montage */
+#tools {
+  position: absolute;
+  inset: 0;
+  z-index: 58;
+  background: #0a0b0d;
+  opacity: 0;
+}
+#tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  gap: 40px 64px;
+  padding: 0 110px;
+}
+#tools div {
+  font: 500 60px/1 "JetBrains Mono";
+  color: #c3cad2;
+  white-space: nowrap;
+}
+#os3 {
+  position: absolute;
+  inset: 0;
+  z-index: 58;
+  background: #0a0b0d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 100px;
+  opacity: 0;
+}
+#os3 .os b {
+  display: block;
+  font: 900 124px/1 "Archivo";
+  letter-spacing: -0.03em;
+  color: var(--paper);
+}
+#os3 .os i {
+  display: block;
+  margin-top: 26px;
+  font: 400 48px/1 "JetBrains Mono";
+  font-style: normal;
+  color: #8c96a1;
+}
+#clients {
+  position: absolute;
+  inset: 0;
+  z-index: 58;
+  background: #0a0b0d;
+  opacity: 0;
+}
+#clients .cl {
+  position: absolute;
+  left: 220px;
+  font: 600 70px/1 "JetBrains Mono";
+  color: var(--paper);
+}
+#clients .to {
+  position: absolute;
+  left: 1180px;
+  top: 500px;
+  font: 700 76px/1 "JetBrains Mono";
+  color: var(--paper);
+}
+#clients svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+#clients svg path {
+  fill: none;
+  stroke: #46505b;
+  stroke-width: 4;
+}
+
+#morph {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 79;
+  overflow: visible;
+  pointer-events: none;
+}
+#morph-r {
+  fill: none;
+  stroke: #eceff2;
+  stroke-width: 4;
+  opacity: 0;
+}
+
+/* stop key */
+#keys {
+  position: absolute;
+  left: 0;
+  top: 700px;
+  width: 1920px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 26px;
+  z-index: 73;
+  opacity: 0;
+}
+.key {
+  min-width: 190px;
+  height: 150px;
+  padding: 0 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 56px/1 "JetBrains Mono";
+  color: var(--paper);
+  background: #121418;
+  border: 3px solid #8c96a1;
+  border-bottom-width: 12px;
+  border-radius: 14px;
+}
+.kplus {
+  font: 400 60px/1 "JetBrains Mono";
+  color: #c3cad2;
+}
+
+/* reveal */
+#final {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+}
+#lockup {
+  position: absolute;
+  left: 0;
+  top: 236px;
+  width: 1920px;
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 60px;
+}
+#mark {
+  display: block;
+  width: 256px;
+  height: 256px;
+  overflow: visible;
+  opacity: 0;
+}
+#wm-name {
+  font: 900 110px/1 "Archivo";
+  font-stretch: 108%;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+  color: var(--paper);
+  opacity: 0;
+}
+#os {
+  position: absolute;
+  left: 0;
+  top: 590px;
+  width: 1920px;
+  height: 130px;
+  overflow: hidden;
+  text-align: center;
+}
+#os span {
+  display: block;
+  font: 900 112px/1.15 "Archivo";
+  font-stretch: 125%;
+  letter-spacing: 0.02em;
+  color: var(--paper);
+}
+#freedoms {
+  position: absolute;
+  left: 0;
+  top: 752px;
+  width: 1920px;
+  display: flex;
+  justify-content: center;
+  gap: 26px;
+  font: 400 50px/1.3 "Archivo";
+  color: #c3cad2;
+}
+#freedoms span {
+  display: block;
+  opacity: 0;
+}
+#repo {
+  position: absolute;
+  left: 0;
+  top: 880px;
+  width: 1920px;
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  font: 500 32px/1 "JetBrains Mono";
+  color: var(--paper);
+  opacity: 0;
+}
+#repo .lic {
+  color: #8c96a1;
+}
+#repo .sep {
+  color: #8c96a1;
+}
+#flash {
+  position: absolute;
+  inset: 0;
+  z-index: 85;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* the user's request, typed big before it becomes the chip */
+.m.ask {
+  font: 400 76px/1 "JetBrains Mono";
+  color: #dfe3e8;
+  gap: 8px;
+}
+.m.ask {
+  justify-content: flex-start;
+}
+#ask-caret {
+  position: absolute;
+  left: 0;
+  top: 31px;
+  display: block;
+  width: 5px;
+  height: 78px;
+  background: #dfe3e8;
+}
