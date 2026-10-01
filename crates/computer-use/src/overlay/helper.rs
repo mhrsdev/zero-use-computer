@@ -906,6 +906,9 @@ pub fn run(args: &[String]) -> i32 {
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse::<u32>().ok());
     let demo = args.iter().any(|a| a == "--demo");
+    // AppKit calls can block the main loop: exit even then.
+    #[cfg(target_os = "macos")]
+    super::macos::start_watchdog(parent);
 
     let (tx, rx) = mpsc::channel::<Input>();
     if demo {
@@ -918,10 +921,14 @@ pub fn run(args: &[String]) -> i32 {
                 if let Ok(cmd) = serde_json::from_str::<Cmd>(&line) {
                     let quit = cmd == Cmd::Quit;
                     if tx.send(Input::Cmd(cmd)).is_err() || quit {
+                        #[cfg(target_os = "macos")]
+                        super::macos::input_closed();
                         return;
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            super::macos::input_closed();
             let _ = tx.send(Input::Eof);
         });
     }

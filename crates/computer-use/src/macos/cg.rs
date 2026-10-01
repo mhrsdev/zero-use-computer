@@ -4,6 +4,13 @@
 use std::ffi::c_void;
 use std::time::Duration;
 
+use core_graphics::base::{
+    kCGBitmapByteOrder32Big, kCGBitmapByteOrder32Little, kCGBitmapByteOrderDefault,
+    kCGImageAlphaFirst, kCGImageAlphaLast, kCGImageAlphaNoneSkipFirst, kCGImageAlphaNoneSkipLast,
+    kCGImageAlphaPremultipliedFirst, kCGImageAlphaPremultipliedLast,
+};
+use core_graphics::color_space::CGColorSpace;
+use core_graphics::context::CGContext;
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit,
@@ -26,6 +33,20 @@ fn source() -> Result<CGEventSource> {
 fn post(pid: u32, event: &CGEvent) {
     // Deliver to the target process only, so the user's cursor never moves.
     event.post_to_pid(pid as libc::pid_t);
+}
+
+/// A mouse event at `at`, without the modifier flags the user happens to
+/// hold (a held ⌘ or ⇧ would turn a click into a different one).
+fn mouse_event(
+    src: &CGEventSource,
+    ty: CGEventType,
+    at: CGPoint,
+    button: CGMouseButton,
+) -> Result<CGEvent> {
+    let e = CGEvent::new_mouse_event(src.clone(), ty, at, button)
+        .map_err(|_| Error::action("mouse event"))?;
+    e.set_flags(CGEventFlags::empty());
+    Ok(e)
 }
 
 /// Pace of synthesized drag steps: apps that start a drag on a timer or a
@@ -69,16 +90,14 @@ pub fn click(pid: u32, at: CGPoint, button: MouseButton, count: u8) -> Result<()
         ),
     };
     // Move first so hover state is correct.
-    if let Ok(mv) = CGEvent::new_mouse_event(src.clone(), CGEventType::MouseMoved, at, cg_btn) {
+    if let Ok(mv) = mouse_event(&src, CGEventType::MouseMoved, at, cg_btn) {
         post(pid, &mv);
     }
     for i in 1..=count.max(1) as i64 {
-        let d = CGEvent::new_mouse_event(src.clone(), down, at, cg_btn)
-            .map_err(|_| Error::action("mouse down event"))?;
+        let d = mouse_event(&src, down, at, cg_btn)?;
         d.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
         post(pid, &d);
-        let u = CGEvent::new_mouse_event(src.clone(), up, at, cg_btn)
-            .map_err(|_| Error::action("mouse up event"))?;
+        let u = mouse_event(&src, up, at, cg_btn)?;
         u.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
         post(pid, &u);
     }
@@ -87,7 +106,7 @@ pub fn click(pid: u32, at: CGPoint, button: MouseButton, count: u8) -> Result<()
 
 pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
     let src = source()?;
-    let mk = |ty, p| CGEvent::new_mouse_event(src.clone(), ty, p, CGMouseButton::Left);
+    let mk = |ty, p| mouse_event(&src, ty, p, CGMouseButton::Left);
     if let Ok(e) = mk(CGEventType::MouseMoved, from) {
         post(pid, &e);
     }
@@ -116,9 +135,7 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
 /// cursor doesn't move).
 pub fn hover(pid: u32, at: CGPoint) -> Result<()> {
     let src = source()?;
-    let e = CGEvent::new_mouse_event(src, CGEventType::MouseMoved, at, CGMouseButton::Left)
-        .map_err(|_| Error::action("mouse moved event"))?;
-    e.set_flags(CGEventFlags::empty());
+    let e = mouse_event(&src, CGEventType::MouseMoved, at, CGMouseButton::Left)?;
     post(pid, &e);
     Ok(())
 }
@@ -153,10 +170,7 @@ pub fn draw(
         ),
     };
     let send = |ty: CGEventType, p: CGPoint| -> Result<()> {
-        let e = CGEvent::new_mouse_event(src.clone(), ty, p, cg_btn)
-            .map_err(|_| Error::action("mouse event"))?;
-        e.set_flags(CGEventFlags::empty());
-        post(pid, &e);
+        post(pid, &mouse_event(&src, ty, p, cg_btn)?);
         Ok(())
     };
     for stroke in strokes {
@@ -188,17 +202,17 @@ pub fn draw(
 
 pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
     let src = source()?;
-    if let Ok(mv) = CGEvent::new_mouse_event(
-        src.clone(),
-        CGEventType::MouseMoved,
-        at,
-        CGMouseButton::Left,
-    ) {
+    if let Ok(mv) = mouse_event(&src, CGEventType::MouseMoved, at, CGMouseButton::Left) {
         post(pid, &mv);
     }
     // Negative dy scrolls content up in CG's convention (wheel1 positive = up).
     let event = CGEvent::new_scroll_event(src, ScrollEventUnit::LINE, 2, -dy, -dx, 0)
         .map_err(|_| Error::action("scroll event"))?;
+    // A new scroll event sits at the user's cursor: the app scrolls the
+    // view under its location, so put it at the target. And a held ⌘ or
+    // ⇧ would turn it into a zoom or a sideways scroll.
+    event.set_location(at);
+    event.set_flags(CGEventFlags::empty());
     post(pid, &event);
     Ok(())
 }
@@ -295,9 +309,87 @@ fn desktop_bounds() -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
+/// What to do without the Screen Recording permission.
+pub const SCREEN_RECORDING_HELP: &str = "screenshots would show only the desktop wallpaper: enable the app that runs this server (your terminal or MCP client) under System Settings ▸ Privacy & Security ▸ Screen Recording, then restart it";
+
+/// Without Screen Recording, captures "succeed" with the wallpaper only.
+fn ensure_capture_allowed() -> Result<()> {
+    if ffi::screen_capture_allowed() == Some(false) {
+        return Err(Error::Permission(format!(
+            "Screen Recording — {SCREEN_RECORDING_HELP}"
+        )));
+    }
+    Ok(())
+}
+
+/// The CGWindowID of `pid`'s window with these bounds (screen coordinates),
+/// from the window server's list: for a window whose AX element doesn't
+/// tell it.
+pub fn find_window(pid: u32, rect: Rect) -> Option<u32> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFStringRef;
+    use core_graphics::window::{
+        copy_window_info, kCGWindowBounds, kCGWindowNumber, kCGWindowOwnerPID,
+    };
+
+    // Every window (on other Spaces too), front to back.
+    let list = copy_window_info(
+        ffi::kCGWindowListExcludeDesktopElements,
+        ffi::kCGNullWindowID,
+    )?;
+    let mut best: Option<(u32, f64)> = None;
+    for raw in list.get_all_values() {
+        if raw.is_null() {
+            continue;
+        }
+        // SAFETY: an item of a live array, retained while wrapped.
+        let item = unsafe { CFType::wrap_under_get_rule(raw) };
+        let Some(dict) = item.downcast::<CFDictionary>() else {
+            continue;
+        };
+        let get = |key: CFStringRef| {
+            dict.find(key as *const c_void)
+                .filter(|v| !v.is_null())
+                // SAFETY: a value of a live dictionary, retained while wrapped.
+                .map(|v| unsafe { CFType::wrap_under_get_rule(*v) })
+        };
+        let num = |key| {
+            get(key)
+                .and_then(|v| v.downcast::<CFNumber>())
+                .and_then(|n| n.to_i64())
+        };
+        // SAFETY: reading CoreGraphics' constant keys.
+        let (owner, number, bounds) =
+            unsafe { (kCGWindowOwnerPID, kCGWindowNumber, kCGWindowBounds) };
+        if num(owner) != Some(i64::from(pid)) {
+            continue;
+        }
+        let Some(id) = num(number).and_then(|n| u32::try_from(n).ok()) else {
+            continue;
+        };
+        let Some(b) = get(bounds)
+            .and_then(|v| v.downcast::<CFDictionary>())
+            .and_then(|d| CGRect::from_dict_representation(&d))
+        else {
+            continue;
+        };
+        let off = (b.origin.x - rect.x).abs()
+            + (b.origin.y - rect.y).abs()
+            + (b.size.width - rect.width).abs()
+            + (b.size.height - rect.height).abs();
+        if off < 4.0 && best.is_none_or(|(_, o)| off < o) {
+            best = Some((id, off));
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
 /// Capture the whole desktop (every display), or a screen-space rectangle
 /// of it.
 pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
+    ensure_capture_allowed()?;
     let rect = region.unwrap_or_else(desktop_bounds);
     let bounds = CGRect {
         origin: CGPoint {
@@ -321,6 +413,7 @@ pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
 }
 
 pub fn capture_window(window_id: u32, rect: Rect) -> Result<Capture> {
+    ensure_capture_allowed()?;
     // CGRectNull tells CoreGraphics to use the window's own bounds.
     let null_rect = CGRect {
         origin: CGPoint {
@@ -346,34 +439,122 @@ pub fn capture_window(window_id: u32, rect: Rect) -> Result<Capture> {
 fn capture_from_image(ptr: *const c_void, rect: Rect) -> Result<Capture> {
     if ptr.is_null() {
         return Err(Error::Platform(
-            "screen capture failed (grant Screen Recording permission)".into(),
+            "screen capture failed (the window may be gone, or Screen Recording is not granted)"
+                .into(),
         ));
     }
+    // SAFETY: a +1 CGImageRef from a Create call, released on drop.
     let image = unsafe { CGImage::from_ptr(ptr as *mut _) };
-    let width = image.width() as u32;
-    let height = image.height() as u32;
-    let bpr = image.bytes_per_row();
-    let bpp = image.bits_per_pixel() / 8;
-    let data = image.data();
-    let bytes = data.bytes();
-    if width == 0 || height == 0 || bpp < 3 {
+    let (width, height) = (image.width(), image.height());
+    if width == 0 || height == 0 {
         return Err(Error::Platform("unexpected capture format".into()));
     }
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height as usize {
-        let row = &bytes[y * bpr..];
-        for x in 0..width as usize {
-            let p = &row[x * bpp..x * bpp + bpp];
-            // CoreGraphics window images are little-endian ARGB → B,G,R,A.
-            rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
-        }
-    }
+    // SAFETY: `ptr` is the live CGImage held by `image`.
+    let info = unsafe { ffi::CGImageGetBitmapInfo(ptr) };
+    let rgba = match rgb_offsets(&image, info).and_then(|o| copy_pixels(&image, o)) {
+        Some(rgba) => rgba,
+        // Any other layout (16-bit or float components, 24-bit pixels…):
+        // let CoreGraphics convert it.
+        None => redraw(&image),
+    };
     Ok(Capture {
-        width,
-        height,
+        width: width as u32,
+        height: height as u32,
         rgba,
         bounds: rect,
     })
+}
+
+const ALPHA_INFO_MASK: u32 = 0x1F;
+const BYTE_ORDER_MASK: u32 = 0x7000;
+const FLOAT_COMPONENTS: u32 = 1 << 8;
+
+/// Where R, G and B sit in each 4-byte pixel of `image`, read off its
+/// bitmap info; `None` for a layout other than 8-bit RGB(A) in 32 bits.
+fn rgb_offsets(image: &CGImage, info: u32) -> Option<(usize, usize, usize)> {
+    if image.bits_per_component() != 8
+        || image.bits_per_pixel() != 32
+        || info & FLOAT_COMPONENTS != 0
+    {
+        return None;
+    }
+    let alpha = info & ALPHA_INFO_MASK;
+    let alpha_first = if [
+        kCGImageAlphaPremultipliedFirst,
+        kCGImageAlphaFirst,
+        kCGImageAlphaNoneSkipFirst,
+    ]
+    .contains(&alpha)
+    {
+        true
+    } else if [
+        kCGImageAlphaPremultipliedLast,
+        kCGImageAlphaLast,
+        kCGImageAlphaNoneSkipLast,
+    ]
+    .contains(&alpha)
+    {
+        false
+    } else {
+        return None;
+    };
+    // A 32-bit little-endian pixel lies in memory in reverse order.
+    let order = info & BYTE_ORDER_MASK;
+    let little = if order == kCGBitmapByteOrder32Little {
+        true
+    } else if order == kCGBitmapByteOrderDefault || order == kCGBitmapByteOrder32Big {
+        false
+    } else {
+        return None;
+    };
+    Some(match (alpha_first, little) {
+        (true, false) => (1, 2, 3),  // A R G B
+        (false, false) => (0, 1, 2), // R G B A
+        (true, true) => (2, 1, 0),   // B G R A
+        (false, true) => (3, 2, 1),  // A B G R
+    })
+}
+
+/// The image's pixels as opaque RGBA, from 4-byte pixels with R, G and B at
+/// these offsets.
+fn copy_pixels(image: &CGImage, (r, g, b): (usize, usize, usize)) -> Option<Vec<u8>> {
+    let (w, h, bpr) = (image.width(), image.height(), image.bytes_per_row());
+    let data = image.data();
+    let bytes = data.bytes();
+    if bpr < w * 4 || bytes.len() < (h - 1) * bpr + w * 4 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for row in bytes.chunks(bpr).take(h) {
+        for p in row[..w * 4].as_chunks::<4>().0 {
+            rgba.extend_from_slice(&[p[r], p[g], p[b], 255]);
+        }
+    }
+    Some(rgba)
+}
+
+/// The image drawn into an RGBX bitmap (8 bits each, in this byte order),
+/// then made opaque RGBA.
+fn redraw(image: &CGImage) -> Vec<u8> {
+    let (w, h) = (image.width(), image.height());
+    let mut buf = vec![0u8; w * h * 4];
+    {
+        let ctx = CGContext::create_bitmap_context(
+            Some(buf.as_mut_ptr() as *mut c_void),
+            w,
+            h,
+            8,
+            w * 4,
+            &CGColorSpace::create_device_rgb(),
+            kCGImageAlphaNoneSkipLast | kCGBitmapByteOrder32Big,
+        );
+        let all = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(w as f64, h as f64));
+        ctx.draw_image(all, image);
+    }
+    for p in buf.as_chunks_mut::<4>().0 {
+        p[3] = 255;
+    }
+    buf
 }
 
 /// macOS virtual key code for a key, and whether it needs Shift.

@@ -55,6 +55,7 @@ fn banners(el: &AxRef, depth: usize, out: &mut Vec<Notification>) {
     }
 }
 
+/// The notifications on screen. The caller holds an autorelease pool.
 pub fn recent() -> Result<Vec<Notification>> {
     let running = NSWorkspace::sharedWorkspace().runningApplications();
     let pid = (0..running.count())
