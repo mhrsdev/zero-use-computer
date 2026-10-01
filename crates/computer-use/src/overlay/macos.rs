@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
@@ -65,6 +66,42 @@ const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
 const K_EVENT_HOT_KEY_RELEASED: u32 = 6;
 
+/// The helper's input closed, or it was told to quit.
+static INPUT_CLOSED: AtomicBool = AtomicBool::new(false);
+
+/// How long the helper may outlive its input or its parent.
+const WATCHDOG_GRACE: Duration = Duration::from_secs(3);
+
+/// Tell the watchdog the helper's input is closed (or it was told to quit).
+pub fn input_closed() {
+    INPUT_CLOSED.store(true, Ordering::SeqCst);
+}
+
+/// End the process once its input has been closed, or `parent` has been
+/// gone, for [`WATCHDOG_GRACE`]. The main loop normally fades out and exits
+/// well before, but an AppKit call can block it, and an orphaned overlay
+/// would stay on screen (and keep the stop key) for good.
+pub fn start_watchdog(parent: Option<u32>) {
+    let spawned = std::thread::Builder::new()
+        .name("overlay-watchdog".into())
+        .spawn(move || {
+            let mut since: Option<Instant> = None;
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let orphaned = INPUT_CLOSED.load(Ordering::SeqCst)
+                    || parent.is_some_and(|p| !super::process_alive(p));
+                if !orphaned {
+                    since = None;
+                } else if since.get_or_insert_with(Instant::now).elapsed() >= WATCHDOG_GRACE {
+                    std::process::exit(0);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("overlay: no watchdog ({e})");
+    }
+}
+
 /// Set by the hot key handler, read by `pump`.
 static HOTKEY_HIT: AtomicBool = AtomicBool::new(false);
 /// The hot key is held down (a repeat is not a new press).
@@ -86,20 +123,51 @@ extern "C" fn on_hotkey(_next: *mut c_void, event: *mut c_void, _data: *mut c_vo
 struct Win {
     window: Retained<NSWindow>,
     view: Retained<NSImageView>,
+    /// Top-left corner, in top-left screen units.
+    pos: (f64, f64),
     /// Size in points.
     size: (f64, f64),
     visible: bool,
 }
 
-pub struct MacSurface {
-    mtm: MainThreadMarker,
-    app: Retained<NSApplication>,
+/// The primary screen's geometry, as the overlay draws on it.
+#[derive(Clone, Copy, PartialEq)]
+struct Geometry {
     /// Height of the primary screen (Cocoa's y axis points up from its bottom).
     primary_h: f64,
     screen: Rect,
-    /// Height of the menu bar (and notch) at the top of the main screen.
+    /// Height of the menu bar (and notch) at the top of the primary screen.
     top_inset: f64,
     scale: f64,
+}
+
+impl Geometry {
+    fn read(mtm: MainThreadMarker) -> Option<Self> {
+        let screens = NSScreen::screens(mtm);
+        let primary = screens.firstObject()?;
+        let frame = primary.frame();
+        let visible = primary.visibleFrame();
+        let top_inset = ((frame.origin.y + frame.size.height)
+            - (visible.origin.y + visible.size.height))
+            .max(0.0);
+        Some(Self {
+            primary_h: frame.size.height,
+            screen: Rect::new(0.0, 0.0, frame.size.width, frame.size.height),
+            top_inset,
+            scale: primary.backingScaleFactor().max(1.0),
+        })
+    }
+}
+
+/// How often the screen geometry is read again (displays added, removed,
+/// rearranged or rescaled).
+const GEOMETRY_EVERY: Duration = Duration::from_secs(1);
+
+pub struct MacSurface {
+    mtm: MainThreadMarker,
+    app: Retained<NSApplication>,
+    geo: Geometry,
+    geo_at: Instant,
     layers: HashMap<Layer, Win>,
     hidden: bool,
     /// Current fade level, applied to every window.
@@ -112,39 +180,52 @@ pub struct MacSurface {
 impl MacSurface {
     pub fn open() -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("the overlay must run on the main thread")?;
-        let app = NSApplication::sharedApplication(mtm);
-        // No Dock icon, never the active app.
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-        app.finishLaunching();
-        let screens = NSScreen::screens(mtm);
-        let primary = screens.firstObject().ok_or("no screen")?;
-        let frame = primary.frame();
-        let visible = primary.visibleFrame();
-        let top_inset = ((frame.origin.y + frame.size.height)
-            - (visible.origin.y + visible.size.height))
-            .max(0.0);
-        let scale = NSScreen::mainScreen(mtm)
-            .map(|s| s.backingScaleFactor())
-            .unwrap_or(1.0)
-            .max(1.0);
-        Ok(Self {
-            mtm,
-            app,
-            primary_h: frame.size.height,
-            screen: Rect::new(0.0, 0.0, frame.size.width, frame.size.height),
-            top_inset,
-            scale,
-            layers: HashMap::new(),
-            hidden: false,
-            opacity: 1.0,
-            hotkey: None,
-            handler: false,
+        autoreleasepool(|_| {
+            let app = NSApplication::sharedApplication(mtm);
+            // No Dock icon, never the active app.
+            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            app.finishLaunching();
+            let geo = Geometry::read(mtm).ok_or("no screen")?;
+            Ok(Self {
+                mtm,
+                app,
+                geo,
+                geo_at: Instant::now(),
+                layers: HashMap::new(),
+                hidden: false,
+                opacity: 1.0,
+                hotkey: None,
+                handler: false,
+            })
         })
     }
 
     /// Top-left screen units → Cocoa frame.
     fn frame(&self, x: f64, y: f64, w: f64, h: f64) -> NSRect {
-        NSRect::new(NSPoint::new(x, self.primary_h - y - h), NSSize::new(w, h))
+        NSRect::new(
+            NSPoint::new(x, self.geo.primary_h - y - h),
+            NSSize::new(w, h),
+        )
+    }
+
+    /// Read the screen geometry again; when the primary screen's height
+    /// changed, put the windows back where they belong (Cocoa places them
+    /// from the bottom of that screen).
+    fn refresh_geometry(&mut self) {
+        let Some(geo) = Geometry::read(self.mtm) else {
+            return;
+        };
+        if geo == self.geo {
+            return;
+        }
+        let moved = geo.primary_h != self.geo.primary_h;
+        self.geo = geo;
+        if moved {
+            for w in self.layers.values() {
+                let origin = NSPoint::new(w.pos.0, geo.primary_h - w.pos.1 - w.size.1);
+                w.window.setFrameOrigin(origin);
+            }
+        }
     }
 
     fn image(img: &Pixmap, size: (f64, f64)) -> Option<Retained<NSImage>> {
@@ -188,6 +269,7 @@ impl MacSurface {
         Win {
             window,
             view,
+            pos: (0.0, 0.0),
             size: (rect.size.width, rect.size.height),
             visible: false,
         }
@@ -200,79 +282,91 @@ impl Surface for MacSurface {
     }
 
     fn screen(&self) -> Rect {
-        self.screen
+        self.geo.screen
     }
 
     fn top_inset(&self) -> f64 {
-        self.top_inset
+        self.geo.top_inset
     }
 
     fn render_scale(&self) -> f32 {
-        self.scale as f32
+        self.geo.scale as f32
     }
 
     fn px_per_unit(&self) -> f32 {
-        self.scale as f32
+        self.geo.scale as f32
     }
 
+    // Every method that calls AppKit drains its own autorelease pool: the
+    // helper's loop runs for hours, and nothing else would ever drain one.
+
     fn show(&mut self, layer: Layer, img: &Pixmap, x: f64, y: f64) {
-        let size = (
-            f64::from(img.width()) / self.scale,
-            f64::from(img.height()) / self.scale,
-        );
-        let Some(image) = Self::image(img, size) else {
-            return;
-        };
-        let rect = self.frame(x, y, size.0, size.1);
-        match self.layers.get_mut(&layer) {
-            Some(w) => {
-                w.window.setFrame_display(rect, true);
-                w.view.setImage(Some(&image));
-                w.size = size;
+        autoreleasepool(|_| {
+            let size = (
+                f64::from(img.width()) / self.geo.scale,
+                f64::from(img.height()) / self.geo.scale,
+            );
+            let Some(image) = Self::image(img, size) else {
+                return;
+            };
+            let rect = self.frame(x, y, size.0, size.1);
+            match self.layers.get_mut(&layer) {
+                Some(w) => {
+                    w.window.setFrame_display(rect, true);
+                    w.view.setImage(Some(&image));
+                    w.size = size;
+                }
+                None => {
+                    let w = self.create(rect, &image);
+                    self.layers.insert(layer, w);
+                }
             }
-            None => {
-                let w = self.create(rect, &image);
-                self.layers.insert(layer, w);
+            if let Some(w) = self.layers.get_mut(&layer) {
+                w.pos = (x, y);
+                w.visible = true;
+                if !self.hidden {
+                    w.window.orderFrontRegardless();
+                }
             }
-        }
-        if let Some(w) = self.layers.get_mut(&layer) {
-            w.visible = true;
-            if !self.hidden {
-                w.window.orderFrontRegardless();
-            }
-        }
+        })
     }
 
     fn move_to(&mut self, layer: Layer, x: f64, y: f64) {
-        if let Some(w) = self.layers.get(&layer) {
-            let origin = NSPoint::new(x, self.primary_h - y - w.size.1);
-            w.window.setFrameOrigin(origin);
+        let primary_h = self.geo.primary_h;
+        if let Some(w) = self.layers.get_mut(&layer) {
+            w.pos = (x, y);
+            let origin = NSPoint::new(x, primary_h - y - w.size.1);
+            autoreleasepool(|_| w.window.setFrameOrigin(origin));
         }
     }
 
     fn hide(&mut self, layer: Layer) {
         if let Some(w) = self.layers.get_mut(&layer) {
             w.visible = false;
-            w.window.orderOut(None);
+            autoreleasepool(|_| w.window.orderOut(None));
         }
     }
 
     fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
-        for w in self.layers.values().filter(|w| w.visible) {
-            if hidden {
-                w.window.orderOut(None);
-            } else {
-                w.window.orderFrontRegardless();
+        autoreleasepool(|_| {
+            for w in self.layers.values().filter(|w| w.visible) {
+                if hidden {
+                    w.window.orderOut(None);
+                } else {
+                    w.window.orderFrontRegardless();
+                }
             }
-        }
+        })
     }
 
     fn set_opacity(&mut self, opacity: f32) -> bool {
         self.opacity = opacity;
-        for w in self.layers.values() {
-            w.window.setAlphaValue(f64::from(opacity));
-        }
+        autoreleasepool(|_| {
+            for w in self.layers.values() {
+                w.window.setAlphaValue(f64::from(opacity));
+            }
+        });
         true
     }
 
@@ -336,17 +430,23 @@ impl Surface for MacSurface {
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
-        let past = NSDate::distantPast();
-        // SAFETY: reading a constant Foundation string.
-        let mode = unsafe { NSDefaultRunLoopMode };
-        while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
-            NSEventMask::Any,
-            Some(&past),
-            mode,
-            true,
-        ) {
-            self.app.sendEvent(&event);
-        }
+        autoreleasepool(|_| {
+            let past = NSDate::distantPast();
+            // SAFETY: reading a constant Foundation string.
+            let mode = unsafe { NSDefaultRunLoopMode };
+            while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&past),
+                mode,
+                true,
+            ) {
+                self.app.sendEvent(&event);
+            }
+            if self.geo_at.elapsed() >= GEOMETRY_EVERY {
+                self.geo_at = Instant::now();
+                self.refresh_geometry();
+            }
+        });
         let mut events = Vec::new();
         if HOTKEY_HIT.swap(false, Ordering::SeqCst) {
             events.push(SurfaceEvent::Hotkey);
@@ -356,9 +456,11 @@ impl Surface for MacSurface {
 
     fn close(&mut self) {
         self.set_hotkey(None);
-        for (_, w) in self.layers.drain() {
-            w.window.orderOut(None);
-            w.window.close();
-        }
+        autoreleasepool(|_| {
+            for (_, w) in self.layers.drain() {
+                w.window.orderOut(None);
+                w.window.close();
+            }
+        })
     }
 }
