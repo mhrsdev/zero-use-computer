@@ -7,8 +7,9 @@ computer-use-mcp for Claude Code
      macOS / Linux :  ./install.sh
      Windows       :  double-click install.cmd   (or: powershell -ExecutionPolicy Bypass -File .\install.ps1)
    Options: --scope project|user|local, --no-register, --uninstall (Windows: -Scope, -NoRegister, -Uninstall)
-   Skills: the skills/ folder holds the agent's guide (computer-use) and its safety rules
-   (computer-use-security). The server asks no one for permission: give the agent both skills.
+   Skills: the skills/ folder holds the agent's guide (computer-use), its safety rules
+   (computer-use-security) and the design method (computer-use-design). The server asks
+   no one for permission: give the agent the skills.
 3. Check:  claude mcp list     (inside Claude Code: /mcp)
 4. macOS: give Accessibility + Screen Recording to the app that runs Claude Code.
    Linux: needs an X11/XWayland session with the AT-SPI accessibility bus.

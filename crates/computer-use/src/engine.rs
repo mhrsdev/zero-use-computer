@@ -2255,7 +2255,16 @@ impl<B: Backend> Engine<B> {
                 draw_shape(s).map_err(|e| Error::InvalidArgs(format!("stroke {}: {e}", i + 1)))
             })
             .collect::<Result<Vec<_>>>()?;
-        let (frame, area) = match args.element_index {
+        let map = self.state(app.pid).ok().and_then(|s| s.coord);
+        let no_map = || {
+            Error::InvalidArgs(
+                "no current screenshot to draw on: call get_app_state first, or pass element_index"
+                    .into(),
+            )
+        };
+        // The box the drawing goes in (screen coordinates), if not the
+        // whole screenshot.
+        let element = match args.element_index {
             Some(i) => {
                 let h = self.element_by_index(&app, i)?;
                 let b = self
@@ -2267,14 +2276,47 @@ impl<B: Backend> Engine<B> {
                     .ok_or_else(|| {
                         Error::ActionFailed("this element has no on-screen box to draw in".into())
                     })?;
-                (crate::draw::Frame::fractions(b), "the element")
+                Some(b)
             }
-            None => {
-                let map = self.state(app.pid).ok().and_then(|s| s.coord).ok_or_else(|| {
-                    Error::InvalidArgs(
-                        "no current screenshot to draw on: call get_app_state first, or pass element_index".into(),
-                    )
-                })?;
+            None => None,
+        };
+        let (frame, area) = match (&args.canvas, element) {
+            (Some(c), _) => {
+                let [w, h] = c.size;
+                if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+                    return Err(Error::InvalidArgs(
+                        "canvas.size is [width, height], both positive".into(),
+                    ));
+                }
+                let b = match (c.area, element) {
+                    (Some(_), Some(_)) => {
+                        return Err(Error::InvalidArgs(
+                            "give canvas.box or element_index, not both".into(),
+                        ));
+                    }
+                    (Some([l, t, r, btm]), None) => {
+                        let map = map.ok_or_else(no_map)?;
+                        let (a, z) = (map.to_screen(l, t)?, map.to_screen(r, btm)?);
+                        let b = Rect::new(a.x, a.y, z.x - a.x, z.y - a.y);
+                        if b.is_empty() {
+                            return Err(Error::InvalidArgs(
+                                "canvas.box is [left, top, right, bottom], right of left and below top".into(),
+                            ));
+                        }
+                        b
+                    }
+                    (None, Some(b)) => b,
+                    (None, None) => {
+                        return Err(Error::InvalidArgs(
+                            "canvas needs box (where the document is in the screenshot) or element_index".into(),
+                        ));
+                    }
+                };
+                (crate::draw::Frame::units(b, w, h), "the document")
+            }
+            (None, Some(b)) => (crate::draw::Frame::fractions(b), "the element"),
+            (None, None) => {
+                let map = map.ok_or_else(no_map)?;
                 (
                     crate::draw::Frame::pixels(map.bounds, map.width, map.height),
                     "the screenshot",
@@ -2356,6 +2398,46 @@ impl<B: Backend> Engine<B> {
         Ok(ToolOutput::text(msg))
     }
 
+    /// Point the mouse at screenshot pixel (x, y) of `app`, for apps that
+    /// send keys to what is under the pointer. Returns how to put the
+    /// pointer back afterwards ([`Engine::unhover`]).
+    fn hover(
+        &mut self,
+        app: &AppInfo,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> Result<Option<(InputTarget, Point)>> {
+        if x.is_none() && y.is_none() {
+            return Ok(None);
+        }
+        let anchor = self.anchor(app, None, x, y, "the pointer position")?;
+        let at = self.anchor_point(app, &anchor)?;
+        let target = self.input_target(app)?;
+        self.overlay_point(at, false);
+        let back = self.backend.move_pointer(&target, at)?;
+        // Let the app see where the pointer is before the keys arrive.
+        (self.sleep)(Duration::from_millis(40));
+        Ok(back.map(|p| (target, p)))
+    }
+
+    fn unhover(&mut self, back: Option<(InputTarget, Point)>) {
+        if let Some((target, p)) = back {
+            let _ = self.backend.move_pointer(&target, p);
+        }
+    }
+
+    fn press_combos(&mut self, app: &AppInfo, combos: &[KeyCombo]) -> Result<()> {
+        let target = self.input_target(app)?;
+        for combo in combos {
+            if self.is_stopped() {
+                return Err(self.stopped_error());
+            }
+            self.backend.press_key(&target, combo)?;
+            (self.sleep)(Duration::from_millis(self.store.config.timing.key_delay_ms));
+        }
+        Ok(())
+    }
+
     fn press_key(&mut self, args: PressKeyArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
@@ -2366,14 +2448,10 @@ impl<B: Backend> Engine<B> {
             self.overlay_point_element(&app, h, false);
             self.focus_element(&app, h, &node)?;
         }
-        let target = self.input_target(&app)?;
-        for combo in &combos {
-            if self.is_stopped() {
-                return Err(self.stopped_error());
-            }
-            self.backend.press_key(&target, combo)?;
-            (self.sleep)(Duration::from_millis(self.store.config.timing.key_delay_ms));
-        }
+        let back = self.hover(&app, args.x, args.y)?;
+        let pressed = self.press_combos(&app, &combos);
+        self.unhover(back);
+        pressed?;
         self.settle_on(&app);
         let shown: Vec<String> = combos.iter().map(|c| c.to_string()).collect();
         Ok(ToolOutput::text(format!("Pressed {}.", shown.join(" "))))
@@ -2394,7 +2472,10 @@ impl<B: Backend> Engine<B> {
             self.settle();
             field = Some((i, node));
         }
-        self.type_into_focus(&app, &args.text)?;
+        let back = self.hover(&app, args.x, args.y)?;
+        let typed = self.type_into_focus(&app, &args.text);
+        self.unhover(back);
+        typed?;
         self.settle_on(&app);
         let mut msg = format!("Typed {} character(s).", args.text.chars().count());
 
@@ -2620,6 +2701,9 @@ impl<B: Backend> Engine<B> {
         });
         // An element to zoom into (screen rect).
         let mut zoom: Option<Rect> = None;
+        // What grid labels and `pick` points are in: screen coordinates,
+        // or the x/y actions use for the window.
+        let mut space = LabelSpace::Screen;
         let (capture, marks, label) = match mode {
             ScreenshotMode::Auto | ScreenshotMode::Full => (
                 self.capture_clean(|b| b.capture_screen(None))?,
@@ -2672,6 +2756,12 @@ impl<B: Backend> Engine<B> {
                     label = format!("{} in {}", node.label(), app.name);
                 }
                 let cap = self.capture_clean(|b| b.capture(&app, &window))?;
+                space = match self.states.get(&app.pid) {
+                    Some(st) if st.window_id == Some(window.id) => {
+                        st.coord.map_or(LabelSpace::Image, LabelSpace::Map)
+                    }
+                    _ => LabelSpace::Image,
+                };
                 let marks = if args.annotate {
                     Some(
                         self.state(app.pid)?
@@ -2689,10 +2779,7 @@ impl<B: Backend> Engine<B> {
 
         let mut capture = capture;
         let redacted = self.redact_capture(&mut capture);
-        if let Some(marks) = marks {
-            imaging::annotate(&mut capture, &marks);
-        }
-        let note = if redacted > 0 {
+        let mut note = if redacted > 0 {
             format!(" [{redacted} private area(s) blacked out]")
         } else {
             String::new()
@@ -2715,7 +2802,50 @@ impl<B: Backend> Engine<B> {
                 (b.height * sy).ceil() as u32,
             );
             let px = imaging::widen(px, 8, 0, capture.width, capture.height);
-            let (img, _) = imaging::encode(imaging::crop(&capture, px), &cfg)?;
+            capture = imaging::crop(&capture, px);
+        }
+
+        // Exact colours and coordinates, read before anything is drawn on it.
+        let extras = args.grid.is_some() || args.palette || args.pick.is_some();
+        let sig = matches!(mode, ScreenshotMode::Auto | ScreenshotMode::Full)
+            .then(|| PixelSig::of(&capture, self.store.config.cache.pixel_grid));
+        let (out_w, _) = imaging::fit(capture.width, capture.height, cfg.max_dimension.max(64));
+        let (ax, ay) = space.axes(&capture, out_w);
+        if args.palette {
+            let colours: Vec<String> = imaging::palette(&capture, 8)
+                .iter()
+                .map(|(hex, share)| format!("{hex} {:.0}%", share * 100.0))
+                .collect();
+            note.push_str(&format!("\nMain colours: {}.", colours.join(", ")));
+        }
+        if let Some(points) = &args.pick {
+            let read: Vec<String> = points
+                .iter()
+                .take(50)
+                .map(|p| {
+                    let (x, y) = p.xy();
+                    match imaging::color_at(&capture, ax.pixel(x), ay.pixel(y)) {
+                        Some(hex) => format!("({x}, {y}) {hex}"),
+                        None => format!("({x}, {y}) is outside the image"),
+                    }
+                })
+                .collect();
+            note.push_str(&format!("\nColours: {}.", read.join("; ")));
+        }
+        if let Some(marks) = marks {
+            imaging::annotate(&mut capture, &marks);
+        }
+        if let Some(step) = args.grid {
+            let out_scale = f64::from(capture.width) / f64::from(out_w.max(1));
+            let used = imaging::draw_grid(&mut capture, ax, ay, f64::from(step.max(1)), out_scale);
+            note.push_str(&format!(
+                "\nGrid: a line every {used:.0}, labelled in {}.",
+                space.describe()
+            ));
+        }
+
+        if zoom.is_some() {
+            let (img, _) = imaging::encode(capture, &cfg)?;
             let text = format!(
                 "Screenshot of {label}, zoomed in: {}x{} px. It is its own picture: x/y for actions still refer to get_app_state's screenshot.{note}",
                 img.width, img.height
@@ -2724,11 +2854,11 @@ impl<B: Backend> Engine<B> {
         }
 
         // The whole screen, or only what changed since the last one.
-        if matches!(mode, ScreenshotMode::Auto | ScreenshotMode::Full) {
-            let grid = self.store.config.cache.pixel_grid;
+        if let Some(sig) = sig {
             let tolerance = self.store.config.cache.pixel_tolerance;
-            let sig = PixelSig::of(&capture, grid);
-            let smart = mode == ScreenshotMode::Auto && cfg.scope == crate::config::ShotScope::Auto;
+            let smart = mode == ScreenshotMode::Auto
+                && cfg.scope == crate::config::ShotScope::Auto
+                && !extras;
             if smart && let Some((old, map)) = &self.screen_shot {
                 let map = *map;
                 if map.bounds == capture.bounds && sig.same_as(old, tolerance) {
@@ -3273,9 +3403,117 @@ const TYPED_UNCONFIRMED_NOTE: &str = " Note: the field doesn't show the new text
 /// Appended when an action changed nothing that can be seen.
 const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
 
+/// What the coordinates on a screenshot's grid (and `pick` points) are.
+#[derive(Debug, Clone, Copy)]
+enum LabelSpace {
+    /// Screen coordinates (full screen and region screenshots).
+    Screen,
+    /// The x/y actions use for a window: pixels of its latest get_app_state
+    /// screenshot.
+    Map(CoordMap),
+    /// This image's own pixels (no get_app_state of the window yet).
+    Image,
+}
+
+impl LabelSpace {
+    /// Label = offset + scale * capture pixel, per axis; `out_w` is the
+    /// width the capture will be sent at.
+    fn axes(&self, cap: &Capture, out_w: u32) -> (imaging::Axis, imaging::Axis) {
+        let (cw, ch) = (f64::from(cap.width.max(1)), f64::from(cap.height.max(1)));
+        let (px_x, px_y) = (cap.bounds.width / cw, cap.bounds.height / ch);
+        match self {
+            LabelSpace::Screen => (
+                imaging::Axis {
+                    offset: cap.bounds.x,
+                    scale: px_x,
+                },
+                imaging::Axis {
+                    offset: cap.bounds.y,
+                    scale: px_y,
+                },
+            ),
+            LabelSpace::Map(m) => {
+                let kx = f64::from(m.width) / m.bounds.width.max(f64::MIN_POSITIVE);
+                let ky = f64::from(m.height) / m.bounds.height.max(f64::MIN_POSITIVE);
+                (
+                    imaging::Axis {
+                        offset: (cap.bounds.x - m.bounds.x) * kx,
+                        scale: px_x * kx,
+                    },
+                    imaging::Axis {
+                        offset: (cap.bounds.y - m.bounds.y) * ky,
+                        scale: px_y * ky,
+                    },
+                )
+            }
+            LabelSpace::Image => {
+                let k = f64::from(out_w.max(1)) / cw;
+                (
+                    imaging::Axis {
+                        offset: 0.0,
+                        scale: k,
+                    },
+                    imaging::Axis {
+                        offset: 0.0,
+                        scale: k,
+                    },
+                )
+            }
+        }
+    }
+
+    fn describe(&self) -> &'static str {
+        match self {
+            LabelSpace::Screen => {
+                "screen coordinates (as region screenshots and window moves take them)"
+            }
+            LabelSpace::Map(_) => "the x/y that click, drag and draw use for this window",
+            LabelSpace::Image => "this image's pixels (call get_app_state before acting with x/y)",
+        }
+    }
+}
+
 /// A `draw` stroke as the drawing module takes it.
 fn draw_shape(s: &DrawStroke) -> std::result::Result<crate::draw::Shape, String> {
     use crate::draw::{Expr, Shape};
+    let kinds = [
+        s.points.is_some(),
+        s.x.is_some() || s.y.is_some(),
+        s.rect.is_some(),
+        s.ellipse.is_some(),
+    ];
+    if kinds.iter().filter(|k| **k).count() > 1 {
+        return Err("give one of points, x and y, rect or ellipse".into());
+    }
+    if let Some(r) = s.rect {
+        let [x, y, w, h] = r;
+        if !r.iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+            return Err("rect is [x, y, width, height] with a positive width and height".into());
+        }
+        return Ok(Shape::Points {
+            points: vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)],
+            closed: true,
+            smooth: false,
+        });
+    }
+    if let Some(e) = s.ellipse {
+        let [cx, cy, rx, ry] = e;
+        if !e.iter().all(|v| v.is_finite()) || rx <= 0.0 || ry <= 0.0 {
+            return Err(
+                "ellipse is [center x, center y, radius x, radius y] with positive radii".into(),
+            );
+        }
+        // Drawn from its rightmost point, all the way round.
+        return Ok(Shape::Curve {
+            x: Expr::parse(&format!("({cx:?}) + ({rx:?})*cos(t)"))
+                .map_err(|e| format!("ellipse: {e}"))?,
+            y: Expr::parse(&format!("({cy:?}) + ({ry:?})*sin(t)"))
+                .map_err(|e| format!("ellipse: {e}"))?,
+            t0: 0.0,
+            t1: std::f64::consts::TAU,
+            steps: None,
+        });
+    }
     match (&s.points, &s.x, &s.y) {
         (Some(points), None, None) => Ok(Shape::Points {
             points: points.iter().map(|p| p.xy()).collect(),
@@ -3308,11 +3546,11 @@ fn draw_shape(s: &DrawStroke) -> std::result::Result<crate::draw::Shape, String>
                 steps: s.steps,
             })
         }
-        (Some(_), _, _) => Err("give either points or x and y, not both".into()),
+        (Some(_), _, _) => Err("give one of points, x and y, rect or ellipse".into()),
         (None, Some(_), None) | (None, None, Some(_)) => {
             Err("a curve needs both x and y (expressions in t)".into())
         }
-        (None, None, None) => Err("give points, or x and y expressions in t".into()),
+        (None, None, None) => Err("give points, rect, ellipse, or x and y expressions in t".into()),
     }
 }
 
@@ -4314,6 +4552,169 @@ mod tests {
     }
 
     #[test]
+    fn rects_and_ellipses_need_no_formulas() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [
+                {"rect": [100, 100, 200, 100]},
+                {"ellipse": [400, 300, 100, 50]}
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let downs: Vec<Point> = pointer_events(&e)
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::PointerDown(_, p, _) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(downs, [Point::new(100.0, 100.0), Point::new(500.0, 300.0)]);
+        assert!(out.text.contains("Drew 2 strokes"), "{}", out.text);
+        assert!(
+            out.text.contains("x 100 to 500, y 100 to 350"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [{"rect": [1, 1, 5, 5], "ellipse": [1, 1, 1, 1]}]}),
+        );
+        assert!(out.text.contains("give one of"), "{}", out.text);
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "strokes": [{"ellipse": [1, 1, 0, 1]}]}),
+        );
+        assert!(out.text.contains("positive radii"), "{}", out.text);
+    }
+
+    #[test]
+    fn draw_in_document_units() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // A 1000x500 px document shown at (100, 100)-(500, 300).
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "canvas": {"box": [100, 100, 500, 300], "size": [1000, 500]},
+                "strokes": [{"points": [[0, 0], [1000, 500]]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let events = pointer_events(&e);
+        assert_eq!(
+            events[0],
+            Event::PointerDown(4242, Point::new(100.0, 100.0), MouseButton::Left)
+        );
+        assert_eq!(
+            *events.last().unwrap(),
+            Event::PointerUp(4242, Point::new(500.0, 300.0), MouseButton::Left)
+        );
+        assert!(
+            out.text
+                .contains("on the document: x 0 to 1000, y 0 to 500"),
+            "{}",
+            out.text
+        );
+        // The element's box with the document's size.
+        let doc = index_named(&e, 4242, "Document");
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "canvas": {"size": [800, 560]},
+                "strokes": [{"points": [[400, 280]]}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(pointer_events(&e).contains(&Event::PointerDown(
+            4242,
+            Point::new(400.0, 320.0),
+            MouseButton::Left
+        )));
+        for (canvas, want) in [
+            (serde_json::json!({"size": [10, 10]}), "needs box"),
+            (
+                serde_json::json!({"box": [1, 1, 5, 5], "size": [0, 10]}),
+                "both positive",
+            ),
+            (
+                serde_json::json!({"box": [50, 50, 10, 10], "size": [10, 10]}),
+                "right of left",
+            ),
+        ] {
+            let out = e.call_tool(
+                "draw",
+                serde_json::json!({"app": "TextEdit", "canvas": canvas, "strokes": [{"points": [[1, 1]]}]}),
+            );
+            assert!(
+                out.is_error && out.text.contains(want),
+                "{want}: {}",
+                out.text
+            );
+        }
+    }
+
+    #[test]
+    fn keys_can_go_to_what_is_under_the_pointer() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        e.backend_mut().pointer = Some(Point::new(5.0, 5.0));
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "g x 2 Return", "x": 300, "y": 200}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let ev = &e.backend().events;
+        let first_key = ev.iter().position(|v| matches!(v, Event::Key(..))).unwrap();
+        let last_key = ev
+            .iter()
+            .rposition(|v| matches!(v, Event::Key(..)))
+            .unwrap();
+        // Pointed there before the first key, put back after the last.
+        assert!(ev[..first_key].contains(&Event::Hover(4242, Point::new(300.0, 200.0))));
+        assert!(ev[last_key..].contains(&Event::Hover(4242, Point::new(5.0, 5.0))));
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "1.5", "x": 300}),
+        );
+        assert!(
+            out.is_error && out.text.contains("both x and y"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn screenshots_read_coordinates_and_colours() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"app": "TextEdit", "grid": 100, "palette": true,
+                "pick": [[10, 10], [5000, 5]]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+        let t = &out.text;
+        assert!(t.contains("Main colours: #C8C8C8 100%."), "{t}");
+        assert!(
+            t.contains("Colours: (10, 10) #C8C8C8; (5000, 5) is outside the image."),
+            "{t}"
+        );
+        assert!(
+            t.contains("Grid: a line every 100, labelled in the x/y that click"),
+            "{t}"
+        );
+        // A full-screen grid is in screen coordinates, and always sent.
+        let out = e.call_tool("screenshot", serde_json::json!({"grid": true}));
+        assert!(out.image.is_some());
+        assert!(
+            out.text.contains("labelled in screen coordinates"),
+            "{}",
+            out.text
+        );
+        let again = e.call_tool("screenshot", serde_json::json!({"grid": true}));
+        assert!(again.image.is_some(), "{}", again.text);
+    }
+
+    #[test]
     fn bad_drawings_are_explained() {
         let mut e = engine();
         let out = e.call_tool(
@@ -4332,10 +4733,13 @@ mod tests {
                 "stroke 1: x: unknown name `foo`",
             ),
             (serde_json::json!({"x": "t"}), "needs both x and y"),
-            (serde_json::json!({}), "give points, or x and y"),
+            (
+                serde_json::json!({}),
+                "give points, rect, ellipse, or x and y",
+            ),
             (
                 serde_json::json!({"points": [[1, 1]], "x": "t", "y": "t"}),
-                "not both",
+                "give one of",
             ),
             (
                 serde_json::json!({"points": [[1, 1], [5000, 1]]}),

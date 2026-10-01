@@ -574,6 +574,13 @@ impl Backend for LinuxBackend {
             .drag((from.x as i32, from.y as i32), (to.x as i32, to.y as i32))
     }
 
+    fn move_pointer(&mut self, _target: &InputTarget, at: Point) -> Result<Option<Point>> {
+        let back = self
+            .x11()?
+            .move_pointer(at.x.round() as i32, at.y.round() as i32)?;
+        Ok(back.map(|(x, y)| Point::new(f64::from(x), f64::from(y))))
+    }
+
     fn draw(
         &mut self,
         _target: &InputTarget,

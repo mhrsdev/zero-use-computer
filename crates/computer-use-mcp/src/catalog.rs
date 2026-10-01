@@ -86,6 +86,76 @@ const FILES: &[File] = &[
         raw: include_str!("../../../skills/computer-use/reference/apps/image-editors.md"),
     },
     File {
+        skill: "computer-use-design",
+        path: "SKILL.md",
+        raw: include_str!("../../../skills/computer-use-design/SKILL.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/blender.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/blender.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/cad.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/cad.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/figma.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/figma.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/gimp-krita.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/gimp-krita.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/paint.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/paint.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/photoshop.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/photoshop.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/revit.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/revit.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/sketchup.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/sketchup.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/apps/vector.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/apps/vector.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/checks.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/checks.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/recipes.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/recipes.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/reference-images.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/reference-images.md"),
+    },
+    File {
+        skill: "computer-use-design",
+        path: "reference/spec.md",
+        raw: include_str!("../../../skills/computer-use-design/reference/spec.md"),
+    },
+    File {
         skill: "computer-use-security",
         path: "SKILL.md",
         raw: include_str!("../../../skills/computer-use-security/SKILL.md"),
@@ -202,9 +272,13 @@ pub fn prompts_get(params: &Value) -> Result<Value, RpcError> {
         .ok_or((INVALID_PARAMS, "prompts/get requires `name`".to_string()))?;
     let main = |skill: &str| FILES.iter().find(|f| f.is_main() && f.skill == skill);
     let file = main(name).ok_or_else(|| (INVALID_PARAMS, format!("unknown prompt: {name}")))?;
-    // The guide never comes without the safety rules it relies on.
+    // The guides never come without the safety rules they rely on, and
+    // the design method builds on the basic guide.
     let mut files = vec![file];
-    if name == "computer-use" {
+    if name == "computer-use-design" {
+        files.extend(main("computer-use"));
+    }
+    if name != "computer-use-security" {
         files.extend(main("computer-use-security"));
     }
     let messages: Vec<Value> = files
@@ -280,9 +354,16 @@ mod tests {
             .iter()
             .map(|p| p["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["computer-use", "computer-use-security"]);
+        assert_eq!(
+            names,
+            [
+                "computer-use",
+                "computer-use-design",
+                "computer-use-security"
+            ]
+        );
         assert!(
-            prompts["prompts"][1]["description"]
+            prompts["prompts"][2]["description"]
                 .as_str()
                 .unwrap()
                 .starts_with("Safety rules for the computer-use tools")
@@ -373,6 +454,28 @@ mod tests {
         let text = |i: usize| messages[i]["content"]["text"].as_str().unwrap();
         assert!(text(0).starts_with("# Computer use\n"), "{}", text(0));
         assert!(text(1).starts_with("# Computer use: security rules"));
+    }
+
+    #[test]
+    fn the_design_prompt_brings_the_basics_and_the_rules() {
+        let got = prompts_get(&json!({"name": "computer-use-design"})).unwrap();
+        let firsts: Vec<String> = got["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                let text = m["content"]["text"].as_str().unwrap();
+                text.lines().next().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            firsts,
+            [
+                "# Design with computer use",
+                "# Computer use",
+                "# Computer use: security rules"
+            ]
+        );
     }
 
     #[test]

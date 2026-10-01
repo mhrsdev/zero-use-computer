@@ -15,12 +15,21 @@
     coordinates);
   - `app` (+ `window`) one window; `annotate: true` draws each element's
     index on it; `element_index` zooms into one element at full resolution.
+  - `grid: 100` draws a labelled grid every 100 px, in the x/y that
+    `click`, `drag` and `draw` use for that window (screen coordinates for
+    full/region shots): read positions off it instead of guessing.
+  - `palette: true` lists the main colours (hex and share);
+    `pick: [[x, y], ...]` gives the exact colour at each point (same
+    coordinates as the grid).
 - `window(app, action)`: `list`, `focus`, `move` (x, y, optional width and
   height), `resize`, `maximize`, `minimize`, `restore`, `fullscreen`,
   `exit_fullscreen`, `close`, `tile_left` / `tile_right` / `tile_top` /
   `tile_bottom`, `center`, `move_to_display`, `move_to_desktop`.
   `window(action="displays")` lists the screens. Positions are screen
   coordinates, not screenshot pixels.
+- `press_key` / `type_text` with `x`/`y`: point the mouse there first, for
+  apps that send keys to what is under the pointer (Blender). Keypad keys:
+  `Numpad0`…`Numpad9`, `NumpadDecimal`, `NumpadAdd`, `NumpadSubtract`.
 - `get_clipboard` / `set_clipboard`: move text between apps (set it, then
   `press_key "cmd+v"`).
 - `get_notifications(app?, limit?)`: recent desktop notifications, when the

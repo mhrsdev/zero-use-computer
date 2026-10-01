@@ -935,6 +935,10 @@ impl Backend for WindowsBackend {
         input::drag(from, to)
     }
 
+    fn move_pointer(&mut self, _target: &InputTarget, at: Point) -> Result<Option<Point>> {
+        input::move_pointer(at)
+    }
+
     fn draw(
         &mut self,
         _target: &InputTarget,

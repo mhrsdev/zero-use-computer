@@ -63,5 +63,5 @@ echo "Added '$name' ($scope scope). Check with:  claude mcp list"
 case "$(uname -s)" in
   Darwin) echo "macOS: grant Accessibility and Screen Recording to the app that runs Claude Code (Terminal / your IDE), then restart it." ;;
 esac
-echo "Give the agent the skills in skills/ (computer-use and computer-use-security): the server asks no one for permission, the security skill sets the rules."
+echo "Give the agent the skills in skills/ (computer-use, computer-use-security, and computer-use-design for design work): the server asks no one for permission, the security skill sets the rules."
 

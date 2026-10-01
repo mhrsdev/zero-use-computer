@@ -86,6 +86,8 @@ pub enum Event {
     ScrollElement(ElementHandle, ScrollDirection, f64),
     Click(u32, Point, MouseButton, u8),
     Drag(u32, Point, Point),
+    /// The pointer moved without a click (keys for what is under it).
+    Hover(u32, Point),
     /// A `draw` gesture: button down, pointer moves, button up.
     PointerDown(u32, Point, MouseButton),
     PointerMove(u32, Point),
@@ -100,6 +102,9 @@ pub enum Event {
 pub struct MockBackend {
     apps: Vec<MockApp>,
     pub events: Vec<Event>,
+    /// Where the pointer is, when known (move_pointer reports it to be put
+    /// back).
+    pub pointer: Option<Point>,
     /// Elements whose native action support is disabled, to force fallbacks.
     pub no_native: std::collections::HashSet<ElementHandle>,
     /// Apps that appear (by name) only after launch_app is called.
@@ -598,6 +603,11 @@ impl Backend for MockBackend {
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
         self.events.push(Event::Drag(target.pid, from, to));
         Ok(())
+    }
+
+    fn move_pointer(&mut self, target: &InputTarget, at: Point) -> Result<Option<Point>> {
+        self.events.push(Event::Hover(target.pid, at));
+        Ok(self.pointer.replace(at))
     }
 
     fn draw(

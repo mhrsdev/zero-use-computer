@@ -32,7 +32,10 @@ actions need the user's OK is up to the agent. Give it both skills from
 [`skills/`](../skills):
 
 - `computer-use`: how to work with the tools while spending few tokens;
-- `computer-use-security`: the safety rules. Load it with the first one.
+- `computer-use-security`: the safety rules. Load it with the first one;
+- `computer-use-design` (for design work): spec first, exact methods per
+  app, checks with grid screenshots and colour readings, playbooks for
+  Photoshop, Paint, Blender, Revit, AutoCAD and others.
 
 Clients with Agent Skills (Claude Code, the Claude apps) load them from the
 `skills/` folder; the installers and the plugin bundle include it. For other
@@ -116,8 +119,9 @@ Client entries: [`examples/http.mcp.json`](../examples/http.mcp.json)
 ## 4. The skills over MCP
 
 For clients without skill files, the server offers them as MCP
-**prompts** (`prompts/list`, `prompts/get`: `computer-use` and
-`computer-use-security`, in your client's prompt or slash-command menu) and
+**prompts** (`prompts/list`, `prompts/get`: `computer-use`,
+`computer-use-design` and `computer-use-security`, in your client's prompt
+or slash-command menu; each brings the safety rules along) and
 **resources** (`resources/list`, `resources/read`): every file as
 `computer-use://skills/<skill>/<file>`, Markdown. A skill's links to its
 `reference/*.md` files resolve to resources, so an agent reads one only when

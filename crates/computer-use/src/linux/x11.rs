@@ -10,7 +10,7 @@ use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
 use crate::error::{Error, Result};
-use crate::keys::{Key, KeyCombo, Modifiers, NamedKey};
+use crate::keys::{Key, KeyCombo, Modifiers, NamedKey, Pad};
 use crate::types::{Capture, Rect};
 
 const KEY_PRESS: u8 = 2;
@@ -243,6 +243,15 @@ impl X11 {
         self.flush()
     }
 
+    /// Move the pointer to (x, y); where it was, if it should go back.
+    pub fn move_pointer(&self, x: i32, y: i32) -> Result<Option<(i32, i32)>> {
+        let home = self.pointer();
+        self.warp(x, y)?;
+        self.fake(6, 0, x as i16, y as i16)?;
+        self.flush()?;
+        Ok(home)
+    }
+
     /// Draw `strokes` with `button` (1 left, 2 middle, 3 right) held (see
     /// `Backend::draw`).
     pub fn draw(
@@ -356,7 +365,12 @@ impl X11 {
     fn resolve_key(&mut self, key: Key) -> Result<(u8, bool)> {
         let keysym =
             keysym_for(key).ok_or_else(|| Error::ActionFailed(format!("no keysym for {key:?}")))?;
-        if let Some((kc, sh)) = self.keymap.get(&keysym) {
+        // A keypad key reached through Shift would depend on Num Lock:
+        // bind the exact keysym to the spare keycode instead.
+        let keypad = (0xff80..=0xffbd).contains(&keysym);
+        if let Some((kc, sh)) = self.keymap.get(&keysym)
+            && !(keypad && *sh)
+        {
             return Ok((*kc, *sh));
         }
         // Characters not on the keyboard (another script, a symbol): bind
@@ -642,6 +656,15 @@ pub(crate) fn keysym_for(key: Key) -> Option<u32> {
             NamedKey::CapsLock => 0xffe5,
             NamedKey::Menu => 0xff67,
             NamedKey::F(n) => 0xffbe + (u32::from(n) - 1),
+            NamedKey::Numpad(p) => match p {
+                Pad::Digit(d) => 0xffb0 + u32::from(d),
+                Pad::Decimal => 0xffae,
+                Pad::Add => 0xffab,
+                Pad::Subtract => 0xffad,
+                Pad::Multiply => 0xffaa,
+                Pad::Divide => 0xffaf,
+                Pad::Enter => 0xff8d,
+            },
         },
     })
 }
@@ -657,7 +680,7 @@ mod tests {
     /// Needs an X server with XTest (`xvfb-run cargo test -- --ignored`).
     #[test]
     #[ignore]
-    fn drawing_reaches_the_window_under_it_with_the_button_held() {
+    fn drawing_and_keypad_keys_reach_the_window() {
         use x11rb::protocol::Event;
         use xproto::{CreateWindowAux, EventMask, KeyButMask, WindowClass};
         let (conn, n) = x11rb::connect(None).expect("an X display");
@@ -708,6 +731,33 @@ mod tests {
         assert!(matches!(stopped, Err(Error::Stopped(_))));
         std::thread::sleep(Duration::from_millis(200));
 
+        // Keypad keys arrive as keypad keysyms, whatever Num Lock says.
+        conn.change_window_attributes(
+            win,
+            &xproto::ChangeWindowAttributesAux::new().event_mask(EventMask::KEY_PRESS),
+        )
+        .unwrap();
+        conn.set_input_focus(xproto::InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+            .unwrap();
+        conn.flush().unwrap();
+        let mut keys = X11::connect().unwrap();
+        // (One key: the mapping is read afterwards, and a second keypad
+        // key would rebind the same spare keycode.)
+        keys.press(&KeyCombo {
+            modifiers: Modifiers::default(),
+            key: Key::Named(NamedKey::Numpad(Pad::Digit(5))),
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let setup = conn.setup();
+        let (min, max) = (setup.min_keycode, setup.max_keycode);
+        let map = conn
+            .get_keyboard_mapping(min, max - min + 1)
+            .unwrap()
+            .reply()
+            .unwrap();
+        let per = map.keysyms_per_keycode as usize;
+        let mut typed = Vec::new();
         let (mut presses, mut releases, mut held_moves) = (0, 0, 0);
         let mut last = (0, 0);
         while let Some(ev) = conn.poll_for_event().unwrap() {
@@ -718,6 +768,11 @@ mod tests {
                     last = (e.event_x, e.event_y);
                 }
                 Event::MotionNotify(e) if e.state.contains(KeyButMask::BUTTON1) => held_moves += 1,
+                Event::KeyPress(e) => {
+                    let i = (e.detail - min) as usize * per;
+                    let shifted = e.state.contains(KeyButMask::SHIFT);
+                    typed.push(map.keysyms[i + usize::from(shifted)]);
+                }
                 _ => {}
             }
         }
@@ -725,6 +780,7 @@ mod tests {
         assert_eq!((presses, releases), (2, 2));
         assert!(held_moves >= 40, "{held_moves}");
         assert_eq!(last, (80, 60), "released where the stopped stroke got to");
+        assert_eq!(typed, [0xffb5], "KP_5");
     }
 
     #[test]

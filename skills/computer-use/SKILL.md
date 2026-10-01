@@ -9,7 +9,8 @@ description: >-
 # Computer use
 
 Load `computer-use-security` too: nothing asks the user for permission, so
-its rules are yours to follow.
+its rules are yours to follow. For design work (images, logos, 3D, plans in
+Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
 
 ## The loop
 

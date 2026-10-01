@@ -8,6 +8,12 @@ don't show in the accessibility tree.
 ## Where
 
 - Default: screenshot pixels, like `click`'s x/y (y grows downwards).
+- `canvas: {"box": [left, top, right, bottom], "size": [w, h]}`: the
+  document's own units. `box` is where the document is in the screenshot
+  (read it off `screenshot(app, grid=50)`), `size` its size in its units
+  (e.g. 1080 x 1350 px). Then every coordinate is a document pixel,
+  whatever the zoom. With `element_index` instead of `box`, the element's
+  box is the document.
 - `element_index`: fractions of that element's box, (0,0) its top-left and
   (1,1) its bottom-right. Handy for "the middle of the canvas"; a circle in
   fractions is an ellipse unless the box is square, so use pixels for exact
@@ -20,6 +26,8 @@ don't show in the accessibility tree.
 Each stroke is one press-move-release; several strokes lift the pen between
 them (axes, then a curve).
 
+- Rectangle: `{"rect": [x, y, width, height]}`. Ellipse or circle:
+  `{"ellipse": [center x, center y, radius x, radius y]}`.
 - Lines and polygons: `{"points": [[100,100],[300,100],[300,200]], "closed": true}`.
 - Freehand curves: `"smooth": true` draws a smooth curve through the points.
 - Parametric curves: `x` and `y` are expressions in `t`, from `t[0]` to

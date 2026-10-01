@@ -39,6 +39,20 @@ pub enum NamedKey {
     CapsLock,
     Menu,
     F(u8),
+    /// A key on the numeric keypad (Blender's views, calculators).
+    Numpad(Pad),
+}
+
+/// Keys of the numeric keypad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pad {
+    Digit(u8),
+    Decimal,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Enter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +84,8 @@ impl std::fmt::Display for KeyCombo {
         match self.key {
             Key::Char(c) => write!(f, "{c}"),
             Key::Named(NamedKey::F(n)) => write!(f, "F{n}"),
+            Key::Named(NamedKey::Numpad(Pad::Digit(d))) => write!(f, "Numpad{d}"),
+            Key::Named(NamedKey::Numpad(p)) => write!(f, "Numpad{p:?}"),
             Key::Named(k) => write!(f, "{k:?}"),
         }
     }
@@ -144,6 +160,17 @@ fn normalize(s: &str) -> String {
         .to_lowercase()
 }
 
+/// `numpad7`, `kp7` -> 7.
+fn numpad_digit(name: &str) -> Option<u8> {
+    let d = name
+        .strip_prefix("numpad")
+        .or_else(|| name.strip_prefix("kp"))?;
+    match d.as_bytes() {
+        [c] if c.is_ascii_digit() => Some(c - b'0'),
+        _ => None,
+    }
+}
+
 fn parse_key(s: &str) -> Option<Key> {
     let mut chars = s.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {
@@ -151,7 +178,16 @@ fn parse_key(s: &str) -> Option<Key> {
     }
     let n = normalize(s);
     let named = match n.as_str() {
-        "return" | "enter" | "kpenter" => NamedKey::Return,
+        "return" | "enter" => NamedKey::Return,
+        "numpadenter" | "kpenter" => NamedKey::Numpad(Pad::Enter),
+        "numpaddecimal" | "numpadperiod" | "numpaddot" | "kpdecimal" => {
+            NamedKey::Numpad(Pad::Decimal)
+        }
+        "numpadadd" | "numpadplus" | "kpadd" => NamedKey::Numpad(Pad::Add),
+        "numpadsubtract" | "numpadminus" | "kpsubtract" => NamedKey::Numpad(Pad::Subtract),
+        "numpadmultiply" | "kpmultiply" => NamedKey::Numpad(Pad::Multiply),
+        "numpaddivide" | "kpdivide" => NamedKey::Numpad(Pad::Divide),
+        p if numpad_digit(p).is_some() => NamedKey::Numpad(Pad::Digit(numpad_digit(p)?)),
         "tab" => NamedKey::Tab,
         "space" | "spacebar" => NamedKey::Space,
         "backspace" | "back" => NamedKey::Backspace,
@@ -216,6 +252,22 @@ mod tests {
             Key::Named(NamedKey::PageUp)
         );
         assert_eq!(parse_combo("f12").unwrap().key, Key::Named(NamedKey::F(12)));
+        for (name, pad) in [
+            ("Numpad0", Pad::Digit(0)),
+            ("numpad_7", Pad::Digit(7)),
+            ("KP_3", Pad::Digit(3)),
+            ("NumpadDecimal", Pad::Decimal),
+            ("numpad_minus", Pad::Subtract),
+            ("NumpadEnter", Pad::Enter),
+        ] {
+            let c = parse_combo(name).unwrap();
+            assert_eq!(c.key, Key::Named(NamedKey::Numpad(pad)), "{name}");
+        }
+        assert!(parse_combo("numpad12").is_err());
+        assert_eq!(
+            parse_combo("ctrl+numpad0").unwrap().to_string(),
+            "ctrl+Numpad0"
+        );
         assert_eq!(
             parse_combo("option+ArrowLeft").unwrap(),
             KeyCombo {

@@ -57,4 +57,4 @@ claude mcp add --scope $Scope $Name -- $exe @serverArgs
 Write-Host ''
 Write-Host "Added '$Name' ($Scope scope). Check with:  claude mcp list"
 Write-Host 'Apps running as administrator cannot be controlled from a normal process.'
-Write-Host 'Give the agent the skills in skills\ (computer-use and computer-use-security): the server asks no one for permission, the security skill sets the rules.'
+Write-Host 'Give the agent the skills in skills\ (computer-use, computer-use-security, and computer-use-design for design work): the server asks no one for permission, the security skill sets the rules.'

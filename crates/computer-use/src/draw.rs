@@ -401,12 +401,18 @@ impl Frame {
 
     /// Fractions of `bounds` (screen coordinates).
     pub fn fractions(bounds: Rect) -> Self {
+        Self::units(bounds, 1.0, 1.0)
+    }
+
+    /// A document `width` x `height` units big, shown at `bounds` (screen
+    /// coordinates).
+    pub fn units(bounds: Rect, width: f64, height: f64) -> Self {
         Self {
             origin: Point::new(bounds.x, bounds.y),
-            scale_x: bounds.width,
-            scale_y: bounds.height,
-            width: 1.0,
-            height: 1.0,
+            scale_x: bounds.width / width,
+            scale_y: bounds.height / height,
+            width,
+            height,
         }
     }
 

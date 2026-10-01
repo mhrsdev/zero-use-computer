@@ -230,6 +230,13 @@ impl Backend for Box<dyn Backend> {
     ) -> Result<()> {
         (**self).drag(target, from, to)
     }
+    fn move_pointer(
+        &mut self,
+        target: &types::InputTarget,
+        at: types::Point,
+    ) -> Result<Option<types::Point>> {
+        (**self).move_pointer(target, at)
+    }
     fn draw(
         &mut self,
         target: &types::InputTarget,

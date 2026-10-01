@@ -560,6 +560,11 @@ impl Backend for MacBackend {
         )
     }
 
+    fn move_pointer(&mut self, target: &InputTarget, at: Point) -> Result<Option<Point>> {
+        cg::hover(target.pid, CGPoint { x: at.x, y: at.y })?;
+        Ok(None)
+    }
+
     fn draw(
         &mut self,
         target: &InputTarget,

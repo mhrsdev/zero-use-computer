@@ -58,12 +58,12 @@ This project follows the same architecture and behaviour:
 | `select_text` | Select a substring (or all) in a text element. |
 | `scroll` | Scroll an element or the area at a point. |
 | `drag` | Drag between elements or points. |
-| `draw` | Draw with the mouse held down: lines, polygons, smooth freehand strokes, or parametric curves `x(t)`, `y(t)` (circles, spirals, function plots), in screenshot pixels or an element's box. |
-| `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`. |
-| `type_text` | Type into the focused element. |
+| `draw` | Draw with the mouse held down: rectangles, ellipses, lines, polygons, smooth freehand strokes, or parametric curves `x(t)`, `y(t)` (spirals, function plots). Coordinates in screenshot pixels, an element's box, or the document's own units (`canvas`). |
+| `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
+| `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
-| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay. |
+| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**). |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
@@ -79,6 +79,19 @@ The model should load two skills:
   which apps and actions are off limits or need the user's OK, prompt
   injection, secrets. The server enforces none of this, so this skill is not
   optional.
+
+For design work there is a third:
+[`skills/computer-use-design/SKILL.md`](skills/computer-use-design/SKILL.md).
+It covers images, logos, UI, vector art, 3D and building/CAD drawings in
+Photoshop, Paint, GIMP, Krita, Illustrator, Inkscape, Figma, Blender,
+Revit, AutoCAD and SketchUp, from a text brief or a reference image. It is
+written so that smaller models get good results too:
+
+- a spec of exact numbers comes first;
+- each step uses the most exact method the app has (numeric fields, typed
+  commands, `draw` in document units);
+- every pass is checked with grid screenshots and exact colour readings;
+- each app has a playbook, and there are recipes for common jobs.
 
 Each is a short core the model keeps loaded, plus `reference/` files it reads
 only when a situation calls for them (see [Token use](#token-use)). Install
@@ -402,7 +415,7 @@ Windows (x64), macOS (Apple silicon and Intel) and Linux (x64). Open the
 repository's **Actions** tab, pick the latest *CI* run and download
 `computer-use-mcp-<platform>` from its **Artifacts**; tagged versions (`v*`,
 or *Run workflow* with a tag) also attach zips to a GitHub **Release**. Each
-download contains the binary, the two skills, installers for Claude Code,
+download contains the binary, the skills, installers for Claude Code,
 ready-to-copy client configs in [`examples/`](examples) and the connection
 guide [`docs/CONNECT.md`](docs/CONNECT.md). It is also a valid Claude plugin
 (`.claude-plugin/plugin.json` + `.mcp.json`).
@@ -440,10 +453,11 @@ Desktop, Codex, Cursor, VS Code and HTTP, with configs in
 
 The server speaks JSON-RPC 2.0 over stdio (or HTTP) and implements
 `initialize`, `tools/*`, and `prompts/*` / `resources/*` for the skills: for
-clients without skill files, the `computer-use` and `computer-use-security`
-skills are MCP prompts, and every skill file is a resource
+clients without skill files, the `computer-use`, `computer-use-design` and
+`computer-use-security` skills are MCP prompts (each comes with the safety
+rules), and every skill file is a resource
 (`computer-use://skills/<skill>/<file>`). It never asks the client to approve
-anything; give the agent both skills.
+anything; give the agent the skills.
 
 ### CLI
 

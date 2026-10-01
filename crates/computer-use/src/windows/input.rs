@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::error::{Error, Result};
-use crate::keys::{Key, KeyCombo, NamedKey};
+use crate::keys::{Key, KeyCombo, NamedKey, Pad};
 use crate::types::{MouseButton, Point};
 
 fn send(inputs: &[INPUT]) -> Result<()> {
@@ -137,6 +137,21 @@ fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
         )))?;
     }
     send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)])
+}
+
+/// Move the pointer to `at`; where it was, if it should go back.
+pub fn move_pointer(at: Point) -> Result<Option<Point>> {
+    let back = if RESTORE_POINTER.load(Ordering::Relaxed) {
+        let mut p = POINT::default();
+        // SAFETY: reading the cursor position into a local.
+        unsafe { GetCursorPos(&mut p) }
+            .ok()
+            .map(|()| Point::new(f64::from(p.x), f64::from(p.y)))
+    } else {
+        None
+    };
+    send(&[move_to(at)])?;
+    Ok(back)
 }
 
 /// Draw `strokes` with `button` held (see `Backend::draw`).
@@ -446,6 +461,15 @@ fn resolve_in(key: Key, layout: HKL) -> Result<(VIRTUAL_KEY, crate::keys::Modifi
             NamedKey::CapsLock => VK_CAPITAL,
             NamedKey::Menu => VK_APPS,
             NamedKey::F(n) => VIRTUAL_KEY(VK_F1.0 + u16::from(n) - 1),
+            NamedKey::Numpad(p) => match p {
+                Pad::Digit(d) => VIRTUAL_KEY(VK_NUMPAD0.0 + u16::from(d)),
+                Pad::Decimal => VK_DECIMAL,
+                Pad::Add => VK_ADD,
+                Pad::Subtract => VK_SUBTRACT,
+                Pad::Multiply => VK_MULTIPLY,
+                Pad::Divide => VK_DIVIDE,
+                Pad::Enter => VK_RETURN,
+            },
         },
         Key::Char(c) if c.is_ascii_alphabetic() => {
             let upper = c.to_ascii_uppercase();

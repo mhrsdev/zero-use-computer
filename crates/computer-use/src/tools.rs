@@ -249,11 +249,26 @@ pub struct DrawArgs {
     /// screenshot pixels.
     #[serde(default, deserialize_with = "de_opt_index")]
     pub element_index: Option<u32>,
+    /// Coordinates are in the document's own units: the document's
+    /// `size` is shown at `box` (or at `element_index`'s box).
+    #[serde(default)]
+    pub canvas: Option<DrawCanvas>,
     #[serde(default)]
     pub button: MouseButton,
     /// Pointer speed while drawing, in screen pixels per second.
     #[serde(default)]
     pub speed: Option<f64>,
+}
+
+/// Where a document is on screen and how big it is in its own units.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DrawCanvas {
+    /// `[left, top, right, bottom]` of the document in screenshot pixels.
+    #[serde(default, rename = "box")]
+    pub area: Option<[f64; 4]>,
+    /// `[width, height]` of the document in its own units (pixels, mm…).
+    pub size: [f64; 2],
 }
 
 /// One press-move-release of a `draw`: points, or a parametric curve.
@@ -275,6 +290,12 @@ pub struct DrawStroke {
     pub t: Option<[DrawNumber; 2]>,
     #[serde(default)]
     pub steps: Option<u32>,
+    /// A rectangle: `[x, y, width, height]`.
+    #[serde(default)]
+    pub rect: Option<[f64; 4]>,
+    /// An ellipse: `[center x, center y, radius x, radius y]`.
+    #[serde(default)]
+    pub ellipse: Option<[f64; 4]>,
 }
 
 /// A point as `[x, y]` or `{"x": .., "y": ..}`.
@@ -324,6 +345,9 @@ pub struct PressKeyArgs {
     pub key: String,
     #[serde(default, deserialize_with = "de_opt_index")]
     pub element_index: Option<u32>,
+    /// Point the mouse here (screenshot pixels) while pressing.
+    pub x: Option<f64>,
+    pub y: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -334,6 +358,9 @@ pub struct TypeTextArgs {
     pub text: String,
     #[serde(default, deserialize_with = "de_opt_index")]
     pub element_index: Option<u32>,
+    /// Point the mouse here (screenshot pixels) while typing.
+    pub x: Option<f64>,
+    pub y: Option<f64>,
 }
 
 /// A state an element can be matched on, for find_element / wait_for.
@@ -428,6 +455,33 @@ pub struct ScreenshotArgs {
     /// Zoom into this element of the window (from get_app_state).
     #[serde(default, deserialize_with = "de_opt_index")]
     pub element_index: Option<u32>,
+    /// Draw a labelled coordinate grid, a line every this many pixels.
+    #[serde(default, deserialize_with = "de_grid")]
+    pub grid: Option<u32>,
+    /// List the image's main colours.
+    #[serde(default)]
+    pub palette: bool,
+    /// Exact colours at these points.
+    #[serde(default)]
+    pub pick: Option<Vec<DrawPoint>>,
+}
+
+/// `grid`: a spacing in pixels, or `true` for every 100.
+fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u32>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(100),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(v) if v >= 1.0 => Some(v.min(100_000.0) as u32),
+            Some(_) => None,
+            None => None,
+        },
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "grid must be a spacing in pixels or true, got {other}"
+            )));
+        }
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -633,6 +687,10 @@ fn coord_prop(axis: &str) -> Value {
     json!({"type": "number", "description": format!("{axis} coordinate in screenshot pixels (from the latest get_app_state image).")})
 }
 
+fn hover_prop(axis: &str) -> Value {
+    json!({"type": "number", "description": format!("{axis} in screenshot pixels: point the mouse there first, for apps that send keys to what is under the pointer (Blender, some CAD apps).")})
+}
+
 fn read_only(title: &str) -> Value {
     json!({"title": title, "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false})
 }
@@ -777,7 +835,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "draw",
             title: "Draw",
-            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is either points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them) or a parametric curve: x and y are expressions in t (+ - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e...) from t[0] to t[1] (default 0 to 1); steps=n draws n straight pieces instead (polygons, stars). Circle: {\"x\": \"400+90*cos(t)\", \"y\": \"300+90*sin(t)\", \"t\": [0, \"2*pi\"]}. Coordinates are screenshot pixels like click's x/y or, with element_index, fractions of that element's box (0,0 top-left, 1,1 bottom-right). Parts of a curve outside that area are not drawn. The stop key ends a drawing midway.",
+            description: "Draw with the mouse: for each stroke, press the button, move along the stroke and release (a pen or brush in a paint app, a signature field, shapes or function plots on a canvas). A stroke is rect [x,y,w,h], ellipse [cx,cy,rx,ry], points [[x,y],...] (straight lines; closed=true returns to the first point, smooth=true draws a smooth curve through them) or a parametric curve: x and y are expressions in t (+ - * / ^ %, sin cos tan sqrt abs exp ln log10 min max floor round, pi, e...) from t[0] to t[1] (default 0 to 1); steps=n draws n straight pieces instead (polygons, stars). Circle: {\"x\": \"400+90*cos(t)\", \"y\": \"300+90*sin(t)\", \"t\": [0, \"2*pi\"]}. Coordinates are screenshot pixels like click's x/y or, with element_index, fractions of that element's box (0,0 top-left, 1,1 bottom-right); canvas={box, size} lets you use the document's own pixels instead (box = where the document is in the screenshot). Parts of a curve outside that area are not drawn. The stop key ends a drawing midway.",
             input_schema: schema(
                 app_props(),
                 json!({
@@ -794,12 +852,24 @@ pub fn definitions() -> Vec<ToolDefinition> {
                                 "x": {"type": "string", "description": "x(t)"},
                                 "y": {"type": "string", "description": "y(t)"},
                                 "t": {"type": "array", "items": {"type": ["number", "string"]}, "description": "[from, to]: numbers or expressions like \"2*pi\"."},
-                                "steps": {"type": "integer", "minimum": 1}
+                                "steps": {"type": "integer", "minimum": 1},
+                                "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, width, height]"},
+                                "ellipse": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius x, radius y]"}
                             },
                             "additionalProperties": false
                         }
                     },
                     "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
+                    "canvas": {
+                        "type": "object",
+                        "description": "Draw in document units: {\"box\": [left, top, right, bottom] of the document in screenshot pixels (or use element_index), \"size\": [width, height] in its own units}.",
+                        "properties": {
+                            "box": {"type": "array", "items": {"type": "number"}},
+                            "size": {"type": "array", "items": {"type": "number"}}
+                        },
+                        "required": ["size"],
+                        "additionalProperties": false
+                    },
                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                     "speed": {"type": "number", "minimum": 50, "description": "Pointer speed in pixels per second (default 800)."}
                 }),
@@ -815,7 +885,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "key": {"type": "string", "description": "Key combo(s): modifiers (cmd/ctrl/alt/option/shift/meta) joined with + and a key name."},
-                    "element_index": index_prop("Element to focus before pressing.")
+                    "element_index": index_prop("Element to focus before pressing."),
+                    "x": hover_prop("X"),
+                    "y": hover_prop("Y")
                 }),
                 &["key"],
             ),
@@ -829,7 +901,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "text": {"type": "string", "description": "Text to type. Newlines press Return."},
-                    "element_index": index_prop("Element to focus before typing.")
+                    "element_index": index_prop("Element to focus before typing."),
+                    "x": hover_prop("X"),
+                    "y": hover_prop("Y")
                 }),
                 &["text"],
             ),
@@ -873,7 +947,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot",
             title: "Screenshot",
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks).",
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N pixels (labels are the x/y that click and draw use for that window; screen coordinates for full/region), palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -885,7 +959,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "width": {"type": "number", "description": "Region width."},
                     "height": {"type": "number", "description": "Region height."},
                     "annotate": {"type": "boolean", "default": false, "description": "Draw element indices over a window capture."},
-                    "element_index": index_prop("Zoom into this element of the window (from get_app_state).")
+                    "element_index": index_prop("Zoom into this element of the window (from get_app_state)."),
+                    "grid": {"type": ["integer", "boolean"], "description": "Labelled coordinate grid: a line every N pixels (true = 100)."},
+                    "palette": {"type": "boolean", "description": "List the image's main colours (hex, share)."},
+                    "pick": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]: the exact colour at each point."}
                 },
                 "additionalProperties": false
             }),
@@ -996,14 +1073,18 @@ fn short_description(name: &str) -> Option<&'static str> {
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => "Drag from an element/point to another element/point.",
         "draw" => {
-            "Draw with the mouse held down along strokes: points=[[x,y],...] (closed, smooth) or a curve x, y = expressions in t over t=[from,to] (e.g. x \"400+90*cos(t)\", y \"300+90*sin(t)\", t [0,\"2*pi\"]; steps=n for straight pieces). Screenshot pixels, or fractions of element_index's box."
+            "Draw with the mouse held down along strokes: rect=[x,y,w,h], ellipse=[cx,cy,rx,ry], points=[[x,y],...] (closed, smooth) or a curve x, y = expressions in t over t=[from,to] (e.g. x \"400+90*cos(t)\", y \"300+90*sin(t)\", t [0,\"2*pi\"]; steps=n for straight pieces). Screenshot pixels, fractions of element_index's box, or document units with canvas={box:[l,t,r,b], size:[w,h]}."
         }
-        "press_key" => "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\".",
-        "type_text" => "Type text into the focused element (element_index focuses first).",
+        "press_key" => {
+            "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it)."
+        }
+        "type_text" => {
+            "Type text into the focused element (element_index focuses first; x,y points the mouse there first)."
+        }
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
         "screenshot" => {
-            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices)."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N: labelled grid every N px in the x/y click and draw use; palette=true: main colours; pick=[[x,y]]: exact colours."
         }
         "batch" => "Run several tools in order: steps=[{tool, arguments}].",
         "window" => {
@@ -1142,7 +1223,8 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}], "speed": 300,
+            "steps": [{"tool": "list_apps"}], "speed": 300, "grid": 50, "palette": true,
+            "pick": [[1, 2]], "canvas": {"box": [0, 0, 10, 10], "size": [100, 100]},
             "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},
                         {"x": "t", "y": 5, "t": [0, "2*pi"], "steps": 6}]
             }"#,

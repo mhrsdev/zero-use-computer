@@ -1,6 +1,8 @@
 //! Screenshot scaling/encoding and the mapping between screenshot pixels
 //! (what the model sees) and screen coordinates (what input APIs take).
 
+use std::collections::HashMap;
+
 use base64::Engine as _;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage, imageops::FilterType};
@@ -402,6 +404,237 @@ pub fn redact(cap: &mut Capture, rects: &[Rect], style: crate::config::RedactSty
     covered
 }
 
+/// How the coordinates written on a grid relate to a capture's pixels, on
+/// one axis: `label = offset + scale * pixel`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Axis {
+    pub offset: f64,
+    pub scale: f64,
+}
+
+impl Axis {
+    pub fn label(&self, pixel: f64) -> f64 {
+        self.offset + self.scale * pixel
+    }
+
+    pub fn pixel(&self, label: f64) -> f64 {
+        (label - self.offset) / self.scale
+    }
+}
+
+/// Glyphs for grid labels besides the digits: a minus sign.
+const MINUS: [u8; 15] = [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0];
+
+fn draw_glyph(cap: &mut Capture, pat: &[u8; 15], x: i64, y: i64, scale: i64, rgb: [u8; 3]) {
+    for row in 0..5i64 {
+        for col in 0..3i64 {
+            if pat[(row * 3 + col) as usize] == 1 {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        put(
+                            &mut cap.rgba,
+                            cap.width,
+                            cap.height,
+                            x + col * scale + dx,
+                            y + row * scale + dy,
+                            rgb,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `text` (digits and `-`) in a dark box with its top-left at (x, y).
+fn draw_label(cap: &mut Capture, text: &str, x: i64, y: i64, scale: i64) {
+    let w = text.chars().count() as i64 * (3 * scale + scale) + scale;
+    let h = 5 * scale + 2 * scale;
+    for yy in 0..h {
+        for xx in 0..w {
+            put(
+                &mut cap.rgba,
+                cap.width,
+                cap.height,
+                x + xx,
+                y + yy,
+                [0, 0, 0],
+            );
+        }
+    }
+    let mut cx = x + scale;
+    for c in text.chars() {
+        let pat = match c.to_digit(10) {
+            Some(d) => &DIGITS[d as usize],
+            None => &MINUS,
+        };
+        draw_glyph(cap, pat, cx, y + scale, scale, [255, 255, 0]);
+        cx += 4 * scale;
+    }
+}
+
+/// Mix `rgb` into the pixel at (x, y): 45% of the colour, 55% of what was there.
+fn tint(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
+    if x < 0 || y < 0 || x >= i64::from(w) || y >= i64::from(h) {
+        return;
+    }
+    let i = ((y as u32 * w + x as u32) * 4) as usize;
+    for (k, c) in rgb.iter().enumerate() {
+        buf[i + k] = ((u16::from(buf[i + k]) * 55 + u16::from(*c) * 45) / 100) as u8;
+    }
+}
+
+/// Draw a labelled coordinate grid over `cap`: a line every `step` label
+/// units on each axis, its value written at the top (x) or left (y).
+/// `out_scale` is how many capture pixels make one pixel of the image that
+/// will be sent, so lines and labels stay readable after it is shrunk.
+/// Returns the step used (larger than asked when lines would crowd).
+pub fn draw_grid(cap: &mut Capture, ax: Axis, ay: Axis, step: f64, out_scale: f64) -> f64 {
+    if cap.width == 0
+        || cap.height == 0
+        || step.is_nan()
+        || step <= 0.0
+        || ax.scale == 0.0
+        || ay.scale == 0.0
+    {
+        return step;
+    }
+    let out_scale = if out_scale.is_finite() {
+        out_scale.max(1.0)
+    } else {
+        1.0
+    };
+    let line = out_scale.round().max(1.0) as i64;
+    // Digits 9x15 sent pixels: readable for any model.
+    let glyph = (3.0 * out_scale).round().max(1.0) as i64;
+    // At least 48 sent pixels between lines (room for a label), at most
+    // 200 lines per axis.
+    let mut step = step;
+    let min_gap = |a: &Axis| 48.0 * out_scale * a.scale.abs();
+    while step < min_gap(&ax).max(min_gap(&ay)) {
+        step *= 2.0;
+    }
+    let (w, h) = (f64::from(cap.width), f64::from(cap.height));
+    let lines = |a: &Axis, len: f64| -> Vec<(f64, i64)> {
+        let (l0, l1) = (a.label(0.0), a.label(len));
+        let (lo, hi) = (l0.min(l1), l0.max(l1));
+        let mut out = Vec::new();
+        let mut k = (lo / step).ceil();
+        while k * step <= hi && out.len() < 200 {
+            let v = k * step;
+            out.push((v, a.pixel(v).round() as i64));
+            k += 1.0;
+        }
+        out
+    };
+    let magenta = [255, 0, 255];
+    let (xs, ys) = (lines(&ax, w), lines(&ay, h));
+    for &(_, px) in &xs {
+        for dx in 0..line {
+            for y in 0..i64::from(cap.height) {
+                tint(&mut cap.rgba, cap.width, cap.height, px + dx, y, magenta);
+            }
+        }
+    }
+    for &(_, py) in &ys {
+        for dy in 0..line {
+            for x in 0..i64::from(cap.width) {
+                tint(&mut cap.rgba, cap.width, cap.height, x, py + dy, magenta);
+            }
+        }
+    }
+    let text = |v: f64| format!("{}", v.round() as i64);
+    for &(v, px) in &xs {
+        draw_label(cap, &text(v), px + line + 1, 0, glyph);
+    }
+    for &(v, py) in &ys {
+        draw_label(cap, &text(v), 0, py + line + 1, glyph);
+    }
+    step
+}
+
+/// The colour at a capture pixel, as `#RRGGBB`.
+pub fn color_at(cap: &Capture, x: f64, y: f64) -> Option<String> {
+    if !(x.is_finite() && y.is_finite()) || x < 0.0 || y < 0.0 {
+        return None;
+    }
+    let (x, y) = (x.floor() as u32, y.floor() as u32);
+    if x >= cap.width || y >= cap.height {
+        return None;
+    }
+    let i = ((y * cap.width + x) * 4) as usize;
+    let p = cap.rgba.get(i..i + 3)?;
+    Some(format!("#{:02X}{:02X}{:02X}", p[0], p[1], p[2]))
+}
+
+/// The main colours of a capture, most common first: `#RRGGBB` and the
+/// share of the image (0 to 1). Similar shades count as one colour.
+pub fn palette(cap: &Capture, max: usize) -> Vec<(String, f64)> {
+    let n = cap.width as usize * cap.height as usize;
+    if n == 0 || cap.rgba.len() < n * 4 {
+        return Vec::new();
+    }
+    // Count 5-bit-per-channel bins over at most ~250k sampled pixels.
+    let stride = (n / 250_000).max(1);
+    let mut bins: HashMap<u16, (u64, [u64; 3])> = HashMap::new();
+    let mut sampled = 0u64;
+    for i in (0..n).step_by(stride) {
+        let p = &cap.rgba[i * 4..i * 4 + 3];
+        let key = (u16::from(p[0] >> 3) << 10) | (u16::from(p[1] >> 3) << 5) | u16::from(p[2] >> 3);
+        let e = bins.entry(key).or_insert((0, [0; 3]));
+        e.0 += 1;
+        for (sum, v) in e.1.iter_mut().zip(p) {
+            *sum += u64::from(*v);
+        }
+        sampled += 1;
+    }
+    // Most common first; ties in bin order, so the result is the same
+    // every time.
+    let mut bins: Vec<(u16, (u64, [u64; 3]))> = bins.into_iter().collect();
+    bins.sort_by_key(|(key, (count, _))| (std::cmp::Reverse(*count), *key));
+    let bins = bins.into_iter().map(|(_, b)| b);
+    // Merge each bin into the first colour close to it (most common first).
+    // Closer than this counts as one shade (5-bit bins are 8 apart); an
+    // off-white and white stay apart.
+    const NEAR: f64 = 14.0;
+    let mut colours: Vec<(u64, [u64; 3])> = Vec::new();
+    let avg = |c: &(u64, [u64; 3])| c.1.map(|v| v as f64 / c.0 as f64);
+    for b in bins {
+        let mb = avg(&b);
+        let near = colours.iter_mut().find(|c| {
+            let mc = avg(c);
+            (0..3).map(|k| (mc[k] - mb[k]).powi(2)).sum::<f64>().sqrt() < NEAR
+        });
+        match near {
+            Some(c) => {
+                c.0 += b.0;
+                for k in 0..3 {
+                    c.1[k] += b.1[k];
+                }
+            }
+            None => colours.push(b),
+        }
+    }
+    colours.sort_by_key(|c| std::cmp::Reverse(c.0));
+    colours
+        .iter()
+        .map(|c| {
+            let m = avg(c);
+            (
+                format!(
+                    "#{:02X}{:02X}{:02X}",
+                    m[0].round() as u8,
+                    m[1].round() as u8,
+                    m[2].round() as u8
+                ),
+                c.0 as f64 / sampled as f64,
+            )
+        })
+        .filter(|(_, share)| *share >= 0.005)
+        .take(max)
+        .collect()
+}
+
 /// Draw each element's index over the capture (set-of-marks). `marks` are
 /// (index, screen-space bounds); they are mapped into the capture's pixels.
 pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
@@ -460,6 +693,73 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn solid(w: u32, h: u32, rgb: [u8; 3]) -> Capture {
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..w * h {
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+        Capture {
+            width: w,
+            height: h,
+            rgba,
+            bounds: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+        }
+    }
+
+    #[test]
+    fn grids_mark_their_lines_and_label_them() {
+        let mut cap = solid(400, 300, [255, 255, 255]);
+        let axis = Axis {
+            offset: 0.0,
+            scale: 1.0,
+        };
+        let step = draw_grid(&mut cap, axis, axis, 100.0, 1.0);
+        assert_eq!(step, 100.0);
+        // A line at x = 100 (tinted), none at x = 150.
+        assert_ne!(color_at(&cap, 100.0, 150.0).unwrap(), "#FFFFFF");
+        assert_eq!(color_at(&cap, 150.0, 150.0).unwrap(), "#FFFFFF");
+        // Its label sits at the top, on a dark box.
+        assert_eq!(color_at(&cap, 102.0, 0.0).unwrap(), "#000000");
+        // Labels follow the axis: screen coordinates of an offset capture.
+        let mut cap = solid(200, 100, [255, 255, 255]);
+        let shifted = Axis {
+            offset: 1000.0,
+            scale: 2.0,
+        };
+        draw_grid(&mut cap, shifted, axis, 100.0, 1.0);
+        // 1100 is at pixel 50.
+        assert_ne!(color_at(&cap, 50.0, 60.0).unwrap(), "#FFFFFF");
+        // Too dense a grid is thinned out.
+        let mut cap = solid(400, 300, [255, 255, 255]);
+        assert_eq!(draw_grid(&mut cap, axis, axis, 5.0, 2.0), 160.0);
+    }
+
+    #[test]
+    fn palettes_and_picks_read_exact_colours() {
+        let mut cap = solid(100, 100, [30, 136, 229]);
+        for y in 0..100u32 {
+            for x in 0..25u32 {
+                let i = ((y * 100 + x) * 4) as usize;
+                cap.rgba[i..i + 3].copy_from_slice(&[250, 250, 250]);
+            }
+            // An off-white strip: a colour of its own, not white.
+            for x in 25..35u32 {
+                let i = ((y * 100 + x) * 4) as usize;
+                cap.rgba[i..i + 3].copy_from_slice(&[244, 241, 234]);
+            }
+        }
+        let p = palette(&cap, 8);
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert_eq!(p[0].0, "#1E88E5");
+        assert!((p[0].1 - 0.65).abs() < 0.01);
+        assert_eq!(p[1].0, "#FAFAFA");
+        assert_eq!(p[2].0, "#F4F1EA");
+        assert_eq!(color_at(&cap, 10.0, 10.0).as_deref(), Some("#FAFAFA"));
+        assert_eq!(color_at(&cap, 99.5, 99.5).as_deref(), Some("#1E88E5"));
+        assert_eq!(color_at(&cap, 100.0, 5.0), None);
+        assert_eq!(color_at(&cap, -1.0, 5.0), None);
+    }
 
     #[test]
     fn empty_captures_and_huge_outlines_do_not_panic_or_hang() {

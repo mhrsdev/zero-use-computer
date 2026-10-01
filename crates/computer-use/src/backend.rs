@@ -192,6 +192,16 @@ pub trait Backend {
     /// Synthesized mouse drag between two screen points.
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()>;
 
+    /// Point the mouse at a screen point without clicking, for apps that
+    /// send keys to what is under the pointer (Blender). Returns where the
+    /// pointer was when it should be put back afterwards
+    /// (`restore_pointer`); the engine then calls this again with it.
+    fn move_pointer(&mut self, _target: &InputTarget, _at: Point) -> Result<Option<Point>> {
+        Err(crate::error::Error::Unsupported(
+            "moving the pointer is not implemented on this platform".into(),
+        ))
+    }
+
     /// Synthesized drawing (`draw`): for each stroke, press `button` at its
     /// first screen point, move through the others with it held, release
     /// at the last. `pace` is called with the distance of each move before

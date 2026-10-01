@@ -15,7 +15,7 @@ use foreign_types::ForeignType;
 
 use super::ffi;
 use crate::error::{Error, Result};
-use crate::keys::{Key, KeyCombo, Modifiers, NamedKey};
+use crate::keys::{Key, KeyCombo, Modifiers, NamedKey, Pad};
 use crate::types::{Capture, MouseButton, Rect};
 
 fn source() -> Result<CGEventSource> {
@@ -109,6 +109,17 @@ pub fn drag(pid: u32, from: CGPoint, to: CGPoint) -> Result<()> {
     if let Ok(e) = mk(CGEventType::LeftMouseUp, to) {
         post(pid, &e);
     }
+    Ok(())
+}
+
+/// Tell the app the pointer is at `at` (posted to its process: the user's
+/// cursor doesn't move).
+pub fn hover(pid: u32, at: CGPoint) -> Result<()> {
+    let src = source()?;
+    let e = CGEvent::new_mouse_event(src, CGEventType::MouseMoved, at, CGMouseButton::Left)
+        .map_err(|_| Error::action("mouse moved event"))?;
+    e.set_flags(CGEventFlags::empty());
+    post(pid, &e);
     Ok(())
 }
 
@@ -239,7 +250,10 @@ pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
             if shift {
                 mods.shift = true;
             }
-            let f = flags(mods);
+            let mut f = flags(mods);
+            if matches!(combo.key, Key::Named(NamedKey::Numpad(_))) {
+                f |= CGEventFlags::CGEventFlagNumericPad;
+            }
             let down = CGEvent::new_keyboard_event(src.clone(), code, true)
                 .map_err(|_| Error::action("key down"))?;
             down.set_flags(f);
@@ -405,6 +419,15 @@ pub(crate) fn keycode(key: Key) -> Option<(u16, bool)> {
                 19 => 80,
                 20 => 90,
                 _ => return None,
+            },
+            NamedKey::Numpad(p) => match p {
+                Pad::Digit(d) => [82, 83, 84, 85, 86, 87, 88, 89, 91, 92][usize::from(d.min(9))],
+                Pad::Decimal => 65,
+                Pad::Multiply => 67,
+                Pad::Add => 69,
+                Pad::Divide => 75,
+                Pad::Subtract => 78,
+                Pad::Enter => 76,
             },
         },
         Key::Char(c) => return char_keycode(c),
