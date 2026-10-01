@@ -512,12 +512,15 @@ applying after a reload. The agent has no tool to change settings.
 ### Token use
 
 Everything a tool returns stays in the model's context for the rest of the
-task, so the server spends tokens only where they buy something:
+task, so the server spends tokens only where they buy something. None of
+this costs accuracy or speed: nothing the model needs is withheld (what is
+folded is still searchable, and pictures are re-sent when they change), and
+the checks are cheap compared with reading the app:
 
 | Where | What it does | Setting |
 |---|---|---|
-| **Tree budget** | A tree or diff over the budget has its long lists (rows, list items, menu items…) folded to the first and last few, with a line saying how many are hidden; if it's still too big, it is cut. Folded and cut elements keep their indices and `find_element` finds them. A long mailbox or file list then costs a few hundred tokens instead of several thousand; smaller windows are sent whole. | `tree.max_tokens` (3000; 0 = off) |
-| **Overview screenshots** | A screenshot attached on its own to a window whose tree already says what is there is an overview (768 px ≈ 60% fewer image tokens than 1280 px). `screenshot=true`, windows with little in their tree, and OCR'd windows get full size; `screenshot(element_index)` zooms in. | `screenshot.overview_max_dimension` |
+| **Tree budget** | Only a tree or diff over the budget is touched: its long lists (rows, list items, menu items…) are folded to the first and last few, with a line saying how many are hidden, and it is cut if still too big. The focused or selected element is never folded away; folded and cut elements keep their indices and `find_element` finds them. Ordinary windows are sent whole. | `tree.max_tokens` (10,000; 0 = off) |
+| **Overview screenshots** (opt-in) | Off by default, since it trades detail for tokens. Turned on, a screenshot attached on its own to a window whose tree already says what is there is a smaller overview (768 px ≈ 60% fewer image tokens than 1280 px); `screenshot=true` always gets full size. | `screenshot.overview_max_dimension` (0 = off) |
 | **Say it once** | Explanations (what a diff, a partial screenshot or a returning screen means) come in full the first time and as a few words after that. | — |
 | **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
 | **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part. | `cache.dedupe_screenshots`, `screenshot.scope` |

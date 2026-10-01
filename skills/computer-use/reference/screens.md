@@ -20,10 +20,11 @@ Every view is labelled with a screen number:
 - After the first `get_app_state` of a screen, later calls return a diff:
   `+ added`, `~ changed` (with the old line), `- removed`. Unchanged
   elements keep their indices. `disable_diff: true` gives the whole tree.
-- Each result has a token budget. A tree over it has its long lists folded
-  to the first and last items (`[… N more "row" folded; find_element finds
-  them]`) and, if still too big, is cut (`[… N more lines not shown]`).
-  Folded and cut elements still have indices: `find_element` returns them.
+- Each result has a generous token budget. A tree over it has its long
+  lists folded to the first and last items, never the focused or selected
+  one (`[… N more "row" folded; find_element finds them]`), and if still
+  too big, it is cut (`[… N more lines not shown]`). Folded and cut
+  elements still have indices: `find_element` returns them.
 - Explanations (what a diff means, what a partial screenshot is) come in
   full the first time and in a short form after that.
 
@@ -31,8 +32,9 @@ Every view is labelled with a screen number:
 
 - Without `screenshot`, one is attached when it adds something: the first
   view of a window, a big change, a window with little in its tree, or a
-  screen whose pixels changed. For a window the tree describes well, it is
-  an overview (smaller); pass `screenshot: true` for full detail.
+  screen whose pixels changed. (If the user turned on overview screenshots,
+  an automatic one of a well-described window is smaller; pass
+  `screenshot: true` for full detail.)
 - "Screenshot: unchanged, not re-sent": the picture you have is current.
 - A follow-up screenshot may be only the part that changed. The text says
   where it sits in your earlier screenshot; `x`/`y` still refer to that

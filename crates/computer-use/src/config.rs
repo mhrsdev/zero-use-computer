@@ -79,11 +79,12 @@ pub struct ScreenshotConfig {
     /// Longest edge of the image sent to the model, in pixels. Image token cost
     /// grows with width x height, so this is the main image-token knob.
     pub max_dimension: u32,
-    /// Longest edge of a screenshot attached on its own (`attach = "auto"`)
-    /// to a window whose tree already says what is there: an overview, for
-    /// fewer image tokens. A screenshot asked for (`screenshot=true`), and
-    /// one of a window with little in its tree, uses `max_dimension`.
-    /// 0 = always `max_dimension`.
+    /// Opt-in: longest edge of a screenshot attached on its own (`attach =
+    /// "auto"`) to a window whose tree already says what is there, as a
+    /// smaller overview for fewer image tokens. It trades detail for tokens,
+    /// so it is off (0 = always `max_dimension`). A screenshot asked for
+    /// (`screenshot=true`), or of a window with little in its tree, always
+    /// uses `max_dimension`.
     pub overview_max_dimension: u32,
     pub format: ImageFormat,
     pub jpeg_quality: u8,
@@ -120,7 +121,7 @@ impl Default for ScreenshotConfig {
             attach: AttachMode::Auto,
             auto_sparse_threshold: 2,
             max_dimension: 1280,
-            overview_max_dimension: 768,
+            overview_max_dimension: 0,
             format: ImageFormat::Png,
             jpeg_quality: 85,
             png_compression: PngCompression::Fast,
@@ -178,7 +179,7 @@ impl Default for TreeConfig {
             diff_full_ratio: 0.33,
             report_changes: true,
             report_changes_max_lines: 25,
-            max_tokens: 3000,
+            max_tokens: 10_000,
         }
     }
 }

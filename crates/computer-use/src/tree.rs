@@ -516,14 +516,35 @@ fn render_folded(nodes: &[Node], indent: usize, fold: impl Fn(&str) -> bool) -> 
                 .push(i);
         }
     }
-    // First folded position of each group -> how many are folded there.
+    // What the user is working on is never folded away: the focused or
+    // selected element, and every element that contains one.
+    let mut current = vec![false; nodes.len()];
+    for (i, n) in nodes.iter().enumerate().rev() {
+        current[i] |= n.states.focused || n.states.selected;
+        if current[i]
+            && let Some(p) = n.parent
+        {
+            current[p] = true;
+        }
+    }
+    // First position of each folded run -> how many are folded there.
     let mut folded_at: HashMap<usize, usize> = HashMap::new();
     let mut hidden = vec![false; nodes.len()];
     for members in groups.values().filter(|m| m.len() > FOLD_MIN) {
-        let fold = &members[FOLD_HEAD..members.len() - FOLD_TAIL];
-        folded_at.insert(fold[0], fold.len());
-        for &i in fold {
+        let mut run: Option<usize> = None;
+        for &i in &members[FOLD_HEAD..members.len() - FOLD_TAIL] {
+            if current[i] {
+                run = None;
+                continue;
+            }
             hidden[i] = true;
+            match run {
+                Some(start) => *folded_at.entry(start).or_default() += 1,
+                None => {
+                    folded_at.insert(i, 1);
+                    run = Some(i);
+                }
+            }
         }
     }
     let mut out = String::new();
@@ -752,6 +773,21 @@ mod tests {
             "{folded}"
         );
         assert!(folded.contains("button \"Send\""));
+        // The selected message, deep in the list, is never folded away.
+        let mut raw2 = raw.clone();
+        raw2[2 + 100].states.selected = true;
+        let mut p2 = prune(&raw2, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p2.nodes);
+        let folded = render_full_within(&p2.nodes, 1, 300);
+        assert!(folded.contains("Message 100"), "{folded}");
+        assert!(
+            folded.contains("[… 95 more \"list item\" folded"),
+            "{folded}"
+        );
+        assert!(
+            folded.contains("[… 97 more \"list item\" folded"),
+            "{folded}"
+        );
         // Tighter still: cut, saying so.
         let cut = render_full_within(&p.nodes, 1, 40);
         assert!(cut.contains("more lines not shown"), "{cut}");

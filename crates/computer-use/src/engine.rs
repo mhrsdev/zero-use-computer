@@ -1757,7 +1757,7 @@ impl<B: Backend> Engine<B> {
                             )
                         } else {
                             format!(
-                                "\nScreenshot: changed part only, x {ox}–{x1}, y {oy}–{y1} of your earlier one."
+                                "\nScreenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your earlier one (x/y still refer to that whole screenshot)."
                             )
                         });
                         self.pending_images.push(PendingImage {
@@ -2528,7 +2528,7 @@ impl<B: Backend> Engine<B> {
                         )
                     } else {
                         format!(
-                            "Screenshot: changed part only, x {ox}–{x1}, y {oy}–{y1} of your last full-screen one.{note}"
+                            "Screenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your last full-screen one (x/y still refer to that whole screenshot).{note}"
                         )
                     };
                     self.screen_shot = Some((sig, map));
@@ -3216,18 +3216,10 @@ mod tests {
     use crate::config::Config;
     use crate::mock::{Event, MockBackend};
 
-    /// Settings for tests: screenshots at full size, so the mock's 800x600
-    /// window maps 1:1 (overview screenshots have their own test).
-    fn test_config() -> Config {
-        let mut cfg = Config::default();
-        cfg.screenshot.overview_max_dimension = 0;
-        cfg
-    }
-
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let cfg = test_config();
+        let cfg = Config::default();
         let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
         // Deterministic, instant time.
         e = e.with_time(Instant::now, |_| {});
@@ -3738,7 +3730,7 @@ mod tests {
         backend.add_app(page_a(7));
         backend.on_press.insert(20, page_b(7));
         backend.on_press.insert(30, page_a(7));
-        let mut cfg = test_config();
+        let mut cfg = Config::default();
         cfg.tree.report_changes = report;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
@@ -4612,17 +4604,24 @@ mod tests {
     fn always_shot_engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut cfg = test_config();
+        let mut cfg = Config::default();
         cfg.screenshot.attach = AttachMode::Always;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
 
     #[test]
-    fn auto_screenshots_of_well_described_windows_are_overviews() {
+    fn auto_screenshots_of_well_described_windows_can_be_overviews() {
+        // Off by default: full detail.
+        let mut e = engine();
+        let img = state_of(&mut e, serde_json::json!({})).image.unwrap();
+        assert_eq!((img.width, img.height), (800, 600));
+        // Opted in.
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
-            .with_time(Instant::now, |_| {});
+        let mut cfg = Config::default();
+        cfg.screenshot.overview_max_dimension = 768;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         // Attached on its own: an overview at overview_max_dimension.
         let out = state_of(&mut e, serde_json::json!({}));
         let img = out.image.expect("first view");

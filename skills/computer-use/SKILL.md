@@ -45,9 +45,9 @@ Every result stays in the conversation, so ask only for what you need:
 - Search with `find_element(role/name/text)` instead of re-reading a tree.
   Long lists come folded (`[… N more "list item" folded]`): find_element
   finds the folded items too.
-- Leave `screenshot` unset: one comes when it helps (an overview size). Ask
-  `screenshot: true` only to read details; `screenshot(app, element_index)`
-  zooms into one element for small text.
+- Leave `screenshot` unset: one comes when it adds something, and a picture
+  you already have isn't sent again. Ask `screenshot: true` when you need a
+  fresh look; `screenshot(app, element_index)` zooms into one element.
 - Don't pass `disable_diff: true` unless a diff confused you.
 - Use `wait_for` instead of polling, and `batch` for a known sequence of
   steps (then call `get_app_state`: a batch shows one line per step).
