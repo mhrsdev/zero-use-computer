@@ -336,6 +336,9 @@ pub struct DrawStroke {
     /// A picture traced with trace_image: draw this step of it.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub trace: Option<String>,
+    /// A design from the design board: draw this step of it.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub design: Option<String>,
     #[serde(default)]
     pub step: Option<u32>,
 }
@@ -531,6 +534,197 @@ pub struct ScreenshotArgs {
     pub compare: Option<String>,
 }
 
+/// The design board: compose a picture from layers, see it, then put it
+/// into an app.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignArgs {
+    pub name: String,
+    /// `[width, height]` in the design's units (pixels of the result).
+    #[serde(default)]
+    pub size: Option<[f64; 2]>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub background: Option<String>,
+    /// Space kept clear at the edges (default 5% of the short side).
+    #[serde(default)]
+    pub margin: Option<f64>,
+    #[serde(default)]
+    pub add: Option<Vec<DesignLayer>>,
+    #[serde(default)]
+    pub change: Option<Vec<DesignLayer>>,
+    #[serde(default)]
+    pub remove: Option<Vec<String>>,
+    #[serde(default)]
+    pub mirror: Option<Vec<DesignMirror>>,
+    #[serde(default)]
+    pub align: Option<Vec<DesignAlign>>,
+    #[serde(default)]
+    pub distribute: Option<Vec<DesignDistribute>>,
+    #[serde(default)]
+    pub order: Option<Vec<DesignOrder>>,
+    /// Extras on the picture: a grid, the layers' names, the guides.
+    #[serde(default)]
+    pub show: Option<DesignShow>,
+    /// Write the design to a temporary file to import into an app.
+    #[serde(default)]
+    pub export: Option<ExportFormat>,
+}
+
+/// A layer: a shape (as `draw` takes it) or a text, with its colours.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignLayer {
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub points: Option<Vec<DrawPoint>>,
+    #[serde(default)]
+    pub closed: Option<bool>,
+    #[serde(default)]
+    pub smooth: Option<bool>,
+    #[serde(default, deserialize_with = "de_opt_expr")]
+    pub x: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_expr")]
+    pub y: Option<String>,
+    #[serde(default)]
+    pub t: Option<[DrawNumber; 2]>,
+    #[serde(default)]
+    pub steps: Option<u32>,
+    #[serde(default)]
+    pub rect: Option<Vec<f64>>,
+    #[serde(default)]
+    pub ellipse: Option<[f64; 4]>,
+    #[serde(default)]
+    pub polygon: Option<[f64; 4]>,
+    #[serde(default)]
+    pub star: Option<[f64; 5]>,
+    #[serde(default)]
+    pub arc: Option<[f64; 5]>,
+    #[serde(default)]
+    pub bezier: Option<Vec<DrawPoint>>,
+    #[serde(default)]
+    pub rotate: Option<f64>,
+    #[serde(default)]
+    pub about: Option<DrawPoint>,
+    #[serde(default)]
+    pub repeat: Option<DrawRepeat>,
+    /// A text layer: the text (lines split at "\n").
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub text: Option<String>,
+    /// Where the text starts: its top, and its left, centre or right
+    /// (`align`).
+    #[serde(default)]
+    pub at: Option<DrawPoint>,
+    /// Text height in the design's units.
+    #[serde(default)]
+    pub size: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub font: Option<String>,
+    #[serde(default)]
+    pub bold: Option<bool>,
+    #[serde(default)]
+    pub align: Option<TextAlign>,
+    /// Colours as "#RRGGBB", or "none".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub fill: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub stroke: Option<String>,
+    /// Outline width.
+    #[serde(default)]
+    pub width: Option<f64>,
+    /// 0 (clear) to 1.
+    #[serde(default)]
+    pub opacity: Option<f64>,
+    /// Move by [dx, dy].
+    #[serde(default, rename = "move")]
+    pub shift: Option<[f64; 2]>,
+    /// Move so the layer's box starts at [x, y].
+    #[serde(default)]
+    pub to: Option<[f64; 2]>,
+    /// Put the new layer just below / above this one (default: on top).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub below: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub above: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// A mirrored copy of a layer (the other ear, the other eye).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignMirror {
+    pub id: String,
+    /// The copy's id.
+    #[serde(rename = "as")]
+    pub copy: String,
+    /// "x": left-right (about a vertical line, default); "y": top-bottom.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub axis: Option<String>,
+    /// Where the mirror line is (default: the middle of the page).
+    #[serde(default)]
+    pub line: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignAlign {
+    pub ids: Vec<String>,
+    /// "left", "center" or "right".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub x: Option<String>,
+    /// "top", "middle" or "bottom".
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub y: Option<String>,
+    /// "page" (default), "margins", "each other", or a layer's id.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignDistribute {
+    pub ids: Vec<String>,
+    /// "x" (side by side, default) or "y" (one above another).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub axis: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignOrder {
+    pub id: String,
+    /// "front", "back", "up" (one step) or "down".
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DesignShow {
+    #[serde(default, deserialize_with = "de_grid")]
+    pub grid: Option<f64>,
+    /// Write each layer's id on the picture.
+    #[serde(default)]
+    pub ids: bool,
+    /// Margins, centre lines and thirds.
+    #[serde(default)]
+    pub guides: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Png,
+    Svg,
+}
+
 /// Turn a reference picture into a few flat colours and shapes to paint.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -685,6 +879,7 @@ pub enum ToolCall {
     Scroll(ScrollArgs),
     Drag(DragArgs),
     Draw(DrawArgs),
+    Design(DesignArgs),
     TraceImage(TraceImageArgs),
     PressKey(PressKeyArgs),
     TypeText(TypeTextArgs),
@@ -717,6 +912,7 @@ impl ToolCall {
             "drag" => ToolCall::Drag(parse_args(name, args)?),
             "draw" => ToolCall::Draw(parse_args(name, args)?),
             "trace_image" => ToolCall::TraceImage(parse_args(name, args)?),
+            "design" => ToolCall::Design(parse_args(name, args)?),
             "press_key" => ToolCall::PressKey(parse_args(name, args)?),
             "type_text" => ToolCall::TypeText(parse_args(name, args)?),
             "find_element" => ToolCall::FindElement(parse_args(name, args)?),
@@ -744,6 +940,7 @@ impl ToolCall {
             ToolCall::Drag(_) => "drag",
             ToolCall::Draw(_) => "draw",
             ToolCall::TraceImage(_) => "trace_image",
+            ToolCall::Design(_) => "design",
             ToolCall::PressKey(_) => "press_key",
             ToolCall::TypeText(_) => "type_text",
             ToolCall::FindElement(_) => "find_element",
@@ -802,6 +999,90 @@ fn canvas_prop() -> Value {
         },
         "additionalProperties": false
     })
+}
+
+/// The shape of a stroke or design layer, as draw takes it.
+fn shape_props() -> serde_json::Map<String, Value> {
+    let v = json!({
+                                "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]"},
+                                "closed": {"type": "boolean"},
+                                "smooth": {"type": "boolean"},
+                                "x": {"type": "string", "description": "x(t)"},
+                                "y": {"type": "string", "description": "y(t)"},
+                                "t": {"type": "array", "items": {"type": ["number", "string"]}, "description": "[from, to]: numbers or expressions like \"2*pi\"."},
+                                "steps": {"type": "integer", "minimum": 1},
+                                "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, width, height] or [x, y, width, height, corner radius]"},
+                                "ellipse": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius x, radius y]"},
+                                "polygon": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, corners]"},
+                                "star": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, outer radius, inner radius, points]"},
+                                "arc": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, from degrees, to degrees]"},
+                                "bezier": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Cubic: start, then control, control, end per segment."},
+                                "axes": {"type": "array", "items": {"type": "number"}, "description": "[x tick step, y tick step]: axes through 0 (needs canvas.range)."},
+                                "rotate": {"type": "number", "description": "Degrees, clockwise on screen, about `about` (default: the stroke's centre)."},
+                                "about": {"type": "array", "items": {"type": "number"}},
+                                "repeat": {
+                                    "type": "object",
+                                    "description": "Copies: copy k is moved by k*offset and turned by k*rotate degrees about `about`.",
+                                    "properties": {
+                                        "count": {"type": "integer", "minimum": 1},
+                                        "offset": {"type": "array", "items": {"type": "number"}},
+                                        "rotate": {"type": "number"},
+                                        "about": {"type": "array", "items": {"type": "number"}}
+                                    },
+                                    "required": ["count"],
+                                    "additionalProperties": false
+                                }
+    });
+    match v {
+        Value::Object(m) => m,
+        _ => unreachable!("an object"),
+    }
+}
+
+/// A draw stroke: a shape, painted solid or not, or a step of a trace or
+/// design.
+fn stroke_props() -> Value {
+    let mut m = shape_props();
+    m.extend(
+        match json!({
+            "fill": {"type": "number", "description": "Paint the closed shape solid instead of its outline, with a round brush this wide (in the stroke's units; set the app's brush to this size). Shapes painted back to front cover each other."},
+            "trace": {"type": "string", "description": "A picture traced with trace_image: draw one step of it (with step and fill), fitted into the canvas or element."},
+            "design": {"type": "string", "description": "A design from the design tool: draw one step of it (with step, and fill for a solid step), fitted into the canvas or element."},
+            "step": {"type": "integer", "minimum": 1, "description": "Which step of the trace or design (1 = first)."}
+        }) {
+            Value::Object(e) => e,
+            _ => unreachable!("an object"),
+        },
+    );
+    Value::Object(m)
+}
+
+/// A design layer: a shape or a text, with colours and placement.
+fn layer_props() -> Value {
+    let mut m = shape_props();
+    m.extend(
+        match json!({
+            "id": {"type": "string", "description": "The layer's name (\"head\", \"title\"); used by change, align, mirror."},
+            "text": {"type": "string", "description": "A text layer (lines split at \\n)."},
+            "at": {"type": "array", "items": {"type": "number"}, "description": "Text: [x, y] of its top, and of its left, centre or right (align)."},
+            "size": {"type": "number", "description": "Text: font size in the design's units."},
+            "font": {"type": "string"},
+            "bold": {"type": "boolean"},
+            "align": {"type": "string", "enum": ["left", "center", "right"]},
+            "fill": {"type": "string", "description": "\"#RRGGBB\" or \"none\" (text colour for text)."},
+            "stroke": {"type": "string", "description": "Outline colour, \"#RRGGBB\" or \"none\"."},
+            "width": {"type": "number", "description": "Outline width."},
+            "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+            "move": {"type": "array", "items": {"type": "number"}, "description": "Move by [dx, dy]."},
+            "to": {"type": "array", "items": {"type": "number"}, "description": "Move so the layer's box starts at [x, y]."},
+            "below": {"type": "string", "description": "Place it just below this layer."},
+            "above": {"type": "string", "description": "Place it just above this layer."}
+        }) {
+            Value::Object(e) => e,
+            _ => unreachable!("an object"),
+        },
+    );
+    json!({"type": "object", "properties": Value::Object(m), "additionalProperties": false})
 }
 
 fn hover_prop(axis: &str) -> Value {
@@ -962,39 +1243,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "description": "One press-move-release each.",
                         "items": {
                             "type": "object",
-                            "properties": {
-                                "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "[[x, y], ...]"},
-                                "closed": {"type": "boolean"},
-                                "smooth": {"type": "boolean"},
-                                "x": {"type": "string", "description": "x(t)"},
-                                "y": {"type": "string", "description": "y(t)"},
-                                "t": {"type": "array", "items": {"type": ["number", "string"]}, "description": "[from, to]: numbers or expressions like \"2*pi\"."},
-                                "steps": {"type": "integer", "minimum": 1},
-                                "rect": {"type": "array", "items": {"type": "number"}, "description": "[x, y, width, height] or [x, y, width, height, corner radius]"},
-                                "ellipse": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius x, radius y]"},
-                                "polygon": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, corners]"},
-                                "star": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, outer radius, inner radius, points]"},
-                                "arc": {"type": "array", "items": {"type": "number"}, "description": "[center x, center y, radius, from degrees, to degrees]"},
-                                "bezier": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Cubic: start, then control, control, end per segment."},
-                                "axes": {"type": "array", "items": {"type": "number"}, "description": "[x tick step, y tick step]: axes through 0 (needs canvas.range)."},
-                                "rotate": {"type": "number", "description": "Degrees, clockwise on screen, about `about` (default: the stroke's centre)."},
-                                "about": {"type": "array", "items": {"type": "number"}},
-                                "repeat": {
-                                    "type": "object",
-                                    "description": "Copies: copy k is moved by k*offset and turned by k*rotate degrees about `about`.",
-                                    "properties": {
-                                        "count": {"type": "integer", "minimum": 1},
-                                        "offset": {"type": "array", "items": {"type": "number"}},
-                                        "rotate": {"type": "number"},
-                                        "about": {"type": "array", "items": {"type": "number"}}
-                                    },
-                                    "required": ["count"],
-                                    "additionalProperties": false
-                                },
-                                "fill": {"type": "number", "description": "Paint the closed shape solid instead of its outline, with a round brush this wide (in the stroke's units; set the app's brush to this size). Shapes painted back to front cover each other."},
-                                "trace": {"type": "string", "description": "A picture traced with trace_image: draw one step of it (with step and fill), fitted into the canvas or element."},
-                                "step": {"type": "integer", "minimum": 1, "description": "Which step of the trace (1 = first)."}
-                            },
+                            "properties": stroke_props(),
                             "additionalProperties": false
                         }
                     },
@@ -1027,6 +1276,32 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "additionalProperties": false
             }),
             annotations: read_only("Trace a picture"),
+        },
+        ToolDefinition {
+            name: "design",
+            title: "Design board",
+            description: "A design board, like Canva: compose a picture from layers (shapes as draw takes them, and text) and see it rendered before anything is drawn in an app. Each call can add, change, remove, mirror (a symmetric copy: the other eye or ear), align, distribute and reorder layers; it returns the picture, the layers with their boxes and colours, checks (off the page, almost centred, pairs not quite symmetric, hard-to-read text) and the steps to paint it. Then put it into an app: export=\"svg\" or \"png\" (a temporary file to import), the layers' numbers for the app's fields, or draw with strokes=[{design, step, fill}]. Coordinates are the design's units (pixels of the result), y down. Start with name and size; later calls with the same name change it.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "size": {"type": "array", "items": {"type": "number"}, "description": "[width, height]: starts the design (or resizes it)."},
+                    "background": {"type": "string", "description": "\"#RRGGBB\"."},
+                    "margin": {"type": "number", "description": "Space to keep clear at the edges (default 5% of the short side)."},
+                    "add": {"type": "array", "items": layer_props(), "description": "New layers, on top (or below/above a layer)."},
+                    "change": {"type": "array", "items": layer_props(), "description": "Layers to change, by id: new colours, text, place (move, to) or a new shape."},
+                    "remove": {"type": "array", "items": {"type": "string"}},
+                    "mirror": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "as": {"type": "string"}, "axis": {"type": "string", "enum": ["x", "y"]}, "line": {"type": "number"}}, "required": ["id", "as"], "additionalProperties": false}, "description": "A mirrored copy: x = left-right about the page's middle (or line)."},
+                    "align": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "x": {"type": "string", "enum": ["left", "center", "right"]}, "y": {"type": "string", "enum": ["top", "middle", "bottom"]}, "to": {"type": "string", "description": "page (default), margins, each other, or a layer id."}}, "required": ["ids"], "additionalProperties": false}},
+                    "distribute": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "axis": {"type": "string", "enum": ["x", "y"]}}, "required": ["ids"], "additionalProperties": false}, "description": "Equal gaps between 3 or more layers."},
+                    "order": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "to": {"type": "string", "enum": ["front", "back", "up", "down"]}}, "required": ["id", "to"], "additionalProperties": false}},
+                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}}, "additionalProperties": false, "description": "On the picture: a grid in the design's units, the layers' ids, guides (margins, centre, thirds)."},
+                    "export": {"type": "string", "enum": ["png", "svg"], "description": "Write a temporary file to import into an app."}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            annotations: read_only("Design board"),
         },
         ToolDefinition {
             name: "press_key",
@@ -1236,6 +1511,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         }
         "find_element" => "Find elements by role/name/text; returns their indices.",
         "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
+        "design" => {
+            "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; returns the picture, layers, checks and paint steps; export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
+        }
         "trace_image" => {
             "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
         }
@@ -1343,7 +1621,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 21);
+        assert_eq!(defs.len(), 22);
         for d in &defs {
             assert_eq!(d.input_schema["type"], "object", "{}", d.name);
             // Every required property is declared.
@@ -1383,7 +1661,21 @@ mod tests {
             "preview": false,
             "pick": [[1, 2]], "canvas": {"box": [0, 0, 10, 10], "size": [100, 100]},
             "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},
-                        {"x": "t", "y": 5, "t": [0, "2*pi"], "steps": 6}]
+                        {"x": "t", "y": 5, "t": [0, "2*pi"], "steps": 6},
+                        {"rect": [0, 0, 5, 5], "fill": 3},
+                        {"design": "d", "step": 1, "fill": 3}],
+            "name": "n", "path": "p.png", "colors": 4, "detail": "low", "box": [0, 0, 5, 5],
+            "compare": "t", "size": [100, 50], "background": "fff", "margin": 4,
+            "add": [{"id": "a", "ellipse": [5, 5, 2, 2], "fill": "123456", "stroke": "none",
+                     "width": 1, "opacity": 0.5, "move": [1, 1], "below": "b"},
+                    {"text": "hi", "at": [1, 1], "size": 9, "font": "Arial", "bold": true,
+                     "align": "center", "to": [0, 0]}],
+            "change": [{"id": "a", "rotate": 10}], "remove": ["c"],
+            "mirror": [{"id": "a", "as": "a2", "axis": "x", "line": 50}],
+            "align": [{"ids": ["a"], "x": "center", "y": "middle", "to": "page"}],
+            "distribute": [{"ids": ["a", "b", "c"], "axis": "y"}],
+            "order": [{"id": "a", "to": "front"}],
+            "show": {"grid": true, "ids": true, "guides": true}, "export": "svg"
             }"#,
         )
         .unwrap();
@@ -1404,7 +1696,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 21);
+        assert_eq!(compact.len(), 22);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

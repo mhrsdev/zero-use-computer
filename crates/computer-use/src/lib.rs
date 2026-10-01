@@ -49,6 +49,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod design;
 pub mod draw;
 pub mod engine;
 pub mod error;

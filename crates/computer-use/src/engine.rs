@@ -137,6 +137,11 @@ pub struct Engine<B: Backend> {
     overrides: Option<ConfigOverride>,
     /// Pictures traced with trace_image, by name (newest last).
     traces: Vec<(String, crate::paint::Trace)>,
+    /// Designs on the design board, by name (newest last).
+    designs: Vec<(String, crate::design::Design)>,
+    fonts: crate::design::FontCache,
+    /// Exported files (temporary).
+    exports: crate::design::TempFiles,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -220,6 +225,9 @@ impl<B: Backend> Engine<B> {
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
+            designs: Vec::new(),
+            fonts: crate::design::FontCache::default(),
+            exports: crate::design::TempFiles::default(),
             ocr_note: None,
             ocr_note_shown: false,
             last_capture: None,
@@ -1507,6 +1515,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Drag(a) => self.drag(a),
             ToolCall::Draw(a) => self.draw(a),
             ToolCall::TraceImage(a) => self.trace_image(a),
+            ToolCall::Design(a) => self.design(a),
             ToolCall::PressKey(a) => self.press_key(a),
             ToolCall::TypeText(a) => self.type_text(a),
             ToolCall::FindElement(a) => self.find_element(a),
@@ -2362,19 +2371,35 @@ impl<B: Backend> Engine<B> {
         };
         for (i, s) in args.strokes.iter().enumerate() {
             let bad = |e: String| Error::InvalidArgs(format!("stroke {}: {e}", i + 1));
-            let made = match &s.trace {
-                Some(name) => self.trace_shapes(s, name, &frame, area),
-                None => draw_shapes(s, &frame),
-            }
-            .map_err(bad)?;
-            let fill = match s.fill {
-                None if s.trace.is_some() => {
-                    return Err(bad(
-                        "a trace step is painted solid: give fill, the brush width".into(),
-                    ));
+            // Shapes, and whether they must be painted solid (a trace or
+            // a design's solid step), may not be (a design's line step), or
+            // either.
+            let (made, solid) = match (&s.trace, &s.design) {
+                (Some(_), Some(_)) => return Err(bad("give trace or design, not both".into())),
+                (Some(name), None) => (
+                    self.trace_shapes(s, name, &frame, area).map_err(bad)?,
+                    Some(true),
+                ),
+                (None, Some(name)) => {
+                    let (shapes, solid) = self.design_shapes(s, name, &frame, area).map_err(bad)?;
+                    (shapes, Some(solid))
                 }
-                None => None,
-                Some(w) if w.is_finite() && w > 0.0 => {
+                (None, None) => (draw_shapes(s, &frame).map_err(bad)?, None),
+            };
+            let what = if s.trace.is_some() {
+                "a trace step"
+            } else {
+                "this design step"
+            };
+            let fill = match (s.fill, solid) {
+                (_, Some(false)) => None,
+                (None, Some(true)) => {
+                    return Err(bad(format!(
+                        "{what} is painted solid: give fill, the brush width"
+                    )));
+                }
+                (None, None) => None,
+                (Some(w), _) if w.is_finite() && w > 0.0 => {
                     if w * unit < 2.0 {
                         return Err(bad(format!(
                             "fill {w} is under 2 pixels on screen; use a wider brush"
@@ -2386,7 +2411,9 @@ impl<B: Backend> Engine<B> {
                     };
                     Some((w * unit, bleed))
                 }
-                Some(_) => return Err(bad("fill is the brush width, a positive number".into())),
+                (Some(_), _) => {
+                    return Err(bad("fill is the brush width, a positive number".into()));
+                }
             };
             let copies = made.len();
             for (k, shape) in made.into_iter().enumerate() {
@@ -2546,6 +2573,203 @@ impl<B: Backend> Engine<B> {
         msg
     }
 
+    /// A design on the design board, by name.
+    fn design_named(&self, name: &str) -> std::result::Result<&crate::design::Design, String> {
+        let key = design_key(name);
+        if let Some((_, d)) = self.designs.iter().rev().find(|(n, _)| *n == key) {
+            return Ok(d);
+        }
+        let known: Vec<&str> = self.designs.iter().map(|(n, _)| n.as_str()).collect();
+        Err(if known.is_empty() {
+            format!("no design called \"{name}\": make it with the design tool first")
+        } else {
+            format!(
+                "no design called \"{name}\" (designs: {})",
+                known.join(", ")
+            )
+        })
+    }
+
+    /// The shapes of one step of a design, fitted into the drawing area
+    /// with its proportions kept, and whether they are painted solid.
+    fn design_shapes(
+        &mut self,
+        s: &DrawStroke,
+        name: &str,
+        frame: &crate::draw::Frame,
+        area: &str,
+    ) -> std::result::Result<(Vec<crate::draw::Shape>, bool), String> {
+        use crate::design::StepKind;
+        if shape_given(s) {
+            return Err(
+                "give design on its own (with step, and fill for a solid step), not with a shape"
+                    .into(),
+            );
+        }
+        if s.rotate.is_some() || s.repeat.is_some() {
+            return Err("a design step can't be turned or repeated: change the design".into());
+        }
+        if area == "the screenshot" {
+            return Err("a design needs canvas or element_index: where it goes".into());
+        }
+        let d = self.design_named(name)?.clone();
+        let steps = d.steps();
+        let n = steps.len();
+        let step = match s.step {
+            Some(k) if k >= 1 && k as usize <= n => &steps[k as usize - 1],
+            _ => return Err(format!("\"{name}\" has steps 1 to {n}: give step")),
+        };
+        if step.kind == StepKind::Text {
+            let l = &d.layers[step.layers[0]];
+            let (at, size) = l
+                .text
+                .as_ref()
+                .map_or(((0.0, 0.0), 0.0), |t| (t.at, t.size));
+            return Err(format!(
+                "step {} is the text of {}: type it with the app's text tool at ({:.0}, {:.0}) in the design's units, size {:.0}",
+                s.step.unwrap_or(0),
+                l.id,
+                at.0,
+                at.1,
+                size
+            ));
+        }
+        let place = crate::paint::fit_in(
+            frame.screen_rect(),
+            d.width.round().max(1.0) as u32,
+            d.height.round().max(1.0) as u32,
+        );
+        let (sx, sy) = (place.width / d.width, place.height / d.height);
+        let (xa, xb) = (frame.x0.min(frame.x1), frame.x0.max(frame.x1));
+        let (ya, yb) = (frame.y0.min(frame.y1), frame.y0.max(frame.y1));
+        let lines = d.step_lines(step)?;
+        let shapes = lines
+            .into_iter()
+            .map(|(pts, closed)| {
+                let pts = pts
+                    .iter()
+                    .map(|&(x, y)| {
+                        let (fx, fy) =
+                            frame.to_frame(Point::new(place.x + x * sx, place.y + y * sy));
+                        (fx.clamp(xa, xb), fy.clamp(ya, yb))
+                    })
+                    .collect();
+                crate::draw::Shape::points(pts, closed)
+            })
+            .collect();
+        Ok((shapes, step.kind == StepKind::Solid))
+    }
+
+    fn design(&mut self, args: DesignArgs) -> Result<ToolOutput> {
+        use crate::design::{Design, Extras, StepKind, hex};
+        let key = design_key(&args.name);
+        if key.is_empty() {
+            return Err(Error::InvalidArgs("give the design a name".into()));
+        }
+        let mut d = match self.designs.iter().position(|(n, _)| *n == key) {
+            Some(i) => self.designs[i].1.clone(),
+            None => {
+                let [w, h] = args.size.ok_or_else(|| {
+                    Error::InvalidArgs(format!(
+                        "no design called \"{key}\" yet: give size [width, height] to start one"
+                    ))
+                })?;
+                Design::new(w, h)
+            }
+        };
+        // All or nothing: the stored design changes only if every part works.
+        d.apply(&args, &mut self.fonts)
+            .map_err(Error::InvalidArgs)?;
+        self.designs.retain(|(n, _)| *n != key);
+        self.designs.push((key.clone(), d.clone()));
+        if self.designs.len() > 8 {
+            self.designs.remove(0);
+        }
+        let mut text = format!(
+            "Design \"{key}\": {} x {}, background {}, margin {}. {} layer{}, back to front: {}.",
+            d.width,
+            d.height,
+            hex(d.background),
+            d.margin,
+            d.layers.len(),
+            if d.layers.len() == 1 { "" } else { "s" },
+            if d.layers.is_empty() {
+                "none yet".to_string()
+            } else {
+                d.listing(&mut self.fonts)
+            }
+        );
+        let checks = d.checks(&mut self.fonts);
+        if checks.is_empty() {
+            if !d.layers.is_empty() {
+                text.push_str("\nChecks: nothing off.");
+            }
+        } else {
+            text.push_str(&format!("\nChecks: {}.", checks.join("; ")));
+        }
+        let steps = d.steps();
+        if !steps.is_empty() {
+            let list: Vec<String> = steps
+                .iter()
+                .enumerate()
+                .map(|(k, st)| {
+                    let ids: Vec<&str> =
+                        st.layers.iter().map(|&i| d.layers[i].id.as_str()).collect();
+                    let how = match st.kind {
+                        StepKind::Solid => "solid".to_string(),
+                        StepKind::Outline(w) => format!("lines {w}"),
+                        StepKind::Text => "text".to_string(),
+                    };
+                    format!("{} {} {how} ({})", k + 1, hex(st.color), ids.join(", "))
+                })
+                .collect();
+            text.push_str(&format!(
+                "\nTo paint it in an app: background {} first, then steps {}. Each: set the colour, then draw(strokes=[{{\"design\": \"{key}\", \"step\": n, \"fill\": <brush size>}}], canvas=...); a lines step uses a brush that wide; type text steps with the text tool. Or export=\"svg\" / \"png\" and import the file.",
+                hex(d.background),
+                list.join("; ")
+            ));
+        }
+        if let Some(format) = args.export {
+            let (bytes, ext) = match format {
+                ExportFormat::Png => (d.png(&mut self.fonts).map_err(Error::InvalidArgs)?, "png"),
+                ExportFormat::Svg => (
+                    d.svg(&mut self.fonts)
+                        .map_err(Error::InvalidArgs)?
+                        .into_bytes(),
+                    "svg",
+                ),
+            };
+            let path = self
+                .exports
+                .write(&key, ext, &bytes)
+                .map_err(Error::InvalidArgs)?;
+            text.push_str(&format!(
+                "\nExported to {} ({} KB). It is temporary: import it into the app now (it is deleted when the server stops).",
+                path.display(),
+                bytes.len().div_ceil(1024)
+            ));
+        }
+        let cfg = self.store.config.screenshot.clone();
+        if self.store.config.text_only || !cfg.enabled {
+            return Ok(ToolOutput::text(text));
+        }
+        let show = args.show.clone().unwrap_or_default();
+        let extras = Extras {
+            grid: show.grid,
+            ids: show.ids,
+            guides: show.guides,
+        };
+        let picture = d
+            .render(cfg.max_dimension.clamp(256, 1024), extras, &mut self.fonts)
+            .map_err(Error::InvalidArgs)?;
+        let (img, _) = imaging::encode(picture, &cfg)?;
+        Ok(ToolOutput {
+            text,
+            image: Some(img),
+            is_error: false,
+        })
+    }
+
     /// A picture traced with trace_image, by name.
     fn trace_named(&self, name: &str) -> std::result::Result<&crate::paint::Trace, String> {
         if let Some((_, t)) = self
@@ -2586,17 +2810,7 @@ impl<B: Backend> Engine<B> {
         frame: &crate::draw::Frame,
         area: &str,
     ) -> std::result::Result<Vec<crate::draw::Shape>, String> {
-        let shape_too = s.points.is_some()
-            || s.x.is_some()
-            || s.y.is_some()
-            || s.rect.is_some()
-            || s.ellipse.is_some()
-            || s.polygon.is_some()
-            || s.star.is_some()
-            || s.arc.is_some()
-            || s.bezier.is_some()
-            || s.axes.is_some();
-        if shape_too {
+        if shape_given(s) {
             return Err("give trace on its own (with step and fill), not with a shape".into());
         }
         if s.rotate.is_some() || s.repeat.is_some() {
@@ -4221,7 +4435,7 @@ impl LabelSpace {
 
 /// A `draw` stroke as the drawing module takes it: one shape, or several
 /// (axes and ticks, repeated copies).
-fn draw_shapes(
+pub(crate) fn draw_shapes(
     s: &DrawStroke,
     frame: &crate::draw::Frame,
 ) -> std::result::Result<Vec<crate::draw::Shape>, String> {
@@ -4430,6 +4644,33 @@ fn draw_shapes(
                 .then(frame.rotation(about, k * turn))
         })
         .collect())
+}
+
+/// Whether a `draw` stroke gives a shape of its own.
+fn shape_given(s: &DrawStroke) -> bool {
+    s.points.is_some()
+        || s.x.is_some()
+        || s.y.is_some()
+        || s.rect.is_some()
+        || s.ellipse.is_some()
+        || s.polygon.is_some()
+        || s.star.is_some()
+        || s.arc.is_some()
+        || s.bezier.is_some()
+        || s.axes.is_some()
+}
+
+/// A design's name as it is stored: lower case, letters, digits and '-'.
+fn design_key(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(40)
+        .collect()
 }
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
@@ -5903,6 +6144,129 @@ mod tests {
             out.text
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn designs_are_composed_seen_and_painted_step_by_step() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // A name nobody started yet needs a size.
+        let out = e.call_tool("design", serde_json::json!({"name": "Badge"}));
+        assert!(
+            out.is_error && out.text.contains("give size"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "Badge", "size": [400, 200], "background": "#FFFFFF",
+                "add": [{"id": "disc", "ellipse": [100, 100, 60, 60], "fill": "#CC2222"},
+                        {"id": "ring", "ellipse": [100, 100, 80, 80], "fill": "none", "stroke": "#222222", "width": 4},
+                        {"id": "label", "text": "OK", "at": [280, 80], "size": 40}],
+                "mirror": [{"id": "disc", "as": "disc-2"}],
+                "show": {"guides": true, "ids": true, "grid": 50}}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+        assert!(
+            out.text.starts_with("Design \"badge\": 400 x 200, background #FFFFFF, margin 10. 4 layers, back to front: disc ellipse x 40 y 40 w 120 h 120 fill #CC2222; disc-2 ellipse x 240 y 40"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("steps 1 #CC2222 solid (disc, disc-2); 2 #222222 lines 4 (ring); 3 #000000 text (label)"), "{}", out.text);
+
+        // A change that fails leaves the design as it was.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "badge", "change": [{"id": "disc", "fill": "#00FF00"}], "remove": ["nope"]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("no layer \"nope\""),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool("design", serde_json::json!({"name": "badge"}));
+        assert!(
+            out.text
+                .contains("disc ellipse x 40 y 40 w 120 h 120 fill #CC2222"),
+            "{}",
+            out.text
+        );
+
+        // Painted into an 800 x 400 document shown at (0, 0)-(800, 400):
+        // twice the size.
+        let canvas = serde_json::json!({"box": [0, 0, 800, 400], "size": [800, 400]});
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas,
+                "strokes": [{"design": "badge", "step": 1, "fill": 8}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        for ev in pointer_events(&e) {
+            if let Event::PointerMove(_, p) = ev {
+                let d = (p.x - 200.0)
+                    .hypot(p.y - 200.0)
+                    .min((p.x - 600.0).hypot(p.y - 200.0));
+                assert!(d <= 120.5, "{p:?}");
+            }
+        }
+        // The ring is a line step: no fill needed; the text step is typed.
+        let out = e.call_tool(
+            "draw",
+            serde_json::json!({"app": "TextEdit", "canvas": canvas,
+                "strokes": [{"design": "badge", "step": 2}]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        for (strokes, want) in [
+            (
+                serde_json::json!([{"design": "badge", "step": 1}]),
+                "give fill",
+            ),
+            (
+                serde_json::json!([{"design": "badge", "step": 3}]),
+                "step 3 is the text of label: type it with the app's text tool at (280, 80)",
+            ),
+            (
+                serde_json::json!([{"design": "badge", "step": 9}]),
+                "has steps 1 to 3",
+            ),
+            (
+                serde_json::json!([{"design": "nope", "step": 1}]),
+                "no design called \"nope\" (designs: badge)",
+            ),
+            (
+                serde_json::json!([{"design": "badge", "trace": "x", "step": 1}]),
+                "trace or design, not both",
+            ),
+        ] {
+            let out = e.call_tool(
+                "draw",
+                serde_json::json!({"app": "TextEdit", "canvas": canvas, "strokes": strokes}),
+            );
+            assert!(
+                out.is_error && out.text.contains(want),
+                "{want}: {}",
+                out.text
+            );
+        }
+
+        // Exports are temporary files.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "badge", "export": "svg"}),
+        );
+        let path = out
+            .text
+            .split("Exported to ")
+            .nth(1)
+            .and_then(|r| r.split(" (").next())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("{}", out.text));
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(svg.contains("<ellipse id=\"disc-2\" cx=\"300\""), "{svg}");
+        assert!(out.text.contains("It is temporary"), "{}", out.text);
+        drop(e);
+        assert!(!path.exists(), "deleted with the server");
     }
 
     #[test]

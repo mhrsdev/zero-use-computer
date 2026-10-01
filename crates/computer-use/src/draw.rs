@@ -426,6 +426,21 @@ impl Frame {
         }
     }
 
+    /// Document units (y down), `scale` screen units each, with unit
+    /// (0, 0) at `origin`; coordinates may run from `x0` to `x1` and `y0`
+    /// to `y1` (past the document's edges).
+    pub fn window(origin: Point, scale: f64, x0: f64, x1: f64, y0: f64, y1: f64) -> Self {
+        Self {
+            origin,
+            scale_x: scale,
+            scale_y: scale,
+            x0,
+            x1,
+            y0,
+            y1,
+        }
+    }
+
     /// Math coordinates across `bounds`: x from `x0` (left) to `x1`
     /// (right), y from `y0` (bottom) to `y1` (top).
     pub fn range(bounds: Rect, x0: f64, x1: f64, y0: f64, y1: f64) -> Self {
