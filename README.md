@@ -1,6 +1,6 @@
 # Zero Use Computer
 
-**[Download v3.0.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
+**[Download v3.1.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
 · [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
 · [License](LICENSE)
 
@@ -14,9 +14,15 @@ It is a standalone building block: run it as an **MCP server**
 (`computer-use-mcp`; works with Claude Code, Codex, Cursor or any MCP-capable
 agent), or embed the **library** (`computer-use`) in your own agent.
 
-## What's new in v3.0.0
+## What's new
 
-Stability first ([full changelog](CHANGELOG.md)):
+**v3.1.0** — Wayland: on **Hyprland**, **sway** and other wlroots-family
+compositors, window positions, clicks, typing (any language), screenshots,
+window changes and the stop key all go through the compositor, and the
+overlay no longer flickers or replays animations under compositors (X11,
+Wayland, macOS, Windows). [Changelog](CHANGELOG.md).
+
+**v3.0.0** — stability first:
 
 - **It never gets stuck.** Every accessibility call has a timeout, every
   tool has limits, and a hung or busy app gives what was read and a "not
@@ -779,11 +785,23 @@ compares coming back to a screen with the screen memory off and on.
   scan codes, sent in short batches so slow apps and remote sessions keep up.
   Windows silently drops input to apps running as administrator unless the
   server runs as administrator too.
-- **Linux** — needs an AT-SPI2 accessibility bus and an X11 display. Enable
-  accessibility for your toolkit (e.g. GTK loads the at-spi bridge when the a11y
-  bus is present). Wayland isn't supported for synthesized input/capture: in
-  a Wayland session they only reach XWayland apps (`doctor` says so); log in
-  to an X11 ("Xorg") session.
+- **Linux** — needs an AT-SPI2 accessibility bus. Enable accessibility for
+  your toolkit (e.g. GTK loads the at-spi bridge when the a11y bus is
+  present).
+  - **X11** desktops: input through XTest, screenshots through X11.
+  - **Wayland** with **Hyprland**, **sway** or another wlroots-family
+    compositor: the compositor's IPC says where windows are and focuses,
+    moves and resizes them; input goes through its virtual pointer and
+    virtual keyboard (any app, XWayland ones too, any keyboard layout),
+    screenshots through wlr-screencopy, and the overlay is a layer-shell
+    surface. The stop key is bound in the compositor while the server runs
+    (never over a binding of yours: if the combination is taken, set
+    another with `control.stop_hotkey`). Hyprland users can tune the
+    overlay with layer rules on the `computer-use` namespace, e.g.
+    `layerrule = noanim, computer-use`.
+  - Other Wayland desktops (GNOME, KDE Plasma): accessibility actions work
+    for every app; synthesized input and screenshots only reach XWayland
+    apps (`doctor` says so).
 
 ## Safety
 

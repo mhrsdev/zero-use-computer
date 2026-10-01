@@ -1,6 +1,9 @@
 //! Linux backend: AT-SPI2 (over D-Bus) for the accessibility tree and
-//! semantic actions, X11/XTest for synthesized input, and X11 GetImage for
-//! screenshots.
+//! semantic actions; for synthesized input and screenshots, X11 (XTest,
+//! GetImage) on an X11 desktop, and in a Wayland session the compositor's
+//! protocols and IPC ([`wayland`]: Hyprland, sway and the other
+//! wlroots-family compositors), with X11 kept for XWayland apps where the
+//! compositor offers neither.
 //!
 //! The accessibility path (DoAction, SetTextContents, GrabFocus, text
 //! selection) is preferred; synthesized mouse/keyboard input is the fallback.
@@ -18,6 +21,8 @@ use std::time::{Duration, Instant};
 
 pub use atspi::ipc_calls;
 use atspi::{AtspiConnection, CallError, Fail, ObjRef, state};
+use wayland::ipc::{Compositor, Toplevel};
+use wayland::proto::Wl;
 use wm::Front;
 use x11::X11;
 
@@ -60,6 +65,15 @@ pub struct LinuxBackend {
     text_max: usize,
     /// Listens for notifications while [notifications] is enabled.
     notifications: Option<notify::Listener>,
+    /// A Wayland session: the compositor's protocols (input, screenshots,
+    /// idle time), connected when first needed, and when to try again.
+    wl: Option<Wl>,
+    wl_retry: Option<Instant>,
+    /// The compositor's IPC (Hyprland, sway): where windows are, which has
+    /// the keyboard, window changes.
+    comp: Option<Compositor>,
+    /// Window handle → the compositor's window, from the last listing.
+    toplevels: HashMap<ElementHandle, Toplevel>,
 }
 
 impl LinuxBackend {
@@ -88,7 +102,73 @@ impl LinuxBackend {
             batch_size: defaults.batch_size,
             text_max: defaults.text_max_chars,
             notifications: None,
+            wl: None,
+            wl_retry: None,
+            comp: if wayland_session() {
+                Compositor::detect()
+            } else {
+                None
+            },
+            toplevels: HashMap::new(),
         })
+    }
+
+    /// The Wayland protocols, connected (or reconnected) when needed.
+    fn wl(&mut self) -> Result<&mut Wl> {
+        if self.wl.as_ref().is_some_and(Wl::lost) {
+            log::warn!("reconnecting to the Wayland compositor");
+            self.wl = None;
+            self.wl_retry = None;
+        }
+        if self.wl.is_none()
+            && wayland_session()
+            && self.wl_retry.is_none_or(|t| Instant::now() >= t)
+        {
+            match Wl::connect() {
+                Ok(w) => {
+                    self.wl = Some(w);
+                    self.wl_retry = None;
+                }
+                Err(e) => {
+                    log::warn!("Wayland input/capture unavailable: {e}");
+                    self.wl_retry = Some(Instant::now() + X11_RETRY);
+                }
+            }
+        }
+        self.wl.as_mut().ok_or_else(|| {
+            Error::Unsupported("no connection to the Wayland compositor for input/capture".into())
+        })
+    }
+
+    /// Whether pointer input goes through the compositor (a Wayland session
+    /// whose compositor offers wlr-virtual-pointer): for every app, XWayland
+    /// ones included.
+    fn wl_points(&mut self) -> bool {
+        wayland_session() && self.wl().is_ok_and(|w| w.can_point())
+    }
+
+    /// Whether keyboard input goes through the compositor (virtual-keyboard).
+    fn wl_types(&mut self) -> bool {
+        wayland_session() && self.wl().is_ok_and(|w| w.can_type())
+    }
+
+    /// Whether screenshots come from the compositor (wlr-screencopy).
+    fn wl_captures(&mut self) -> bool {
+        wayland_session() && self.wl().is_ok_and(|w| w.can_capture())
+    }
+
+    /// The compositor's window behind a window handle, or else the one of
+    /// `pid` titled `title` (looked up afresh).
+    fn toplevel(&self, handle: ElementHandle, pid: u32, title: &str) -> Option<Toplevel> {
+        if let Some(t) = self.toplevels.get(&handle) {
+            return Some(t.clone());
+        }
+        let tops = self.comp.as_ref()?.toplevels().ok()?;
+        let mine: Vec<&Toplevel> = tops.iter().filter(|t| t.pid == Some(pid)).collect();
+        match mine.as_slice() {
+            [only] => Some((*only).clone()),
+            many => many.iter().find(|t| t.title == title).map(|t| (*t).clone()),
+        }
     }
 
     /// The X server connection, after handling what it sent meanwhile; a
@@ -234,6 +314,9 @@ impl LinuxBackend {
         // Apps that quit take their handles with them.
         let live = &self.app_refs;
         self.window_handles.retain(|_, (p, _)| live.contains_key(p));
+        let windows: std::collections::HashSet<ElementHandle> =
+            self.window_handles.values().map(|(_, h)| *h).collect();
+        self.toplevels.retain(|h, _| windows.contains(h));
         self.handles.retain(|_, (p, _)| live.contains_key(p));
         self.app_names.retain(|p, _| live.contains_key(p));
         Ok(apps)
@@ -280,6 +363,45 @@ impl LinuxBackend {
     /// engine brings the app it types into to the front first. `apps` are
     /// the apps that answered (only they are asked about their windows).
     fn mark_front(&mut self, out: &mut Vec<AppInfo>, apps: &[(ObjRef, u32)]) {
+        // In a Wayland session the compositor knows (X11 sees only XWayland).
+        if let Some(active) = self.comp.as_ref().map(Compositor::active) {
+            match active {
+                Ok(Some(t)) => {
+                    if let Some(pid) = t.pid.filter(|p| out.iter().any(|a| a.pid == *p)) {
+                        for a in out.iter_mut() {
+                            a.frontmost = a.pid == pid;
+                        }
+                    } else {
+                        let (exe, comm) = t.pid.map(proc_info).unwrap_or_default();
+                        out.push(AppInfo {
+                            name: if t.app_id.is_empty() {
+                                comm.clone().unwrap_or_else(|| t.title.clone())
+                            } else {
+                                t.app_id.clone()
+                            },
+                            id: comm.unwrap_or_else(|| t.app_id.clone()),
+                            pid: t.pid.unwrap_or(0),
+                            exe,
+                            frontmost: true,
+                            hidden: false,
+                        });
+                    }
+                    return;
+                }
+                Ok(None) => {
+                    out.push(AppInfo {
+                        name: "Desktop".into(),
+                        id: "desktop".into(),
+                        pid: 0,
+                        exe: None,
+                        frontmost: true,
+                        hidden: false,
+                    });
+                    return;
+                }
+                Err(e) => log::debug!("compositor: {e}"),
+            }
+        }
         let Some(front) = self.x11().ok().and_then(|x| x.wm().front()) else {
             return; // can't tell
         };
@@ -414,16 +536,63 @@ impl Backend for LinuxBackend {
     }
 
     fn permissions(&mut self) -> Vec<PermissionStatus> {
-        vec![
-            PermissionStatus {
-                name: "AT-SPI accessibility bus".into(),
-                granted: true,
-                detail: "connected".into(),
-            },
+        let mut out = vec![PermissionStatus {
+            name: "AT-SPI accessibility bus".into(),
+            granted: true,
+            detail: "connected".into(),
+        }];
+        if wayland_session() {
+            // What this compositor lets us do, and how.
+            let comp = self.comp.as_ref().map(Compositor::name);
+            let wl = self.wl().ok().map(|w| {
+                let has = |p: &str| w.protocols().iter().any(|(i, _)| i == p);
+                (
+                    w.can_point(),
+                    w.can_type(),
+                    w.can_capture(),
+                    has("zwlr_layer_shell_v1"),
+                )
+            });
+            let (point, typing, capture, layer) = wl.unwrap_or_default();
+            let mut missing = Vec::new();
+            for (ok, what) in [
+                (comp.is_some(), "window positions (Hyprland or sway IPC)"),
+                (point, "pointer input (wlr-virtual-pointer)"),
+                (typing, "keyboard input (virtual-keyboard)"),
+                (capture, "screenshots (wlr-screencopy)"),
+                (layer, "overlay (wlr-layer-shell)"),
+            ] {
+                if !ok {
+                    missing.push(what);
+                }
+            }
+            out.push(PermissionStatus {
+                name: "Wayland compositor".into(),
+                granted: missing.is_empty(),
+                detail: match (comp, missing.is_empty()) {
+                    (Some(c), true) => format!(
+                        "{c}: windows, input, screenshots and overlay through the compositor"
+                    ),
+                    (c, false) => format!(
+                        "{}: no {} (only X11/XWayland apps get those)",
+                        c.unwrap_or("this compositor"),
+                        missing.join(", ")
+                    ),
+                    (None, true) => "input and screenshots through the compositor".into(),
+                },
+            });
+        }
+        out.push(
             PermissionStatus {
                 name: "X11 input/capture".into(),
-                granted: self.x11().is_ok() && !wayland_session(),
-                detail: if wayland_session() {
+                granted: if wayland_session() {
+                    self.wl_points()
+                } else {
+                    self.x11().is_ok()
+                },
+                detail: if wayland_session() && self.wl_points() {
+                    "not needed: input and screenshots go through the compositor".into()
+                } else if wayland_session() {
                     "Wayland session: keys, clicks and screenshots only reach X11 (XWayland) apps; log in to an X11 (\"Xorg\") session for the rest".into()
                 } else if self.x11.is_some() {
                     "connected".into()
@@ -431,7 +600,8 @@ impl Backend for LinuxBackend {
                     "no X11 connection (DISPLAY unset or unreachable)".into()
                 },
             },
-        ]
+        );
+        out
     }
 
     fn list_apps(&mut self) -> Result<Vec<AppInfo>> {
@@ -538,27 +708,59 @@ impl Backend for LinuxBackend {
         // Windows no longer listed drop their handles.
         self.window_handles
             .retain(|r, (p, _)| *p != app.pid || windows.iter().any(|(w, _)| w == r));
+        // In a Wayland session the compositor says where each window is.
+        let mut tops: Vec<Toplevel> = self
+            .comp
+            .as_ref()
+            .and_then(|c| c.toplevels().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.pid == Some(pid))
+            .collect();
+        let frames: Vec<Frame> = windows
+            .iter()
+            .map(|(_, d)| (d.acc.name.clone(), d.extents))
+            .collect();
+        let matched = match_toplevels(&frames, &mut tops);
         let mut out = Vec::new();
-        for (r, d) in windows {
-            let bounds = d
-                .extents
-                .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into()));
+        for ((r, d), top) in windows.into_iter().zip(matched) {
             let id = stable_id(&r.path);
             let handle = self.window_handle(app.pid, r);
             let active = d.acc.states.has(state::ACTIVE);
-            out.push(WindowInfo {
+            let mut info = WindowInfo {
                 id,
                 title: if d.acc.name.is_empty() {
                     app.name.clone()
                 } else {
                     d.acc.name
                 },
-                bounds,
+                bounds: d
+                    .extents
+                    .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into())),
                 focused: active,
                 main: active,
                 minimized: !d.acc.states.has(state::SHOWING),
                 handle,
-            });
+            };
+            match top {
+                Some(t) => {
+                    info.bounds = Some(t.rect);
+                    info.focused = t.focused;
+                    info.main = t.focused || info.main;
+                    // On another workspace it can't be seen or clicked.
+                    info.minimized = !t.visible;
+                    self.toplevels.insert(handle, t);
+                }
+                None => {
+                    self.toplevels.remove(&handle);
+                    // A Wayland app's own coordinates are relative to its
+                    // window, whose place only the compositor knows.
+                    if wayland_session() && !self.x11().is_ok_and(|x| x.wm().has_window_of(pid)) {
+                        info.bounds = None;
+                    }
+                }
+            }
+            out.push(info);
         }
         Ok(out)
     }
@@ -581,9 +783,27 @@ impl Backend for LinuxBackend {
             self.batch_size,
             self.text_max,
         );
+        // A native Wayland window reports its elements relative to itself:
+        // place them where the compositor has the window.
+        let shift = self
+            .toplevels
+            .get(&window.handle)
+            .filter(|t| !t.xwayland)
+            .map(|t| (t.rect, wayland_offset(&walked, t.rect)));
         let mut out = Vec::with_capacity(walked.len());
         for w in walked {
             out.push(self.build_node(app.pid, w));
+        }
+        if let Some((rect, (dx, dy))) = shift {
+            for n in &mut out {
+                if let Some(b) = n.bounds.as_mut() {
+                    b.x += dx;
+                    b.y += dy;
+                }
+            }
+            if let Some(root) = out.first_mut().filter(|n| n.parent.is_none()) {
+                root.bounds = Some(rect);
+            }
         }
         Ok(out)
     }
@@ -617,18 +837,44 @@ impl Backend for LinuxBackend {
     }
 
     fn user_idle(&mut self) -> Option<std::time::Duration> {
+        if wayland_session() {
+            // XWayland's idle counter sees only X11 input: never trust it
+            // here (it could make the engine wait for ever).
+            return self.wl().ok().and_then(Wl::idle);
+        }
         self.x11().ok().and_then(|x| x.idle())
     }
 
     fn displays(&mut self) -> Result<Vec<Display>> {
+        if let Some(Ok(d)) = self.comp.as_ref().map(Compositor::displays) {
+            return Ok(d);
+        }
         Ok(self.x11()?.wm().displays())
     }
 
     fn desktops(&mut self) -> Option<(u32, u32)> {
+        if wayland_session() {
+            return None;
+        }
         self.x11().ok().and_then(|x| x.wm().desktops())
     }
 
     fn window_op(&mut self, app: &AppInfo, window: &WindowInfo, op: &WindowOp) -> Result<()> {
+        // In a Wayland session the compositor does it (XWayland windows too).
+        if let Some(comp) = &self.comp {
+            let top = self
+                .toplevel(window.handle, app.pid, &window.title)
+                .ok_or_else(|| {
+                    Error::ActionFailed(format!(
+                        "the compositor has no window of {} titled \"{}\"",
+                        app.name, window.title
+                    ))
+                })?;
+            return match op {
+                WindowOp::Focus => comp.focus(&top),
+                op => comp.apply(&top, op),
+            };
+        }
         let x11 = self.x11()?;
         let wm = x11.wm();
         let win = wm
@@ -647,11 +893,25 @@ impl Backend for LinuxBackend {
             .bounds
             .filter(|b| !b.is_empty())
             .ok_or_else(|| Error::Platform("window has no on-screen bounds to capture".into()))?;
+        if self.wl_captures() {
+            if window.minimized {
+                return Err(Error::ActionFailed(format!(
+                    "\"{}\" isn't on screen (on another workspace, or minimized), so a screenshot would show something else; bring it forward first (window action=focus)",
+                    window.title
+                )));
+            }
+            return self.wl()?.capture(rect);
+        }
         self.x11_reaches(app.pid, "A screenshot")?;
         self.x11()?.capture(rect)
     }
 
     fn capture_screen(&mut self, region: Option<Rect>) -> Result<Capture> {
+        if self.wl_captures() {
+            let wl = self.wl()?;
+            let rect = region.unwrap_or_else(|| wl.layout());
+            return wl.capture(rect);
+        }
         if wayland_session() {
             return Err(Error::Unsupported(
                 "screenshots of the screen: this is a Wayland session, where X11 screenshots show only X11 (XWayland) windows. Log in to an X11 (\"Xorg\") session for them.".into(),
@@ -795,22 +1055,33 @@ impl Backend for LinuxBackend {
         button: MouseButton,
         count: u8,
     ) -> Result<()> {
-        self.x11_reaches(target.pid, "A click")?;
         let b = match button {
             MouseButton::Left => 1,
             MouseButton::Middle => 2,
             MouseButton::Right => 3,
         };
+        if self.wl_points() {
+            return self.wl()?.click(at.x, at.y, b, count);
+        }
+        self.x11_reaches(target.pid, "A click")?;
         self.x11()?.click(at.x as i32, at.y as i32, b, count)
     }
 
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
+        if self.wl_points() {
+            return self.wl()?.drag((from.x, from.y), (to.x, to.y));
+        }
         self.x11_reaches(target.pid, "A drag")?;
         self.x11()?
             .drag((from.x as i32, from.y as i32), (to.x as i32, to.y as i32))
     }
 
     fn move_pointer(&mut self, target: &InputTarget, at: Point) -> Result<Option<Point>> {
+        if self.wl_points() {
+            // Wayland never tells where the pointer is: it stays here.
+            self.wl()?.move_pointer(at.x, at.y)?;
+            return Ok(None);
+        }
         self.x11_reaches(target.pid, "Moving the pointer")?;
         let back = self
             .x11()?
@@ -825,12 +1096,19 @@ impl Backend for LinuxBackend {
         button: MouseButton,
         pace: &mut dyn FnMut(f64) -> Result<()>,
     ) -> Result<()> {
-        self.x11_reaches(target.pid, "Drawing")?;
         let b = match button {
             MouseButton::Left => 1,
             MouseButton::Middle => 2,
             MouseButton::Right => 3,
         };
+        if self.wl_points() {
+            let strokes: Vec<Vec<(f64, f64)>> = strokes
+                .iter()
+                .map(|s| s.iter().map(|p| (p.x, p.y)).collect())
+                .collect();
+            return self.wl()?.draw(&strokes, b, pace);
+        }
+        self.x11_reaches(target.pid, "Drawing")?;
         let strokes: Vec<Vec<(i32, i32)>> = strokes
             .iter()
             .map(|s| {
@@ -843,19 +1121,125 @@ impl Backend for LinuxBackend {
     }
 
     fn scroll_wheel(&mut self, target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
+        if self.wl_points() {
+            return self.wl()?.scroll(at.x, at.y, dx, dy);
+        }
         self.x11_reaches(target.pid, "Scrolling")?;
         self.x11()?.scroll(at.x as i32, at.y as i32, dx, dy)
     }
 
     fn press_key(&mut self, target: &InputTarget, combo: &KeyCombo) -> Result<()> {
+        if self.wl_types() {
+            return self.wl()?.press(combo);
+        }
         self.x11_reaches(target.pid, "A key press")?;
         self.x11()?.press(combo)
     }
 
     fn type_text(&mut self, target: &InputTarget, text: &str) -> Result<()> {
+        if self.wl_types() {
+            self.wl()?.type_text(text)?;
+            // The keys reach the app through the compositor, after this
+            // returns: let it work through them before the engine reads the
+            // app again (GTK 3 can crash when its accessibility is read in
+            // the middle of a burst of keys).
+            let n = text.chars().count() as u64;
+            std::thread::sleep(Duration::from_millis((40 + 3 * n).min(1500)));
+            return Ok(());
+        }
         self.x11_reaches(target.pid, "Typing")?;
         self.x11()?.type_text(text)
     }
+}
+
+/// An accessible window as matched to the compositor's: its title, and its
+/// extents (x, y, width, height).
+type Frame = (String, Option<(i32, i32, i32, i32)>);
+
+/// For each accessible window (title, extents), the compositor's window it
+/// is, taken from `tops` (one window each): the only one, else the one with
+/// that title, else the one whose size fits inside its frame (a frame can
+/// be larger by the shadow an app draws around itself).
+fn match_toplevels(frames: &[Frame], tops: &mut Vec<Toplevel>) -> Vec<Option<Toplevel>> {
+    let mut out: Vec<Option<Toplevel>> = vec![None; frames.len()];
+    if frames.len() == 1 && tops.len() == 1 {
+        out[0] = tops.pop();
+        return out;
+    }
+    for (i, (title, _)) in frames.iter().enumerate() {
+        if let Some(k) = tops
+            .iter()
+            .position(|t| !title.is_empty() && t.title == *title)
+        {
+            out[i] = Some(tops.remove(k));
+        }
+    }
+    for (i, (_, ext)) in frames.iter().enumerate() {
+        let Some((_, _, fw, fh)) = *ext else {
+            continue;
+        };
+        if out[i].is_some() {
+            continue;
+        }
+        let fits = |t: &Toplevel| {
+            let (dw, dh) = (f64::from(fw) - t.rect.width, f64::from(fh) - t.rect.height);
+            (0.0..=160.0).contains(&dw) && (0.0..=160.0).contains(&dh)
+        };
+        if let Some(k) = tops
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| fits(t))
+            .min_by(|a, b| {
+                let d =
+                    |t: &Toplevel| (f64::from(fw) - t.rect.width) + (f64::from(fh) - t.rect.height);
+                d(a.1).total_cmp(&d(b.1))
+            })
+            .map(|(k, _)| k)
+        {
+            out[i] = Some(tops.remove(k));
+        }
+    }
+    out
+}
+
+/// How far to move a native Wayland window's element coordinates (relative
+/// to its own surface) to put them on screen, where the compositor has the
+/// window's content at `rect`. The surface can be larger than the content
+/// by a drawn shadow (GTK's client-side decorations): the frame's visible
+/// children start where the content does; without them, the shadow is
+/// taken to be even all round.
+fn wayland_offset(walked: &[atspi::Walked], rect: Rect) -> (f64, f64) {
+    let Some((fx, fy, fw, fh)) = walked.first().and_then(|w| w.data.extents) else {
+        return (rect.x, rect.y);
+    };
+    let (dw, dh) = (
+        (f64::from(fw) - rect.width).max(0.0),
+        (f64::from(fh) - rect.height).max(0.0),
+    );
+    let shown = |w: &&atspi::Walked| {
+        let s = w.data.acc.states;
+        w.parent == Some(0)
+            && s.has(state::SHOWING)
+            && w.data
+                .extents
+                .is_some_and(|(_, _, cw, ch)| cw > 0 && ch > 0)
+    };
+    let children: Vec<(i32, i32)> = walked
+        .iter()
+        .filter(shown)
+        .filter_map(|w| w.data.extents.map(|(x, y, _, _)| (x, y)))
+        .collect();
+    let (left, top) = match (
+        children.iter().map(|c| c.0).min(),
+        children.iter().map(|c| c.1).min(),
+    ) {
+        (Some(x), Some(y)) => (
+            f64::from(x - fx).clamp(0.0, dw),
+            f64::from(y - fy).clamp(0.0, dh),
+        ),
+        _ => (dw / 2.0, dh / 2.0),
+    };
+    (rect.x - f64::from(fx) - left, rect.y - f64::from(fy) - top)
 }
 
 /// The failure of a request that does something (DoAction, setting a

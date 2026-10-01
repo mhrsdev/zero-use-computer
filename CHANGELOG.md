@@ -1,5 +1,64 @@
 # Changelog
 
+## v3.1.0
+
+Wayland: Hyprland, sway and the other wlroots-family compositors work in
+full, and the overlay stops flickering under compositors on every system
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.0.0...v3.1.0)).
+
+### Hyprland, sway (Wayland)
+
+Before, in a Wayland session only accessibility actions worked for native
+Wayland apps: clicks at a place, typing, screenshots and window changes
+only reached XWayland apps, element positions were off (a Wayland app
+only knows where things are inside its own window), and the stop key
+mostly didn't fire.
+
+- **Windows come from the compositor** (Hyprland's or sway's IPC): where
+  each window is, which has the keyboard, and focusing, moving, resizing,
+  maximizing, minimizing, full screen, closing and moving to a workspace.
+  Element positions are placed on screen from there, allowing for the
+  shadow apps like GTK draw around their windows.
+- **Input through the compositor**: clicks, drags, drawing and scrolling
+  through wlr-virtual-pointer; keys and text through a virtual keyboard
+  with a keymap made for what is typed, so any text (Persian, CJK, emoji)
+  comes out exactly whatever the keyboard layout. XWayland apps too.
+- **Screenshots through wlr-screencopy**, at each output's own scale
+  (fractional scales included), across several outputs.
+- **The user's idle time** from ext-idle-notify, so the pause while you
+  use the mouse or keyboard works; without it the engine doesn't guess.
+- **The overlay is a layer-shell surface**: made once, never unmapped
+  (hiding for a screenshot shows a transparent buffer, in about 1 ms), so
+  Hyprland never replays its open and close animations on it; sharp at
+  fractional scales; click-through; on every output. Layer rules can
+  target the `computer-use` namespace.
+- **The stop key is bound in the compositor** while the server runs (and
+  bound again if the compositor reloads its config), never over a binding
+  of yours.
+- `doctor` says what the compositor offers. Other Wayland desktops (GNOME,
+  KDE Plasma) keep the previous behaviour: accessibility actions for every
+  app, input and screenshots for XWayland apps.
+
+Tested live on headless sway (the wlroots protocols Hyprland speaks too),
+at scales 1, 1.25 and 1.5, and in CI. Hyprland's IPC is tested against a
+simulated server: please report anything that behaves differently there.
+
+### Overlay on every system
+
+- **X11**: under a compositor (picom, xcompmgr, KWin…) the overlay faded
+  in and out around every screenshot (sometimes still visible in it) and
+  got shadows; without one, it flashed black when shown again. Its
+  windows now stay mapped and are emptied instead; the screenshot waits
+  until the compositor has drawn that; images are in place before a
+  window shows; compositors are asked for no shadow, and the windows are
+  named `computer-use-overlay` for compositor rules.
+- **macOS**: a border around a window on a secondary display was cut off
+  entirely; the overlay now spans every display. Window animations off,
+  and it stays up when another app hides the others.
+- **Windows**: no show/hide animation and no rounded corners on
+  Windows 11.
+- Reloading the settings no longer hides and re-shows everything.
+
 ## v3.0.0
 
 Stability first: no call can hang the server or run for hours, a busy or

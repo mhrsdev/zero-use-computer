@@ -1106,6 +1106,14 @@ pub fn run(args: &[String]) -> i32 {
 fn open_surface() -> Result<Box<dyn Surface>, String> {
     #[cfg(target_os = "linux")]
     {
+        // Wayland compositors with layer-shell (Hyprland, sway, KDE…) get
+        // a native overlay; the rest (GNOME, X11 desktops) the X11 one.
+        if crate::linux::wayland::session() {
+            match super::wayland::WaylandSurface::open() {
+                Ok(s) => return Ok(Box::new(s)),
+                Err(e) => eprintln!("overlay: no Wayland overlay ({e}); trying X11"),
+            }
+        }
         super::linux::X11Surface::open().map(|s| Box::new(s) as Box<dyn Surface>)
     }
     #[cfg(target_os = "macos")]

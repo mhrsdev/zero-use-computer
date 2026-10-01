@@ -18,9 +18,6 @@
 //! Coordinates are logical (layout) pixels everywhere: an output's rectangle
 //! is its position and its mode divided by its scale.
 
-// The Wayland backend calls into this; until it does, nothing else here is used.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -118,8 +115,6 @@ pub struct Output {
 #[derive(Debug, Clone)]
 struct Win {
     top: Toplevel,
-    /// Workspace name: "1", "special:minimized" (Hyprland), "__i3_scratch" (sway).
-    workspace: String,
     /// Workspace number: Hyprland's workspace id, sway's `num`.
     ws_num: Option<i64>,
     /// Hyprland: maximized (its "fullscreen mode 1"). sway: maximized by us.
@@ -181,6 +176,7 @@ impl Compositor {
         }
     }
 
+    #[cfg(test)]
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -190,10 +186,6 @@ impl Compositor {
             Kind::Hyprland => "Hyprland",
             Kind::Sway => "sway",
         }
-    }
-
-    pub fn socket(&self) -> &Path {
-        &self.socket
     }
 
     /// Every window the compositor manages, on any workspace.
@@ -1126,7 +1118,6 @@ fn hypr_windows(clients: &Value, monitors: &Value, active: &Value) -> Vec<Win> {
                     floating: c["floating"].as_bool() == Some(true),
                     xwayland: c["xwayland"].as_bool() == Some(true),
                 },
-                workspace: workspace.to_string(),
                 ws_num: ws_id,
                 maximized,
                 minimized: workspace == HYPR_MINIMIZED,
@@ -1348,7 +1339,6 @@ fn sway_view(n: &Value, ctx: &SwayCtx) -> Win {
             floating: n["type"].as_str() == Some("floating_con"),
             xwayland,
         },
-        workspace: ctx.workspace.clone(),
         ws_num: ctx.num,
         maximized: false,
         minimized,

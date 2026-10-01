@@ -23,6 +23,10 @@ pub mod text;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod wayland;
+#[cfg(target_os = "linux")]
+mod wayland_stop;
 #[cfg(target_os = "windows")]
 mod windows;
 
