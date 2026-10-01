@@ -8,14 +8,16 @@ use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
-    SelectObject,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC,
+    SRCCOPY, SelectObject,
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GetAncestor, GetSystemMetrics, GetWindowRect, IsIconic, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WindowFromPoint,
 };
+
+use super::wm::hung;
 
 use crate::error::{Error, Result};
 use crate::types::{Capture, Rect};
@@ -57,8 +59,13 @@ fn with_dib(
         };
         let mut bits: *mut c_void = std::ptr::null_mut();
         let bitmap: HBITMAP =
-            CreateDIBSection(Some(mem_dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
-                .map_err(|e| Error::Platform(format!("CreateDIBSection: {e}")))?;
+            match CreateDIBSection(Some(mem_dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = DeleteDC(mem_dc);
+                    return Err(Error::Platform(format!("CreateDIBSection: {e}")));
+                }
+            };
         if bits.is_null() {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
             let _ = DeleteDC(mem_dc);
@@ -72,7 +79,9 @@ fn with_dib(
 
         let mut rgba = Vec::new();
         if ok {
-            let n = (width * height) as usize;
+            // GDI may batch drawing: finish it before reading the pixels.
+            let _ = GdiFlush();
+            let n = width as usize * height as usize;
             let src = std::slice::from_raw_parts(bits as *const u8, n * 4);
             rgba.reserve(n * 4);
             for px in src.as_chunks::<4>().0 {
@@ -105,11 +114,25 @@ fn with_dib(
 /// `PrintWindow` nothing but a blank image. When that happens and the
 /// window is the one showing on screen there, the screen itself is captured
 /// instead.
-pub fn capture_window(hwnd: HWND) -> Result<Capture> {
+///
+/// `PrintWindow` waits for the window's thread to draw, forever if the app
+/// hangs: a window Windows reports as hung is captured off the screen
+/// (where Windows shows a frozen copy of it).
+pub fn capture_window(hwnd: HWND, app: &str) -> Result<Capture> {
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
         .map_err(|e| Error::Platform(format!("GetWindowRect: {e}")))?;
     let frame = visible_frame(hwnd).unwrap_or(rect);
+    if hung(hwnd) {
+        // SAFETY: a read-only query.
+        if unsafe { IsIconic(hwnd) }.as_bool() {
+            return Err(Error::ActionFailed(format!(
+                "{app} is not responding and its window is minimized, so it can't be captured; wait a moment and try again"
+            )));
+        }
+        log::info!("{app} is not responding; capturing its window off the screen");
+        return capture_screen(Some(frame_rect(&frame)));
+    }
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let bounds = Rect::new(
@@ -132,18 +155,23 @@ pub fn capture_window(hwnd: HWND) -> Result<Capture> {
     } else {
         full
     };
-    if crate::imaging::uniform(&cap) && on_top(hwnd, &frame) {
-        let r = Rect::new(
-            f64::from(frame.left),
-            f64::from(frame.top),
-            f64::from(fw.max(1)),
-            f64::from(fh.max(1)),
-        );
-        if let Ok(shot) = capture_screen(Some(r)) {
-            return Ok(shot);
-        }
+    if crate::imaging::uniform(&cap)
+        && on_top(hwnd, &frame)
+        && let Ok(shot) = capture_screen(Some(frame_rect(&frame)))
+    {
+        return Ok(shot);
     }
     Ok(cap)
+}
+
+/// A frame as a screen rectangle at least one pixel across.
+fn frame_rect(frame: &RECT) -> Rect {
+    Rect::new(
+        f64::from(frame.left),
+        f64::from(frame.top),
+        (f64::from(frame.right) - f64::from(frame.left)).max(1.0),
+        (f64::from(frame.bottom) - f64::from(frame.top)).max(1.0),
+    )
 }
 
 /// The window's frame without its invisible resize borders.
