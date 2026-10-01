@@ -232,6 +232,7 @@ impl<B: Backend> Engine<B> {
         })
         .map_err(|e| Error::Internal(format!("can't start the script: {e}")))?;
         let seen_before = self.known_screens();
+        self.in_script = true;
         let mut images: Vec<Option<ScriptImage>> = Vec::new();
         let mut shown: Option<usize> = None;
         let mut limit = running.deadline + GRACE;
@@ -265,6 +266,7 @@ impl<B: Backend> Engine<B> {
                 }
             }
         };
+        self.in_script = false;
         self.restore_known(seen_before);
         // Only the picture the script shows reaches the model.
         self.pending_images.clear();

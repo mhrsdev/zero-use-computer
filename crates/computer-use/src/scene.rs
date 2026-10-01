@@ -101,16 +101,12 @@ fn euler(m: M3) -> V3 {
     [a, b, c].map(|r| tidy_angle(r.to_degrees()))
 }
 
-/// An angle in (-180, 180], without rounding noise.
+/// An angle in (-180, 180], without rounding noise. (A remainder, not a
+/// loop: 1e19 - 360 is 1e19, and a loop would never end.)
 fn tidy_angle(d: f64) -> f64 {
-    let mut d = (d * 1e6).round() / 1e6;
-    while d > 180.0 {
-        d -= 360.0;
-    }
-    while d <= -180.0 {
-        d += 360.0;
-    }
-    if d == 0.0 { 0.0 } else { d }
+    let d = (d.rem_euclid(360.0) * 1e6).round() / 1e6;
+    let d = if d > 180.0 { d - 360.0 } else { d };
+    if d == 0.0 || d == -0.0 { 0.0 } else { d }
 }
 
 /// A number as short as it can be: "0.45", "2", "-1.25".
@@ -600,6 +596,9 @@ impl Scene {
             }
             o.rotate = euler(r);
             self.objects.push(o);
+            if self.objects.len() > MAX_OBJECTS {
+                return Err(format!("a scene holds at most {MAX_OBJECTS} objects"));
+            }
         }
         for rep in a.repeat.iter().flatten() {
             let i = self.find(&rep.id)?;
@@ -1657,6 +1656,17 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_angles_are_tidied_at_once() {
+        assert_eq!(tidy_angle(540.0), 180.0);
+        assert_eq!(tidy_angle(-190.0), 170.0);
+        assert_eq!(tidy_angle(-180.0), 180.0);
+        assert_eq!(tidy_angle(720.0), 0.0);
+        // A loop subtracting 360 would never end here.
+        let t = tidy_angle(1e19);
+        assert!(t > -180.0 && t <= 180.0, "{t}");
+    }
     use crate::tools::{SceneMirror, SceneRepeat};
 
     fn obj(id: &str, shape: SceneShape, size: &[f64], at: V3) -> SceneObject {

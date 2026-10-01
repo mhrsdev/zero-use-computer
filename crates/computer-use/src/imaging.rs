@@ -758,28 +758,34 @@ pub fn draw_grid(
     step
 }
 
-/// Draw a path (capture pixels) `width` pixels wide.
+/// Draw a path (capture pixels) `width` pixels wide. Each stamp is clipped
+/// to the picture, the width to its diagonal, and a wide brush is stamped
+/// every quarter of its width: the work grows with the width, not its
+/// square (a brush thousands of pixels wide stays quick).
 pub fn draw_path(cap: &mut Capture, pts: &[(f64, f64)], rgb: [u8; 3], width: i64) {
-    let width = width.max(1);
+    let (cw, ch) = (i64::from(cap.width), i64::from(cap.height));
+    let diagonal = (cw as f64).hypot(ch as f64).ceil() as i64;
+    let width = width.clamp(1, diagonal.max(1));
     let dot = |cap: &mut Capture, x: f64, y: f64| {
         let (x, y) = (x.round() as i64 - width / 2, y.round() as i64 - width / 2);
-        for dy in 0..width {
-            for dx in 0..width {
-                put(&mut cap.rgba, cap.width, cap.height, x + dx, y + dy, rgb);
+        let (xa, xb) = (x.max(0), x.saturating_add(width).min(cw));
+        let (ya, yb) = (y.max(0), y.saturating_add(width).min(ch));
+        for py in ya..yb {
+            for px in xa..xb {
+                put(&mut cap.rgba, cap.width, cap.height, px, py, rgb);
             }
         }
     };
     if let [only] = pts {
         dot(cap, only.0, only.1);
     }
+    let spacing = (width as f64 / 4.0).max(1.0);
     for w in pts.windows(2) {
         let ((x0, y0), (x1, y1)) = (w[0], w[1]);
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
             continue;
         }
-        let n = (x1 - x0)
-            .abs()
-            .max((y1 - y0).abs())
+        let n = ((x1 - x0).abs().max((y1 - y0).abs()) / spacing)
             .ceil()
             .clamp(1.0, 100_000.0) as usize;
         for k in 0..=n {
@@ -929,6 +935,24 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_huge_brush_paints_quickly_and_only_the_picture() {
+        let mut cap = solid(200, 100, [255, 255, 255]);
+        let t = std::time::Instant::now();
+        draw_path(
+            &mut cap,
+            &[(10.0, 10.0), (190.0, 90.0)],
+            [0, 0, 0],
+            10_000_000,
+        );
+        assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+        assert!(cap.rgba.chunks(4).all(|p| p[..3] == [0, 0, 0]));
+        // A thin line still leaves no gaps.
+        let mut cap = solid(100, 10, [255, 255, 255]);
+        draw_path(&mut cap, &[(0.0, 5.0), (99.0, 5.0)], [0, 0, 0], 1);
+        assert!((0..100).all(|x| cap.rgba[((5 * 100 + x) * 4) as usize] == 0));
+    }
 
     #[test]
     fn exported_pngs_name_their_program_and_still_open() {

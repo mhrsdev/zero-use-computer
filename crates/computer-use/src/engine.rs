@@ -64,6 +64,10 @@ struct PendingImage {
     pixels: Option<PixelSig>,
 }
 
+/// How deep calls may nest (batch steps and a script's tools run inside the
+/// call that started them).
+const MAX_DEPTH: u32 = 8;
+
 /// Failed starts or crashes of the overlay helper before the engine stops
 /// trying (until the server restarts).
 const MAX_OVERLAY_FAILURES: u32 = 5;
@@ -148,6 +152,9 @@ pub struct Engine<B: Backend> {
     exports: crate::design::TempFiles,
     /// Saved scripts.
     scripts: crate::script::Library,
+    /// A script is running: its calls can't start another (by any route,
+    /// `batch` included), or scripts could nest until the stack runs out.
+    in_script: bool,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -237,6 +244,7 @@ impl<B: Backend> Engine<B> {
             fonts: crate::design::FontCache::default(),
             exports: crate::design::TempFiles::default(),
             scripts,
+            in_script: false,
             ocr_note: None,
             ocr_note_shown: false,
             last_capture: None,
@@ -1146,12 +1154,40 @@ impl<B: Backend> Engine<B> {
         let mut size_changed = false;
         match st.known.as_mut() {
             Some(k) if k.id == st.screen => {
+                // The same screen in a window that moved or changed size: the
+                // model's screenshot still names the same places only if the
+                // size is the same, shifted by the move. (The tree's text
+                // doesn't change, so nothing else would notice.)
+                match (k.size, size) {
+                    (Some(a), Some(b)) if (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0 => {
+                        if let (Some(o0), Some(o1)) = (k.origin, origin) {
+                            let (dx, dy) = (o1.0 - o0.0, o1.1 - o0.1);
+                            if dx != 0.0 || dy != 0.0 {
+                                for c in [k.coord.as_mut(), st.coord.as_mut()].into_iter().flatten()
+                                {
+                                    c.bounds.x += dx;
+                                    c.bounds.y += dy;
+                                }
+                            }
+                        }
+                    }
+                    (Some(_), Some(_)) => {
+                        k.coord = None;
+                        k.pixels = None;
+                        k.shot = false;
+                        st.coord = None;
+                        size_changed = true;
+                    }
+                    _ => {}
+                }
                 k.view = view;
                 k.window = window.id;
                 k.size = size;
                 k.origin = origin;
             }
             _ => {
+                // Where the window was when the model last saw it.
+                let before = st.known.as_ref().map(|k| (k.origin, k.size));
                 let mut next = self
                     .memory
                     .take(st.screen)
@@ -1193,6 +1229,23 @@ impl<B: Backend> Engine<B> {
                 next.origin = origin;
                 if let Some(c) = next.coord {
                     st.coord = Some(c);
+                } else if let Some(c) = st.coord.as_mut() {
+                    // No picture of this screen yet: x/y still refer to the
+                    // last one the model saw, which follows the window if it
+                    // moved and is no use if it changed size.
+                    match (before, origin, size) {
+                        (Some((Some(o0), Some(s0))), Some(o1), Some(s1))
+                            if (s0.0 - s1.0).abs() < 1.0 && (s0.1 - s1.1).abs() < 1.0 =>
+                        {
+                            c.bounds.x += o1.0 - o0.0;
+                            c.bounds.y += o1.1 - o0.1;
+                        }
+                        (Some((_, Some(_))), _, Some(_)) => {
+                            st.coord = None;
+                            size_changed = true;
+                        }
+                        _ => {}
+                    }
                 }
                 st.known = Some(next);
             }
@@ -1473,6 +1526,17 @@ impl<B: Backend> Engine<B> {
             }
             return Err(self.stopped_error());
         }
+        // Calls inside calls (batch steps, a script's tools) stay shallow.
+        if self.depth >= MAX_DEPTH {
+            return Err(Error::InvalidArgs(format!(
+                "calls nest at most {MAX_DEPTH} deep (batch steps and scripts run tools inside a call)"
+            )));
+        }
+        if self.in_script && matches!(call, ToolCall::Script(_)) {
+            return Err(Error::InvalidArgs(
+                "a script can't start another script, through batch or otherwise: run(name, args) runs a saved script inside it".into(),
+            ));
+        }
         self.depth += 1;
         if self.depth == 1 {
             self.overlay_send(OverlayCmd::Begin);
@@ -1595,9 +1659,13 @@ impl<B: Backend> Engine<B> {
                 log::error!("{name} panicked: {what}");
                 // Undo what the interrupted call left half-done.
                 self.depth = 0;
+                self.in_script = false;
+                self.force_ocr = false;
+                self.ocr_reuse = false;
                 self.pending_images.clear();
                 self.pending_screen_shot = None;
                 self.epoch += 1;
+                self.overlay_send(OverlayCmd::End { ok: false });
                 ToolOutput::error(&Error::Internal(format!(
                     "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"
                 )))
@@ -5725,6 +5793,48 @@ mod tests {
     }
 
     #[test]
+    fn coordinates_follow_a_window_that_moved() {
+        let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.cache.snapshot_ttl_ms = 0;
+        cfg.timing.app_cache_ms = 0;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let look = || {
+            ToolCall::GetAppState(GetAppStateArgs {
+                app: "TextEdit".into(),
+                ..Default::default()
+            })
+        };
+        e.call(look()).unwrap();
+        // The user drags the window 300 px right: the tree reads the same.
+        e.backend_mut().app_mut(4242).unwrap().windows[0].bounds.x += 300.0;
+        // No new screenshot comes with this look: the old one must follow.
+        let out = e
+            .call(ToolCall::GetAppState(GetAppStateArgs {
+                app: "TextEdit".into(),
+                screenshot: Some(false),
+                ..Default::default()
+            }))
+            .unwrap();
+        assert!(out.image.is_none());
+        e.call(ToolCall::Click(ClickArgs {
+            app: "TextEdit".into(),
+            x: Some(400.0),
+            y: Some(300.0),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                e.backend().events.last().unwrap(),
+                Event::Click(4242, p, _, _) if (p.x - 700.0).abs() < 1.0 && (p.y - 300.0).abs() < 1.0
+            ),
+            "{:?}",
+            e.backend().events.last()
+        );
+    }
+
+    #[test]
     fn set_value_and_type_and_select() {
         let mut e = engine();
         e.call(ToolCall::GetAppState(GetAppStateArgs {
@@ -8125,6 +8235,32 @@ mod tests {
             serde_json::json!({"app": "TextEdit", "element_index": bold}),
         );
         assert!(out.is_error, "{}", out.text);
+    }
+
+    #[test]
+    fn scripts_cannot_start_scripts_through_batch() {
+        let dir = std::env::temp_dir().join(format!("cu-nest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.script.dir = Some(dir.clone());
+        e.set_config(ConfigStore::in_memory(cfg));
+        let code = r#"tool("batch", #{steps: [#{tool: "script", arguments: #{run: "rec"}}]})"#;
+        let saved = e.call_tool(
+            "script",
+            serde_json::json!({"save": "rec", "code": code, "description": "recurse"}),
+        );
+        assert!(!saved.is_error, "{}", saved.text);
+        let out = e.call_tool("script", serde_json::json!({"run": "rec"}));
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("can't start another script"),
+            "{}",
+            out.text
+        );
+        // And the engine is fine afterwards.
+        assert!(!e.call_tool("list_apps", serde_json::json!({})).is_error);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
