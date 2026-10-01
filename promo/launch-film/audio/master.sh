@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Synthesize the score from cues.json, then master it: static gain into an
-# oversampled peak limiter, landing near -16.5 LUFS integrated, <= -1 dBTP.
+# oversampled peak limiter, landing near -17 LUFS integrated, about -1.8 dBTP.
 # No dynamic loudness processing, so the film's dynamics stay as composed.
 set -euo pipefail
 cd "$(dirname "$0")"

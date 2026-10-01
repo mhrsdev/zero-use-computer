@@ -21,7 +21,7 @@ product was changed; everything lives in this folder.
 | `src/timeline.js` | The film's one seekable GSAP timeline, built from measured layout. |
 | `src/scene-data.js` | Every string the system "says" (tree, change reports, call path), in the engine's formats. |
 | `cues.json` → `src/cues.js` | The single timing source for picture **and** sound (`python3 tools/sync-cues.py`). |
-| `audio/synth.py`, `audio/master.sh` | The score and sound design, generated from `cues.json`; mastered to about -16.5 LUFS, -1.3 dBTP. |
+| `audio/synth.py`, `audio/master.sh` | The score and sound design, generated from `cues.json`; mastered to -16.9 LUFS integrated, -1.8 dBTP true peak. |
 | `assets/` | Fonts (Archivo, JetBrains Mono — OFL), GSAP, grain, model-view thumbnails, the mastered score. |
 | `review/` | Contact sheets and representative frames from the final render. |
 | `docs/reference-renders/` | The overlay as the repo's own code draws it, and real engine output, used as reference. |
