@@ -906,7 +906,7 @@ mod tests {
             ("danger", "#000000", "Sensitive action: press \"Delete\""),
             ("error", "#E53935", "Zero hit an error"),
             ("done", "#2E7D32", "Zero is done"),
-            ("fa", "#1E88E5", "زیرو در حال استفاده از رایانه است"),
+            ("rtl", "#1E88E5", "\u{05E9}\u{05DC}\u{05D5}\u{05DD} 123"),
         ];
         for (name, color, text_str) in states {
             let c = parse_color(color).unwrap();
@@ -936,18 +936,6 @@ mod tests {
         )
         .0
         .save_png(dir.join("panel.png"))
-        .unwrap();
-        panel(
-            &fonts,
-            "زیرو در حال استفاده از رایانه است",
-            "منتظر تأیید شما: فشردن دکمهٔ «ارسال»",
-            "اجازه",
-            "رد",
-            parse_color("#FFE600").unwrap(),
-            2.0,
-        )
-        .0
-        .save_png(dir.join("panel-fa.png"))
         .unwrap();
     }
 }

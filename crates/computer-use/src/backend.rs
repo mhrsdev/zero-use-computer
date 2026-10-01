@@ -2,7 +2,7 @@
 //! native accessibility API (AX on macOS, UI Automation on Windows, AT-SPI on
 //! Linux) plus its input and window-capture APIs.
 //!
-//! Backends stay small and mechanical. Pruning, indexing, diffing, approvals,
+//! Backends stay small and mechanical. Pruning, indexing, diffing,
 //! coordinate mapping and fallbacks live in the engine so every platform
 //! behaves the same way.
 
@@ -12,6 +12,25 @@ use crate::types::{
     AppInfo, Capture, Display, ElementHandle, InputTarget, MouseButton, Notification, OcrLine,
     PermissionStatus, Point, RawNode, Rect, ScrollDirection, SnapshotOptions, WindowInfo, WindowOp,
 };
+
+/// Start a launched app or helper program cut off from this process's
+/// stdin/stdout/stderr: in the MCP server those carry the JSON-RPC stream,
+/// which a child must neither read nor write to. The child is reaped in the
+/// background when it exits.
+pub fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::Builder::new()
+        .name("reap-child".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
+    Ok(())
+}
 
 /// Result of an attempt to handle an element-level operation natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +95,7 @@ pub trait Backend {
     }
 
     /// Read the text in a capture with the OS's own OCR, as lines in screen
-    /// coordinates. `languages` are BCP-47 / ISO codes ("en", "fa"); empty
+    /// coordinates. `languages` are BCP-47 / ISO codes ("en", "de"); empty
     /// means the user's languages. Unsupported where the OS has none (the
     /// engine then uses Tesseract).
     fn ocr(&mut self, _cap: &Capture, _languages: &[String]) -> Result<Vec<OcrLine>> {
@@ -110,6 +129,15 @@ pub trait Backend {
         Err(crate::error::Error::Unsupported(format!(
             "{op:?} is not available for windows on this platform"
         )))
+    }
+
+    /// Whether synthesized keyboard and mouse input goes to whichever window
+    /// is in front (X11 XTest, Windows `SendInput`) rather than to the app it
+    /// is meant for (macOS posts events to the app's process). When it does,
+    /// the engine brings the app to the front first, and sends nothing if it
+    /// can't.
+    fn input_needs_front(&self) -> bool {
+        true
     }
 
     /// How long ago anyone last used the mouse or keyboard: the system's

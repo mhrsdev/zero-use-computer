@@ -5,7 +5,7 @@
 //! `list_apps`, `get_app_state`, `click`, `perform_secondary_action`,
 //! `set_value`, `select_text`, `scroll`, `drag`, `press_key`, `type_text`
 //! (plus `launch_app`) — built on each platform's native accessibility API
-//! plus screenshots, with per-app approvals.
+//! plus screenshots.
 //!
 //! The design mirrors Codex's:
 //!
@@ -26,14 +26,14 @@
 //!   the agent's own cursor, a glow and a status label in state colours;
 //!   it is click-through, left out of screenshots, and gone the moment the
 //!   work ends or the process dies. The real mouse is never taken.
-//! * **Approvals.** Each app is approved before it is controlled (once,
-//!   for the session, or always), and terminals, credential/security prompts
-//!   and the agent's own host app can never be controlled.
+//! * **Access control you configure.** Which apps and actions need approval is
+//!   set in the config ([`policy`], `approvals.*`, `sensitive.*`, `guard.*`);
+//!   the agent-side guidance lives in `skills/computer-use-security`.
 //!
 //! ## Embedding
 //!
 //! ```no_run
-//! use computer_use::{Engine, AllowApprover, tools};
+//! use computer_use::{Engine, engine::AllowApprover, tools};
 //! # fn main() -> computer_use::Result<()> {
 //! let mut engine = computer_use::platform_engine()?;
 //! // Hand `tools::definitions()` to your model, then route its tool calls:
@@ -63,6 +63,7 @@ pub mod privacy;
 pub mod roles;
 pub mod screens;
 pub mod skills;
+pub mod text;
 pub mod tools;
 pub mod tree;
 pub mod types;
@@ -76,9 +77,7 @@ pub mod windows;
 
 pub use backend::Backend;
 pub use config::{Config, ConfigStore};
-pub use engine::{
-    AllowApprover, ApprovalDecision, ApprovalRequest, Approver, DenyApprover, Engine,
-};
+pub use engine::Engine;
 pub use error::{Error, Result};
 pub use tools::{ToolCall, ToolDefinition, ToolOutput};
 
@@ -161,6 +160,9 @@ impl Backend for Box<dyn Backend> {
     }
     fn capture_screen(&mut self, region: Option<types::Rect>) -> Result<types::Capture> {
         (**self).capture_screen(region)
+    }
+    fn input_needs_front(&self) -> bool {
+        (**self).input_needs_front()
     }
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         (**self).user_idle()

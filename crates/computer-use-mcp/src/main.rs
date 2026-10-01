@@ -397,17 +397,25 @@ fn print_setting(path: &std::path::Path, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// The engine with the on-screen overlay, which runs as this same program in
+/// helper mode and also listens for the user's emergency stop key.
+fn with_overlay(engine: Engine<Box<dyn Backend>>) -> Engine<Box<dyn Backend>> {
+    match std::env::current_exe() {
+        Ok(exe) => engine.with_overlay(computer_use::overlay::Launcher::helper(exe)),
+        Err(e) => {
+            log::warn!("no overlay or stop key: cannot find this program ({e})");
+            engine
+        }
+    }
+}
+
 fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     let server_cfg = store.config.server.clone();
     let headless = match server_cfg.headless_approve {
         HeadlessPolicy::Deny => HeadlessApproval::Deny,
         HeadlessPolicy::Allow => HeadlessApproval::Allow,
     };
-    let mut engine = build_engine(common, store)?;
-    // The on-screen overlay runs as this same program in helper mode.
-    if let Ok(exe) = std::env::current_exe() {
-        engine = engine.with_overlay(computer_use::overlay::Launcher::helper(exe));
-    }
+    let mut engine = with_overlay(build_engine(common, store)?);
     // Listen for the stop key from the start, not only after the first call.
     engine.arm();
 
@@ -535,8 +543,10 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         c.screenshot.max_dimension
     );
 
+    let stop_key = c.control.stop_hotkey.trim().to_string();
     match build_engine(common, store) {
-        Ok(mut engine) => {
+        Ok(engine) => {
+            let mut engine = with_overlay(engine);
             println!("backend:  ok");
             println!("permissions:");
             for p in engine.permissions() {
@@ -549,6 +559,14 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
                     println!("apps:     {n} visible");
                 }
                 out => println!("apps:     error: {}", out.text),
+            }
+            if stop_key.is_empty() {
+                println!("stop key: none (control.stop_hotkey is empty)");
+            } else {
+                match engine.check_stop_key(std::time::Duration::from_secs(3)) {
+                    Ok(()) => println!("stop key: ✓ {stop_key}"),
+                    Err(why) => println!("stop key: ✗ {stop_key} — {why}"),
+                }
             }
         }
         Err(e) => println!("backend:  ERROR: {e:#}"),

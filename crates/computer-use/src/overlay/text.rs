@@ -1,5 +1,6 @@
 //! Label text: system font lookup, shaping (rustybuzz) and bidirectional
-//! ordering, so right-to-left labels (e.g. Persian) render correctly.
+//! ordering, so labels in right-to-left scripts (Arabic script, Hebrew) and
+//! mixed-direction text render correctly.
 
 use rustybuzz::ttf_parser::{GlyphId, OutlineBuilder};
 use rustybuzz::{Direction, Face, UnicodeBuffer};
@@ -19,7 +20,8 @@ impl Fonts {
             paths.push(custom.trim().to_string());
         }
         #[cfg(target_os = "linux")]
-        for query in ["sans:lang=fa", "sans"] {
+        // A font for right-to-left scripts first, then the usual one.
+        for query in ["sans:lang=ar", "sans:lang=he", "sans"] {
             if let Ok(out) = std::process::Command::new("fc-match")
                 .args(["-f", "%{file}", query])
                 .output()
@@ -32,7 +34,7 @@ impl Fonts {
 
         let mut faces = Vec::new();
         for p in paths {
-            if faces.len() >= 3 {
+            if faces.len() >= 4 {
                 break;
             }
             let Ok(data) = std::fs::read(&p) else {
@@ -54,11 +56,11 @@ impl Fonts {
 
 #[cfg(target_os = "linux")]
 const CANDIDATES: &[&str] = &[
-    "/usr/share/fonts/truetype/vazirmatn/Vazirmatn-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
@@ -131,6 +133,12 @@ impl OutlineBuilder for Builder {
     }
 }
 
+/// Format characters that shape or order text but draw nothing.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+        || crate::text::is_bidi_control(c)
+}
+
 /// Lay out one line of `text` at `px` pixels per em, in visual order.
 pub fn layout(fonts: &Fonts, text: &str, px: f32) -> TextPath {
     let parsed: Vec<Face> = fonts
@@ -166,12 +174,15 @@ pub fn layout(fonts: &Fonts, text: &str, px: f32) -> TextPath {
         for run in runs {
             let slice = &line[run.clone()];
             let rtl = levels[run.start].is_rtl();
+            // The first font that has every visible character of the run.
+            // Zero-width joiners/non-joiners and direction marks have no
+            // glyph of their own in many fonts; they don't count.
             let face = parsed
                 .iter()
                 .find(|f| {
                     slice
                         .chars()
-                        .filter(|c| !c.is_whitespace() && !c.is_control())
+                        .filter(|c| !c.is_whitespace() && !c.is_control() && !invisible(*c))
                         .all(|c| f.glyph_index(c).is_some())
                 })
                 .unwrap_or(first);
@@ -207,17 +218,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lays_out_latin_and_persian() {
+    fn lays_out_left_to_right_and_right_to_left_text() {
         let fonts = Fonts::load("");
         if fonts.is_empty() {
             return; // no system fonts in this environment
         }
         let en = layout(&fonts, "Zero is using the computer", 14.0);
         assert!(en.width > 100.0 && en.path.is_some());
-        let fa = layout(&fonts, "زیرو در حال استفاده از رایانه است", 14.0);
-        assert!(fa.width > 80.0, "{}", fa.width);
-        assert!(fa.path.is_some());
-        assert!(fa.rtl && !en.rtl);
+        // Arabic-script letters (joined by shaping), a zero-width
+        // non-joiner and a direction mark: still one right-to-left line.
+        let arabic: String =
+            "\u{0628}\u{0628}\u{200C}\u{0628}\u{0628} \u{0628}\u{0628}\u{200F}".into();
+        let rtl = layout(&fonts, &arabic, 14.0);
+        assert!(rtl.rtl && !en.rtl);
+        assert!(rtl.width > 10.0, "{}", rtl.width);
+        let he = layout(&fonts, "\u{05E9}\u{05DC}\u{05D5}\u{05DD}", 14.0);
+        assert!(he.rtl);
         assert!(layout(&fonts, "", 14.0).width == 0.0);
     }
 }

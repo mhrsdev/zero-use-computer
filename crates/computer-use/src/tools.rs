@@ -29,6 +29,16 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
+    /// About how many tokens this result costs the model: its text, plus
+    /// an image at roughly width × height / 750.
+    pub fn estimated_tokens(&self) -> usize {
+        crate::text::estimate_tokens(&self.text)
+            + self
+                .image
+                .as_ref()
+                .map_or(0, |i| (i.width as usize * i.height as usize).div_ceil(750))
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -138,6 +148,10 @@ pub struct GetAppStateArgs {
     /// Also read the window's text off the screen (OCR), whatever settings say.
     #[serde(default)]
     pub ocr: bool,
+    /// Token budget for this tree, instead of `tree.max_tokens`; 0 = the
+    /// whole tree, nothing folded or cut.
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -648,13 +662,14 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "get_app_state",
             title: "Get app state",
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and your earlier screenshot of it still applies.",
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.",
             input_schema: schema(
                 app_props(),
                 json!({
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
                     "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."},
-                    "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."}
+                    "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."},
+                    "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."}
                 }),
                 &[],
             ),
@@ -758,7 +773,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "press_key",
             title: "Press key",
-            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
+            description: "Press a key or shortcut in the app, e.g. \"Return\", \"Escape\", \"Tab\", \"cmd+s\", \"ctrl+shift+t\", \"alt+Left\". \"cmd\" is Cmd on a Mac and Ctrl elsewhere; \"win\"/\"super\" is the Windows/Super key. Several space-separated combos are pressed in order (\"Down Down Return\"). Optionally focus element_index first.",
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1002,7 +1017,7 @@ fn short_description(name: &str) -> Option<&'static str> {
         "list_apps" => "List running apps (name, id, pid).",
         "launch_app" => "Start an app by name/id and wait for its window.",
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded."
         }
         "click" => {
             "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double."
@@ -1230,6 +1245,7 @@ mod tests {
                 disable_diff: true,
                 screenshot: None,
                 ocr: false,
+                max_tokens: None,
             })
         );
         let c = ToolCall::parse(

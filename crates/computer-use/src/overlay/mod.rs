@@ -1,7 +1,8 @@
 //! The on-screen indicator shown while the agent uses the computer: the
 //! agent's own cursor (the real mouse is never touched), a border around the
 //! window it works on, a status label, a ripple where it clicks, and state
-//! colours (thinking, working, waiting for approval, sensitive, error, done).
+//! colours (thinking, working, paused, stopped, waiting for approval, sensitive,
+//! error, done).
 //!
 //! It lives in a **separate helper process** (`computer-use-mcp overlay`)
 //! that the engine feeds JSON lines over a pipe:
@@ -29,9 +30,8 @@ mod windows;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -191,6 +191,9 @@ pub struct Overlay {
     alive: Arc<AtomicBool>,
     /// Set by the stop key (shared with the engine).
     stop: Arc<AtomicBool>,
+    /// The stop key the helper last reported on, and whether the system
+    /// accepted it (`None` until the helper says).
+    hotkey: Arc<Mutex<Option<(String, bool)>>>,
     excluded: bool,
     /// Whether the helper can draw (known once it reports ready).
     available: Option<bool>,
@@ -245,6 +248,8 @@ impl Overlay {
         let (rtx, rx) = mpsc::channel::<Reply>();
         let a = alive.clone();
         let flag = stop.clone();
+        let hotkey_state = Arc::new(Mutex::new(None));
+        let hk = hotkey_state.clone();
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
@@ -264,12 +269,16 @@ impl Overlay {
                                 log::info!("the user let the agent continue");
                             }
                         }
-                        Reply::Hotkey { key, ok: false } => {
-                            log::warn!(
-                                "the stop key {key} could not be registered (another program may use it); set control.stop_hotkey to another combination"
-                            );
+                        Reply::Hotkey { key, ok } => {
+                            if !ok {
+                                log::warn!(
+                                    "the stop key {key} could not be registered (another program may use it, or there is no display); set control.stop_hotkey to another combination"
+                                );
+                            }
+                            if let Ok(mut h) = hk.lock() {
+                                *h = Some((key, ok));
+                            }
                         }
-                        Reply::Hotkey { .. } => {}
                         r => {
                             if rtx.send(r).is_err() {
                                 break;
@@ -287,6 +296,7 @@ impl Overlay {
             backlog: Vec::new(),
             alive,
             stop,
+            hotkey: hotkey_state,
             excluded: false,
             available: None,
             next_id: 0,
@@ -306,6 +316,15 @@ impl Overlay {
 
     pub fn alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    /// Whether the system accepted the stop key `key` (`None` until the
+    /// helper has said, or if it last reported on another key).
+    pub fn hotkey_ok(&self, key: &str) -> Option<bool> {
+        let h = self.hotkey.lock().ok()?;
+        h.as_ref()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
+            .map(|(_, ok)| *ok)
     }
 
     pub fn send(&self, cmd: &Cmd) {
@@ -582,6 +601,7 @@ mod tests {
             backlog: Vec::new(),
             alive: Arc::new(AtomicBool::new(true)),
             stop: Arc::new(AtomicBool::new(false)),
+            hotkey: Arc::new(Mutex::new(None)),
             excluded: false,
             available: None,
             next_id: 5,

@@ -23,7 +23,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::System::Variant::{VariantToBoolean, VariantToInt32, VariantToStringAlloc};
+use windows::Win32::System::Variant::{
+    VARIANT, VariantToBoolean, VariantToInt32, VariantToInt32Array, VariantToStringAlloc,
+};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindowLongW,
@@ -63,7 +65,8 @@ const UIA_TRANSACTION_TIMEOUT_MS: u32 = 5_000;
 const UIA_CONNECTION_TIMEOUT_MS: u32 = 3_000;
 
 /// Properties prefetched for every element by the cache request.
-const CACHED_PROPS: [UIA_PROPERTY_ID; 21] = [
+const CACHED_PROPS: [UIA_PROPERTY_ID; 22] = [
+    UIA_RuntimeIdPropertyId,
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_AutomationIdPropertyId,
@@ -87,11 +90,27 @@ const CACHED_PROPS: [UIA_PROPERTY_ID; 21] = [
     UIA_IsPasswordPropertyId,
 ];
 
+/// UI Automation's runtime id, as an identity key: it stays the same for
+/// as long as the element exists, so an element index can't move to a
+/// look-alike element (the next row's "Delete") when one disappears.
+fn runtime_key(v: windows::core::Result<VARIANT>) -> Option<String> {
+    let v = v.ok()?;
+    let mut ids = [0i32; 16];
+    let mut n = 0u32;
+    // SAFETY: reads an int array out of a VARIANT into a local buffer.
+    unsafe { VariantToInt32Array(&v, &mut ids, &mut n) }.ok()?;
+    let ids = ids.get(..n as usize).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "uia:{}",
+        ids.iter().map(i32::to_string).collect::<Vec<_>>().join(".")
+    ))
+}
+
 impl WindowsBackend {
     pub fn new() -> Result<Self> {
         // Before any coordinate API: UIA, GetWindowRect, GetCursorPos,
         // SendInput and PrintWindow then all agree on physical pixels.
-        set_dpi_aware();
+        make_dpi_aware();
         unsafe {
             // Ignore RPC_E_CHANGED_MODE if COM is already initialized.
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -277,11 +296,12 @@ impl WindowsBackend {
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
 
+        let key = runtime_key(unsafe { el.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId) });
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
             parent,
-            key: None,
+            key,
             role,
             native_role: control_type.to_string(),
             name: name.filter(|s| !s.is_empty()),
@@ -435,11 +455,12 @@ impl WindowsBackend {
         let identifier = automation_id
             .filter(|s| !s.is_empty())
             .or(class.filter(|s| !s.is_empty()));
+        let key = runtime_key(unsafe { el.GetCachedPropertyValue(UIA_RuntimeIdPropertyId) });
         let handle = self.handle_for(pid, el.clone());
         RawNode {
             handle,
             parent,
-            key: None,
+            key,
             role,
             native_role: control_type.to_string(),
             name: name.filter(|s| !s.is_empty()),
@@ -930,9 +951,14 @@ impl Backend for WindowsBackend {
     }
 }
 
-/// Make the process per-monitor DPI aware (v2, falling back to system
-/// aware on older Windows), once.
-fn set_dpi_aware() {
+/// Work in physical pixels, as UI Automation does. Without this, at 125%
+/// or 150% display scaling Windows gives this process scaled window
+/// rectangles, screen sizes and screen captures: screenshots come out
+/// cropped or blurred and clicks land off target.
+///
+/// Per-monitor DPI aware (v2, falling back to system aware on older
+/// Windows), once per process.
+pub(crate) fn make_dpi_aware() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         use windows::Win32::UI::HiDpi::{

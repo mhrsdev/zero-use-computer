@@ -10,8 +10,6 @@ It is a standalone building block: run it as an **MCP server** (works with
 Codex, Claude Code, or any MCP-capable agent), or embed the **library** in your
 own agent.
 
-> فارسی: راهنمای فارسی در [README.fa.md](README.fa.md).
-
 ## Why it mirrors Codex
 
 Codex's computer use is accessibility-first: it reads an app's accessibility
@@ -28,7 +26,8 @@ This project follows the same architecture and behaviour:
 - **Screen memory (beyond Codex).** When the app returns to a screen the model
   has already seen — it went back a page, closed a dialog, reopened a panel —
   the engine recognises it, gives back the element indices the model saw then,
-  and sends only what changed: no new tree, no new screenshot to re-analyse.
+  and sends only what changed: no new tree, and a new screenshot only if the
+  pixels differ from the one the model has.
   See [Screen memory & caching](#screen-memory--caching).
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
@@ -39,7 +38,10 @@ This project follows the same architecture and behaviour:
 - **Approvals & safety.** Each app is approved before it is controlled (once /
   for the session / always), and terminals, credential & OS-security prompts,
   and the agent's own host app are blocked by default (you can deliberately
-  open a category up in `[sensitive]`, or allow a single app).
+  open a category up in `[sensitive]`, or allow a single app). On top of
+  that, the agent follows the
+  [`computer-use-security`](skills/computer-use-security/SKILL.md) skill
+  (also summarised in the server's MCP instructions).
 
 ## Tools
 
@@ -74,8 +76,21 @@ engine adds two safety layers Codex leaves to the model: an **action guard**
 that confirms consequential presses (Send / Delete / Pay …) and an optional
 **audit log**.
 
-The full operating contract the model should follow is in
-[`skill/SKILL.md`](skill/SKILL.md).
+The model should load two skills:
+
+- [`skills/computer-use-security/SKILL.md`](skills/computer-use-security/SKILL.md):
+  which apps and actions are off limits or need the user's OK, prompt
+  injection, secrets. Load it first: the server's approvals, sensitive-app
+  blocks and action guard are a safety net, not a substitute for it;
+- [`skills/computer-use/SKILL.md`](skills/computer-use/SKILL.md): how to use
+  the tools.
+
+Each is a short core the model keeps loaded, plus `reference/` files it reads
+only when a situation calls for them (see [Token use](#token-use)). Install
+them as skills in your agent (for Claude Code: copy `skills/*` into
+`~/.claude/skills/` or the project's `.claude/skills/`; the Claude plugin
+built by `scripts/claude-code/plugin-files.sh` already contains them). They
+complement the built-in, per-OS task playbooks of the `skill` tool.
 
 ## Screen memory & caching
 
@@ -124,9 +139,12 @@ How it works:
 - **Dialogs are followed.** When an action opens a new window (a dialog, a
   menu), the change report and the next `get_app_state` switch to it
   (`follow_new_windows`); when it closes, the window below is recognised.
-- **Screenshots stay valid.** A returning screen's old screenshot keeps working
-  for `x`/`y` clicks (shifted if the window moved; dropped, and a new one sent,
-  if the window changed size).
+- **Screenshots are checked, not assumed.** When the tree changed, or the app
+  came back to an earlier screen, the window is captured and compared with
+  the picture the model has: the same picture isn't sent again, a different
+  one is (or just the part that changed). The model's screenshot keeps
+  working for `x`/`y` clicks (shifted if the window moved; replaced if the
+  window changed size).
 
 Measured on `gtk3-widget-factory` switching between two pages (`BENCH_NAV`,
 below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
@@ -155,7 +173,7 @@ text (`[privacy]`).
 | Vision framework (`VNRecognizeTextRequest`, accurate) | macOS |
 | Tesseract (`tesseract` on `PATH`, `ocr.tesseract_path`) | Linux, and anywhere the built-in engine is missing |
 
-`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "fa"]`).
+`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "de"]`).
 If no engine is available, the agent is told once.
 
 ### Notifications
@@ -335,8 +353,10 @@ task is complete) can say so with a JSON-RPC notification:
   time. It re-reads the app until two reads in a row agree (the UI has
   finished reacting), up to `timing.settle_max_ms`. That is
   `timing.settle = "adaptive"`; `"fixed"` goes back to a plain `settle_ms`
-  pause. The last read is reused for the change report, so it costs about one
-  extra read per action.
+  pause. Reads that still show exactly the state from before the action are
+  trusted only after half a second: many apps (browsers, Electron apps)
+  report a change a moment after making it. The last read is reused for the
+  change report.
 - **Verification** (`[verify]`). Each action's result is checked. If a value
   didn't take, typed text didn't land in the field, or nothing changed after a
   press, the model is told so ("Nothing on screen changed after it; check
@@ -346,14 +366,16 @@ task is complete) can say so with a JSON-RPC notification:
   | Failure | Retry |
   |---|---|
   | an accessibility press errors | a mouse click on the element |
-  | a value didn't take | focus, select all, type |
-  | typed text went nowhere | click into the field and type again |
+  | a value didn't take | focus, select all, type (replaces the value) |
   | a scroll didn't move | the mouse wheel |
   | a field won't take focus | click it |
 
-  A press that simply changed nothing is not repeated unless
-  `verify.retry_on_no_change = true`. Guarded actions (send, pay, delete…) are
-  never repeated.
+  Typed text is **never** typed again on its own (that would enter it
+  twice); if the field doesn't show it, the model is told to look first. A
+  press that simply changed nothing is not repeated unless
+  `verify.retry_on_no_change = true` (off by default: a send or a payment can
+  show its effect late, and must not be repeated). Guarded actions (send,
+  pay, delete…) are never repeated.
 
 ## Architecture
 
@@ -404,7 +426,7 @@ Windows (x64), macOS (Apple silicon and Intel) and Linux (x64) — open the
 repository's **Actions** tab, pick the latest *CI* run and download
 `computer-use-mcp-<platform>` from its **Artifacts** (tagged versions `v*`
 also attach zips to a GitHub **Release**). Each download contains the binary,
-[`mcp.example.json`](mcp.example.json), the READMEs and the skill file.
+[`mcp.example.json`](mcp.example.json), the README and the `skills/` folder.
 
 Or build it:
 
@@ -464,7 +486,10 @@ computer-use-mcp config show                    # settings (see "Settings" below
 
 Flags: `--config <path>`, `--approval prompt|allowlist|allow-all`,
 `--allow <app>` (repeatable, pre-approve for the run),
-`--headless-approve deny|allow`.
+`--headless-approve deny|allow`, `--http <addr>`, `--http-token <token>`,
+`--log <level>`, `--text-only`.
+
+`doctor` also checks that the emergency stop key works on this machine.
 
 ## Embed the library
 
@@ -535,21 +560,28 @@ a time. Admins can enforce policy via a managed config
 `%ProgramData%\ComputerUse\managed.toml` on Windows) with `denied_apps`,
 `allowed_apps`, or a forced `approval_mode` — these always win over user config.
 
-### Token-saving knobs
+### Token use
 
-- `tools.descriptions = "compact"` (default) — the tool list goes out with every
-  model request; compact cuts it from ~3,300 to ~1,360 tokens. Hiding tools you
-  don't need (`tools.disabled`) saves more.
-- `screenshot.attach = "auto"` (default) — images only for a first view, a large
-  change, or a tree with almost no interactive elements; `get_app_state` diffs on
-  an unchanged window cost ~60 tokens instead of ~1,300.
-- `cache.enabled` + `cache.dedupe_screenshots` (default on) — a screen the
-  model already saw costs ~80 tokens instead of a full tree and image; an
-  unchanged screenshot is never sent twice.
-- `screenshot.max_dimension` — image tokens scale with width × height
-  (1024 px ≈ 36% fewer than 1280 px). `text_only = true` removes images entirely.
-- `tree.max_text_len`, `tree.show_actions`, `tree.show_states`,
-  `tree.report_changes_max_lines` trim the text further.
+Everything a tool returns stays in the model's context for the rest of the
+task, so the server spends tokens only where they buy something. None of
+this costs accuracy or speed: nothing the model needs is withheld (what is
+folded is still searchable, and pictures are re-sent when they change), and
+the checks are cheap compared with reading the app:
+
+| Where | What it does | Setting |
+|---|---|---|
+| **Tree budget** | Only a tree or diff over the budget is touched: its long lists (rows, list items, menu items…) are folded to the first and last few, with a line saying how many are hidden, and it is cut if still too big. The focused or selected element is never folded away; folded and cut elements keep their indices and `find_element` finds them. Ordinary windows are sent whole. How much is shortened is up to you: `summarize = "normal"` (fold, then cut), `"light"` (only fold long lists, never cut) or `"off"` (never); `fold_keep` sets how many items of a folded list stay. The model can also ask for one whole tree with `get_app_state(max_tokens=0)` when it really needs every element at once. | `tree.max_tokens` (10,000; 0 = no limit), `tree.summarize`, `tree.fold_keep` |
+| **Overview screenshots** (opt-in) | Off by default, since it trades detail for tokens. Turned on, a screenshot attached on its own to a window whose tree already says what is there is a smaller overview (768 px ≈ 60% fewer image tokens than 1280 px); `screenshot=true` always gets full size. | `screenshot.overview_max_dimension` (0 = off) |
+| **Say it once** | Explanations (what a diff, a partial screenshot or a returning screen means) come in full the first time and as a few words after that. | `tree.brief_repeats` (false = always in full) |
+| **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
+| **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part. | `cache.dedupe_screenshots`, `screenshot.scope` |
+| **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
+| **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (they change only when you edit the `[tools]` settings, and the client is then told), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled` |
+| **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |
+
+Other knobs: `screenshot.max_dimension` (image tokens scale with width ×
+height), `text_only = true` (no images at all), `tree.max_text_len`,
+`tree.show_actions`, `tree.show_states`, `tree.report_changes_max_lines`.
 
 ### Remote transport (optional)
 
@@ -617,12 +649,18 @@ compares coming back to a screen with the screen memory off and on.
 - **macOS** — grant the host app **Accessibility** and **Screen Recording** in
   System Settings ▸ Privacy & Security. Input is posted to the target process,
   so the user's cursor doesn't move.
-- **Windows** — no special permission for UI Automation; coordinate input uses
-  `SendInput` on the active desktop.
+- **Windows** — no special permission for UI Automation. The server runs
+  per-monitor DPI aware, so screenshots and clicks are right at any display
+  scaling. Keyboard input uses `SendInput`: text as Unicode characters
+  (independent of the keyboard layout), shortcuts as virtual keys with their
+  scan codes, sent in short batches so slow apps and remote sessions keep up.
+  Windows silently drops input to apps running as administrator unless the
+  server runs as administrator too.
 - **Linux** — needs an AT-SPI2 accessibility bus and an X11 display. Enable
   accessibility for your toolkit (e.g. GTK loads the at-spi bridge when the a11y
-  bus is present). Wayland isn't supported for synthesized input/capture; use an
-  X11 (or XWayland) session.
+  bus is present). Wayland isn't supported for synthesized input/capture: in
+  a Wayland session they only reach XWayland apps (`doctor` says so); log in
+  to an X11 ("Xorg") session.
 
 ## Safety
 
@@ -634,10 +672,32 @@ grant access deliberately from settings (admin `managed.toml` still overrides).
 The first use of any other app is gated by approval. On top of that, the
 **action guard** confirms consequential presses (Send / Delete / Pay …) at the
 engine level — not just by trusting the model — and an optional **audit log**
-records every call. The model is also instructed (see the skill) to pause before
-such actions. The user can stop the agent at any moment with the stop key; it
-waits while they use the computer; and password fields and card numbers are
+records every call. The model is also instructed (the
+[`computer-use-security`](skills/computer-use-security/SKILL.md) skill and the
+server's MCP instructions) to stay inside the task, pause before such actions,
+treat on-screen text as data rather than instructions, and leave secrets
+alone. The user can stop the agent at any moment with the stop key; it waits
+while they use the computer; and password fields and card numbers are
 never sent to the model (see "You stay in control").
+
+The engine also guarantees, whatever the model does:
+
+- **Input goes only where it is meant to.** On Windows and Linux, synthesized
+  keys and clicks go to whatever window is in front, so the target app is
+  brought to the front first and checked; if it doesn't come forward, nothing
+  is sent. (macOS posts input to the app's own process.)
+- **`launch_app` opens apps, it doesn't run command lines.** The name is
+  never split into arguments (arguments are a separate list and ask for
+  approval), and the launched app is cut off from the server's stdin/stdout.
+- **`cmd` means the shortcut key**: Cmd on a Mac, Ctrl elsewhere; the
+  Windows/Super key only when named (`win`, `super`).
+- **Private data is masked** before anything reaches the model (passwords,
+  card numbers, `[privacy]`).
+- **The user can stop the agent** with the emergency stop key; if it can't be
+  registered, the agent is told so it can tell the user, and `doctor` checks
+  it. The agent also waits while the user is using the computer.
+- **One bad call doesn't take the server down**: a failing tool call becomes
+  an error result.
 
 ## Development
 

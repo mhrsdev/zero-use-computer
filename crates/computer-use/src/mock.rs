@@ -128,6 +128,9 @@ pub struct MockBackend {
     pub ignore_set_value: std::collections::HashSet<ElementHandle>,
     /// Elements whose focus() reports success without focusing.
     pub fake_focus: std::collections::HashSet<ElementHandle>,
+    /// Windows refuse to come to the front (like Windows' focus-stealing
+    /// prevention).
+    pub refuse_focus: bool,
     /// A "select all" waiting for typed text to replace it.
     select_all: Option<ElementHandle>,
     /// Values to apply before successive snapshots (a UI still updating).
@@ -455,8 +458,17 @@ impl Backend for MockBackend {
             WindowOp::Minimize => {
                 self.minimized.insert(window.id);
             }
-            WindowOp::Restore | WindowOp::Focus => {
+            WindowOp::Restore => {
                 self.minimized.remove(&window.id);
+            }
+            WindowOp::Focus => {
+                self.minimized.remove(&window.id);
+                if !self.refuse_focus {
+                    let pid = app.pid;
+                    for other in &mut self.apps {
+                        other.info.frontmost = other.info.pid == pid;
+                    }
+                }
             }
             WindowOp::ToDesktop(_) => {
                 return Err(Error::Unsupported("mock: no virtual desktops".into()));

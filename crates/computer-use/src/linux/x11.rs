@@ -232,7 +232,7 @@ impl X11 {
         self.flush()
     }
 
-    /// Type a run of text as key events (fallback; AT-SPI insert is preferred).
+    /// Type a run of text as key events.
     pub fn type_text(&mut self, text: &str) -> Result<()> {
         let typed = text_keys(text).try_for_each(|key| {
             self.press_one(&KeyCombo {

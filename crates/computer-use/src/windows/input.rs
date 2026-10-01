@@ -144,14 +144,76 @@ pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
     send(&inputs)
 }
 
-fn key_event(vk: VIRTUAL_KEY, scan: u16, up: bool, unicode: bool) -> INPUT {
+/// The keyboard layout of the window that receives the keys (the
+/// foreground window's thread), so keys are looked up in the layout the
+/// target app is actually using, not this process's.
+fn target_layout() -> HKL {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    // SAFETY: plain queries; a null window gives thread 0 (this thread).
+    unsafe {
+        let fg = GetForegroundWindow();
+        let thread = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        GetKeyboardLayout(thread)
+    }
+}
+
+/// Keys whose scan code has the 0xE0 prefix. Without the extended flag,
+/// Windows takes them for their numeric-keypad twins (with Num Lock on,
+/// Delete would type "." and Left would type "4").
+fn is_extended(vk: VIRTUAL_KEY) -> bool {
+    matches!(
+        vk,
+        VK_INSERT
+            | VK_DELETE
+            | VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_LEFT
+            | VK_RIGHT
+            | VK_UP
+            | VK_DOWN
+            | VK_LWIN
+            | VK_RWIN
+            | VK_APPS
+            | VK_RCONTROL
+            | VK_RMENU
+            | VK_DIVIDE
+            | VK_NUMLOCK
+            | VK_SNAPSHOT
+    )
+}
+
+/// A virtual-key press or release, with the scan code apps that read the
+/// hardware key (games, remote desktops, VMs) expect.
+fn vk_event(vk: VIRTUAL_KEY, up: bool, layout: HKL) -> INPUT {
+    // SAFETY: a pure lookup in a keyboard layout.
+    let sc = unsafe { MapVirtualKeyExW(u32::from(vk.0), MAPVK_VK_TO_VSC_EX, Some(layout)) };
     let mut flags = KEYBD_EVENT_FLAGS(0);
+    if is_extended(vk) || matches!(sc >> 8, 0xe0 | 0xe1) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     if up {
         flags |= KEYEVENTF_KEYUP;
     }
-    if unicode {
-        flags |= KEYEVENTF_UNICODE;
+    keyboard_input(vk, (sc & 0xff) as u16, flags)
+}
+
+/// A UTF-16 code unit typed as a character (`VK_PACKET`), whatever the
+/// keyboard layout: any language and script.
+fn unicode_event(unit: u16, up: bool) -> INPUT {
+    let mut flags = KEYEVENTF_UNICODE;
+    if up {
+        flags |= KEYEVENTF_KEYUP;
     }
+    keyboard_input(VIRTUAL_KEY(0), unit, flags)
+}
+
+fn keyboard_input(vk: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -166,86 +228,102 @@ fn key_event(vk: VIRTUAL_KEY, scan: u16, up: bool, unicode: bool) -> INPUT {
     }
 }
 
-/// A virtual-key event with its scan code, flagged extended for the keys
-/// on the extended part of the keyboard (arrows, navigation cluster…), so
-/// apps reading scan codes or the extended bit see the right key.
-fn vk_event(vk: VIRTUAL_KEY, up: bool) -> INPUT {
-    // SAFETY: a pure keyboard-layout lookup.
-    let sc = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC_EX) };
-    let extended = matches!(sc >> 8, 0xe0 | 0xe1) || is_extended(vk);
-    let mut input = key_event(vk, (sc & 0xff) as u16, up, false);
-    if extended {
-        // SAFETY: `ki` is the active member for INPUT_KEYBOARD.
-        unsafe { input.Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY };
-    }
-    input
-}
-
-/// Keys that live on the extended part of the keyboard.
-fn is_extended(vk: VIRTUAL_KEY) -> bool {
-    matches!(
-        vk,
-        VK_LEFT
-            | VK_RIGHT
-            | VK_UP
-            | VK_DOWN
-            | VK_HOME
-            | VK_END
-            | VK_PRIOR
-            | VK_NEXT
-            | VK_INSERT
-            | VK_DELETE
-            | VK_LWIN
-            | VK_RWIN
-            | VK_APPS
-            | VK_RCONTROL
-            | VK_RMENU
-            | VK_DIVIDE
-            | VK_NUMLOCK
-            | VK_SNAPSHOT
-    )
-}
-
-fn tap(inputs: &mut Vec<INPUT>, vk: VIRTUAL_KEY) {
-    inputs.push(vk_event(vk, false));
-    inputs.push(vk_event(vk, true));
-}
-
-pub fn type_text(text: &str) -> Result<()> {
-    let mut inputs = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        // Line breaks and tabs as the keys (a `\r\n` pair is one Return).
-        match c {
-            '\r' | '\n' => {
-                if c == '\r' && chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                tap(&mut inputs, VK_RETURN);
-                continue;
-            }
-            '\t' => {
-                tap(&mut inputs, VK_TAB);
-                continue;
-            }
-            _ => {}
-        }
-        let mut buf = [0u16; 2];
-        for unit in c.encode_utf16(&mut buf) {
-            inputs.push(key_event(VIRTUAL_KEY(0), *unit, false, true));
-            inputs.push(key_event(VIRTUAL_KEY(0), *unit, true, true));
-        }
-    }
-    if inputs.is_empty() {
+/// Send keyboard events. If Windows takes only some of them (UIPI, a
+/// secure desktop appearing midway), every key that was pressed but not
+/// released is released, so no key is left held down.
+fn send_keys(inputs: &[INPUT]) -> Result<()> {
+    // SAFETY: a slice of fully initialised INPUT structures.
+    let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) } as usize;
+    if sent == inputs.len() {
         return Ok(());
     }
-    send(&inputs)
+    let mut held: Vec<INPUT> = Vec::new();
+    for input in &inputs[..sent] {
+        // SAFETY: every input here is a keyboard input.
+        let ki = unsafe { input.Anonymous.ki };
+        let same = |i: &INPUT| {
+            // SAFETY: as above.
+            let k = unsafe { i.Anonymous.ki };
+            k.wVk == ki.wVk && k.wScan == ki.wScan
+        };
+        if ki.dwFlags.contains(KEYEVENTF_KEYUP) {
+            held.retain(|i| !same(i));
+        } else if !held.iter().any(same) {
+            held.push(*input);
+        }
+    }
+    let release: Vec<INPUT> = held
+        .iter()
+        .rev()
+        .map(|i| {
+            // SAFETY: as above.
+            let mut ki = unsafe { i.Anonymous.ki };
+            ki.dwFlags |= KEYEVENTF_KEYUP;
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki },
+            }
+        })
+        .collect();
+    if !release.is_empty() {
+        // SAFETY: as above.
+        unsafe { SendInput(&release, std::mem::size_of::<INPUT>() as i32) };
+    }
+    Err(Error::ActionFailed(
+        "Windows blocked the keyboard input: the window in front may belong to an app running as administrator, or a secure screen (UAC prompt, lock screen) is showing".into(),
+    ))
+}
+
+/// Characters per `SendInput` call when typing. Short batches with a short
+/// pause between them let slow apps and remote sessions keep up, so no
+/// key-up arrives late (a late key-up is what makes a key repeat).
+const TYPE_BATCH: usize = 16;
+const TYPE_PAUSE: std::time::Duration = std::time::Duration::from_millis(3);
+
+pub fn type_text(text: &str) -> Result<()> {
+    let layout = target_layout();
+    // One key press per character; "\r\n" is one line break, not two.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let chars: Vec<char> = text.chars().collect();
+    for (n, batch) in chars.chunks(TYPE_BATCH).enumerate() {
+        if n > 0 {
+            std::thread::sleep(TYPE_PAUSE);
+        }
+        let mut inputs = Vec::with_capacity(batch.len() * 2);
+        for &c in batch {
+            match c {
+                // Line breaks and tabs as the keys.
+                '\n' => {
+                    inputs.push(vk_event(VK_RETURN, false, layout));
+                    inputs.push(vk_event(VK_RETURN, true, layout));
+                }
+                '\t' => {
+                    inputs.push(vk_event(VK_TAB, false, layout));
+                    inputs.push(vk_event(VK_TAB, true, layout));
+                }
+                c => {
+                    let mut buf = [0u16; 2];
+                    let units = c.encode_utf16(&mut buf);
+                    for unit in units.iter() {
+                        inputs.push(unicode_event(*unit, false));
+                    }
+                    for unit in units.iter() {
+                        inputs.push(unicode_event(*unit, true));
+                    }
+                }
+            }
+        }
+        send_keys(&inputs)?;
+    }
+    Ok(())
 }
 
 pub fn press(combo: &KeyCombo) -> Result<()> {
-    let (vk, needed) = match (resolve_with_mods(combo.key), combo.key) {
+    let layout = target_layout();
+    let (vk, needed) = match (resolve_in(combo.key, layout), combo.key) {
         (Ok(r), _) => r,
-        // Not on this layout: a plain character still types as unicode.
+        // A character this layout has no key for: a plain character (Shift
+        // alone doesn't make a shortcut) still types as unicode.
         (Err(_), Key::Char(c)) if !combo_has_command(combo.modifiers) => {
             return type_text(&c.to_string());
         }
@@ -261,28 +339,28 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
     let mut down = Vec::new();
     let mut up = Vec::new();
     for (on, key) in [
-        (mods.ctrl, VK_CONTROL),
-        (mods.alt, VK_MENU),
-        (mods.shift, VK_SHIFT),
+        (mods.ctrl, VK_LCONTROL),
+        (mods.alt, VK_LMENU),
+        (mods.shift, VK_LSHIFT),
         (mods.meta, VK_LWIN),
     ] {
         if on {
-            down.push(vk_event(key, false));
-            up.insert(0, vk_event(key, true));
+            down.push(vk_event(key, false, layout));
+            up.insert(0, vk_event(key, true, layout));
         }
     }
-    down.push(vk_event(vk, false));
-    down.push(vk_event(vk, true));
+    down.push(vk_event(vk, false, layout));
+    down.push(vk_event(vk, true, layout));
     down.extend(up);
-    send(&down)
+    send_keys(&down)
 }
 
 fn combo_has_command(m: Modifiers) -> bool {
     m.ctrl || m.alt || m.meta
 }
 
-/// The modifiers a `VkKeyScanW` result needs: its high byte holds Shift (1),
-/// Ctrl (2) and Alt (4); Ctrl+Alt is AltGr (`@` on a German layout).
+/// The modifiers a `VkKeyScanExW` result needs: its high byte holds Shift
+/// (1), Ctrl (2) and Alt (4); Ctrl+Alt is AltGr (`@` on a German layout).
 fn scan_mods(res: i16) -> Modifiers {
     let state = (res as u16) >> 8;
     Modifiers {
@@ -293,13 +371,20 @@ fn scan_mods(res: i16) -> Modifiers {
     }
 }
 
-/// Virtual-key code for a key, and whether Shift is required.
+/// Virtual-key code for a key, and whether Shift is required (in this
+/// process's keyboard layout; the stop key's registration uses it).
 pub(crate) fn resolve(key: Key) -> Result<(VIRTUAL_KEY, bool)> {
-    resolve_with_mods(key).map(|(vk, m)| (vk, m.shift))
+    // SAFETY: this thread's layout.
+    let layout = unsafe { GetKeyboardLayout(0) };
+    resolve_in(key, layout).map(|(vk, m)| (vk, m.shift))
 }
 
-/// Virtual-key code for a key and the modifiers the layout needs for it.
-fn resolve_with_mods(key: Key) -> Result<(VIRTUAL_KEY, Modifiers)> {
+/// Virtual-key code for a key in `layout`, and the modifiers the layout
+/// needs for it (Shift for "?", AltGr = Ctrl+Alt for "@" on some layouts).
+/// Letters and digits use their fixed virtual keys, so shortcuts like
+/// ctrl+s work whatever layout (Latin or not) is active.
+fn resolve_in(key: Key, layout: HKL) -> Result<(VIRTUAL_KEY, Modifiers)> {
+    let none = Modifiers::default();
     let vk = match key {
         Key::Named(n) => match n {
             NamedKey::Return => VK_RETURN,
@@ -321,21 +406,34 @@ fn resolve_with_mods(key: Key) -> Result<(VIRTUAL_KEY, Modifiers)> {
             NamedKey::Menu => VK_APPS,
             NamedKey::F(n) => VIRTUAL_KEY(VK_F1.0 + u16::from(n) - 1),
         },
+        Key::Char(c) if c.is_ascii_alphabetic() => {
+            let shift = c.is_ascii_uppercase();
+            return Ok((
+                VIRTUAL_KEY(c.to_ascii_uppercase() as u16),
+                Modifiers { shift, ..none },
+            ));
+        }
+        Key::Char(c) if c.is_ascii_digit() => return Ok((VIRTUAL_KEY(c as u16), none)),
+        Key::Char(' ') => VK_SPACE,
         Key::Char(c) => {
-            // VkKeyScanW returns the VK in the low byte and the shift state
-            // in the high byte; characters outside the BMP have no key.
+            // The VK in the low byte, the shift state in the high byte;
+            // characters outside the BMP have no key.
             let Ok(unit) = u16::try_from(u32::from(c)) else {
                 return Err(Error::ActionFailed(format!("no virtual key for {c:?}")));
             };
-            let res = unsafe { VkKeyScanW(unit) };
+            // SAFETY: a pure lookup in a keyboard layout.
+            let res = unsafe { VkKeyScanExW(unit, layout) };
+            // Shift states beyond Shift/Ctrl/Alt (Hankaku, layout-specific
+            // bits) can't be produced with our modifiers.
             if res == -1 || (res as u16) >> 8 & !7 != 0 {
-                return Err(Error::ActionFailed(format!("no virtual key for {c:?}")));
+                return Err(Error::ActionFailed(format!(
+                    "the active keyboard layout has no key for {c:?}"
+                )));
             }
-            let vk = VIRTUAL_KEY((res & 0xff) as u16);
-            return Ok((vk, scan_mods(res)));
+            return Ok((VIRTUAL_KEY((res & 0xff) as u16), scan_mods(res)));
         }
     };
-    Ok((vk, Modifiers::default()))
+    Ok((vk, none))
 }
 
 #[cfg(test)]
@@ -358,5 +456,20 @@ mod tests {
             assert!(is_extended(vk));
         }
         assert!(!is_extended(VK_RETURN));
+    }
+
+    #[test]
+    fn letters_and_digits_use_fixed_virtual_keys() {
+        // No layout lookup for these, so any layout handle will do.
+        let layout = HKL::default();
+        let (vk, m) = resolve_in(Key::Char('s'), layout).unwrap();
+        assert_eq!(vk, VIRTUAL_KEY(u16::from(b'S')));
+        assert!(!m.any());
+        let (vk, m) = resolve_in(Key::Char('S'), layout).unwrap();
+        assert_eq!(vk, VIRTUAL_KEY(u16::from(b'S')));
+        assert!(m.shift && !m.ctrl && !m.alt);
+        let (vk, m) = resolve_in(Key::Char('7'), layout).unwrap();
+        assert_eq!(vk, VIRTUAL_KEY(u16::from(b'7')));
+        assert!(!m.any());
     }
 }

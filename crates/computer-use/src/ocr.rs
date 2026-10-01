@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn language_codes() {
         assert_eq!(tesseract_lang("en-US"), "eng");
-        assert_eq!(tesseract_lang("fa"), "fas");
+        assert_eq!(tesseract_lang("de"), "deu");
         assert_eq!(tesseract_lang("chi_tra"), "chi_tra");
     }
 

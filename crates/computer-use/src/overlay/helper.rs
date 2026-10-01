@@ -136,7 +136,13 @@ pub fn pretty_key(key: &str) -> String {
             match p.to_ascii_lowercase().as_str() {
                 "escape" | "esc" => "Esc".to_string(),
                 "ctrl" | "control" => "Ctrl".to_string(),
-                "cmd" | "command" => "Cmd".to_string(),
+                "cmd" | "command" => {
+                    if cfg!(target_os = "macos") {
+                        "Cmd".to_string()
+                    } else {
+                        "Ctrl".to_string()
+                    }
+                }
                 "meta" | "super" | "win" => {
                     if cfg!(target_os = "macos") {
                         "Cmd".to_string()
@@ -1165,7 +1171,18 @@ pub fn run(args: &[String]) -> i32 {
                 excluded: true,
                 available: false,
             });
-            while let Ok(Input::Cmd(_)) = rx.recv() {}
+            // The stop key needs the same display connection, so it can't
+            // be listened for either: say so, so the engine can tell the user.
+            while let Ok(Input::Cmd(cmd)) = rx.recv() {
+                if let Cmd::Config { hotkey, .. } = cmd
+                    && !hotkey.trim().is_empty()
+                {
+                    reply(&Reply::Hotkey {
+                        key: hotkey,
+                        ok: false,
+                    });
+                }
+            }
             return 1;
         }
     };

@@ -57,7 +57,7 @@ impl Rect {
 pub struct AppInfo {
     /// Human-readable name ("TextEdit", "Notepad", "gedit").
     pub name: String,
-    /// Stable identifier used for approvals: bundle id on macOS, executable
+    /// Stable identifier: bundle id on macOS, executable
     /// name on Windows, executable/application name on Linux.
     pub id: String,
     pub pid: u32,

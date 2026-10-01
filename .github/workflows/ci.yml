@@ -135,8 +135,9 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" dist/
-          cp mcp.example.json README.md README.fa.md dist/
-          cp skill/SKILL.md dist/SKILL.md
+          cp mcp.example.json README.md dist/
+          # The layered skills (skills/computer-use, skills/computer-use-security).
+          mkdir -p dist/skills && cp -R skills/. dist/skills/
           # Claude Code installers, client examples and the connection guide.
           cp scripts/claude-code/install.sh scripts/claude-code/install.ps1 scripts/claude-code/install.cmd dist/
           cp scripts/claude-code/README.txt dist/README-claude-code.txt

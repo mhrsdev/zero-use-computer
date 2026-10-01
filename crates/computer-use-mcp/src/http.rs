@@ -62,6 +62,11 @@ pub fn serve(
              set COMPUTER_USE_HTTP_TOKEN to require one"
         );
     }
+    if !loopback {
+        log::warn!(
+            "{addr} is reachable from other machines: anyone there with the token can control this desktop"
+        );
+    }
 
     let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
     let token = token.map(Arc::new);

@@ -1,7 +1,8 @@
 //! The engine: platform-agnostic implementation of the tool contract on top
-//! of a [`Backend`]. It resolves apps/windows/elements, enforces approvals,
-//! renders app state (tree + screenshot), maintains per-app element indices
-//! and diffs, and maps screenshot coordinates to the screen.
+//! of a [`Backend`]. It resolves apps/windows/elements, renders app state
+//! (tree + screenshot), maintains per-app element indices and diffs, maps
+//! screenshot coordinates to the screen, and keeps synthesized input on the
+//! app it is meant for. It does no access control (see the security skill).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -132,7 +133,6 @@ struct PendingImage {
 pub struct Engine<B: Backend> {
     backend: B,
     store: ConfigStore,
-    session_allowed: HashSet<String>,
     states: HashMap<u32, AppState>,
     /// Screens the model has seen and moved away from.
     memory: ScreenMemory,
@@ -149,10 +149,18 @@ pub struct Engine<B: Backend> {
     overlay: Option<Overlay>,
     /// How to start it; set by the host (`with_overlay`).
     overlay_launcher: Option<Launcher>,
+    /// Apps allowed for this session (approved, not persisted).
+    session_allowed: HashSet<String>,
     /// Start attempts, so a helper that keeps failing is left alone.
     overlay_starts: u32,
     overlay_warned: bool,
     overlay_retry_at: Option<Instant>,
+    /// Why the helper (and with it the stop key) last failed to start.
+    overlay_error: Option<String>,
+    /// The user was told the stop key doesn't work (told once).
+    stop_note_shown: bool,
+    /// Explanations already given in full.
+    hints: Hints,
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
@@ -188,6 +196,20 @@ pub struct Engine<B: Backend> {
 
 /// Host-level settings forced on top of the config file.
 type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
+
+/// Explanations the model gets in full the first time and in a short form
+/// after that: the full one is already in its context, and repeating it on
+/// every call only costs tokens.
+#[derive(Default)]
+struct Hints(std::cell::RefCell<HashSet<&'static str>>);
+
+impl Hints {
+    /// Whether `key` is being explained for the first time (it then counts
+    /// as explained).
+    fn first(&self, key: &'static str) -> bool {
+        self.0.borrow_mut().insert(key)
+    }
+}
 
 /// How the current view relates to what the model has seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,7 +251,6 @@ impl<B: Backend> Engine<B> {
         Self {
             backend,
             store,
-            session_allowed: HashSet::new(),
             states: HashMap::new(),
             memory: ScreenMemory::default(),
             app_cache: None,
@@ -242,6 +263,10 @@ impl<B: Backend> Engine<B> {
             overlay_starts: 0,
             overlay_warned: false,
             overlay_retry_at: None,
+            overlay_error: None,
+            session_allowed: HashSet::new(),
+            stop_note_shown: false,
+            hints: Hints::default(),
             stop: Arc::new(AtomicBool::new(false)),
             last_input: None,
             settled: None,
@@ -260,8 +285,8 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    /// Re-read the config file if it changed on disk (`hot_reload`). Session
-    /// approvals and cached UI state are kept.
+    /// Re-read the config file if it changed on disk (`hot_reload`). Cached
+    /// UI state is kept.
     pub fn reload_if_changed(&mut self) {
         if !self.store.config.hot_reload {
             return;
@@ -296,6 +321,11 @@ impl<B: Backend> Engine<B> {
             }
             Err(e) => log::warn!("keeping previous settings; {e}"),
         }
+    }
+
+    /// Pre-approve an app for the session (e.g. from a host allow-list).
+    pub fn allow_for_session(&mut self, app_id: &str) {
+        self.session_allowed.insert(app_id.to_lowercase());
     }
 
     /// Settings the host always forces (e.g. command-line flags). Applied now
@@ -374,10 +404,14 @@ impl<B: Backend> Engine<B> {
                 return None;
             }
             match Overlay::spawn(&launcher, cfg, &hotkey, self.stop.clone()) {
-                Ok(o) => self.overlay = Some(o),
+                Ok(o) => {
+                    self.overlay = Some(o);
+                    self.overlay_error = None;
+                }
                 Err(e) => {
                     log::warn!("overlay unavailable: {e}");
                     self.overlay_starts += 1;
+                    self.overlay_error = Some(e.to_string());
                     self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(30));
                 }
             }
@@ -419,6 +453,66 @@ impl<B: Backend> Engine<B> {
     /// before the first tool call. Hosts call this once at start-up.
     pub fn arm(&mut self) {
         self.overlay();
+    }
+
+    /// Why the emergency stop key isn't working, if it is configured and
+    /// known not to work: the helper that listens for it couldn't start or
+    /// stopped, or the system refused the key combination.
+    pub fn stop_key_problem(&mut self) -> Option<String> {
+        let key = self.store.config.control.stop_hotkey.trim().to_string();
+        if key.is_empty() {
+            return None; // the user chose to have none
+        }
+        if self.overlay.is_none() {
+            // Try to start it (cheap if it is already known not to start).
+            self.overlay();
+        }
+        match &self.overlay {
+            Some(o) if !o.alive() => Some("the helper that listens for it stopped".into()),
+            Some(o) if o.hotkey_ok(&key) == Some(false) => Some(
+                "the system refused it (another program may use this key, or there is no display the helper can use); set control.stop_hotkey to another combination".into(),
+            ),
+            Some(_) => None,
+            None => self
+                .overlay_error
+                .as_ref()
+                .map(|e| format!("the helper that listens for it could not start ({e})")),
+        }
+    }
+
+    /// Wait up to `timeout` for the stop key to be confirmed working
+    /// (`computer-use-mcp doctor`).
+    pub fn check_stop_key(&mut self, timeout: Duration) -> std::result::Result<(), String> {
+        let key = self.store.config.control.stop_hotkey.trim().to_string();
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(problem) = self.stop_key_problem() {
+                return Err(problem);
+            }
+            if self.overlay.as_ref().and_then(|o| o.hotkey_ok(&key)) == Some(true) {
+                return Ok(());
+            }
+            if self.overlay.is_none() && self.overlay_error.is_none() {
+                return Err("no overlay helper is set up to listen for it".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("the helper didn't confirm it in time".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whether to give the explanation `key` in full: the first time, or
+    /// every time when `tree.brief_repeats` is off.
+    fn explain_first(&self, key: &'static str) -> bool {
+        let first = self.hints.first(key);
+        first || !self.store.config.tree.brief_repeats
+    }
+
+    /// `long` the first time (or always, without `tree.brief_repeats`),
+    /// `short` afterwards.
+    fn explain<'a>(&self, key: &'static str, long: &'a str, short: &'a str) -> &'a str {
+        if self.explain_first(key) { long } else { short }
     }
 
     /// Shared stop flag: the stop key sets and clears it; a host may too
@@ -567,6 +661,46 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// The part of `r` (screen coordinates) that is on a display, so a
+    /// region from the model can't ask for an impossible capture.
+    fn clip_to_screens(&mut self, r: Rect) -> Result<Rect> {
+        /// Largest side accepted when the displays aren't known.
+        const MAX_SIDE: f64 = 16_384.0;
+        let Ok(displays) = self.backend.displays() else {
+            return Ok(Rect::new(
+                r.x,
+                r.y,
+                r.width.min(MAX_SIDE),
+                r.height.min(MAX_SIDE),
+            ));
+        };
+        let on = |d: &Rect| {
+            let (x0, y0) = (r.x.max(d.x), r.y.max(d.y));
+            let x1 = (r.x + r.width).min(d.x + d.width);
+            let y1 = (r.y + r.height).min(d.y + d.height);
+            (x1 - x0 >= 1.0 && y1 - y0 >= 1.0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+        };
+        // The bounding box of the region's parts on every display it touches.
+        let parts: Vec<Rect> = displays.iter().filter_map(|d| on(&d.bounds)).collect();
+        if parts.is_empty() {
+            return Err(Error::InvalidArgs(format!(
+                "the area ({:.0}, {:.0}) {:.0}x{:.0} is not on any display; window(action=\"displays\") lists them",
+                r.x, r.y, r.width, r.height
+            )));
+        }
+        let x0 = parts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let y0 = parts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+        let x1 = parts
+            .iter()
+            .map(|p| p.x + p.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let y1 = parts
+            .iter()
+            .map(|p| p.y + p.height)
+            .fold(f64::NEG_INFINITY, f64::max);
+        Ok(Rect::new(x0, y0, x1 - x0, y1 - y0))
+    }
+
     /// Whether to ask the user on the screen rather than through `approver`.
     fn ask_on_screen(&self, approver: &dyn Approver) -> bool {
         use crate::config::ScreenConfirm;
@@ -671,11 +805,6 @@ impl<B: Backend> Engine<B> {
 
     pub fn permissions(&mut self) -> Vec<PermissionStatus> {
         self.backend.permissions()
-    }
-
-    /// Pre-approve an app for the session (e.g. from a host allow-list).
-    pub fn allow_for_session(&mut self, app_id: &str) {
-        self.session_allowed.insert(app_id.to_lowercase());
     }
 
     // -- app / window / element resolution ---------------------------------
@@ -838,13 +967,13 @@ impl<B: Backend> Engine<B> {
         );
         let remembered = state.window_id;
         if let Some(q) = query {
-            let ql = q.to_lowercase();
+            let ql = crate::text::fold(q);
             if let Some(w) = windows.iter().find(|w| w.id.to_string() == q) {
                 return Ok(w.clone());
             }
             let matches: Vec<&WindowInfo> = windows
                 .iter()
-                .filter(|w| w.title.to_lowercase().contains(&ql))
+                .filter(|w| crate::text::fold(&w.title).contains(&ql))
                 .collect();
             return match matches.as_slice() {
                 [w] => Ok((*w).clone()),
@@ -1119,7 +1248,7 @@ impl<B: Backend> Engine<B> {
 
     /// Render the latest snapshot against what the model has seen of that
     /// screen: a diff, the full tree, or a note that nothing changed.
-    fn render(&self, pid: u32, full: bool) -> Result<Refreshed> {
+    fn render(&self, pid: u32, full: bool, max_tokens: Option<usize>) -> Result<Refreshed> {
         let st = self.state(pid)?;
         let tcfg = &self.store.config.tree;
         let (seen, base) = match &st.known {
@@ -1142,9 +1271,13 @@ impl<B: Backend> Engine<B> {
                 .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
                 .count(),
         };
+        let mut budget = tree::Budget::from_config(tcfg);
+        if let Some(tokens) = max_tokens {
+            budget.tokens = tokens;
+        }
         match base {
             None => {
-                out.text = tree::render_full(nodes, tcfg.indent);
+                out.text = tree::render_full_within(nodes, tcfg.indent, budget);
                 out.full = true;
             }
             Some(view) => {
@@ -1152,22 +1285,47 @@ impl<B: Backend> Engine<B> {
                 out.changes = d.len();
                 let large = out.changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64;
                 if full || !tcfg.diff || large {
-                    out.text = tree::render_full(nodes, tcfg.indent);
+                    out.text = tree::render_full_within(nodes, tcfg.indent, budget);
                     out.full = true;
                     out.large_change = large;
                 } else if seen == Seen::Same {
-                    out.text = tree::render_diff(&d, nodes);
+                    out.text = if d.is_empty() {
+                        tree::render_diff(&d, nodes)
+                    } else {
+                        let intro = self.explain(
+                            "diff",
+                            tree::DIFF_INTRO,
+                            "Changes (+ added, ~ changed, - removed):",
+                        );
+                        tree::render_diff_with(&d, nodes, intro)
+                    };
                 } else if d.is_empty() {
-                    out.text = format!(
-                        "Identical to when you last saw screen #{}; element indices are as they were then.\n",
-                        st.screen
-                    );
+                    out.text = if self.explain_first("revisit") {
+                        format!(
+                            "Identical to when you last saw screen #{}; element indices are as they were then.\n",
+                            st.screen
+                        )
+                    } else {
+                        format!("Identical to screen #{} as you saw it.\n", st.screen)
+                    };
                 } else {
-                    let intro = format!(
-                        "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
-                        st.screen
-                    );
+                    let intro = if self.explain_first("revisit") {
+                        format!(
+                            "Changes since you last saw screen #{} (+ added, ~ changed, - removed). Other elements are as they were then, with the same indices.",
+                            st.screen
+                        )
+                    } else {
+                        format!("Changes since you saw screen #{} (+/~/-):", st.screen)
+                    };
                     out.text = tree::render_diff_with(&d, nodes, &intro);
+                }
+                // A diff gets the same budget as a whole tree.
+                if !out.full
+                    && budget.active()
+                    && budget.level == crate::config::Summarize::Normal
+                    && crate::text::estimate_tokens(&out.text) > budget.tokens
+                {
+                    out.text = tree::cut_to_budget(&out.text, budget.tokens);
                 }
             }
         }
@@ -1308,7 +1466,60 @@ impl<B: Backend> Engine<B> {
             })
     }
 
-    fn input_target(&self, app: &AppInfo) -> InputTarget {
+    /// Where synthesized keyboard/mouse input for `app` goes, after making
+    /// sure it really goes there. Such input lands in whatever window is in
+    /// front (on backends where [`Backend::input_needs_front`]), so the app's
+    /// window is brought to the front first, and nothing is sent if it can't
+    /// be: keys meant for one app must never land in another (the terminal
+    /// the agent runs in, a chat window…).
+    fn input_target(&mut self, app: &AppInfo) -> Result<InputTarget> {
+        if self.backend.input_needs_front() {
+            self.bring_to_front(app)?;
+        }
+        Ok(self.target_of(app))
+    }
+
+    fn bring_to_front(&mut self, app: &AppInfo) -> Result<()> {
+        let front = |e: &mut Self| -> Result<Option<AppInfo>> {
+            Ok(e.find_apps()?.into_iter().find(|a| a.frontmost))
+        };
+        match front(self)? {
+            // In front already, or the platform can't tell what is in front
+            // (no window manager): nothing to do.
+            None => return Ok(()),
+            Some(f) if f.pid == app.pid => return Ok(()),
+            Some(_) => {}
+        }
+        let windows = self.list_windows(app, true)?;
+        let current = self.states.get(&app.pid).and_then(|s| s.window_id);
+        let window = windows
+            .iter()
+            .find(|w| Some(w.id) == current)
+            .or_else(|| windows.first())
+            .cloned()
+            .ok_or_else(|| Error::NoWindows {
+                app: app.name.clone(),
+            })?;
+        let focus = self.backend.window_op(app, &window, &WindowOp::Focus);
+        self.epoch += 1;
+        let deadline = (self.clock)() + Duration::from_millis(1000);
+        loop {
+            match front(self)? {
+                None => return Ok(()),
+                Some(f) if f.pid == app.pid => return Ok(()),
+                Some(f) if (self.clock)() >= deadline => {
+                    let why = focus.err().map(|e| format!(" ({e})")).unwrap_or_default();
+                    return Err(Error::ActionFailed(format!(
+                        "{} could not be brought to the front{why}, so the keyboard/mouse input was not sent: it would have gone to {}, which is in front. Use element_index actions (they work in the background), or ask the user to bring {} forward.",
+                        app.name, f.name, app.name
+                    )));
+                }
+                Some(_) => (self.sleep)(Duration::from_millis(50)),
+            }
+        }
+    }
+
+    fn target_of(&self, app: &AppInfo) -> InputTarget {
         let (window_id, window_handle) = self
             .states
             .get(&app.pid)
@@ -1373,8 +1584,18 @@ impl<B: Backend> Engine<B> {
     /// re-read the app until two reads in a row agree — the UI has finished
     /// reacting — or `settle_max_ms` passes. Leaves a fresh snapshot for
     /// verification and the change report.
+    ///
+    /// Reads that still show exactly what was there before the action are
+    /// not trusted at once: many apps (browsers, Electron apps) report a
+    /// change a little after making it. Only after `NO_CHANGE_GRACE` of
+    /// reads like that does the action count as having changed nothing.
     fn settle_on(&mut self, app: &AppInfo) {
         use crate::config::SettleMode;
+        /// How long reads may keep showing the old state before "nothing
+        /// changed" is believed.
+        const NO_CHANGE_GRACE: Duration = Duration::from_millis(500);
+        // The latest read is still the one from before the action.
+        let before = self.tree_fingerprint(app.pid);
         self.settle();
         let cfg = &self.store.config;
         let adaptive = cfg.timing.settle == SettleMode::Adaptive;
@@ -1385,6 +1606,8 @@ impl<B: Backend> Engine<B> {
         let poll = Duration::from_millis(cfg.timing.settle_poll_ms.max(5));
         let deadline = (self.clock)() + max;
         let mut last = None;
+        // Time waited, counted in poll intervals (independent of the clock).
+        let mut waited = Duration::from_millis(cfg.timing.settle_ms);
         // Text read off the screen isn't read again for every look.
         let reuse = std::mem::replace(&mut self.ocr_reuse, true);
         while let Ok(window) = self.pick_window(app, None, true) {
@@ -1393,14 +1616,16 @@ impl<B: Backend> Engine<B> {
             }
             self.settled = Some(self.epoch);
             let now = self.tree_fingerprint(app.pid);
-            if !adaptive || (now.is_some() && now == last) {
+            let steady = now.is_some() && now == last;
+            if !adaptive || (steady && (now != before || waited >= NO_CHANGE_GRACE)) {
                 break;
             }
             last = now;
-            if self.is_stopped() || (self.clock)() >= deadline {
+            if self.is_stopped() || (self.clock)() >= deadline || waited >= max {
                 break;
             }
             (self.sleep)(poll);
+            waited += poll;
         }
         self.ocr_reuse = reuse;
     }
@@ -1541,10 +1766,41 @@ impl<B: Backend> Engine<B> {
     ) -> ToolOutput {
         self.reload_if_changed();
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
-        let out = match ToolCall::parse(name, args).and_then(|c| self.call(c, approver)) {
-            Ok(out) => out,
-            Err(e) => ToolOutput::error(&e),
+        // A bug in one tool call must not take the whole server down.
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ToolCall::parse(name, args).and_then(|c| self.call(c, approver))
+        }));
+        let mut out = match run {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => ToolOutput::error(&e),
+            Err(panic) => {
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                log::error!("{name} panicked: {what}");
+                // Undo what the interrupted call left half-done.
+                self.depth = 0;
+                self.pending_images.clear();
+                self.epoch += 1;
+                ToolOutput::error(&Error::Internal(format!(
+                    "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"
+                )))
+            }
         };
+        // The user is counting on the stop key: if it doesn't work, say so
+        // (once), so the agent can tell them.
+        if !self.stop_note_shown
+            && let Some(problem) = self.stop_key_problem()
+        {
+            self.stop_note_shown = true;
+            let key = crate::overlay::helper::pretty_key(&self.store.config.control.stop_hotkey);
+            log::warn!("the emergency stop key {key} is not working: {problem}");
+            out.text.push_str(&format!(
+                "\n\nNote: the user's emergency stop key ({key}) is not working: {problem}. Tell the user now, so they know they can't stop you with it."
+            ));
+        }
         self.audit(name, app.as_deref(), &out);
         out
     }
@@ -1569,6 +1825,8 @@ impl<B: Backend> Engine<B> {
             "tool": tool,
             "app": app,
             "ok": !out.is_error,
+            // Estimated tokens the result costs the model (text + image).
+            "tokens": out.estimated_tokens(),
             "summary": if matches!(
                 tool,
                 "read_file" | "list_folder" | "get_clipboard" | "get_notifications" | "skill"
@@ -1605,9 +1863,6 @@ impl<B: Backend> Engine<B> {
             }
             if a.hidden {
                 tags.push("hidden".to_string());
-            }
-            if let Some(t) = policy::tag(a, &self.store, &self.session_allowed) {
-                tags.push(t);
             }
             let tags = if tags.is_empty() {
                 String::new()
@@ -1666,7 +1921,6 @@ impl<B: Backend> Engine<B> {
                 self.approve(probe, "launch_app", approver)?;
             }
         }
-
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
         self.backend.launch_app(&request, &args.args)?;
 
@@ -1725,7 +1979,7 @@ impl<B: Backend> Engine<B> {
         let observed = self.observe(&app, &window, args.ocr);
         self.force_ocr = false;
         observed?;
-        let r = self.render(app.pid, args.disable_diff)?;
+        let r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
         let size_changed = self.commit(app.pid, &window);
 
         let mut header = format!(
@@ -1784,6 +2038,12 @@ impl<B: Backend> Engine<B> {
                         || r.large_change
                         || size_changed
                         || r.interactive < shot.auto_sparse_threshold
+                        // Something changed, or the app came back to an
+                        // earlier screen: look at the pixels rather than
+                        // assume the model's picture still fits (an
+                        // unchanged picture isn't sent again).
+                        || r.changes > 0
+                        || r.seen == Seen::Revisit
                 }
             });
         let (dedupe, grid, tolerance) = (
@@ -1793,8 +2053,7 @@ impl<B: Backend> Engine<B> {
         );
         // Pixel fingerprints tell unchanged pictures and changed parts apart.
         let fingerprint = cache.dedupe_screenshots || shot.scope == crate::config::ShotScope::Auto;
-        let (known_pixels, known_coord, known_shot) =
-            (known.pixels.clone(), known.coord, known.shot);
+        let (known_pixels, known_coord) = (known.pixels.clone(), known.coord);
 
         let mut image = None;
         if want {
@@ -1813,6 +2072,11 @@ impl<B: Backend> Engine<B> {
             };
             match captured {
                 Ok(mut cap) => {
+                    if imaging::uniform(&cap) {
+                        header.push_str(
+                            "\n[The screenshot is one flat colour: the app may not draw while its window is in the background or minimized. Use the tree, or bring it forward (window action=focus) and look again.]",
+                        );
+                    }
                     let redacted = self.redact_capture(&mut cap);
                     if redacted > 0 {
                         header.push_str(&format!(
@@ -1828,9 +2092,11 @@ impl<B: Backend> Engine<B> {
                         if let Some(st) = self.states.get_mut(&app.pid) {
                             st.coord = known_coord;
                         }
-                        header.push_str(
+                        header.push_str(self.explain(
+                            "shot-unchanged",
                             "\nScreenshot: unchanged since you last saw it, not re-sent (screenshot=true forces one).",
-                        );
+                            "\nScreenshot: unchanged, not re-sent.",
+                        ));
                     } else if let Some(part) = (args.screenshot != Some(true))
                         .then(|| {
                             self.changed_part(
@@ -1847,13 +2113,17 @@ impl<B: Backend> Engine<B> {
                     {
                         // Only the part that changed, placed in the picture
                         // the model already has.
-                        header.push_str(&format!(
-                            "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot).",
-                            w = img.width,
-                            h = img.height,
-                            x1 = ox + img.width,
-                            y1 = oy + img.height,
-                        ));
+                        let (w, h, x1, y1) =
+                            (img.width, img.height, ox + img.width, oy + img.height);
+                        header.push_str(&if self.explain_first("shot-part") {
+                            format!(
+                                "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
+                            )
+                        } else {
+                            format!(
+                                "\nScreenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your earlier one (x/y still refer to that whole screenshot)."
+                            )
+                        });
                         self.pending_images.push(PendingImage {
                             pid: app.pid,
                             screen: r.screen,
@@ -1862,12 +2132,31 @@ impl<B: Backend> Engine<B> {
                         });
                         image = Some(img);
                     } else {
-                        match imaging::encode(cap, &self.store.config.screenshot) {
+                        // Attached on its own to a window the tree already
+                        // describes well: an overview is enough, and costs a
+                        // fraction of the image tokens.
+                        let mut shot_cfg = self.store.config.screenshot.clone();
+                        let overview = args.screenshot.is_none()
+                            && shot_cfg.overview_max_dimension > 0
+                            && shot_cfg.overview_max_dimension < shot_cfg.max_dimension
+                            && r.interactive >= shot_cfg.auto_sparse_threshold.max(1)
+                            && self.state(app.pid).is_ok_and(|s| s.ocr_lines == 0);
+                        if overview {
+                            shot_cfg.max_dimension = shot_cfg.overview_max_dimension;
+                        }
+                        match imaging::encode(cap, &shot_cfg) {
                             Ok((img, map)) => {
                                 header.push_str(&format!(
                                     "\nScreenshot: {}x{} px.",
                                     img.width, img.height
                                 ));
+                                if overview {
+                                    header.push_str(self.explain(
+                                        "overview",
+                                        " (An overview; pass screenshot=true for full detail, or screenshot(element_index) to zoom into one element.)",
+                                        " (overview)",
+                                    ));
+                                }
                                 self.pending_images.push(PendingImage {
                                     pid: app.pid,
                                     screen: r.screen,
@@ -1888,13 +2177,12 @@ impl<B: Backend> Engine<B> {
                     header.push_str(&format!("\n[screenshot unavailable: {e}]"));
                 }
             }
-        } else if allowed && r.seen == Seen::Revisit && known_shot && known_coord.is_some() {
-            header.push_str(&format!(
-                "\nScreenshot: not re-sent (your earlier one of screen #{} still applies).",
-                r.screen
-            ));
         } else if allowed {
-            header.push_str("\nScreenshot: not attached (pass screenshot=true for one).");
+            header.push_str(self.explain(
+                "shot-none",
+                "\nScreenshot: not attached (pass screenshot=true for one).",
+                "\nScreenshot: not attached.",
+            ));
         }
 
         Ok(ToolOutput {
@@ -1985,11 +2273,10 @@ impl<B: Backend> Engine<B> {
                         if unchanged
                             && v.retry
                             && v.retry_on_no_change
-                            && !guarded
                             && let Some(p) = point
                         {
                             // Nothing happened: click it with the mouse.
-                            let target = self.input_target(&app);
+                            let target = self.input_target(&app)?;
                             self.backend.click(&target, p, MouseButton::Left, 1)?;
                             self.settle_on(&app);
                             let mut msg = format!(
@@ -2023,7 +2310,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend.click(&target, point, args.button, count)?;
         self.settle_on(&app);
         let verb = match (args.button, count) {
@@ -2178,7 +2465,7 @@ impl<B: Backend> Engine<B> {
                 if self.store.config.verify.retry
                     && let Some(p) = point
                 {
-                    let target = self.input_target(&app);
+                    let target = self.input_target(&app)?;
                     self.backend
                         .scroll_wheel(&target, p, ux * lines, uy * lines)?;
                     self.settle_on(&app);
@@ -2198,7 +2485,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend
             .scroll_wheel(&target, point, ux * lines, uy * lines)?;
         self.settle_on(&app);
@@ -2236,7 +2523,7 @@ impl<B: Backend> Engine<B> {
         let before = self.tree_fingerprint(app.pid);
         self.overlay_point(p0, true);
         self.overlay_point(p1, false);
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
         let mut msg = format!(
@@ -2263,7 +2550,7 @@ impl<B: Backend> Engine<B> {
         if combos.iter().any(|c| c.key == Key::Named(NamedKey::Return)) {
             self.guard_focused(&app, args.element_index, approver)?;
         }
-        let target = self.input_target(&app);
+        let target = self.input_target(&app)?;
         for combo in &combos {
             if self.is_stopped() {
                 return Err(self.stopped_error());
@@ -2310,33 +2597,11 @@ impl<B: Backend> Engine<B> {
                     .ok()
                     .is_some_and(|n| n.value.is_some() && n.value == node.value)
             };
+            // Never typed again automatically: many apps update what they
+            // report a moment late, and typing twice would enter the text
+            // twice (or send a message twice).
             if unchanged(self) {
-                let fresh = self.node_by_index(&app, i).ok().cloned();
-                let point = fresh
-                    .as_ref()
-                    .and_then(|n| n.bounds)
-                    .filter(|b| !b.is_empty())
-                    .map(|b| b.center());
-                // Typing again would repeat a Return press (a second "send").
-                if self.store.config.verify.retry
-                    && !args.text.contains('\n')
-                    && let Some(p) = point
-                {
-                    // Click into the field and type again.
-                    let target = self.input_target(&app);
-                    self.backend.click(&target, p, MouseButton::Left, 1)?;
-                    self.settle();
-                    self.type_into_focus(&app, &args.text)?;
-                    self.settle_on(&app);
-                    msg.push_str(
-                        " The text didn't land in the field at first, so it was clicked and the text typed again (the first attempt may have gone to another element).",
-                    );
-                }
-                if self.verified() && unchanged(self) {
-                    msg.push_str(
-                        " Note: the field's text didn't change; the typing may have gone elsewhere. Check with get_app_state.",
-                    );
-                }
+                msg.push_str(TYPED_UNCONFIRMED_NOTE);
             }
         }
         Ok(ToolOutput::text(msg))
@@ -2344,7 +2609,9 @@ impl<B: Backend> Engine<B> {
 
     /// Type `text` into the app's focused element (newlines press Return).
     fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
-        let target = self.input_target(app);
+        let target = self.input_target(app)?;
+        // A Windows line break is one Return, not two.
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
         // Split on newlines so each becomes a Return press (works everywhere).
         let mut first = true;
         for segment in text.split('\n') {
@@ -2378,7 +2645,7 @@ impl<B: Backend> Engine<B> {
             && (ocr || self.store.config.verify.retry && node.states.editable)
             && let Some(p) = node.bounds.filter(|b| !b.is_empty()).map(|b| b.center())
         {
-            let target = self.input_target(app);
+            let target = self.input_target(app)?;
             self.backend.click(&target, p, MouseButton::Left, 1)?;
         }
         Ok(())
@@ -2394,7 +2661,7 @@ impl<B: Backend> Engine<B> {
     ) -> Result<()> {
         self.focus_element(app, handle, node)?;
         if self.backend.select_text(handle, None, 1).is_err() {
-            let target = self.input_target(app);
+            let target = self.input_target(app)?;
             self.backend
                 .press_key(&target, &keys::parse_combo("primary+a")?)?;
         }
@@ -2445,8 +2712,8 @@ impl<B: Backend> Engine<B> {
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.observe(&app, &window, false)?;
         let role = args.role.map(|r| r.to_lowercase());
-        let name = args.name.map(|n| n.to_lowercase());
-        let text = args.text.map(|t| t.to_lowercase());
+        let name = args.name.map(|n| crate::text::fold(&n));
+        let text = args.text.map(|t| crate::text::fold(&t));
         let state = self.state(app.pid)?;
         let mut hits: Vec<&Node> = state
             .nodes
@@ -2456,7 +2723,7 @@ impl<B: Backend> Engine<B> {
                     && name.as_deref().is_none_or(|q| {
                         n.name
                             .as_deref()
-                            .is_some_and(|nm| nm.to_lowercase().contains(q))
+                            .is_some_and(|nm| crate::text::fold(nm).contains(q))
                     })
                     && text.as_deref().is_none_or(|q| node_text(n).contains(q))
                     && (!args.editable || n.states.editable)
@@ -2479,10 +2746,14 @@ impl<B: Backend> Engine<B> {
     fn wait_for(&mut self, args: WaitForArgs, approver: &mut dyn Approver) -> Result<ToolOutput> {
         let app = self.authorize(&args.app, "wait_for", approver)?;
         let role = args.role.clone().map(|r| r.to_lowercase());
-        let name = args.name.clone().map(|n| n.to_lowercase());
-        let text = args.text.clone().map(|t| t.to_lowercase());
+        let name = args.name.clone().map(|n| crate::text::fold(&n));
+        let text = args.text.clone().map(|t| crate::text::fold(&t));
         let timing = &self.store.config.timing;
-        let timeout_ms = args.timeout_ms.unwrap_or(timing.wait_timeout_ms).max(1);
+        // At most two minutes: the server answers nothing else while it waits.
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(timing.wait_timeout_ms)
+            .clamp(1, 120_000);
         let poll = Duration::from_millis(
             args.poll_ms
                 .unwrap_or(timing.wait_poll_ms)
@@ -2501,7 +2772,7 @@ impl<B: Backend> Engine<B> {
                         && name.as_deref().is_none_or(|q| {
                             n.name
                                 .as_deref()
-                                .is_some_and(|nm| nm.to_lowercase().contains(q))
+                                .is_some_and(|nm| crate::text::fold(nm).contains(q))
                         })
                         && text.as_deref().is_none_or(|q| node_text(n).contains(q))
                         && state_matches(n, args.state)
@@ -2552,14 +2823,19 @@ impl<B: Backend> Engine<B> {
                 "full screen".to_string(),
             ),
             ScreenshotMode::Region => {
-                let (x, y, w, h) = match (args.x, args.y, args.width, args.height) {
-                    (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => (x, y, w, h),
+                let region = match (args.x, args.y, args.width, args.height) {
+                    (Some(x), Some(y), Some(w), Some(h))
+                        if [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0 =>
+                    {
+                        self.clip_to_screens(Rect::new(x, y, w, h))?
+                    }
                     _ => {
                         return Err(Error::InvalidArgs(
                             "region mode needs x, y, width and height".into(),
                         ));
                     }
                 };
+                let (x, y, w, h) = (region.x, region.y, region.width, region.height);
                 (
                     self.capture_clean(|b| b.capture_screen(Some(Rect::new(x, y, w, h))))?,
                     None,
@@ -2661,13 +2937,16 @@ impl<B: Backend> Engine<B> {
                 }
                 if let Some(part) = self.changed_part(&capture, Some(&sig), Some(old), Some(map)) {
                     let (img, (ox, oy)) = imaging::encode_part(&capture, part, &map, &cfg)?;
-                    let text = format!(
-                        "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}",
-                        w = img.width,
-                        h = img.height,
-                        x1 = ox + img.width,
-                        y1 = oy + img.height,
-                    );
+                    let (w, h, x1, y1) = (img.width, img.height, ox + img.width, oy + img.height);
+                    let text = if self.explain_first("screen-part") {
+                        format!(
+                            "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}"
+                        )
+                    } else {
+                        format!(
+                            "Screenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your last full-screen one (x/y still refer to that whole screenshot).{note}"
+                        )
+                    };
                     self.pending_screen_shot = Some((sig, map));
                     return Ok(image(img, text));
                 }
@@ -2696,6 +2975,14 @@ impl<B: Backend> Engine<B> {
         let mut report = String::new();
         let mut last_image = None;
         let mut any_error = false;
+        // The report shows one line per step, so the trees the steps render
+        // never reach the model: what it has seen of each app stays what it
+        // saw before the batch (restored below).
+        let seen_before: HashMap<u32, Option<Screen>> = self
+            .states
+            .iter()
+            .map(|(pid, st)| (*pid, st.known.clone()))
+            .collect();
         for (i, step) in args.steps.iter().enumerate() {
             // Inject the default app when the step omits one.
             let mut step_args = match &step.arguments {
@@ -2756,6 +3043,24 @@ impl<B: Backend> Engine<B> {
                     }
                 }
             }
+        }
+        for (pid, st) in self.states.iter_mut() {
+            let before = seen_before.get(pid).cloned().flatten();
+            st.known = match (before, st.known.take()) {
+                // Same screen: the model's tree is the one from before; the
+                // screenshot state (only the returned image counts) is kept.
+                (Some(b), Some(mut now)) if b.id == now.id => {
+                    now.view = b.view;
+                    Some(now)
+                }
+                // A screen reached in the batch: its tree hasn't been shown,
+                // so the next look sends all of it.
+                (_, Some(mut now)) => {
+                    now.view = crate::screens::View::default();
+                    Some(now)
+                }
+                (before, None) => before,
+            };
         }
         Ok(ToolOutput {
             text: format!("Ran {} step(s):\n{report}", args.steps.len()),
@@ -2984,23 +3289,9 @@ impl<B: Backend> Engine<B> {
             {
                 continue;
             }
-            // The user's app rules apply to what their notifications say.
-            let probe = AppInfo {
-                name: n.app.clone(),
-                id: n.app.clone(),
-                pid: 0,
-                exe: None,
-                frontmost: false,
-                hidden: false,
-            };
             let allowed_app =
                 cfg.apps.is_empty() || cfg.apps.iter().any(|a| a.eq_ignore_ascii_case(&n.app));
-            if !allowed_app
-                || matches!(
-                    policy::evaluate(&probe, &self.store, &self.session_allowed),
-                    Verdict::Blocked(_)
-                )
-            {
+            if !allowed_app {
                 hidden += 1;
                 continue;
             }
@@ -3053,7 +3344,7 @@ impl<B: Backend> Engine<B> {
         }
         if hidden > 0 {
             out.push_str(&format!(
-                "[{hidden} from apps blocked in settings not shown]\n"
+                "[{hidden} from apps not in notifications.apps not shown]\n"
             ));
         }
         Ok(ToolOutput::text(out))
@@ -3335,7 +3626,7 @@ impl<B: Backend> Engine<B> {
         if self.observe(&app, &window, fresh).is_err() {
             return out;
         }
-        let Ok(r) = self.render(app.pid, false) else {
+        let Ok(r) = self.render(app.pid, false, None) else {
             return out;
         };
         if r.seen == Seen::Same && !r.full && r.changes == 0 {
@@ -3506,6 +3797,9 @@ fn ocr_can_only_be_clicked(handle: ElementHandle, tool: &str) -> Result<()> {
     Ok(())
 }
 
+/// Appended when typed text doesn't show in the field (yet).
+const TYPED_UNCONFIRMED_NOTE: &str = " Note: the field doesn't show the new text yet. Look (get_app_state) before typing again: typing again could enter the text twice.";
+
 /// Appended when an action changed nothing that can be seen.
 const NO_CHANGE_NOTE: &str = " Nothing on screen changed after it; check (get_app_state, screenshot=true) before repeating it.";
 
@@ -3548,13 +3842,14 @@ fn shape_similarity(nodes: &[Node], shapes: &HashSet<u64>) -> f64 {
 }
 
 /// Lowercased name + value of a node, for text matching.
+/// An element's name and value, [folded](crate::text::fold) for matching.
 fn node_text(n: &Node) -> String {
     let mut s = n.name.clone().unwrap_or_default();
     if let Some(v) = &n.value {
         s.push(' ');
         s.push_str(v);
     }
-    s.to_lowercase()
+    crate::text::fold(&s)
 }
 
 fn state_matches(n: &Node, want: crate::tools::ElementState) -> bool {
@@ -3659,7 +3954,10 @@ fn resolve_app_in(apps: &[AppInfo], query: &str) -> Result<AppInfo> {
     // (not even "the frontmost one"): the caller says which.
     let sub: Vec<&AppInfo> = apps
         .iter()
-        .filter(|a| a.name.to_lowercase().contains(&ql) || a.id.to_lowercase().contains(&ql))
+        .filter(|a| {
+            let q = crate::text::fold(&ql);
+            crate::text::fold(&a.name).contains(&q) || a.id.to_lowercase().contains(&ql)
+        })
         .collect();
     match sub.as_slice() {
         [a] => Ok((*a).clone()),
@@ -3681,19 +3979,18 @@ mod tests {
     use crate::config::{ApprovalMode, Config};
     use crate::mock::{Event, MockBackend};
 
+    fn allow() -> AllowApprover {
+        AllowApprover
+    }
+
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e = Engine::new(backend, ConfigStore::in_memory(cfg));
         // Deterministic, instant time.
         e = e.with_time(Instant::now, |_| {});
         e
-    }
-
-    fn allow() -> AllowApprover {
-        AllowApprover
     }
 
     #[test]
@@ -3877,7 +4174,82 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(keys, vec!["meta+a", "Delete"]);
+        // "cmd" is the shortcut key: Cmd on a Mac, Ctrl elsewhere.
+        let select_all = if cfg!(target_os = "macos") {
+            "meta+a"
+        } else {
+            "ctrl+a"
+        };
+        assert_eq!(keys, vec![select_all, "Delete"]);
+    }
+
+    /// An engine with TextEdit (pid 4242) behind another app that is in front.
+    fn behind_engine() -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        app.info.frontmost = false;
+        backend.add_app(app);
+        let mut front = MockBackend::text_editor(77);
+        front.info.name = "Terminal".into();
+        front.info.id = "com.apple.Terminal".into();
+        backend.add_app(front);
+        Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {})
+    }
+
+    fn keys_sent(e: &Engine<MockBackend>) -> Vec<(u32, String)> {
+        e.backend()
+            .events
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::Key(pid, k) => Some((*pid, k.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keys_go_to_the_app_only_once_it_is_in_front() {
+        let mut e = behind_engine();
+        let out = e.call_tool(
+            "press_key",
+            serde_json::json!({"app": "TextEdit", "key": "Return"}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            e.backend()
+                .window_ops
+                .iter()
+                .any(|(_, op)| *op == WindowOp::Focus),
+            "brought to the front first"
+        );
+        assert_eq!(keys_sent(&e), vec![(4242, "Return".to_string())]);
+    }
+
+    #[test]
+    fn no_input_when_the_app_cannot_come_to_the_front() {
+        let mut e = behind_engine();
+        e.backend_mut().refuse_focus = true;
+        let out = e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "rm -rf ~\n"}),
+            &mut allow(),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Terminal, which is in front"),
+            "{}",
+            out.text
+        );
+        assert!(keys_sent(&e).is_empty(), "nothing typed anywhere");
+        assert!(
+            !e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Type(..))),
+            "nothing typed anywhere"
+        );
     }
 
     #[test]
@@ -3901,41 +4273,6 @@ mod tests {
     }
 
     #[test]
-    fn blocked_app_is_refused() {
-        let mut backend = MockBackend::new();
-        let mut term = MockBackend::text_editor(10);
-        term.info.name = "iTerm2".into();
-        term.info.id = "com.googlecode.iterm2".into();
-        backend.add_app(term);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "iTerm2"}),
-            &mut allow(),
-        );
-        assert!(out.is_error);
-        assert!(out.text.contains("terminal"));
-    }
-
-    #[test]
-    fn approval_denied_blocks() {
-        let mut backend = MockBackend::new();
-        backend.add_app(MockBackend::text_editor(7));
-        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
-            .with_time(Instant::now, |_| {});
-        let out = e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut DenyApprover,
-        );
-        assert!(out.is_error);
-        assert!(out.text.contains("denied"));
-    }
-
-    #[test]
     fn launch_makes_app_available() {
         let mut backend = MockBackend::new();
         backend.add_launchable("notes", {
@@ -3945,8 +4282,7 @@ mod tests {
             a.info.exe = Some("/System/Applications/Notes.app".into());
             a
         });
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         let out = e
@@ -3968,15 +4304,21 @@ mod tests {
     }
 
     #[test]
-    fn cannot_launch_a_terminal() {
+    fn screenshot_regions_off_the_screen_are_refused_not_fatal() {
         let mut e = engine();
         let out = e.call_tool(
-            "launch_app",
-            serde_json::json!({"app": "xterm"}),
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": 1.0e9, "y": 5, "width": 1.0e12, "height": 10}), &mut allow(),
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("not on any display"), "{}", out.text);
+        // Partly on a display: the visible part is captured.
+        let out = e.call_tool(
+            "screenshot",
+            serde_json::json!({"mode": "region", "x": -50, "y": -50, "width": 100, "height": 100}),
             &mut allow(),
         );
-        assert!(out.is_error);
-        assert!(out.text.contains("terminal"));
+        assert!(!out.is_error, "{}", out.text);
     }
 
     #[test]
@@ -4047,8 +4389,7 @@ mod tests {
 
         let out = e.call_tool(
             "wait_for",
-            serde_json::json!({"app": "TextEdit", "name": "Nonexistent", "timeout_ms": 60, "poll_ms": 20}),
-            &mut allow(),
+            serde_json::json!({"app": "TextEdit", "name": "Nonexistent", "timeout_ms": 60, "poll_ms": 20}), &mut allow(),
         );
         assert!(out.is_error);
         assert!(out.text.contains("timed out"));
@@ -4211,50 +4552,6 @@ mod tests {
     }
 
     #[test]
-    fn guard_blocks_and_confirms_sensitive_press() {
-        // A backend with a "Send" button that has a press action.
-        let mut backend = MockBackend::new();
-        let mut app = MockBackend::text_editor(50);
-        app.elements.push(
-            crate::mock::MockElement::new(9, "button", "Send", Rect::new(0.0, 0.0, 40.0, 20.0))
-                .child_of(1)
-                .with_actions(&["AXPress"]),
-        );
-        backend.add_app(app);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        e.call_tool(
-            "get_app_state",
-            serde_json::json!({"app": "TextEdit"}),
-            &mut allow(),
-        );
-        let send = e
-            .state(50)
-            .unwrap()
-            .nodes
-            .iter()
-            .find(|n| n.name.as_deref() == Some("Send"))
-            .unwrap()
-            .index;
-        // DenyApprover.confirm_action() returns false -> blocked.
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut DenyApprover,
-        );
-        assert!(out.is_error, "guard should block: {}", out.text);
-        // AllowApprover confirms -> allowed.
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut allow(),
-        );
-        assert!(!out.is_error, "{}", out.text);
-    }
-
-    #[test]
     fn change_report_appended_after_action() {
         let mut e = engine();
         e.call_tool(
@@ -4324,7 +4621,6 @@ mod tests {
         backend.on_press.insert(20, page_b(7));
         backend.on_press.insert(30, page_a(7));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.tree.report_changes = report;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
     }
@@ -4365,6 +4661,22 @@ mod tests {
     }
 
     #[test]
+    fn a_returning_screen_that_looks_different_gets_a_new_picture() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let next = index_named(&e, 7, "Next");
+        press(&mut e, next);
+        state_of(&mut e, serde_json::json!({}));
+        let back = index_named(&e, 7, "Back");
+        press(&mut e, back);
+        // Same elements as before, different pixels (say, a new image).
+        e.backend_mut().fill = 40;
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("screen #1 (seen before)"), "{}", out.text);
+        assert!(out.image.is_some(), "{}", out.text);
+    }
+
+    #[test]
     fn returning_to_a_seen_screen_skips_tree_and_screenshot() {
         let mut e = nav_engine(false);
         let out = state_of(&mut e, serde_json::json!({}));
@@ -4395,8 +4707,14 @@ mod tests {
             "no tree re-sent: {}",
             out.text
         );
+        // The pixels are checked, not assumed: the same picture isn't sent.
         assert!(out.image.is_none(), "no screenshot re-sent");
-        assert_eq!(e.backend().captures, captures, "not even captured");
+        assert_eq!(e.backend().captures, captures + 1, "checked once");
+        assert!(
+            out.text.contains("unchanged since you last saw it"),
+            "{}",
+            out.text
+        );
         // The indices the model analysed are back.
         assert_eq!(index_named(&e, 7, "Document"), doc);
         assert_eq!(index_named(&e, 7, "Next"), next);
@@ -4516,8 +4834,7 @@ mod tests {
         backend.add_app(main());
         backend.on_press.insert(20, with_dialog);
         backend.on_press.insert(41, main());
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
 
@@ -4551,7 +4868,6 @@ mod tests {
         canvas.elements.retain(|el| el.handle == 1);
         backend.add_app(canvas);
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.ocr.mode = crate::config::OcrMode::Off;
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
@@ -4597,7 +4913,7 @@ mod tests {
         assert_eq!(e.backend().window_lists, lists, "window list reused");
         // An action makes them stale: settling reads the app until two reads
         // agree, and the next get_app_state reuses the last of them.
-        press_named(&mut e, 7, "Bold");
+        press_named(&mut e, 7, "Next");
         state_of(&mut e, serde_json::json!({}));
         assert_eq!(e.backend().snapshots, snaps + 2);
         // Turned off: every call reads again.
@@ -4691,6 +5007,38 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn a_stop_key_that_does_not_work_is_reported_once() {
+        let dir = std::env::temp_dir().join(format!("cu-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stop.log");
+        // A helper that says the system refused the key.
+        let helper = Launcher {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    r#"echo '{{"t":"hotkey","key":"ctrl+alt+escape","ok":false}}'; cat > '{}'"#,
+                    log.display()
+                ),
+            ],
+        };
+        let mut e = engine().with_overlay(helper);
+        e.arm();
+        assert!(e.check_stop_key(Duration::from_secs(5)).is_err());
+        let first = e.call_tool("list_apps", serde_json::json!({}), &mut allow());
+        assert!(
+            first.text.contains("emergency stop key") && first.text.contains("not working"),
+            "{}",
+            first.text
+        );
+        let second = e.call_tool("list_apps", serde_json::json!({}), &mut allow());
+        assert!(!second.text.contains("emergency stop key"), "told once");
+        drop(e);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
     fn read_log(path: &std::path::Path) -> String {
         for _ in 0..100 {
             if let Ok(t) = std::fs::read_to_string(path)
@@ -4725,44 +5073,6 @@ mod tests {
             r#""t":"end","ok":true"#,
         ] {
             assert!(t.contains(want), "missing {want} in:\n{t}");
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sensitive_click_waits_for_the_screen_when_no_client_can_ask() {
-        let dir = std::env::temp_dir().join(format!("cu-ov2-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (answer, allowed) in [(true, true), (false, false)] {
-            let log = dir.join(format!("ask-{answer}.log"));
-            let mut backend = MockBackend::new();
-            let mut app = MockBackend::text_editor(60);
-            app.elements.push(button(9, "Send", 2, 200.0));
-            backend.add_app(app);
-            let mut cfg = Config::default();
-            cfg.approvals.mode = ApprovalMode::AllowAll;
-            let mut e = Engine::new(backend, ConfigStore::in_memory(cfg))
-                .with_time(Instant::now, |_| {})
-                .with_overlay(recording_helper(&log, Some(answer)));
-            state_of(&mut e, serde_json::json!({}));
-            let send = index_named(&e, 60, "Send");
-            // DenyApprover can't ask anyone: the screen is asked instead.
-            let out = e.call_tool(
-                "click",
-                serde_json::json!({"app": "TextEdit", "element_index": send}),
-                &mut DenyApprover,
-            );
-            assert_eq!(!out.is_error, allowed, "{}", out.text);
-            drop(e);
-            let t = read_log(&log);
-            assert!(t.contains(r#""ask":true"#), "{t}");
-            if allowed {
-                assert!(
-                    t.contains(r#""t":"danger","action":"press button \"Send\"""#),
-                    "{t}"
-                );
-            }
         }
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4832,8 +5142,7 @@ mod tests {
         // The user is typing (input 0.1 s and 0.4 s ago), then stops.
         backend.idle_script = [100, 400].map(Duration::from_millis).into();
         backend.idle = Some(Duration::from_secs(5));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let (mut e, clock) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
         let t0 = *clock.lock().unwrap();
@@ -4865,7 +5174,6 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         backend.idle = Some(Duration::from_millis(100));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.control.max_pause_secs = 3;
         let (mut e, _) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
@@ -4899,7 +5207,8 @@ mod tests {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        // Only the pause for the user is measured here, not settling.
+        cfg.timing.settle = crate::config::SettleMode::Fixed;
         let (mut e, clock) = timed_engine(backend, cfg);
         state_of(&mut e, serde_json::json!({}));
         let press = |e: &mut Engine<MockBackend>| {
@@ -4951,8 +5260,7 @@ mod tests {
     fn private_data_never_reaches_the_model() {
         let mut backend = MockBackend::new();
         backend.add_app(login_app(4242));
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
+        let cfg = Config::default();
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
@@ -5152,37 +5460,6 @@ mod tests {
     }
 
     #[test]
-    fn guarded_presses_are_never_repeated() {
-        let mut backend = MockBackend::new();
-        let mut app = MockBackend::text_editor(4242);
-        app.elements.push(button(9, "Send", 2, 200.0));
-        backend.add_app(app);
-        let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
-        cfg.verify.retry_on_no_change = true;
-        let mut e =
-            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
-        let out = state_of(&mut e, serde_json::json!({}));
-        let send = index_of_name(&out.text, "\"Send\"");
-        let out = e.call_tool(
-            "click",
-            serde_json::json!({"app": "TextEdit", "element_index": send}),
-            &mut allow(),
-        );
-        assert!(
-            out.text.contains("Nothing on screen changed"),
-            "{}",
-            out.text
-        );
-        assert!(
-            !e.backend()
-                .events
-                .iter()
-                .any(|ev| matches!(ev, Event::Click(..)))
-        );
-    }
-
-    #[test]
     fn a_value_that_does_not_take_is_typed_instead() {
         let mut e = engine();
         let out = state_of(&mut e, serde_json::json!({}));
@@ -5201,21 +5478,55 @@ mod tests {
     }
 
     #[test]
-    fn typing_that_does_not_land_clicks_the_field_and_types_again() {
+    fn typing_that_does_not_show_is_never_typed_twice() {
         let mut e = engine();
         let out = state_of(&mut e, serde_json::json!({}));
         let doc = index_of_name(&out.text, "\"Document\"");
-        // Focus claims success but does nothing: the text goes nowhere.
+        // Focus claims success but does nothing: the field doesn't change.
         e.backend_mut().fake_focus.insert(5);
         let out = e.call_tool(
             "type_text",
-            serde_json::json!({"app": "TextEdit", "element_index": doc, "text": " world"}),
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "text": "y"}),
             &mut allow(),
         );
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.contains("didn't land"), "{}", out.text);
-        let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
-        assert!(out.text.contains("Hello world"), "{}", out.text);
+        assert!(
+            out.text.contains("could enter the text twice"),
+            "{}",
+            out.text
+        );
+        let typed = e
+            .backend()
+            .events
+            .iter()
+            .filter(|ev| matches!(ev, Event::Type(..)))
+            .count();
+        assert_eq!(typed, 1, "typed once, never again on its own");
+    }
+
+    #[test]
+    fn a_change_reported_late_is_not_taken_for_no_change() {
+        let mut e = engine();
+        let out = state_of(&mut e, serde_json::json!({}));
+        let bold = index_of_name(&out.text, "\"Bold\"");
+        // The app shows the change only after a few reads.
+        e.backend_mut().snapshot_script.extend([
+            (5, "Hello".to_string()),
+            (5, "Hello".to_string()),
+            (5, "Hello".to_string()),
+            (5, "Changed".to_string()),
+        ]);
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+            &mut allow(),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            !out.text.contains("Nothing on screen changed"),
+            "{}",
+            out.text
+        );
     }
 
     // -- smart screenshots ----------------------------------------------------
@@ -5224,9 +5535,128 @@ mod tests {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.screenshot.attach = AttachMode::Always;
         Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    #[test]
+    fn auto_screenshots_of_well_described_windows_can_be_overviews() {
+        // Off by default: full detail.
+        let mut e = engine();
+        let img = state_of(&mut e, serde_json::json!({})).image.unwrap();
+        assert_eq!((img.width, img.height), (800, 600));
+        // Opted in.
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut cfg = Config::default();
+        cfg.screenshot.overview_max_dimension = 768;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        // Attached on its own: an overview at overview_max_dimension.
+        let out = state_of(&mut e, serde_json::json!({}));
+        let img = out.image.expect("first view");
+        assert_eq!(img.width.max(img.height), 768, "{}", out.text);
+        assert!(out.text.contains("An overview"), "{}", out.text);
+        // Coordinates in the overview still map to the screen.
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 384, "y": 288}),
+            &mut allow(),
+        );
+        assert!(matches!(
+            e.backend().events.last().unwrap(),
+            Event::Click(4242, p, _, _) if (p.x - 400.0).abs() < 1.0 && (p.y - 300.0).abs() < 1.0
+        ));
+        // Asked for: full detail.
+        let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+        let img = out.image.expect("asked for");
+        assert_eq!((img.width, img.height), (800, 600));
+    }
+
+    /// TextEdit with a 300-item list, and a small token budget.
+    fn long_list_engine(cfg: impl FnOnce(&mut Config)) -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        for i in 0..300u64 {
+            app.elements.push(
+                crate::mock::MockElement::new(
+                    1000 + i,
+                    "list item",
+                    &format!("Item {i}"),
+                    Rect::new(0.0, 40.0 + i as f64, 100.0, 1.0),
+                )
+                .child_of(1),
+            );
+        }
+        backend.add_app(app);
+        let mut c = Config::default();
+        c.tree.max_tokens = 400;
+        cfg(&mut c);
+        Engine::new(backend, ConfigStore::in_memory(c)).with_time(Instant::now, |_| {})
+    }
+
+    #[test]
+    fn summarizing_can_be_turned_down_or_off() {
+        // Over the budget: the list is folded.
+        let mut e = long_list_engine(|_| {});
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("folded"), "{}", out.text);
+        // The model can ask for one whole tree.
+        let out = state_of(
+            &mut e,
+            serde_json::json!({"disable_diff": true, "max_tokens": 0}),
+        );
+        assert!(!out.text.contains("folded"), "{}", out.text);
+        assert!(out.text.contains("Item 150"), "{}", out.text);
+        // The user can turn it off.
+        let mut e = long_list_engine(|c| c.tree.summarize = crate::config::Summarize::Off);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(!out.text.contains("folded") && out.text.contains("Item 150"));
+        // Or keep more of each list.
+        let mut e = long_list_engine(|c| c.tree.fold_keep = 40);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("Item 39") && !out.text.contains("Item 40\""));
+    }
+
+    #[test]
+    fn explanations_can_always_be_given_in_full() {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut cfg = Config::default();
+        cfg.tree.brief_repeats = false;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        for _ in 0..2 {
+            let out = state_of(&mut e, serde_json::json!({"screenshot": false}));
+            assert!(
+                out.text
+                    .contains("not attached (pass screenshot=true for one)"),
+                "{}",
+                out.text
+            );
+        }
+    }
+
+    #[test]
+    fn explanations_are_given_once_then_kept_short() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        let first = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        assert!(
+            first
+                .text
+                .contains("not attached (pass screenshot=true for one)"),
+            "{}",
+            first.text
+        );
+        let again = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        assert!(
+            again.text.contains("Screenshot: not attached."),
+            "{}",
+            again.text
+        );
+        assert!(again.text.len() < first.text.len());
     }
 
     #[test]
@@ -5454,7 +5884,6 @@ mod tests {
         backend.add_app(app);
         backend.ocr_text = lines;
         let mut cfg = Config::default();
-        cfg.approvals.mode = ApprovalMode::AllowAll;
         cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
         // Every read looks again (the tests change the picture).
         cfg.cache.snapshot_ttl_ms = 0;
@@ -5616,9 +6045,14 @@ mod tests {
         assert!(out.text.contains("code is ••••••"), "{}", out.text);
         assert!(!out.text.contains("482913"), "{}", out.text);
         assert!(out.text.contains("•••• •••• •••• 1111"), "{}", out.text);
-        // A password manager is a blocked category.
+        assert!(out.text.contains("4 recent notification"), "{}", out.text);
+        // notifications.apps narrows it to a list.
+        let mut cfg = e.store().config.clone();
+        cfg.notifications.apps = vec!["Slack".into(), "Bank".into(), "Shop".into()];
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool("get_notifications", serde_json::json!({}), &mut allow());
         assert!(!out.text.contains("Vault"), "{}", out.text);
-        assert!(out.text.contains("1 from apps blocked"), "{}", out.text);
+        assert!(out.text.contains("1 from apps not in"), "{}", out.text);
         let out = e.call_tool(
             "get_notifications",
             serde_json::json!({"app": "slack"}),

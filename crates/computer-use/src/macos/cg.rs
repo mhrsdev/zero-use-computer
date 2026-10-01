@@ -134,15 +134,19 @@ pub fn scroll(pid: u32, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
 
 pub fn type_text(pid: u32, text: &str) -> Result<()> {
     let src = source()?;
-    // Keyboard events carrying a unicode string type it verbatim, a chunk
-    // per down/up pair. Flags are cleared so a modifier the user happens to
-    // hold doesn't turn the text into shortcuts.
-    for chunk in utf16_chunks(text, UNICODE_CHUNK) {
+    // Keyboard events carrying a unicode string type it verbatim, in any
+    // language, a chunk per down/up pair (with a short pause between chunks
+    // so the app keeps up). Flags are cleared so a modifier the user happens
+    // to hold doesn't turn the text into shortcuts.
+    for (i, chunk) in utf16_chunks(text, UNICODE_CHUNK).iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         for down in [true, false] {
             let event = CGEvent::new_keyboard_event(src.clone(), 0, down)
                 .map_err(|_| Error::action("keyboard event"))?;
             event.set_flags(CGEventFlags::empty());
-            event.set_string_from_utf16_unchecked(&chunk);
+            event.set_string_from_utf16_unchecked(chunk);
             post(pid, &event);
         }
     }

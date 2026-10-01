@@ -124,6 +124,8 @@ pub struct WinSurface {
 
 impl WinSurface {
     pub fn open() -> Result<Self, String> {
+        // The same physical-pixel coordinates as the engine.
+        crate::windows::make_dpi_aware();
         // SAFETY: plain Win32 calls with valid arguments.
         let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }
             .map_err(|e| e.to_string())?
@@ -321,7 +323,10 @@ impl Surface for WinSurface {
     }
 
     fn render_scale(&self) -> f32 {
-        1.0
+        // Draw at the display's scale (1.5 at 150%), so it isn't tiny.
+        // SAFETY: a plain query.
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
+        (dpi as f32 / 96.0).max(1.0)
     }
 
     fn px_per_unit(&self) -> f32 {

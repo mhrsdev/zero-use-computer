@@ -48,7 +48,8 @@ pub fn set(text: &str) -> Result<()> {
     let mut missing = true;
     for (_, _, cmd, args) in HELPERS {
         // wl-copy/xclip keep running to serve the selection: they must not
-        // hold on to our stdout (the MCP JSON-RPC stream) or stderr.
+        // hold on to our stdout (the MCP JSON-RPC stream) or stderr; xclip
+        // forks a daemon that would otherwise hold it open after we exit.
         let spawned = Command::new(cmd)
             .args(*args)
             .stdin(Stdio::piped())

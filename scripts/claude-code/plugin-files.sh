@@ -2,7 +2,8 @@
 # Make a release folder a valid Claude plugin as well as a plain MCP bundle:
 #   <dir>/.claude-plugin/plugin.json   manifest (what "Upload local plugin" looks for)
 #   <dir>/.mcp.json                    starts the bundled binary via ${CLAUDE_PLUGIN_ROOT}
-#   <dir>/skills/computer-use/SKILL.md the agent guide
+#   <dir>/skills/computer-use/...      the agent guide (SKILL.md + reference/)
+#   <dir>/skills/computer-use-security/... the safety rules (load first)
 # Usage: plugin-files.sh <dir> <binary-file-name> [version] [bundled|installed]
 #   bundled   (default) the binary sits in the plugin folder (${CLAUDE_PLUGIN_ROOT})
 #   installed the plugin has no binary (some hosts refuse executables in plugin
@@ -14,7 +15,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${3:-$(grep -m1 '^version' "$root/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')}"
 mode="${4:-bundled}"
 
-mkdir -p "$dir/.claude-plugin" "$dir/skills/computer-use"
+mkdir -p "$dir/.claude-plugin" "$dir/skills"
 cat > "$dir/.claude-plugin/plugin.json" <<JSON
 {
   "name": "computer-use",
@@ -46,6 +47,7 @@ cat > "$dir/.mcp.json" <<JSON
   }
 }
 JSON
-cp "$root/skill/SKILL.md" "$dir/skills/computer-use/SKILL.md"
+# The layered skills: every skills/<name>/ folder of the repo, as is.
+cp -R "$root/skills/." "$dir/skills/"
 # A root SKILL.md would be read as a second, conflicting manifest.
 rm -f "$dir/SKILL.md"

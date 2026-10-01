@@ -238,6 +238,26 @@ fn draw_digit(cap: &mut Capture, digit: usize, x: i64, y: i64, scale: i64, rgb: 
     }
 }
 
+/// Whether a capture is (almost) one colour: what some apps give a
+/// background capture when they draw nothing for it. Over 99% of sampled
+/// pixels equal the first one.
+pub fn uniform(cap: &Capture) -> bool {
+    let n = cap.rgba.len() / 4;
+    if n == 0 {
+        return true;
+    }
+    let step = (n / 4096).max(1);
+    let first = &cap.rgba[..4];
+    let (mut same, mut total) = (0usize, 0usize);
+    for p in cap.rgba.as_chunks::<4>().0.iter().step_by(step) {
+        total += 1;
+        if p == first {
+            same += 1;
+        }
+    }
+    same * 100 > total * 99
+}
+
 /// Cut a pixel rectangle (x, y, width, height) out of a capture.
 pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
     if cap.width == 0 || cap.height == 0 {
@@ -482,6 +502,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn flat_captures_are_spotted() {
+        let cap = |rgba: Vec<u8>| Capture {
+            width: 2,
+            height: 2,
+            rgba,
+            bounds: Rect::new(0.0, 0.0, 2.0, 2.0),
+        };
+        assert!(uniform(&cap([90; 16].to_vec())));
+        let mut mixed = [90u8; 16].to_vec();
+        mixed[4] = 10;
+        assert!(!uniform(&cap(mixed)));
+    }
 
     #[test]
     fn fit_keeps_aspect() {

@@ -5,11 +5,15 @@
 # change settings from the command line:
 #
 #   computer-use-mcp config set screenshot.attach always
-#   computer-use-mcp config add approvals.always_allow com.apple.TextEdit
+#   computer-use-mcp config add tools.disabled drag
 #   computer-use-mcp config show          # effective settings
 #   computer-use-mcp config check         # validate + report unknown keys
 #
 # The agent itself has no tool to change these settings.
+#
+# There is no access control in these settings: which apps and actions the
+# agent may use is decided by its security skill
+# (skills/computer-use-security/SKILL.md), not by this server.
 
 # Expose the clipboard tools (get_clipboard / set_clipboard).
 clipboard = true
@@ -118,6 +122,11 @@ auto_sparse_threshold = 2
 # Longest image edge in pixels. Image tokens grow with width x height, so this
 # is the main image-token knob (1024 ≈ 35% fewer tokens than 1280).
 max_dimension = 1280
+# Opt-in: send screenshots attached on their own to a window whose tree
+# already says what is there as a smaller overview of this size (e.g. 768 ≈
+# 60% fewer image tokens than 1280). It trades detail for tokens, so it is
+# off: 0 = always max_dimension. screenshot=true always gets max_dimension.
+overview_max_dimension = 0
 format = "png"              # "png" or "jpeg"
 jpeg_quality = 85
 png_compression = "fast"    # "fast", "default" or "best" (file size only)
@@ -134,6 +143,18 @@ region_min_size = 200       # the part is at least this big on each side, for co
 max_nodes = 1200            # elements shown per get_app_state
 max_walk = 6000             # elements read from the app before pruning
 max_depth = 64
+# Token budget of one tree or diff (estimated). Only bigger trees are
+# shortened; folded and cut elements stay findable with find_element, and
+# the focused or selected element is never folded away. 0 = no limit.
+max_tokens = 10000
+# How a tree over the budget is shortened:
+#   "normal" = fold long lists, then other long runs, then cut what's left
+#   "light"  = only fold long lists (rows, list items…); never cut
+#   "off"    = never shorten: every tree is sent whole
+# The model can also ask for one whole tree with get_app_state(max_tokens=0).
+summarize = "normal"
+fold_keep = 5               # items kept at the start of a folded list (+2 at its end)
+brief_repeats = true        # explain notes in full once, then briefly (false = always in full)
 max_text_len = 160          # characters of text/value shown per element
 indent = 1                  # spaces per tree level
 show_actions = true         # actions=[...] on elements
@@ -182,7 +203,7 @@ border_target = "screen"     # glow around the whole "screen" or the "window" wo
 border_width = 0             # flat full-strength line at the very edge (0 = pure glow)
 glow_size = 120              # how far the soft glow reaches in (0 = a plain line)
 scale = 0.0                  # size multiplier; 0 = follow display scaling
-# Label per state; {action} is what is pending.
+# Label per state.
 label_working = "Zero is using the computer"
 label_thinking = "Zero is thinking…"
 label_approval = "Waiting for your approval: {action}"
@@ -225,7 +246,7 @@ command = ""                 # helper program for library embedders
 mode = "auto"               # "auto" (sparse trees only), "always" or "off"
 engine = "auto"             # "auto" (the OS's own, else Tesseract), "native", "tesseract"
 sparse_threshold = 3        # auto: fewer interactive elements than this
-languages = []              # e.g. ["en", "fa"]; [] = your languages (Tesseract: English)
+languages = []              # e.g. ["en", "de"]; [] = your languages (Tesseract: English)
 min_confidence = 0.4        # leave out lines recognised with less confidence (0–1)
 max_lines = 150
 tesseract_path = "tesseract"
@@ -234,7 +255,7 @@ tesseract_path = "tesseract"
 # default: notifications carry other apps' messages and codes.
 [notifications]
 enabled = false
-apps = []                   # only these apps ([] = any app not blocked above)
+apps = []                   # only these apps ([] = any app)
 mask_codes = true           # mask one-time / verification codes
 keep = 50                   # how many are kept (Linux)
 
@@ -243,8 +264,7 @@ keep = 50                   # how many are kept (Linux)
 enabled = true              # check each action's result; tell the agent when it didn't work
 retry = true                # an action that clearly failed is tried once more another way
 # Also retry presses after which nothing visible changed. Off: some actions
-# (pay, send…) show their effect late and must not be repeated. Guarded
-# actions are never retried.
+# (pay, send…) show their effect late and must not be repeated.
 retry_on_no_change = false
 
 # Your controls over a running agent.
@@ -283,7 +303,7 @@ enabled = false             # append a JSONL line (metadata only) per call
 headless_approve = "deny"   # when approval is needed but no one can be asked
 log = "warn"                # error, warn, info, debug, trace
 http_addr = ""              # e.g. "127.0.0.1:8787" to serve over HTTP
-http_token = ""             # bearer token required on the HTTP endpoint
+http_token = ""             # bearer token, required when http_addr is set
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

@@ -253,6 +253,13 @@ pub struct ScreenshotConfig {
     /// Longest edge of the image sent to the model, in pixels. Image token cost
     /// grows with width x height, so this is the main image-token knob.
     pub max_dimension: u32,
+    /// Opt-in: longest edge of a screenshot attached on its own (`attach =
+    /// "auto"`) to a window whose tree already says what is there, as a
+    /// smaller overview for fewer image tokens. It trades detail for tokens,
+    /// so it is off (0 = always `max_dimension`). A screenshot asked for
+    /// (`screenshot=true`), or of a window with little in its tree, always
+    /// uses `max_dimension`.
+    pub overview_max_dimension: u32,
     pub format: ImageFormat,
     pub jpeg_quality: u8,
     pub png_compression: PngCompression,
@@ -288,6 +295,7 @@ impl Default for ScreenshotConfig {
             attach: AttachMode::Auto,
             auto_sparse_threshold: 2,
             max_dimension: 1280,
+            overview_max_dimension: 0,
             format: ImageFormat::Png,
             jpeg_quality: 85,
             png_compression: PngCompression::Fast,
@@ -325,6 +333,31 @@ pub struct TreeConfig {
     pub report_changes: bool,
     /// Longest change report (lines) appended to an action result.
     pub report_changes_max_lines: usize,
+    /// Token budget of one tree or diff (estimated; 0 = no limit).
+    pub max_tokens: usize,
+    /// How a tree over `max_tokens` is shortened (see [`Summarize`]).
+    pub summarize: Summarize,
+    /// Items kept at the start of a folded list (and two at its end).
+    /// Higher keeps more of every long list.
+    pub fold_keep: usize,
+    /// Explanations (what a diff or a partial screenshot means) in full the
+    /// first time and in a few words after that. false = in full every time.
+    pub brief_repeats: bool,
+}
+
+/// How much a tree over the token budget is shortened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Summarize {
+    /// Never: every tree is sent whole, whatever its size.
+    Off,
+    /// Only long lists (list items, rows, menu items…) are folded to their
+    /// first and last items; nothing is cut.
+    Light,
+    /// Long lists first, then any long run of look-alike elements, and the
+    /// rest cut if it still doesn't fit. Default.
+    #[default]
+    Normal,
 }
 
 impl Default for TreeConfig {
@@ -333,6 +366,10 @@ impl Default for TreeConfig {
             max_nodes: 1200,
             max_walk: 6000,
             max_depth: 64,
+            max_tokens: 10_000,
+            summarize: Summarize::Normal,
+            fold_keep: 5,
+            brief_repeats: true,
             max_text_len: 160,
             indent: 1,
             show_actions: true,

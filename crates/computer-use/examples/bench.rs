@@ -15,10 +15,14 @@
 
 use std::time::{Duration, Instant};
 
-use computer_use::config::{ApprovalMode, Config, ConfigStore};
+use computer_use::config::{Config, ConfigStore};
 use computer_use::engine::{AllowApprover, Engine};
 use computer_use::tools;
 use serde_json::json;
+
+fn allow() -> AllowApprover {
+    AllowApprover
+}
 
 fn ipc() -> u64 {
     #[cfg(target_os = "linux")]
@@ -65,7 +69,7 @@ fn run(
 ) -> Sample {
     let ipc0 = ipc();
     let t0 = Instant::now();
-    let out = engine.call_tool(tool, args, &mut AllowApprover);
+    let out = engine.call_tool(tool, args, &mut allow());
     let time = t0.elapsed();
     if out.is_error {
         eprintln!("  ! {tool} error: {}", out.text);
@@ -126,7 +130,7 @@ fn press(
 ) {
     let mut args = base.clone();
     args["name"] = json!(name);
-    let found = engine.call_tool("find_element", args, &mut AllowApprover);
+    let found = engine.call_tool("find_element", args, &mut allow());
     let index: u32 = found
         .text
         .lines()
@@ -136,7 +140,7 @@ fn press(
         .unwrap_or_else(|| panic!("no element named {name}: {}", found.text));
     let mut args = base.clone();
     args["element_index"] = json!(index);
-    engine.call_tool("click", args, &mut AllowApprover);
+    engine.call_tool("click", args, &mut allow());
     std::thread::sleep(Duration::from_millis(150));
 }
 
@@ -163,7 +167,6 @@ fn main() {
         Some(p) => ConfigStore::load(Some(std::path::Path::new(p))).expect("config"),
         None => ConfigStore::in_memory(Config::default()),
     };
-    store.config.approvals.mode = ApprovalMode::AllowAll;
     store.config.audit.enabled = false;
     let backend = computer_use::platform_backend().expect("backend");
     let mut engine = Engine::new(backend, store);
