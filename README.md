@@ -435,6 +435,28 @@ task is complete) can say so with a JSON-RPC notification:
   press that simply changed nothing is not repeated unless
   `verify.retry_on_no_change = true` (off by default: a send or a payment can
   show its effect late, and must not be repeated).
+- **Sent but not answered is not a failure.** When the app doesn't answer
+  an action in time (busy, hung, or the action opened a dialog), the action
+  may well have happened: it is reported as "sent, may or may not have
+  happened; look before repeating it" and never retried another way.
+
+## Never stuck
+
+Every call ends, whatever the app or the input does:
+
+- Accessibility reads have timeouts and a time budget per tree (Windows UI
+  Automation, macOS AX, Linux AT-SPI): a hung app gives what was read and a
+  "not responding" message, never a frozen server. Windows checks
+  `IsHungAppWindow` before touching a window.
+- The client can cancel a call (`notifications/cancelled`): it ends at
+  once, as the stop key would.
+- Each call has limits: 100,000 typed characters (typed in pieces, the stop
+  key checked between them), 500 key presses, 50 scroll pages, 30,000
+  clipboard characters, 500 design layers, 50-megapixel pictures; calls nest
+  at most 8 deep.
+- Helper programs (Tesseract, `curl`, clipboard tools) run with time limits
+  and are always waited for; scripts touch only regular files; settings are
+  written atomically.
 
 ## Architecture
 
@@ -656,11 +678,15 @@ estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
 | back to a screen seen before, large app | ~2,516 tokens (tree + image) | **~79 tokens, no image** |
 | `get_app_state` right after an action or `find_element` | 71 ms | **< 1 ms** (read reused) |
 
-The tool definitions, sent with every model request, are ~4,900 tokens for
+The tool definitions, sent with every model request, are ~4,400 tokens for
 all 25 tools with compact descriptions (the default) and ~11,500 with full
 ones; the client's prompt cache serves them cheaply, and `tools.disabled`
-hides tools you never use. Peak memory of the whole server in these runs is
-about 20 MiB (v2.6.0).
+hides tools you never use.
+
+Memory over a session (looks, screenshots, a design, a scene, a script),
+v3.0.0: the server holds **14.7 MiB** (v2.6.0: 24.3) and the overlay helper
+10.9 MiB (13.1); the server's peak is 22 MiB. Fonts are memory-mapped, and
+memory freed by a big call goes back to the system.
 
 ### Compared with Codex's behaviour
 
@@ -669,14 +695,14 @@ look at the app, open another page, look, come back, look again. Once the
 way Codex's computer use behaves (a screenshot with every
 `get_app_state`, no screen memory, no picture dedupe, whole-window
 pictures, no change report after an action), once with this server's
-defaults. Same app (`gtk3-widget-factory`), same calls, v2.6.0:
+defaults. Same app (`gtk3-widget-factory`), same calls, v3.0.0:
 
 | 10 round trips, 61 calls | Codex-style | computer-use defaults |
 |---|---|---|
-| tokens the model receives | ~47,600 | **~7,200** (6.6x fewer, 85% saved) |
+| tokens the model receives | ~46,300 | **~6,800** (6.8x fewer, 85% saved) |
 | screenshots sent | 21 | **2** |
-| average `get_app_state` | 18-19 ms | **5.5-5.7 ms** |
-| whole session | 5.7 s | **5.3 s** |
+| average `get_app_state` | 17-17.5 ms | **5.4-5.8 ms** (3x faster) |
+| whole session | 5.6-5.7 s | **5.1-5.4 s** |
 
 With 5 round trips the saving is 4.2x (76%): it grows with the session,
 because every screen the model has seen once comes back as "seen before"

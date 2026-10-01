@@ -1,5 +1,123 @@
 # Changelog
 
+## v3.0.0
+
+Stability first: no call can hang the server or run for hours, a busy or
+hung app is told apart from one that failed, and an action that was sent
+but not answered is never repeated. Fewer tokens and less memory on top
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v2.6.0...v3.0.0)).
+
+### Stability, everywhere
+
+- **An action sent but not answered is never done twice.** A press, value
+  or secondary action the app didn't answer in time (busy, hung, a dialog
+  opened) is reported as "sent, may or may not have happened; look before
+  repeating it", and is not retried with a mouse click or by typing.
+- **Clients can cancel.** The server reads its input on a thread of its
+  own: `notifications/cancelled` ends the call that is running (a long
+  drawing, a script, a wait) as the stop key would, and a request cancelled
+  before it starts never runs. What a dropped answer would have shown is
+  sent in full by the next look.
+- **Every call is bounded**: `type_text` up to 100,000 characters (typed in
+  pieces, the stop key checked between them), `press_key` 500 presses,
+  `scroll` 50 pages, `get_clipboard` 30,000 characters, design pages 500
+  layers, pictures 50 megapixels; huge angles, brushes and noise pictures
+  no longer stall drawing, scenes or pixel searches; calls nest at most 8
+  deep and a script can't start another script.
+- **Subprocesses can't hang it**: Tesseract runs with a 60 s limit, `curl`
+  is killed by the stop key or a cancel, and every child is waited for.
+- **Files**: scripts read and write only regular files (never a device or
+  a pipe); settings are written atomically, and a settings file caught
+  half-saved is not taken; the audit log rotates at 10 MB.
+- **Coordinates follow a window that moved**, so the model's screenshot
+  still names the right places.
+- The overlay helper's command queue is bounded; a helper that stops
+  reading is replaced. Refused HTTP requests are answered off the main
+  loop. On Windows, apps the server starts no longer inherit its stdio
+  pipes (the client always sees the server end).
+
+### Windows
+
+- UI Automation calls are bounded (CUIAutomation8 timeouts, a 10 s budget
+  per tree read that returns what it has); VARIANTs are freed.
+- A hung window (`IsHungAppWindow`) is never waited on: window changes are
+  asynchronous and checked, captures of it come off the screen (only when
+  nothing covers it), and its actions report "not responding".
+- Focus works past the foreground lock without stray key presses; a
+  minimized window must be restored before input goes to it.
+- Points off every monitor are refused; the wheel is clamped; ghost
+  windows (cloaked, overlays, untitled tool popups) are left out; the
+  pointer is put back after the click lands; handles of closed apps are
+  dropped; capture fixes (DC leak, GdiFlush, overflow); notification reads
+  are bounded; COM runs multithreaded, with shell launches on a short STA
+  thread.
+
+### macOS
+
+- Accessibility calls are bounded on every element (a system-wide
+  messaging timeout); an app that times out ends the tree read at once
+  with what was read, and presses that time out are "sent, not answered".
+- Every Objective-C call runs in an autorelease pool (no growing memory in
+  a long session); Screen Recording permission is checked and reported.
+- Clicks, drags and scrolls carry no held modifier keys, and scrolls land
+  at the target point; focus also sets AXFrontmost and waits for full
+  screen to end before moving a window.
+- Values are type-checked before use; pixel formats are read as they are;
+  concealed clipboard content (passwords) is refused; the overlay follows
+  screen changes and exits if its parent is gone.
+
+### Linux
+
+- Keys go only to the app they are for: the window that has the keyboard
+  comes from the window manager (`_NET_ACTIVE_WINDOW`), a terminal or
+  other app without accessibility counts as in front, and focusing checks
+  the window really got the keyboard.
+- Typing works whatever keyboard layout is active (the group is locked to
+  the first layout and Caps Lock released while typing, then restored).
+- AT-SPI calls are bounded: a press or value the app doesn't answer is
+  "sent, not answered"; slow elements are retried in smaller batches; a
+  tree read returns what it has after 8 s; a busy app (a modal dialog
+  open) stays listed.
+- Huge lists (a 100,000-row table) are read by index, first 256 rows:
+  0.97 s instead of 8.2 s.
+- A broken AT-SPI or X connection is replaced on the next call; the X
+  event queue is drained and the keymap reloaded when it changes.
+- Clipboard helpers give up after 3 s and are always reaped; `wl-*` only
+  under Wayland. Under Wayland, input to apps without an XWayland window
+  is refused instead of going astray.
+- Actions a toolkit names with a sentence (GTK's table cells) get short
+  names.
+
+### Fewer tokens
+
+- After an action's result showed the start of a new screen, the next
+  `get_app_state` sends only the rest.
+- A changed line in a diff ends with only what differed (`…unchecked)`),
+  not the whole old line.
+- How-to paragraphs in `design`, `trace_image` and OCR headers are said
+  once per session.
+- Tool definitions share repeated schemas (compact mode).
+
+Measured with `examples/compare.rs` (gtk3-widget-factory, 10 round trips,
+61 calls): **6,821 tokens** against 46,280 the way Codex's computer use
+behaves (**6.8x fewer, 85% saved**; v2.6.0: 7,164), 2 screenshots instead
+of 21, `get_app_state` in ~5.6 ms instead of ~17 ms. Tool definitions:
+~4,400 tokens per request (v2.6.0: ~4,900).
+
+### Less memory
+
+- Fonts are memory-mapped instead of read into the heap; freed memory is
+  given back to the system after big calls.
+- Measured over a session (look, screenshots, design, scene, script):
+  the server holds **14.7 MiB** (v2.6.0: 24.3), the overlay helper 10.9
+  MiB (13.1), peak 22 MiB.
+
+### Notes
+
+- Linux is tested live (Xvfb, AT-SPI, GTK). The Windows and macOS changes
+  are type-checked and reviewed but not yet run on real hardware: please
+  report anything that behaves differently.
+
 ## v2.6.0
 
 Scripts: the model writes a small program and the server runs it, for
