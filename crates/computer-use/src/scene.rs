@@ -407,12 +407,38 @@ struct Placed<'a> {
     r: M3,
     lo: V3,
     hi: V3,
-    points: Vec<V3>,
+    /// Made only for parts that come near another.
+    points: std::cell::OnceCell<Vec<V3>>,
 }
 
 impl Placed<'_> {
     fn inside(&self, p: V3, g: f64) -> bool {
         self.o.inside_local(mul_t(self.r, sub(p, self.o.at)), g)
+    }
+
+    /// Points on its surface: each triangle's corners, the middles of two
+    /// sides and of the triangle.
+    fn points(&self) -> &[V3] {
+        self.points.get_or_init(|| {
+            let mut points = Vec::new();
+            for t in self.o.triangles() {
+                for (a, b) in [
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 1.0),
+                    (0.5, 0.5),
+                    (0.5, 0.0),
+                    (0.0, 0.5),
+                    (1.0 / 3.0, 1.0 / 3.0),
+                ] {
+                    points.push(add(
+                        t[0],
+                        add(times(sub(t[1], t[0]), a), times(sub(t[2], t[0]), b)),
+                    ));
+                }
+            }
+            points
+        })
     }
 }
 
@@ -720,29 +746,12 @@ impl Scene {
             .iter()
             .map(|o| {
                 let (lo, hi) = o.bounds();
-                let mut points = Vec::new();
-                for t in o.triangles() {
-                    for (a, b) in [
-                        (0.0, 0.0),
-                        (1.0, 0.0),
-                        (0.0, 1.0),
-                        (0.5, 0.5),
-                        (0.5, 0.0),
-                        (0.0, 0.5),
-                        (1.0 / 3.0, 1.0 / 3.0),
-                    ] {
-                        points.push(add(
-                            t[0],
-                            add(times(sub(t[1], t[0]), a), times(sub(t[2], t[0]), b)),
-                        ));
-                    }
-                }
                 Placed {
                     o,
                     r: o.rot(),
                     lo,
                     hi,
-                    points,
+                    points: std::cell::OnceCell::new(),
                 }
             })
             .collect();
@@ -763,8 +772,8 @@ impl Scene {
                 let grid = grid_points(lo, hi, 13);
                 let both = |p: &V3, g: f64| a.inside(*p, g) && b.inside(*p, g);
                 let touching = grid.iter().any(|p| both(p, tol * 2.0))
-                    || a.points.iter().any(|p| b.inside(*p, tol * 2.0))
-                    || b.points.iter().any(|p| a.inside(*p, tol * 2.0));
+                    || a.points().iter().any(|p| b.inside(*p, tol * 2.0))
+                    || b.points().iter().any(|p| a.inside(*p, tol * 2.0));
                 if !touching {
                     continue;
                 }
@@ -1461,23 +1470,28 @@ impl Panel {
     }
 }
 
-/// A small z-buffered painter.
+/// A small z-buffered painter, kept compact (a big view has millions of
+/// pixels): colours as bytes, normals as signed bytes.
 struct Raster {
     side: usize,
-    rgb: Vec<[f32; 3]>,
-    depth: Vec<f64>,
+    rgb: Vec<[u8; 3]>,
+    depth: Vec<f32>,
     id: Vec<i32>,
-    normal: Vec<[f32; 3]>,
+    normal: Vec<[i8; 3]>,
+}
+
+fn bytes(c: [f32; 3]) -> [u8; 3] {
+    c.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 impl Raster {
     fn new(side: usize, bg: [f32; 3]) -> Raster {
         Raster {
             side,
-            rgb: vec![bg; side * side],
-            depth: vec![f64::MAX; side * side],
+            rgb: vec![bytes(bg); side * side],
+            depth: vec![f32::MAX; side * side],
             id: vec![-1; side * side],
-            normal: vec![[0.0; 3]; side * side],
+            normal: vec![[0; 3]; side * side],
         }
     }
 
@@ -1534,9 +1548,10 @@ impl Raster {
     }
 
     fn tri(&mut self, p: [(f64, f64, f64); 3], rgb: [f32; 3], id: i32, n: [f32; 3]) {
+        let (rgb, n) = (bytes(rgb), n.map(|v| (v * 127.0).round() as i8));
         let mut hits = Vec::new();
         self.cover(p, |i, w| {
-            hits.push((i, w[0] * p[0].2 + w[1] * p[1].2 + w[2] * p[2].2));
+            hits.push((i, (w[0] * p[0].2 + w[1] * p[1].2 + w[2] * p[2].2) as f32));
         });
         for (i, d) in hits {
             if d < self.depth[i] {
@@ -1552,7 +1567,7 @@ impl Raster {
         let mut hits = Vec::new();
         self.cover(p, |i, _| hits.push(i));
         for i in hits {
-            self.rgb[i] = rgb;
+            self.rgb[i] = bytes(rgb);
         }
     }
 
@@ -1564,13 +1579,14 @@ impl Raster {
         let n = len.ceil().max(1.0) as usize;
         let r = (width / 2.0).max(0.5);
         let side = self.side as i64;
+        let c = bytes(rgb);
         for s in 0..=n {
             let t = s as f64 / n as f64;
             let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
             for yy in (y - r).round() as i64..(y + r).round() as i64 {
                 for xx in (x - r).round() as i64..(x + r).round() as i64 {
                     if (0..side).contains(&xx) && (0..side).contains(&yy) {
-                        self.rgb[(yy * side + xx) as usize] = rgb;
+                        self.rgb[(yy * side + xx) as usize] = c;
                     }
                 }
             }
@@ -1594,7 +1610,9 @@ impl Raster {
                         mark[j] = 2;
                     } else if a >= 0 {
                         let (n, m) = (self.normal[i], self.normal[j]);
-                        if n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < 0.8 {
+                        let dot: i32 = (0..3).map(|k| i32::from(n[k]) * i32::from(m[k])).sum();
+                        // cos below 0.8: a crease.
+                        if dot < 12_903 {
                             mark[i] = mark[i].max(1);
                             mark[j] = mark[j].max(1);
                         }
@@ -1604,8 +1622,8 @@ impl Raster {
         }
         for (c, m) in self.rgb.iter_mut().zip(&mark) {
             match m {
-                2 => *c = [0.16, 0.16, 0.16],
-                1 => *c = c.map(|v| v * 0.55),
+                2 => *c = [41, 41, 41],
+                1 => *c = c.map(|v| (f32::from(v) * 0.55) as u8),
                 _ => {}
             }
         }
@@ -1617,17 +1635,17 @@ impl Raster {
         let mut v = vec![[0u8; 3]; out * out];
         for y in 0..out {
             for x in 0..out {
-                let mut sum = [0.0f32; 3];
+                let mut sum = [0u32; 3];
                 for dy in 0..k {
                     for dx in 0..k {
                         let c = self.rgb[(y * k + dy) * self.side + x * k + dx];
                         for (s, c) in sum.iter_mut().zip(c) {
-                            *s += c;
+                            *s += u32::from(c);
                         }
                     }
                 }
-                let n = (k * k) as f32;
-                v[y * out + x] = sum.map(|s| (s / n * 255.0).round().clamp(0.0, 255.0) as u8);
+                let n = (k * k) as u32;
+                v[y * out + x] = sum.map(|s| ((s + n / 2) / n) as u8);
             }
         }
         v
