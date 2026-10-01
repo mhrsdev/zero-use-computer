@@ -135,7 +135,7 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" dist/
-          cp mcp.example.json README.md dist/
+          cp mcp.example.json README.md CHANGELOG.md dist/
           # The layered skills (skills/computer-use, skills/computer-use-security).
           mkdir -p dist/skills && cp -R skills/. dist/skills/
           # Claude Code installers, client examples and the connection guide.
@@ -169,6 +169,46 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-mcp-${{ matrix.name }}.zip .; else zip -r ../computer-use-mcp-${{ matrix.name }}.zip .; fi
           cd ../plugin-only
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-plugin-${{ matrix.name }}.zip .; else zip -r ../computer-use-plugin-${{ matrix.name }}.zip .; fi
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # This tag's section of CHANGELOG.md (if it has one), then how to install.
+          new=$(awk -v h="## $TAG" '$0 == h {on = 1; next} on && /^## / {exit} on' CHANGELOG.md)
+          {
+            echo "MCP server for Claude Code (and any MCP client): control desktop apps"
+            echo "through their accessibility tree plus screenshots."
+            echo
+            if [ -n "$new" ]; then
+              echo "## What's new in $TAG"
+              printf '%s\n\n' "$new"
+            fi
+            cat <<'EOF'
+          ## Install
+
+          **Windows:** download `computer-use-mcp-windows-x64.zip`, extract it to a
+          permanent folder (for example `C:\Tools\computer-use-mcp`), then double-click
+          `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
+          Check with `claude mcp list`.
+
+          **As a plugin** (*Customize ▸ Plugins ▸ Upload local plugin*): upload the full
+          `computer-use-mcp-<os>.zip`. If "Upload failed" appears and a `computer-use` plugin is
+          already installed, remove the old one first, then upload again.
+          Only if the full zip is refused for containing a program, use the small
+          `computer-use-plugin-<os>.zip` (about 5 KB, no program inside on purpose): first run
+          `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
+          which copies the program to `~/.computer-use/bin`; then upload the plugin zip.
+
+          **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
+          macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.
+
+          Every zip contains the binary, the installers, `docs/CONNECT.md` (Claude Code, Claude Desktop,
+          Codex, Cursor, VS Code, HTTP) and ready-to-copy configs in `examples/`.
+          The binaries are not code-signed, so Windows SmartScreen may ask you to confirm.
+          EOF
+          } > release-notes.md
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         uses: softprops/action-gh-release@v2
@@ -177,29 +217,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: computer-use-mcp ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
-          body: |
-            MCP server for Claude Code (and any MCP client): control desktop apps
-            through their accessibility tree plus screenshots.
-
-            **Windows:** download `computer-use-mcp-windows-x64.zip`, extract it to a
-            permanent folder (for example `C:\Tools\computer-use-mcp`), then double-click
-            `install.cmd` (or run `claude mcp add --scope user computer-use -- C:\Tools\computer-use-mcp\computer-use-mcp.exe serve`).
-            Check with `claude mcp list`.
-
-            **As a plugin** (*Customize ▸ Plugins ▸ Upload local plugin*): upload the full
-            `computer-use-mcp-<os>.zip`. If "Upload failed" appears and a `computer-use` plugin is
-            already installed, remove the old one first, then upload again.
-            Only if the full zip is refused for containing a program, use the small
-            `computer-use-plugin-<os>.zip` (about 5 KB, no program inside on purpose): first run
-            `install.cmd -NoRegister` (Windows) / `./install.sh --no-register` from the full zip,
-            which copies the program to `~/.computer-use/bin`; then upload the plugin zip.
-
-            **macOS / Linux:** download your platform's zip, extract it, run `./install.sh`.
-            macOS needs Accessibility and Screen Recording permission for the app that runs Claude Code.
-
-            Every zip contains the binary, the installers, `docs/CONNECT.md` (Claude Code, Claude Desktop,
-            Codex, Cursor, VS Code, HTTP) and ready-to-copy configs in `examples/`.
-            The binaries are not code-signed, so Windows SmartScreen may ask you to confirm.
+          body_path: release-notes.md
           files: |
             computer-use-mcp-${{ matrix.name }}.zip
             computer-use-plugin-${{ matrix.name }}.zip
