@@ -11,9 +11,9 @@ description: >-
 # Design with computer use
 
 Good results come from numbers, not from eyeballing. Before you touch the
-app, turn the request into a spec of sizes, positions and colours. Then
-build it with the most exact method the app has, and check every step
-against the spec.
+app, turn the request into a spec of sizes, positions and colours, and see
+it on the design board (2D) or in a scene (3D). Then build it with the most
+exact method the app has, and check every step against the spec.
 
 ## The method
 
@@ -27,10 +27,14 @@ against the spec.
    If the brief is vague, choose sensible values, list them in the spec and go on.
    Ask only for what you can't choose yourself (the text of a logo, a brand
    colour).
-2. **Set up the document exactly**: size, units and background, typed
+2. **See it before you build it.** Put the spec on the board: `design`
+   for anything flat, `scene` for anything 3D (both below). Look at the
+   picture, fix every check it reports, and change numbers until it looks
+   right. A fix there is one call; in the app it is undo and redraw.
+3. **Set up the document exactly**: size, units and background, typed
    into the app's New / Document Setup / Units dialogs. Never set them by
    dragging.
-3. **Build in passes**, back to front:
+4. **Build in passes** from the board, back to front:
    1. background;
    2. big shapes;
    3. smaller shapes;
@@ -40,13 +44,46 @@ against the spec.
 
    One element at a time. Name each layer or object after the spec
    ("bg", "title").
-4. **Check after every pass**: [reference/checks.md](reference/checks.md).
+5. **Check after every pass**: [reference/checks.md](reference/checks.md).
    Fix the first difference before going on. Undo (`cmd+z`) rather than
    painting over a mistake.
-5. **Save versions**: `name_v1`, `name_v2`, … in the app's own format.
+6. **Save versions**: `name_v1`, `name_v2`, … in the app's own format.
    Never overwrite the user's original file (security rule 3).
-6. **Deliver**: export the format and size the spec says, then tell the
+7. **Deliver**: export the format and size the spec says, then tell the
    user where the file is and what the spec was.
+
+## The board: `design` (2D) and `scene` (3D)
+
+Both keep what you build under a name: later calls with the same name
+change it. Both return a picture, the parts with their exact extents, and
+checks. Details and examples: [reference/board.md](reference/board.md).
+
+- **`design`** is a page of layers, like Canva: shapes as `draw` takes
+  them (rect, ellipse, polygon, star, arc, bezier, points, curves, repeat)
+  with `fill`, `stroke` and `width`, and text. Add, change, mirror (the
+  other eye), align, distribute and reorder them. The checks catch shapes
+  off the page or nearly centred, pairs that are not quite symmetric, text
+  that is hard to read or overlaps. The picture has named cells (A1
+  top-left); `show: {"cell": "C4"}` magnifies one.
+- **`scene`** is solids in metres, Z up, the ground at z 0: box, cylinder,
+  sphere, cone, torus, plane, each with `size`, `at` (its centre) and
+  `rotate`. `on: "seat"` sets an object on top of another; `mirror` and
+  `repeat` make legs, wheels and rows. The picture shows the front, right
+  and top views to one scale and a perspective view with shadows. The
+  checks say what floats (and how far above what), sinks into the ground
+  or runs into another part.
+
+Then put it into the app, the most exact way first:
+
+1. **Import a file.** `design` `export: "svg"` (vector apps, Figma) or
+   `"png"`; `scene` `export: "obj"` (Blender, most 3D apps). The file is
+   temporary: import it at once, then save in the app.
+2. **Type the numbers** into the app's fields: each layer's x, y, size and
+   hex; each object's Location (`at`), Rotation (`rotate`) and Dimensions
+   (`size`).
+3. **Paint it step by step** (Paint and other raster apps): the result
+   lists the steps, one colour each. Set the colour, then
+   `draw(canvas=..., strokes=[{"design": name, "step": n, "fill": w}])`.
 
 ## The most exact way first
 
@@ -91,8 +128,10 @@ Use the first of these that the app offers for the step:
    | plot of f(x), axes | `{"y": "f(x)"}`, `{"axes": [xstep, ystep]}` |
 
 3. **Preview** with `preview: true`. Nothing is drawn; the red strokes are
-   shown over the canvas with a grid in your units. Compare with the spec,
-   fix the numbers, then draw for real.
+   shown over the canvas on named cells, sized so the drawing spans about
+   eight of them, with their lines labelled in your units. The result says
+   which cells the drawing covers. Compare with the spec, fix the numbers,
+   then draw for real.
 4. **Solid shapes**: with a brush or pencil, add `"fill": w` (`w` = the
    brush size you set in the app). Paint back to front: each shape covers
    the ones before it, so overlapping shapes come out right. This is the
@@ -101,8 +140,9 @@ Use the first of these that the app offers for the step:
    each closed outline. When other lines cut it into pieces, it gives a
    point per piece; when the outline has a gap, it says where: close it
    first. Never bucket-fill a shape that other outlines cross: use `fill`.
-6. **Check** the drawn pixels with `screenshot` (with the same `canvas`,
-   `grid=true` and `pick`).
+6. **Check** the drawn pixels with `screenshot` (with the same `canvas`):
+   `cells=true` names the cells, `cell="C4"` magnifies one with a fine grid
+   and its colours, `pick` reads exact colours.
 
 The active tool decides what a stroke does. With a brush or pencil, the
 outline is painted. With a shape tool, the app makes its own shape from one
@@ -134,6 +174,14 @@ Details: [reference/recipes.md](reference/recipes.md), "Copying a photo".
   spec.
 - `screenshot(app, element_index=i)` zooms in to read small text and
   values.
+- With `canvas`, `cells=true` lays graph paper over the document (columns
+  A, B…, rows 1, 2…) and `cell="C4"` magnifies one cell. Check a drawing
+  cell by cell where it matters: a face, a joint, a corner.
+- **Aiming at small things:** `screenshot(app, zoom=[x, y])` magnifies
+  around a point with a crosshair; `locate` finds exact places (areas of a
+  colour, look-alikes of an icon, the corner or edge near a rough point);
+  `click` and `drag` take `snap: "corner"` (or `"edge"`, `"center"`, a hex
+  colour) to land on it exactly.
 - Drawn pixels are not in the accessibility tree; panels and fields
   usually are. Read values from fields, not from the picture.
 

@@ -1435,7 +1435,15 @@ impl Panel {
             }
         }
         if ids && scene.objects.len() <= 40 {
-            for o in &scene.objects {
+            // The nearest first: where names would overlap, what is in
+            // front keeps its name.
+            let mut order: Vec<(f64, &Object)> = scene
+                .objects
+                .iter()
+                .map(|o| (self.project(o.at).2, o))
+                .collect();
+            order.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, o) in order {
                 let (x, y, _) = self.project(o.at);
                 let text: String = o.id.chars().take(14).collect();
                 let (w, h) = imaging::tag_size(&text, 2);

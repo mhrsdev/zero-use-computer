@@ -54,6 +54,25 @@ undo) also take Cmd on a Mac.
   "Add Modifier"; then set its fields by double-clicking them.
 - **Smooth look:** `F3` "Shade Smooth". Subdivision: `ctrl+1` or `ctrl+2`.
 
+## From a scene
+
+Plan the model in `scene` first (the design skill's `reference/board.md`): its checks
+catch floating and overlapping parts before anything is built. Then:
+
+- **Import it:** `scene` with `export: "obj"`, then File ▸ Import ▸
+  Wavefront (.obj) and type the path it gave. Keep the default axes
+  (forward -Z, up Y): the model comes in Z up, in metres, with a material
+  per colour. The file is temporary, so import it at once and save the
+  `.blend`.
+- **Or build it by numbers**, one object at a time:
+  1. `shift+c`, then Add ▸ Mesh ▸ Cube (box), Cylinder, UV Sphere, Cone,
+     Torus or Plane (`F3` "Add Cube" and so on).
+  2. In the sidebar (`n`), Item tab: Location = `at`, Rotation = `rotate`,
+     Dimensions = `size`. Then `ctrl+a` ▸ Scale.
+  3. Rename it after the scene's id (`F2`).
+- **Check** with `Numpad1`, `Numpad3` and `Numpad7` against the scene's
+  front, right and top views.
+
 ## Materials, camera, light, render
 
 - **Material:**

@@ -43,6 +43,7 @@ them.
 | `{"y": "sin(x)"}` | plot of y = f(x) over the whole x range (or `t: [a, b]`) |
 | `{"axes": [xstep, ystep]}` | axes through 0 with ticks; needs `canvas.range` |
 | `{"trace": "name", "step": n, "fill": w}` | one colour step of a picture traced with `trace_image` (below) |
+| `{"design": "name", "step": n, "fill": w}` | one colour step of a `design` (below) |
 
 Any stroke can also take:
 
@@ -80,8 +81,13 @@ Expressions:
 ## Preview, then draw
 
 - `"preview": true` draws nothing. It shows the strokes in red over a
-  screenshot, with a grid in the coordinates you used. Check the placement,
-  then call again without it.
+  screenshot, on named cells: columns A, B… and rows 1, 2… from the top
+  left, their lines labelled in the coordinates you used. The cells are
+  sized so the drawing spans about eight of them (a small drawing gets
+  small cells). Check the placement, then call again without it.
+- Every result says which cells the drawing covers ("It covers cells B2
+  to D3"). After drawing, `screenshot(app, canvas=..., cells=true)` shows
+  the same cells over the document and `cell="C4"` magnifies one.
 - For each closed outline (not `fill`), the result says where a bucket or
   magic-wand click fills it, in click coordinates, checked on the real
   pixels:
@@ -91,6 +97,19 @@ Expressions:
   - "would leak out through a gap near (x, y)": the outline isn't closed
     there. Close it (or undo and redraw) before filling, or the fill
     floods the canvas.
+
+## Plan it first: design and scene
+
+- `design(name, size, background, add=[...])` is a design board: layers
+  that are these same strokes (with `fill`, `stroke`, `width`) or text. It
+  returns the picture, the layers' boxes, checks (off the page, nearly
+  centred, not quite symmetric, hard-to-read text) and steps to paint.
+  Paint step n with `{"design": "name", "step": n, "fill": w}`, or
+  `export: "svg"`/`"png"` to import a temporary file.
+- `scene(name, add=[...])` does the same for 3D: solids with size, centre
+  and rotation, seen from the front, right, top and in perspective, with
+  checks for parts that float, sink or run into each other.
+- Details: the computer-use-design skill, `reference/board.md`.
 
 ## Copying a picture: trace_image
 

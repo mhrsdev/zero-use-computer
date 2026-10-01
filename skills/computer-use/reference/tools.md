@@ -27,9 +27,27 @@
     and `pick` points are in those units too.
   - `compare: "name"` (with `canvas`): how the document differs from a
     picture traced with `trace_image`.
+  - `cells: true` (with `canvas`): graph paper over the document, columns
+    A, B… and rows 1, 2… (about 8 across). `cell: "C4"` shows that cell
+    magnified with a fine grid in the document's units and its colours.
+  - `zoom: [x, y]` (window shots): a magnified view around a point, each
+    screen pixel a square, with a crosshair and a grid in click
+    coordinates. Use it to aim at something small.
+- `locate(app, ...)`: exact places in a window, in click coordinates:
+  - `color: "#hex"`: every area of that colour, with its centre and box;
+  - `like: [l, t, r, b]`: every other place that looks like that part of
+    the window (the same icon, handle or marker);
+  - `near: [x, y]` with `feature: "corner"`, `"edge"` or `"center"`: the
+    exact point next to a rough one.
+- `click` and `drag` take `snap: "corner"` (or `"edge"`, `"center"`,
+  `"#hex"`): the x/y moves onto the nearest one within `snap_radius`
+  before acting. The result says how far it moved.
 - `trace_image(path | app + box, colors, detail, name)`: a reference
   picture as flat colour steps to paint with `draw` (see
   [drawing.md](drawing.md)).
+- `design` (a 2D picture from layers) and `scene` (a 3D model from
+  solids): plan and see a drawing before building it in an app. See
+  [drawing.md](drawing.md) and the computer-use-design skill.
 - `window(app, action)`: `list`, `focus`, `move` (x, y, optional width and
   height), `resize`, `maximize`, `minimize`, `restore`, `fullscreen`,
   `exit_fullscreen`, `close`, `tile_left` / `tile_right` / `tile_top` /

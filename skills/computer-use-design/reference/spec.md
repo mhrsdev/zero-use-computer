@@ -30,9 +30,11 @@ Checks: <what must be true at the end>
 - Positions are in canvas pixels, (0, 0) top-left: the top-left corner for
   rects, the centre for round shapes. For a centred rect:
   x = (W - w) / 2. Write down the number, not the formula.
-- Each shape is then one `draw` stroke with the same numbers (the table in
-  the skill's "Drawing" section), or one shape typed into the app's
-  fields. A repeated element is one stroke with `repeat`.
+- Each shape is then one `design` layer and one `draw` stroke with the
+  same numbers (the table in the skill's "Drawing" section), or one shape
+  typed into the app's fields. A repeated element is one stroke with
+  `repeat`. Put the elements on the board (`design`, [board.md](board.md))
+  before the app.
 - Keep everything at least the margin away from the edges.
 - Fonts: use ones the app lists. If the requested font is missing, say so
   and pick a similar one.
@@ -75,6 +77,10 @@ Render: engine <Eevee|Cycles>, <W> x <H> px
 
 Z is up. The floor is z = 0. An object of height h stands on the floor at
 z = h / 2 (Blender places origins at the centre).
+
+Each object line is one `scene` object: `shape`, `size`, `at` (the
+centre), `rotate`, `color` ([board.md](board.md)). Put the spec into
+`scene` before the app and fix what its checks report.
 
 ## Buildings and CAD (Revit, AutoCAD, SketchUp)
 

@@ -32,8 +32,10 @@ This project follows the same architecture and behaviour:
 - **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
   `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
   `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`,
-  `draw` (shapes and parametric curves with the mouse held down) and
-  `trace_image` (a reference picture as flat colours to paint).
+  `draw` (shapes and parametric curves with the mouse held down),
+  `trace_image` (a reference picture as flat colours to paint), `design` (a
+  2D design board) and `scene` (a 3D model planned as solids), and `locate`
+  (exact places to aim at).
 - **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
   screen and a status label in state colours, click-through and invisible to
   the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
@@ -53,25 +55,33 @@ This project follows the same architecture and behaviour:
 | `list_apps` | List running desktop apps (id, pid, window state). |
 | `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments) and wait for a window. |
 | `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
-| `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels. |
+| `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
 | `set_value` | Set a field's text, a slider, or a checkbox/switch directly. |
 | `select_text` | Select a substring (or all) in a text element. |
 | `scroll` | Scroll an element or the area at a point. |
-| `drag` | Drag between elements or points. |
-| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `fill` paints a closed shape solid with the brush (shapes painted back to front cover each other). `preview` shows the strokes over a screenshot first; the result says where a bucket click fills each closed outline, checked on the real pixels (one click per piece when other lines cut it, or where a fill would leak out). |
+| `drag` | Drag between elements or points (`snap` as for `click`). |
+| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `fill` paints a closed shape solid with the brush (shapes painted back to front cover each other). `preview` shows the strokes over a screenshot first, on named cells (graph paper sized to the drawing); the result says which cells the drawing covers and where a bucket click fills each closed outline, checked on the real pixels (one click per piece when other lines cut it, or where a fill would leak out). |
 | `trace_image` | Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes, as steps to paint back to front with `draw`; `screenshot` with `compare` then shows where the canvas still differs. |
+| `design` | A design board, like Canva: a picture composed from layers (the shapes `draw` takes, and text) that can be added, changed, mirrored, aligned, distributed and reordered. Returns the rendered picture on named cells, the layers' boxes, checks (off the page, nearly centred, not quite symmetric, hard-to-read text) and the steps to paint it; then `draw` paints a step, or `export` writes a temporary SVG or PNG to import. |
+| `scene` | A 3D model planned as solids (box, cylinder, sphere, cone, torus, plane) with exact sizes, centres and rotations, Z up. Returns the front, right and top views to one scale and a perspective view with shadows, the parts' extents, checks (what floats, sinks into the ground or runs into another part, and by how much) and the numbers to build it in Blender or another 3D app; `export` writes a temporary OBJ with its colours. |
+| `locate` | Exact places in a window, in click coordinates: every area of a colour, every look-alike of an icon or marker, or the exact corner, edge or centre next to a rough point. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
 | `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
-| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does. |
+| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does, **cells** lays named graph paper over the document and `cell` magnifies one cell. `zoom` magnifies around a point to aim exactly. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
 Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
 region/full `screenshot`, clipboard) cut round-trips and token use, and an
 optional **audit log** records every call.
+
+Files that `design` and `scene` export are temporary. They go to a
+`computer-use-exports` folder in the system's temp directory and are
+deleted when the server stops. Files there older than a day are removed,
+and the folder is kept under 200 MB, so exports never pile up on disk.
 
 The model should load two skills:
 
@@ -92,12 +102,19 @@ written so that smaller models get good results too:
 - a spec of exact numbers comes first;
 - each step uses the most exact method the app has (numeric fields, typed
   commands, `draw` in document units);
+- the spec goes on a board first: `design` renders a 2D picture from
+  layers and `scene` a 3D model from solids, with checks (nothing off the
+  page, symmetric pairs symmetric, no part floating or sunk), before the
+  app is touched;
 - the spec's shapes map one to one to `draw` strokes (rect, ellipse,
   polygon, star, arc, Bézier, plots with axes, repeats), previewed over the
-  canvas before anything is painted, and painted solid back to front;
+  canvas on named cells before anything is painted, and painted solid back
+  to front;
 - a photo is copied with `trace_image`: flat colour steps the model paints
   in order, then checks against the trace;
-- every pass is checked with grid screenshots and exact colour readings;
+- every pass is checked with grid screenshots, cell by cell where it
+  matters, and exact colour readings; small targets are hit with `locate`,
+  `snap` and a magnified `zoom`;
 - each app has a playbook, and there are recipes for common jobs.
 
 Each is a short core the model keeps loaded, plus `reference/` files it reads

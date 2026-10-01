@@ -4,14 +4,26 @@ Check after every pass, not only at the end. A check is a list of yes/no
 questions answered from a screenshot, `pick` colours and the app's own
 fields. Never answer from memory of what you meant to do.
 
+## On the board, before the app
+
+- `design`: the result says "Checks: nothing off", or each check left is
+  one you meant (a shape that bleeds off the page on purpose).
+- `scene`: nothing floats or sinks, and parts run into each other only
+  where they are joined. The front, right and top views show the
+  proportions of the spec.
+- The picture looks like what was asked for. If it doesn't, change the
+  numbers there: it costs one call.
+
 ## Before each `draw`
 
 Call it with `preview: true` first. Nothing is painted; you get the red
-strokes over the canvas, a grid in your units and green dots where each
-stroke starts. Check:
+strokes over the canvas on named cells (lines labelled in your units) and
+green dots where each stroke starts. Check:
 
 - every stroke inside the canvas, where the spec puts it, at its size;
 - the count: one stroke per spec element (repeats included);
+- the cells it covers (the result names them) are where the board's
+  picture has it;
 - round things round. If the result says 1 unit of x and y differ on
   screen, fix the `range` or `size` first.
 
@@ -29,11 +41,16 @@ stroke starts. Check:
    a few units is fine for anti-aliased edges, not for fills.)
    After painting a traced picture: `screenshot(app, canvas=...,
    compare=name)`.
-4. Text: zoom in. Every character right? Font, size, colour and alignment
+4. Fine parts: `screenshot(app, canvas=..., cell="C4")` for each cell
+   where something must be exact (an eye, a joint, a corner where lines
+   meet). Lines meet, nothing spills over, the colours are right.
+5. Text: zoom in. Every character right? Font, size, colour and alignment
    as in the spec? Not cut off?
-5. Layers or objects: named, in the right order, nothing left selected
+6. Layers or objects: named, in the right order, nothing left selected
    that the next step could change by accident.
-6. Save (`cmd+s`). Every few passes, save as the next version.
+7. Save (`cmd+s`). Every few passes, save as the next version.
+8. 3D: the app's front, right and top views against the scene's views;
+   the sizes in its fields against the scene's listing.
 
 ## Before delivering
 
@@ -66,3 +83,7 @@ stroke starts. Check:
 | A fill covered only part of a shape | Other outlines cross it and cut it into pieces | Click each point the `draw` result gave, or undo and paint it with `fill`, back to front |
 | A copied photo looks like a different picture | Drawn by eye | Use `trace_image` and its steps; `screenshot(compare=...)` shows what still differs |
 | Small details vanished in a traced picture | The brush is wider than them (the `draw` result says so) | Draw that step again with a smaller brush and `fill` |
+| A click lands next to a small target | Estimated from the picture | `screenshot(app, zoom=[x, y])`, or `locate`, or `click` with `snap` |
+| A 3D part floats or sits inside another | `at` is the centre, not the bottom | Plan it in `scene`; `on: "<part>"` sets it on top |
+| A cylinder lies the wrong way | Cylinders and cones stand along z until rotated | `rotate` [90, 0, 0] lays it along y, [0, 90, 0] along x |
+| An imported OBJ is on its side | Import axes changed | Import again with forward -Z, up Y (the defaults) |

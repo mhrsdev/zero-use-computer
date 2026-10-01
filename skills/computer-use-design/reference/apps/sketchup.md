@@ -51,6 +51,23 @@ little way in that direction: the pointer sets it.
 - **Circle:** `c`, click the centre, type the radius, then `\n`. Before
   clicking, type the number of segments and `\n`.
 
+## From a scene
+
+Plan the model in `scene` first (the design skill's `reference/board.md`), then build
+each object from its numbers:
+
+- **A box** (not rotated): its corner is `at - size / 2`. `r`, click that
+  corner (or the origin, then Move the group there), type
+  `"<x size>,<y size>\n"`, then `p` and the z size. Make it a group.
+- **A cylinder** standing up: `c`, click the centre of its bottom
+  (`at`, with z lowered by half the height), type the radius, then `p`
+  and the height.
+- **Rotated parts**: build them unrotated at the origin, make a group,
+  rotate it with `q` and a typed angle, then Move it into place.
+- SketchUp's red, green and blue axes are the scene's x, y and z. Check
+  with Camera ▸ Standard Views ▸ Front, Right and Top against the scene's
+  views.
+
 ## Organise and finish
 
 - Make groups of finished parts: select them, then Edit ▸ Make Group.

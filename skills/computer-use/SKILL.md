@@ -60,13 +60,15 @@ Every result stays in the conversation, so ask only for what you need:
 - [reference/screens.md](reference/screens.md): screen numbers, diffs,
   dialogs, partial and overview screenshots.
 - [reference/tools.md](reference/tools.md): `find_element`, `wait_for`,
-  `batch`, `screenshot` modes, `window`, clipboard, notifications.
+  `batch`, `screenshot` modes (grid, cells, zoom), `locate` and `snap` for
+  exact aiming, `window`, clipboard, notifications.
 - [reference/special-content.md](reference/special-content.md): apps with
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
 - [reference/drawing.md](reference/drawing.md): `draw`: lines, shapes,
   stars, curves, function plots with axes, repeats, solid fills,
-  previews, and copying a picture with `trace_image`.
+  previews on named cells, planning with `design` and `scene`, and
+  copying a picture with `trace_image`.
 - Shortcuts and quirks of common apps:
   [browsers](reference/apps/browsers.md), [office](reference/apps/office.md),
   [mail and chat](reference/apps/mail-and-chat.md),

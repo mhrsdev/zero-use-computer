@@ -60,20 +60,27 @@ Follow the steps in order; after each numbered step, run the checks in
 
 ## A badge or emblem (Paint, Photoshop, GIMP, Krita)
 
-Spec example, 1000 x 1000 canvas: a ring, a star in it, 12 dots round it.
+Spec example, 1000 x 1150 canvas: a ring, a disc with a star in it, 12 dots
+round it, a title under it.
 
-1. Pencil or hard brush, 6 px, colour `#1E3A5F`. Then one `draw` with
-   `canvas={"box": [...], "size": [1000, 1000]}` and `preview: true`:
-   - `{"ellipse": [500, 500, 400, 400]}` and
-     `{"ellipse": [500, 500, 340, 340]}` (the ring);
-   - `{"star": [500, 500, 260, 110, 5]}`;
-   - `{"ellipse": [500, 60, 14, 14], "repeat": {"count": 12, "rotate": 30, "about": [500, 500]}}`.
-2. Check the preview, then draw without it.
-3. Bucket fill at the points the result gave, each in its spec colour:
-   stroke 1 is the ring (its point is between the circles), stroke 2 the
-   disc round the star, stroke 3 the star.
-4. `screenshot(app, canvas=..., grid=true, pick=[[500, 500], [500, 130]])`:
-   the star's centre and the ring.
+1. Put it on the board: the `design` call in [board.md](board.md) is this
+   badge. Look at the picture and clear its checks: change the numbers,
+   not the app.
+2. New document 1000 x 1150. Fill it with the background colour. Measure
+   the canvas box on a grid screenshot.
+3. Paint the steps the `design` result lists, in order. For each: set the
+   colour, then
+   `draw(canvas={"box": [...], "size": [1000, 1150]}, strokes=[{"design":
+   "badge", "step": n, "fill": 10}], preview=true)`. Check the preview,
+   then draw it without `preview`. A lines step uses a brush as wide as
+   the step says, and no `fill`.
+4. Type the title with the text tool where its layer says.
+5. `screenshot(app, canvas=..., cells=true)`: compare cell by cell with
+   the design's picture; `cell="E2"` looks closely at the top dot and the
+   ring.
+
+In Photoshop or GIMP you can instead `export: "png"` (or `"svg"` for
+Illustrator, Inkscape and Figma) and place the file as a layer.
 
 ## A radial pattern (mandala, flower, clock face)
 
@@ -119,20 +126,25 @@ Spec example, 1000 x 1000 canvas: a ring, a star in it, 12 dots round it.
 4. Dimensions on all four sides; check they read the spec's numbers.
 5. Save, export PDF.
 
-## A small 3D scene in Blender
+## A 3D model (Blender, SketchUp, any 3D app)
 
-1. Spec: objects with sizes and locations in metres, materials with hex
-   colours, camera, one light, render size.
-2. Delete the default cube (`Delete` with the pointer over the
-   viewport); `shift+c` to centre the cursor.
-3. For each object:
-   1. `F3` "Add Cube" (or Cylinder, …).
-   2. Set Dimensions and Location in the sidebar (`n`).
-   3. Apply scale (`ctrl+a` ▸ Scale).
-   4. Rename it (`F2`, type the name, `Return`).
-4. Materials: one per colour, set Base Color by hex.
-5. Camera and light from the spec. `Numpad0` to look through the camera,
-   then check the framing with a screenshot.
+Example: a stool, as in [board.md](board.md).
+
+1. Spec: the parts as solids with sizes in metres, their centres, their
+   rotations and colours.
+2. Build it in `scene` first. Look at the four views: legs where they
+   belong, proportions right. Clear every check: nothing floats or sinks,
+   and parts only run into each other where they are joined.
+3. Into the app, one of:
+   - `export: "obj"` and import it at once (Blender: File > Import >
+     Wavefront (.obj)); then save the app's own file;
+   - by numbers: per object, the primitive, then Location, Rotation and
+     Dimensions from the scene's listing
+     ([apps/blender.md](apps/blender.md), "From a scene").
+4. Check the app's front, right and top views (Blender `Numpad1`,
+   `Numpad3`, `Numpad7`) against the scene's.
+5. Materials: one per colour, Base Color by hex. Camera and light from the
+   spec; `Numpad0` looks through the camera.
 6. `F12` to render, save the image, `cmd+s` for the `.blend`.
 
 ## Copying a design (logo, poster, UI)
