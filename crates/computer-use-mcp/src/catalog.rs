@@ -11,6 +11,8 @@
 //!
 //! None of this changes the tool list, so prompt caching is unaffected.
 
+use std::borrow::Cow;
+
 use serde_json::{Value, json};
 
 use crate::jsonrpc::INVALID_PARAMS;
@@ -28,64 +30,65 @@ pub type RpcError = (i64, String);
 struct File {
     skill: &'static str,
     path: &'static str,
-    text: &'static str,
+    /// As checked out: a Windows checkout may have CRLF line endings.
+    raw: &'static str,
 }
 
 const FILES: &[File] = &[
     File {
         skill: "computer-use",
         path: "SKILL.md",
-        text: include_str!("../../../skills/computer-use/SKILL.md"),
+        raw: include_str!("../../../skills/computer-use/SKILL.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/screens.md",
-        text: include_str!("../../../skills/computer-use/reference/screens.md"),
+        raw: include_str!("../../../skills/computer-use/reference/screens.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/tools.md",
-        text: include_str!("../../../skills/computer-use/reference/tools.md"),
+        raw: include_str!("../../../skills/computer-use/reference/tools.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/special-content.md",
-        text: include_str!("../../../skills/computer-use/reference/special-content.md"),
+        raw: include_str!("../../../skills/computer-use/reference/special-content.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/apps/browsers.md",
-        text: include_str!("../../../skills/computer-use/reference/apps/browsers.md"),
+        raw: include_str!("../../../skills/computer-use/reference/apps/browsers.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/apps/office.md",
-        text: include_str!("../../../skills/computer-use/reference/apps/office.md"),
+        raw: include_str!("../../../skills/computer-use/reference/apps/office.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/apps/mail-and-chat.md",
-        text: include_str!("../../../skills/computer-use/reference/apps/mail-and-chat.md"),
+        raw: include_str!("../../../skills/computer-use/reference/apps/mail-and-chat.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/apps/vscode.md",
-        text: include_str!("../../../skills/computer-use/reference/apps/vscode.md"),
+        raw: include_str!("../../../skills/computer-use/reference/apps/vscode.md"),
     },
     File {
         skill: "computer-use",
         path: "reference/apps/image-editors.md",
-        text: include_str!("../../../skills/computer-use/reference/apps/image-editors.md"),
+        raw: include_str!("../../../skills/computer-use/reference/apps/image-editors.md"),
     },
     File {
         skill: "computer-use-security",
         path: "SKILL.md",
-        text: include_str!("../../../skills/computer-use-security/SKILL.md"),
+        raw: include_str!("../../../skills/computer-use-security/SKILL.md"),
     },
     File {
         skill: "computer-use-security",
         path: "reference/examples.md",
-        text: include_str!("../../../skills/computer-use-security/reference/examples.md"),
+        raw: include_str!("../../../skills/computer-use-security/reference/examples.md"),
     },
 ];
 
@@ -98,14 +101,24 @@ impl File {
         self.path == "SKILL.md"
     }
 
+    /// The file with `\n` line endings, however it was checked out.
+    fn text(&self) -> Cow<'static, str> {
+        if self.raw.contains('\r') {
+            Cow::Owned(self.raw.replace("\r\n", "\n"))
+        } else {
+            Cow::Borrowed(self.raw)
+        }
+    }
+
     /// The text after the YAML front matter.
-    fn body(&self) -> &'static str {
-        front_matter(self.text).1
+    fn body(&self) -> String {
+        front_matter(&self.text()).1.to_string()
     }
 
     /// The skill's `description`, or the file's first heading.
     fn description(&self) -> String {
-        let (meta, body) = front_matter(self.text);
+        let text = self.text();
+        let (meta, body) = front_matter(&text);
         description(meta).unwrap_or_else(|| title(body))
     }
 }
@@ -169,7 +182,7 @@ pub fn prompts_list() -> Value {
         .map(|f| {
             json!({
                 "name": f.skill,
-                "title": title(f.body()),
+                "title": title(&f.body()),
                 "description": f.description(),
             })
         })
@@ -213,10 +226,10 @@ pub fn resources_list() -> Value {
             json!({
                 "uri": f.uri(),
                 "name": format!("{}/{}", f.skill, f.path),
-                "title": title(f.body()),
+                "title": title(&f.body()),
                 "description": f.description(),
                 "mimeType": MIME,
-                "size": f.text.len(),
+                "size": f.text().len(),
             })
         })
         .collect();
@@ -233,7 +246,7 @@ pub fn resources_read(params: &Value) -> Result<Value, RpcError> {
         .find(|f| f.uri() == uri)
         .ok_or_else(|| (RESOURCE_NOT_FOUND, format!("resource not found: {uri}")))?;
     Ok(json!({
-        "contents": [{"uri": uri, "mimeType": MIME, "text": file.text}],
+        "contents": [{"uri": uri, "mimeType": MIME, "text": file.text()}],
     }))
 }
 
@@ -329,7 +342,7 @@ mod tests {
         assert_eq!(served, on_disk, "add new skill files to FILES");
         // And every relative link in them names one of them.
         for f in FILES {
-            for link in f.text.split("](").skip(1) {
+            for link in f.text().split("](").skip(1) {
                 let target = link.split(')').next().unwrap();
                 if target.starts_with("http") || target.starts_with('#') {
                     continue;
@@ -376,6 +389,18 @@ mod tests {
             );
         }
         assert!(handle("tools/list", &json!({})).is_none());
+    }
+
+    #[test]
+    fn crlf_checkouts_are_served_with_lf() {
+        let f = File {
+            skill: "x",
+            path: "SKILL.md",
+            raw: "---\r\nname: x\r\ndescription: D\r\n---\r\n# T\r\nbody\r\n",
+        };
+        assert_eq!(f.text(), "---\nname: x\ndescription: D\n---\n# T\nbody\n");
+        assert_eq!(f.body(), "# T\nbody\n");
+        assert_eq!(f.description(), "D");
     }
 
     #[test]
