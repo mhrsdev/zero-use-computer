@@ -1,14 +1,37 @@
-# computer-use
+# Zero Use Computer
+
+**[Download v3.0.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
+· [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
+· [License](LICENSE)
 
 A Codex-style **computer use** capability for agents, in Rust. It gives any
 agent the same desktop-control surface OpenAI's Codex app exposes — see and
 operate real GUI apps by clicking, typing, reading on-screen state and running
 multi-app workflows — built on each OS's native **accessibility API** plus
-**screenshots**.
+**screenshots**. Windows, macOS and Linux.
 
-It is a standalone building block: run it as an **MCP server** (works with
-Codex, Claude Code, or any MCP-capable agent), or embed the **library** in your
-own agent.
+It is a standalone building block: run it as an **MCP server**
+(`computer-use-mcp`; works with Claude Code, Codex, Cursor or any MCP-capable
+agent), or embed the **library** (`computer-use`) in your own agent.
+
+## What's new in v3.0.0
+
+Stability first ([full changelog](CHANGELOG.md)):
+
+- **It never gets stuck.** Every accessibility call has a timeout, every
+  tool has limits, and a hung or busy app gives what was read and a "not
+  responding" message instead of freezing the server. The client can
+  cancel a call and it stops at once.
+- **An action is never done twice.** When an app doesn't answer a click in
+  time (busy, or the click opened a dialog), the model is told it may have
+  happened and to look first; nothing is retried behind its back.
+- **Per-platform fixes**: hung windows and the foreground lock on Windows,
+  bounded accessibility calls and steady memory on macOS, keys only to the
+  right app and any keyboard layout on Linux.
+- **Fewer tokens, less memory**: **6.8x fewer tokens** than Codex-style
+  computer use in the same session (85% saved, 2 screenshots instead of
+  21, each look ~3x faster), and the server holds **14.7 MiB** (v2.6:
+  24.3). See [Performance](#performance).
 
 ## Why it mirrors Codex
 
@@ -496,15 +519,24 @@ screenshot pixels to screen coordinates, and keeping input on the target app. Ea
 
 ## Use it as an MCP server
 
-**Download** a ready-made build: every push builds `computer-use-mcp` for
-Windows (x64), macOS (Apple silicon and Intel) and Linux (x64). Open the
-repository's **Actions** tab, pick the latest *CI* run and download
-`computer-use-mcp-<platform>` from its **Artifacts**; tagged versions (`v*`,
-or *Run workflow* with a tag) also attach zips to a GitHub **Release**. Each
-download contains the binary, the skills, installers for Claude Code,
+**Download** a ready-made build from the
+[latest release](https://github.com/mhrsdev/zero-use-computer/releases/latest):
+
+| System | File |
+|---|---|
+| Windows (x64) | `computer-use-mcp-windows-x64.zip` |
+| macOS, Apple silicon | `computer-use-mcp-macos-arm64.zip` |
+| macOS, Intel | `computer-use-mcp-macos-x64.zip` |
+| Linux (x64) | `computer-use-mcp-linux-x64.zip` |
+
+Each zip contains the binary, the skills, installers for Claude Code,
 ready-to-copy client configs in [`examples/`](examples) and the connection
 guide [`docs/CONNECT.md`](docs/CONNECT.md). It is also a valid Claude plugin
-(`.claude-plugin/plugin.json` + `.mcp.json`).
+(`.claude-plugin/plugin.json` + `.mcp.json`); the small
+`computer-use-plugin-<platform>.zip` is the plugin without the program, for
+hosts that refuse executables. The binaries are not code-signed, so Windows
+SmartScreen may ask you to confirm. Builds of every push to `main` are under
+the repository's **Actions** tab (*CI* run ▸ **Artifacts**).
 
 **Claude Code in one step:** extract the zip to a permanent folder and run
 `install.cmd` (Windows) or `./install.sh` (macOS / Linux). It registers the
