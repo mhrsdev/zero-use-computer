@@ -1,0 +1,5 @@
+{"app":"Dia","ok":true,"summary":"App: dia (dia, pid 7081) · window \"services.dia (/tmp/cubench/home) — Dia Diagram Editor\" (id 3005543296453802520, 1200x900 at 0,0) · screen #1 (new)","tokens":2570,"tool":"get_app_state","ts":1790924759}
+{"app":"Dia","ok":true,"summary":"Clicked the point at (745, 316).","tokens":8,"tool":"click","ts":1790924762}
+{"app":"Dia","ok":true,"summary":"Pressed Delete.","tokens":4,"tool":"press_key","ts":1790924762}
+{"app":"Dia","ok":true,"summary":"Pressed ctrl+s.","tokens":4,"tool":"press_key","ts":1790924763}
+{"app":"Dia","ok":true,"summary":"Screenshot of dia window \"services.dia (/tmp/cubench/home) — Dia Diagram Editor\": 1200x900 px.","tokens":1465,"tool":"screenshot","ts":1790924763}

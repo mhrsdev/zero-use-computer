@@ -1,0 +1,2013 @@
+[
+ {
+  "run": "baseline-1",
+  "arm": "baseline",
+  "n": 1,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 9.83,
+  "claude_exit": 0,
+  "model_input_tokens": 38964,
+  "model_output_tokens": 411,
+  "model_cache_read": 32076,
+  "model_cache_write": 6882,
+  "model_cost_usd": 0.0381,
+  "api_requests": 3,
+  "per_request_input": [
+   9953,
+   13510,
+   15501
+  ],
+  "per_request_input_sum": 38964,
+  "first_request_input": 9953,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.45,
+  "cli_api_s": 6.06,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 745,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 745,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-2",
+  "arm": "baseline",
+  "n": 2,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 14.74,
+  "claude_exit": 0,
+  "model_input_tokens": 38951,
+  "model_output_tokens": 392,
+  "model_cache_read": 32080,
+  "model_cache_write": 6865,
+  "model_cost_usd": 0.0378,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15484
+  ],
+  "per_request_input_sum": 38951,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 12.43,
+  "cli_api_s": 11.18,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 700,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 700,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-3",
+  "arm": "baseline",
+  "n": 3,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 9.91,
+  "claude_exit": 0,
+  "model_input_tokens": 38965,
+  "model_output_tokens": 409,
+  "model_cache_read": 32078,
+  "model_cache_write": 6881,
+  "model_cost_usd": 0.038,
+  "api_requests": 3,
+  "per_request_input": [
+   9954,
+   13511,
+   15500
+  ],
+  "per_request_input_sum": 38965,
+  "first_request_input": 9954,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.52,
+  "cli_api_s": 6.28,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 318,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 318
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-4",
+  "arm": "baseline",
+  "n": 4,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 8.61,
+  "claude_exit": 0,
+  "model_input_tokens": 38951,
+  "model_output_tokens": 392,
+  "model_cache_read": 32080,
+  "model_cache_write": 6865,
+  "model_cost_usd": 0.0378,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15484
+  ],
+  "per_request_input_sum": 38951,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.23,
+  "cli_api_s": 4.83,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 745,
+    "y": 315,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 745,
+     "y": 315
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-5",
+  "arm": "baseline",
+  "n": 5,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 8.88,
+  "claude_exit": 0,
+  "model_input_tokens": 38968,
+  "model_output_tokens": 409,
+  "model_cache_read": 32080,
+  "model_cache_write": 6882,
+  "model_cost_usd": 0.038,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15501
+  ],
+  "per_request_input_sum": 38968,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.52,
+  "cli_api_s": 5.17,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 660,
+    "y": 318,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 660,
+     "y": 318
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-6",
+  "arm": "baseline",
+  "n": 6,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 11.42,
+  "claude_exit": 0,
+  "model_input_tokens": 38948,
+  "model_output_tokens": 392,
+  "model_cache_read": 32078,
+  "model_cache_write": 6864,
+  "model_cost_usd": 0.0378,
+  "api_requests": 3,
+  "per_request_input": [
+   9954,
+   13511,
+   15483
+  ],
+  "per_request_input_sum": 38948,
+  "first_request_input": 9954,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 9.01,
+  "cli_api_s": 7.78,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 720,
+    "y": 315,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 720,
+     "y": 315
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-7",
+  "arm": "baseline",
+  "n": 7,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 9.06,
+  "claude_exit": 0,
+  "model_input_tokens": 38951,
+  "model_output_tokens": 392,
+  "model_cache_read": 32080,
+  "model_cache_write": 6865,
+  "model_cost_usd": 0.0378,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15484
+  ],
+  "per_request_input_sum": 38951,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.63,
+  "cli_api_s": 5.15,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 745,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 745,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-8",
+  "arm": "baseline",
+  "n": 8,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 10.2,
+  "claude_exit": 0,
+  "model_input_tokens": 38965,
+  "model_output_tokens": 415,
+  "model_cache_read": 32074,
+  "model_cache_write": 6885,
+  "model_cost_usd": 0.0381,
+  "api_requests": 3,
+  "per_request_input": [
+   9952,
+   13509,
+   15504
+  ],
+  "per_request_input_sum": 38965,
+  "first_request_input": 9952,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.87,
+  "cli_api_s": 5.66,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 660,
+    "y": 315,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 660,
+     "y": 315
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-9",
+  "arm": "baseline",
+  "n": 9,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 9.72,
+  "claude_exit": 0,
+  "model_input_tokens": 38957,
+  "model_output_tokens": 416,
+  "model_cache_read": 32068,
+  "model_cache_write": 6883,
+  "model_cost_usd": 0.0381,
+  "api_requests": 3,
+  "per_request_input": [
+   9949,
+   13506,
+   15502
+  ],
+  "per_request_input_sum": 38957,
+  "first_request_input": 9949,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.23,
+  "cli_api_s": 5.78,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4047,
+  "est_tool_text_tokens": 1167,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 660,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 660,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "baseline-10",
+  "arm": "baseline",
+  "n": 10,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 12.25,
+  "claude_exit": 0,
+  "model_input_tokens": 39137,
+  "model_output_tokens": 505,
+  "model_cache_read": 32078,
+  "model_cache_write": 7053,
+  "model_cost_usd": 0.0397,
+  "api_requests": 3,
+  "per_request_input": [
+   9954,
+   13511,
+   15672
+  ],
+  "per_request_input_sum": 39137,
+  "first_request_input": 9954,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 9.76,
+  "cli_api_s": 5.65,
+  "num_turns": 7,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 6,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 2,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4079,
+  "est_tool_text_tokens": 1199,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 0
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 900,
+    "y": 500,
+    "where": "canvas, no box",
+    "args": {
+     "app": "Dia",
+     "x": 900,
+     "y": 500
+    }
+   },
+   {
+    "x": 740,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 1,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 2,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-1",
+  "arm": "current",
+  "n": 1,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 10.12,
+  "claude_exit": 0,
+  "model_input_tokens": 39429,
+  "model_output_tokens": 392,
+  "model_cache_read": 32074,
+  "model_cache_write": 7349,
+  "model_cost_usd": 0.0397,
+  "api_requests": 3,
+  "per_request_input": [
+   9952,
+   13509,
+   15968
+  ],
+  "per_request_input_sum": 39429,
+  "first_request_input": 9952,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.75,
+  "cli_api_s": 6.88,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 700,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 700,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-2",
+  "arm": "current",
+  "n": 2,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 15.45,
+  "claude_exit": 0,
+  "model_input_tokens": 56897,
+  "model_output_tokens": 553,
+  "model_cache_read": 47839,
+  "model_cache_write": 9050,
+  "model_cost_usd": 0.0513,
+  "api_requests": 4,
+  "per_request_input": [
+   9950,
+   13506,
+   15772,
+   17669
+  ],
+  "per_request_input_sum": 56897,
+  "first_request_input": 9950,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 13.13,
+  "cli_api_s": 6.99,
+  "num_turns": 7,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 6,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 2
+  },
+  "tool_errors": 0,
+  "images_to_model": 3,
+  "image_bytes": 778045,
+  "est_tool_result_tokens": 5776,
+  "est_tool_text_tokens": 1456,
+  "est_tool_image_tokens": 4320,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 745,
+    "y": 318,
+    "where": "target",
+    "args": {
+     "app": "dia",
+     "x": 745,
+     "y": 318
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-3",
+  "arm": "current",
+  "n": 3,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 11.03,
+  "claude_exit": 0,
+  "model_input_tokens": 39426,
+  "model_output_tokens": 392,
+  "model_cache_read": 32072,
+  "model_cache_write": 7348,
+  "model_cost_usd": 0.0397,
+  "api_requests": 3,
+  "per_request_input": [
+   9951,
+   13508,
+   15967
+  ],
+  "per_request_input_sum": 39426,
+  "first_request_input": 9951,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 8.68,
+  "cli_api_s": 7.56,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-4",
+  "arm": "current",
+  "n": 4,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 10.98,
+  "claude_exit": 0,
+  "model_input_tokens": 39432,
+  "model_output_tokens": 392,
+  "model_cache_read": 32076,
+  "model_cache_write": 7350,
+  "model_cost_usd": 0.0397,
+  "api_requests": 3,
+  "per_request_input": [
+   9953,
+   13510,
+   15969
+  ],
+  "per_request_input_sum": 39432,
+  "first_request_input": 9953,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 8.67,
+  "cli_api_s": 7.49,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 660,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 660,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-5",
+  "arm": "current",
+  "n": 5,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 9.19,
+  "claude_exit": 0,
+  "model_input_tokens": 39438,
+  "model_output_tokens": 392,
+  "model_cache_read": 32080,
+  "model_cache_write": 7352,
+  "model_cost_usd": 0.0398,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15971
+  ],
+  "per_request_input_sum": 39438,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.7,
+  "cli_api_s": 5.38,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 745,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 745,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-6",
+  "arm": "current",
+  "n": 6,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 10.29,
+  "claude_exit": 0,
+  "model_input_tokens": 39449,
+  "model_output_tokens": 415,
+  "model_cache_read": 32072,
+  "model_cache_write": 7371,
+  "model_cost_usd": 0.0401,
+  "api_requests": 3,
+  "per_request_input": [
+   9951,
+   13508,
+   15990
+  ],
+  "per_request_input_sum": 39449,
+  "first_request_input": 9951,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.92,
+  "cli_api_s": 5.54,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 315,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 315
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-7",
+  "arm": "current",
+  "n": 7,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 10.26,
+  "claude_exit": 0,
+  "model_input_tokens": 39460,
+  "model_output_tokens": 414,
+  "model_cache_read": 32080,
+  "model_cache_write": 7374,
+  "model_cost_usd": 0.0401,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15993
+  ],
+  "per_request_input_sum": 39460,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 7.8,
+  "cli_api_s": 6.52,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 318,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 318
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-8",
+  "arm": "current",
+  "n": 8,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 12.16,
+  "claude_exit": 0,
+  "model_input_tokens": 39456,
+  "model_output_tokens": 419,
+  "model_cache_read": 32074,
+  "model_cache_write": 7376,
+  "model_cost_usd": 0.0401,
+  "api_requests": 3,
+  "per_request_input": [
+   9952,
+   13509,
+   15995
+  ],
+  "per_request_input_sum": 39456,
+  "first_request_input": 9952,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 9.81,
+  "cli_api_s": 8.75,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 720,
+    "y": 315,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 720,
+     "y": 315
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-9",
+  "arm": "current",
+  "n": 9,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 8.9,
+  "claude_exit": 0,
+  "model_input_tokens": 39438,
+  "model_output_tokens": 392,
+  "model_cache_read": 32080,
+  "model_cache_write": 7352,
+  "model_cost_usd": 0.0398,
+  "api_requests": 3,
+  "per_request_input": [
+   9955,
+   13512,
+   15971
+  ],
+  "per_request_input_sum": 39438,
+  "first_request_input": 9955,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.53,
+  "cli_api_s": 5.02,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ },
+ {
+  "run": "current-10",
+  "arm": "current",
+  "n": 10,
+  "success": true,
+  "problems": [],
+  "wrong_box_deleted": [],
+  "wall_s": 8.82,
+  "claude_exit": 0,
+  "model_input_tokens": 39463,
+  "model_output_tokens": 414,
+  "model_cache_read": 32082,
+  "model_cache_write": 7375,
+  "model_cost_usd": 0.0401,
+  "api_requests": 3,
+  "per_request_input": [
+   9956,
+   13513,
+   15994
+  ],
+  "per_request_input_sum": 39463,
+  "first_request_input": 9956,
+  "harness_side_model_tokens": {
+   "claude-haiku-4-5-20251001": {
+    "in": 947,
+    "out": 15
+   }
+  },
+  "cli_duration_s": 6.51,
+  "cli_api_s": 5.11,
+  "num_turns": 6,
+  "result_subtype": "success",
+  "final_text": "DONE",
+  "claimed_done": true,
+  "false_claim": false,
+  "tool_calls": 5,
+  "tool_calls_by_name": {
+   "get_app_state": 1,
+   "click": 1,
+   "press_key": 2,
+   "screenshot": 1
+  },
+  "tool_errors": 0,
+  "images_to_model": 2,
+  "image_bytes": 518943,
+  "est_tool_result_tokens": 4312,
+  "est_tool_text_tokens": 1432,
+  "est_tool_image_tokens": 2880,
+  "features": {
+   "ocr_auto": 0,
+   "ocr_asked": 0,
+   "ocr_unavailable": 0,
+   "shot_deduped": 0,
+   "shot_changed_part": 0,
+   "shot_not_attached": 0,
+   "shot_overview": 0,
+   "screen_seen_before": 0,
+   "change_report": 3
+  },
+  "get_app_state": [
+   {
+    "image": true,
+    "size": [
+     [
+      1200,
+      900
+     ]
+    ],
+    "args": {
+     "app": "Dia",
+     "screenshot": true
+    }
+   }
+  ],
+  "clicks": [
+   {
+    "x": 740,
+    "y": 316,
+    "where": "target",
+    "args": {
+     "app": "Dia",
+     "x": 740,
+     "y": 316
+    }
+   }
+  ],
+  "clicks_on_target": 1,
+  "clicks_on_other_box": 0,
+  "clicks_canvas_no_box": 0,
+  "clicks_outside_canvas": 0,
+  "physical_button_presses": 1,
+  "atspi_raw_nodes": 433,
+  "atspi_drawing_area_children": [
+   0,
+   0,
+   0
+  ],
+  "atspi_box_label_hits": [],
+  "initial_png_sha256": "2492e760cf672318"
+ }
+]
