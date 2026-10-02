@@ -66,6 +66,14 @@ scope = "auto"
 region_max_ratio = 0.5      # a bigger change than this share of the window: whole window
 region_padding = 24         # margin around the changed part (pixels)
 region_min_size = 200       # the part is at least this big on each side, for context
+# Attach automatic screenshots by how the model works in an app: once it
+# has looked a few times without ever using pixels there (no x/y, no
+# screenshot asked for), well-described windows come without one.
+adaptive = false
+locate_picture = true       # locate sends the window with the places found numbered
+# Experimental: when no screenshot is attached, a small strip of the
+# buttons without a name, each numbered with its element_index.
+icon_sprite = false
 
 [tree]
 max_nodes = 1200            # elements shown per get_app_state

@@ -66,6 +66,12 @@ struct AppState {
     /// Elements whose line changed in the last reports, by key, and in how
     /// many of them in a row ([tree] quiet_volatile).
     volatile: HashMap<u64, u8>,
+    /// Looks at this app, and calls that used its pixels (x/y, a
+    /// screenshot asked for): [screenshot] adaptive.
+    looks: u32,
+    pixel_uses: u32,
+    /// Unnamed buttons already shown in an icon strip, by key.
+    icons_shown: HashSet<u64>,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -1975,6 +1981,7 @@ impl<B: Backend> Engine<B> {
             self.wait_for_user()?;
         }
         let report_app = acting.filter(|_| self.store.config.tree.report_changes);
+        let pixels_of_app = pixel_use(&call).map(str::to_string);
         let out = match call {
             ToolCall::ListApps => self.list_apps(),
             ToolCall::LaunchApp(a) => self.launch_app(a),
@@ -2007,6 +2014,12 @@ impl<B: Backend> Engine<B> {
             self.last_input = Some((self.clock)());
         }
         let out = out?;
+        if let Some(query) = pixels_of_app
+            && let Ok(app) = self.resolve_app(&query)
+        {
+            let st = self.states.entry(app.pid).or_default();
+            st.pixel_uses = st.pixel_uses.saturating_add(1);
+        }
         match report_app {
             Some(app) => Ok(self.append_changes(&app, out)),
             None => Ok(out),
@@ -2312,6 +2325,22 @@ impl<B: Backend> Engine<B> {
         // Decide whether this view needs pixels (screenshot.attach): a screen
         // the model has no picture of, a big change, a returning screen whose
         // window changed size, or custom-drawn UI with little in the tree.
+        // [screenshot] adaptive: no automatic picture of a well-described
+        // window in an app where the model hasn't used pixels.
+        let (looks, pixel_uses) = self
+            .states
+            .get_mut(&app.pid)
+            .map(|s| {
+                s.looks = s.looks.saturating_add(1);
+                (s.looks, s.pixel_uses)
+            })
+            .unwrap_or((1, 0));
+        let unneeded = self.store.config.screenshot.adaptive
+            && looks > 3
+            && pixel_uses == 0
+            && r.interactive >= self.store.config.screenshot.auto_sparse_threshold.max(3)
+            && blind == 0
+            && ocr_lines == 0;
         let shot = &self.store.config.screenshot;
         let allowed = shot.enabled && !self.store.config.text_only;
         let known = self
@@ -2319,26 +2348,28 @@ impl<B: Backend> Engine<B> {
             .known
             .as_ref()
             .ok_or(Error::Internal("no known screen".into()))?;
-        let want = allowed
-            && args.screenshot.unwrap_or(match shot.attach {
-                AttachMode::Always => true,
-                AttachMode::Never => false,
-                AttachMode::Auto => {
-                    !known.shot
-                        || r.large_change
-                        || size_changed
-                        || r.interactive < shot.auto_sparse_threshold
-                        // Something changed, or the app came back to an
-                        // earlier screen: look at the pixels rather than
-                        // assume the model's picture still fits (an
-                        // unchanged picture isn't sent again).
-                        || r.changes > 0
-                        || r.seen == Seen::Revisit
-                        // What changes in an area the tree says nothing
-                        // about only the pixels show.
-                        || blind > 0
-                }
-            });
+        let auto = match shot.attach {
+            AttachMode::Always => true,
+            AttachMode::Never => false,
+            AttachMode::Auto => {
+                !known.shot
+                    || r.large_change
+                    || size_changed
+                    || r.interactive < shot.auto_sparse_threshold
+                    // Something changed, or the app came back to an
+                    // earlier screen: look at the pixels rather than
+                    // assume the model's picture still fits (an unchanged
+                    // picture isn't sent again).
+                    || r.changes > 0
+                    || r.seen == Seen::Revisit
+                    // What changes in an area the tree says nothing
+                    // about only the pixels show.
+                    || blind > 0
+            }
+        };
+        let want = allowed && args.screenshot.unwrap_or(auto && !unneeded);
+        // A picture held back only because the model hasn't needed any here.
+        let withheld = allowed && args.screenshot.is_none() && auto && unneeded;
         let force = args.screenshot == Some(true);
         let mut image = None;
         let mut stale: Option<Changed> = None;
@@ -2444,13 +2475,29 @@ impl<B: Backend> Engine<B> {
                 }
             }
         } else if allowed {
-            header.push_str(self.explain(
-                "shot-none",
-                "\nScreenshot: not attached (pass screenshot=true for one).",
-                "\nScreenshot: not attached.",
-            ));
+            header.push_str(if withheld && self.explain_first("shot-unneeded") {
+                "\nScreenshot: not attached (you haven't needed pictures in this app; screenshot=true for one)."
+            } else {
+                self.explain(
+                    "shot-none",
+                    "\nScreenshot: not attached (pass screenshot=true for one).",
+                    "\nScreenshot: not attached.",
+                )
+            });
         }
 
+        // [screenshot] icon_sprite: no screenshot, but buttons without a
+        // name: a strip of what they look like.
+        if image.is_none()
+            && allowed
+            && self.store.config.screenshot.icon_sprite
+            && let Some((img, listed)) = self.icon_strip(&app, &window)
+        {
+            header.push_str(&format!(
+                "\nIcons of buttons without a name, numbered with their element_index: {listed}."
+            ));
+            image = Some(img);
+        }
         // The pixels changed where the tree reports nothing (a toolkit that
         // doesn't tell accessibility what it redrew): say where.
         if let Some(c) = stale
@@ -2501,6 +2548,60 @@ impl<B: Backend> Engine<B> {
             image,
             is_error: false,
         })
+    }
+
+    /// A strip of the buttons in the latest snapshot that have no name and
+    /// haven't been shown yet, each numbered with its index.
+    fn icon_strip(&mut self, app: &AppInfo, window: &WindowInfo) -> Option<(EncodedImage, String)> {
+        let st = self.states.get(&app.pid)?;
+        let icons: Vec<(u32, Rect, u64)> = st
+            .nodes
+            .iter()
+            .filter(|n| {
+                crate::roles::is_interactive(&n.role)
+                    && n.name.is_none()
+                    && !n.line.contains(" desc=")
+                    && !st.icons_shown.contains(&n.key)
+            })
+            .filter_map(|n| {
+                let b = n.bounds?;
+                (b.width >= 4.0 && b.height >= 4.0 && b.width <= 96.0 && b.height <= 96.0)
+                    .then_some((n.index, b, n.key))
+            })
+            .take(24)
+            .collect();
+        if icons.is_empty() {
+            return None;
+        }
+        let reuse = match self.last_capture.take() {
+            Some((pid, wid, epoch, cap))
+                if pid == app.pid && wid == window.id && epoch == self.epoch =>
+            {
+                Some(cap)
+            }
+            _ => None,
+        };
+        let mut cap = match reuse {
+            Some(c) => c,
+            None => self.capture_clean(|b| b.capture(app, window)).ok()?,
+        };
+        self.redact_capture(&mut cap);
+        let crops: Vec<(u32, Capture)> = icons
+            .iter()
+            .filter_map(|(i, b, _)| {
+                crate::coverage::pixels_of(&cap, *b).map(|px| (*i, imaging::crop(&cap, px)))
+            })
+            .collect();
+        if crops.is_empty() {
+            return None;
+        }
+        let strip = imaging::strip(&crops, 28);
+        let (img, _) = imaging::encode(strip, &self.store.config.screenshot).ok()?;
+        let mut listed: Vec<u32> = crops.iter().map(|(i, _)| *i).collect();
+        if let Some(st) = self.states.get_mut(&app.pid) {
+            st.icons_shown.extend(icons.iter().map(|(_, _, k)| *k));
+        }
+        Some((img, tree::ranges(&mut listed)))
     }
 
     /// One element and what is in it (get_app_state within=index): a look
@@ -4338,7 +4439,7 @@ impl<B: Backend> Engine<B> {
         };
         let text = format!("{text} Coordinates are the x/y click takes.");
         let cfg = self.store.config.screenshot.clone();
-        if marks.is_empty() {
+        if marks.is_empty() || !args.picture.unwrap_or(cfg.locate_picture) {
             return Ok(ToolOutput::text(text));
         }
         // The window with each place found numbered, to check before acting.
@@ -6629,6 +6730,24 @@ fn describe_matcher(args: &WaitForArgs) -> String {
         "any element".into()
     } else {
         parts.join(", ")
+    }
+}
+
+/// The app whose pixels a call uses (x/y, a picture asked for), if any:
+/// [screenshot] adaptive keeps sending automatic screenshots there.
+fn pixel_use(call: &ToolCall) -> Option<&str> {
+    let xy = |x: Option<f64>, i: Option<u32>| x.is_some() && i.is_none();
+    match call {
+        ToolCall::Click(a) if xy(a.x, a.element_index) => Some(&a.app),
+        ToolCall::Scroll(a) if xy(a.x, a.element_index) => Some(&a.app),
+        ToolCall::PressKey(a) if a.x.is_some() => Some(&a.app),
+        ToolCall::TypeText(a) if a.x.is_some() => Some(&a.app),
+        ToolCall::Drag(a) if a.from_x.is_some() || a.to_x.is_some() => Some(&a.app),
+        ToolCall::Draw(a) => Some(&a.app),
+        ToolCall::Locate(a) => Some(&a.app),
+        ToolCall::GetAppState(a) if a.screenshot == Some(true) => Some(&a.app),
+        ToolCall::Screenshot(a) => a.app.as_deref(),
+        _ => None,
     }
 }
 
@@ -9935,6 +10054,89 @@ mod tests {
             "{last}"
         );
         assert!(!last.contains("value=\"12:00"), "{last}");
+    }
+
+    #[test]
+    fn pictures_follow_how_the_model_works() {
+        // Adaptive: after a few looks without pixels, a new screen of a
+        // well-described window comes without a picture.
+        let mut e = nav_engine(true);
+        let mut cfg = e.store().config.clone();
+        cfg.screenshot.adaptive = true;
+        cfg.cache.snapshot_ttl_ms = 0;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let first = state_of(&mut e, serde_json::json!({}));
+        assert!(first.image.is_some(), "the first look has one");
+        for _ in 0..3 {
+            state_of(&mut e, serde_json::json!({}));
+        }
+        // The document changes: a reason to look at the pixels, but not
+        // here.
+        e.backend_mut()
+            .snapshot_script
+            .push_back((5, "Changed".into()));
+        e.backend_mut().fill = 90;
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_none(), "{}", out.text);
+        assert!(out.text.contains("haven't needed pictures"), "{}", out.text);
+        // Once the model uses pixels there, pictures come again.
+        let r = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "x": 5, "y": 5}),
+        );
+        assert!(!r.is_error, "{}", r.text);
+        e.backend_mut()
+            .snapshot_script
+            .push_back((5, "Changed again".into()));
+        e.backend_mut().fill = 120;
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_some(), "{}", out.text);
+
+        // Icon strip: unnamed buttons, shown once, numbered.
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        for k in 0..3u64 {
+            app.elements.push(
+                MockElement::new(
+                    70 + k,
+                    "button",
+                    "",
+                    Rect::new(300.0 + 40.0 * k as f64, 8.0, 24.0, 24.0),
+                )
+                .child_of(2)
+                .with_actions(&["AXPress"]),
+            );
+        }
+        backend.add_app(app);
+        let mut cfg = Config::default();
+        cfg.screenshot.icon_sprite = true;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let out = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        let strip = out.image.as_ref().expect("the strip");
+        assert!(
+            strip.height < 80 && strip.width < 300,
+            "{}x{}",
+            strip.width,
+            strip.height
+        );
+        assert!(
+            out.text.contains("Icons of buttons without a name"),
+            "{}",
+            out.text
+        );
+        let again = state_of(&mut e, serde_json::json!({"screenshot": false}));
+        assert!(again.image.is_none(), "shown once: {}", again.text);
+
+        // locate without its picture.
+        let mut e = always_shot_engine();
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "locate",
+            serde_json::json!({"app": "TextEdit", "near": [400, 300], "feature": "center", "picture": false}),
+        );
+        assert!(out.image.is_none(), "{}", out.text);
     }
 
     #[test]

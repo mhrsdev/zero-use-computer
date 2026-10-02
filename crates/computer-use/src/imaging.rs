@@ -880,6 +880,54 @@ pub fn palette(cap: &Capture, max: usize) -> Vec<(String, f64)> {
 
 /// Draw each element's index over the capture (set-of-marks). `marks` are
 /// (index, screen-space bounds); they are mapped into the capture's pixels.
+/// Small pictures side by side on white, each scaled to `height` pixels
+/// (and at most twice as wide) and numbered with its index: a strip of
+/// icons to show what unnamed buttons look like without a screenshot.
+pub fn strip(items: &[(u32, Capture)], height: u32) -> Capture {
+    const GAP: u32 = 6;
+    let h = height.max(8);
+    let scaled: Vec<(u32, image::RgbaImage)> = items
+        .iter()
+        .filter_map(|(index, c)| {
+            let img = image::RgbaImage::from_raw(c.width, c.height, c.rgba.clone())?;
+            let w = ((f64::from(c.width) * f64::from(h) / f64::from(c.height.max(1))).round()
+                as u32)
+                .clamp(1, 2 * h);
+            Some((
+                *index,
+                image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle),
+            ))
+        })
+        .collect();
+    let width = scaled.iter().map(|(_, i)| i.width() + GAP).sum::<u32>() + GAP;
+    let total_h = h + 2 * GAP + 12;
+    let mut canvas =
+        image::RgbaImage::from_pixel(width.max(1), total_h, image::Rgba([255, 255, 255, 255]));
+    let mut marks = Vec::new();
+    let mut x = GAP;
+    for (index, img) in &scaled {
+        image::imageops::overlay(&mut canvas, img, i64::from(x), i64::from(GAP + 12));
+        marks.push((
+            *index,
+            Rect::new(
+                f64::from(x),
+                f64::from(GAP),
+                f64::from(img.width()),
+                f64::from(h + 12),
+            ),
+        ));
+        x += img.width() + GAP;
+    }
+    let mut cap = Capture {
+        width: canvas.width(),
+        height: canvas.height(),
+        rgba: canvas.into_raw(),
+        bounds: Rect::new(0.0, 0.0, f64::from(width.max(1)), f64::from(total_h)),
+    };
+    annotate(&mut cap, &marks);
+    cap
+}
+
 pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
     let box_rgb = [255, 40, 40];
     let text_rgb = [255, 255, 0];

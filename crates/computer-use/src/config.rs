@@ -101,6 +101,16 @@ pub struct ScreenshotConfig {
     pub region_padding: u32,
     /// The part sent is at least this many pixels on each side, for context.
     pub region_min_size: u32,
+    /// Attach automatic screenshots by how the model works in an app: once
+    /// it has looked a few times without ever using pixels there (no x/y,
+    /// no screenshot asked for), well-described windows come without one
+    /// (`screenshot=true` still gets one).
+    pub adaptive: bool,
+    /// `locate` sends the window with the places it found numbered.
+    pub locate_picture: bool,
+    /// When no screenshot is attached, a small strip of the buttons that
+    /// have no name, each numbered with its element_index (experimental).
+    pub icon_sprite: bool,
 }
 
 /// How much of the window a follow-up screenshot covers.
@@ -130,6 +140,9 @@ impl Default for ScreenshotConfig {
             region_max_ratio: 0.5,
             region_padding: 24,
             region_min_size: 200,
+            adaptive: false,
+            locate_picture: true,
+            icon_sprite: false,
         }
     }
 }

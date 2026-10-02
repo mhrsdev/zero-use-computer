@@ -284,6 +284,9 @@ pub struct LocateArgs {
     pub feature: Option<String>,
     #[serde(default)]
     pub radius: Option<f64>,
+    /// Send the window with the places found numbered (default: settings).
+    #[serde(default)]
+    pub picture: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -1638,7 +1641,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "like": {"type": "array", "items": {"type": "number"}, "description": "[left, top, right, bottom] of something to find again."},
                     "near": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: a rough point."},
                     "feature": {"type": "string", "enum": ["corner", "edge", "center"], "description": "What to find near the point."},
-                    "radius": {"type": "number", "description": "How far from near to look, in screenshot pixels (default 12)."}
+                    "radius": {"type": "number", "description": "How far from near to look, in screenshot pixels (default 12)."},
+                    "picture": {"type": "boolean", "description": "Send the window with the places found numbered (default: settings, usually yes)."}
                 }),
                 &[],
             ),
