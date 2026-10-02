@@ -4728,11 +4728,12 @@ impl<B: Backend> Engine<B> {
                         || self.store.config.screenshot.scope == crate::config::ShotScope::Auto)
                 {
                     // Which screen this is, to compare with the picture the
-                    // model has of it.
-                    if !crate::privacy::active(&self.store.config.privacy) {
-                        self.observe(&app, &window, false)?;
-                    }
-                    if let Some(st) = self.states.get(&app.pid)
+                    // model has of it. (An app whose tree can't be read
+                    // still gets its picture, in full.)
+                    let read = crate::privacy::active(&self.store.config.privacy)
+                        || self.observe(&app, &window, false).is_ok();
+                    if read
+                        && let Some(st) = self.states.get(&app.pid)
                         && st.window_id == Some(window.id)
                         && st.known.as_ref().is_some_and(|k| k.id == st.screen)
                     {
