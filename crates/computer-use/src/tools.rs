@@ -1918,6 +1918,74 @@ pub fn definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Tools few tasks need, whose parameters are many: in `compact` mode the
+/// model sees one line about each, and `help=true` gives the rest when it
+/// needs them (once, in the conversation) instead of with every request.
+pub const ON_DEMAND: [&str; 7] = [
+    "draw",
+    "design",
+    "scene",
+    "trace_image",
+    "locate",
+    "script",
+    "decide",
+];
+
+/// The line an [`ON_DEMAND`] tool shows in `compact` mode.
+fn on_demand_description(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "draw" => {
+            "Draw with the mouse button held down along strokes: lines, shapes, curves, function plots, solid fills, a traced picture's or a design's steps; preview=true shows them first. help=true: the stroke format."
+        }
+        "design" => {
+            "A design board, like Canva: compose a picture from layers, see it with checks, then draw it in an app or export SVG/PNG. Plan every drawing here first. help=true: the parameters."
+        }
+        "scene" => {
+            "Plan a 3D model as solids (exact sizes, positions, rotations): views to scale, checks, build numbers, OBJ export. Plan every 3D model here first. help=true: the parameters."
+        }
+        "trace_image" => {
+            "Turn a picture (a file, or part of a window) into flat colour steps to paint with draw. help=true: the parameters."
+        }
+        "locate" => {
+            "Exact click points in a window: every area of a colour, look-alikes of an icon, or the corner/edge/centre next to a rough point. help=true: the parameters."
+        }
+        "script" => {
+            "Run a small program (Rhai, like JavaScript) for loops over tool calls, maths, file or web data and graph-paper pictures; save=name keeps it as a tool of its own. help=true lists every function."
+        }
+        "decide" => {
+            "Fast typed answers (yes/no, a choice, a score) from the user's decision model about text, many items at once, or an app's window; pick=\"description\" + app finds an element. help=true: the parameters; setup=\"open\" lets the user add a model."
+        }
+        _ => return None,
+    })
+}
+
+/// An [`ON_DEMAND`] tool's schema in `compact` mode: each parameter's type
+/// only, and `help`.
+fn on_demand_schema(schema: &mut Value) {
+    // help=true needs nothing else (the server checks a real call).
+    if let Some(m) = schema.as_object_mut() {
+        m.remove("required");
+    }
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        for prop in props.values_mut() {
+            let kind = prop.get("type").cloned().unwrap_or(json!("object"));
+            *prop = json!({"type": kind});
+        }
+        props.insert("help".into(), json!({"type": "boolean"}));
+    }
+}
+
+/// What `help=true` on a tool returns: its full description and parameters.
+pub fn help_text(name: &str) -> Option<String> {
+    let d = definitions().into_iter().find(|d| d.name == name)?;
+    Some(format!(
+        "{} — {}\n\nParameters (JSON schema):\n{}",
+        d.name,
+        d.description,
+        serde_json::to_string(&d.input_schema).unwrap_or_default()
+    ))
+}
+
 /// One-line descriptions used in `compact` mode.
 fn short_description(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -2046,6 +2114,95 @@ fn share_repeats(schema: &mut Value) {
     }
 }
 
+/// A schema as a short signature, TypeScript-like (`{id, at:[n],
+/// align:left|center|right, repeat:{count!:int}}`; `n` a number, `s` text,
+/// `!` required): what a model needs to write the call, in about a third of
+/// the tokens of the JSON schema.
+fn signature(v: &Value) -> String {
+    if let Some(e) = v.get("enum").and_then(Value::as_array) {
+        return e
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| x.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+    }
+    let kinds: Vec<&str> = match v.get("type") {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if kinds.is_empty() {
+        return "any".into();
+    }
+    let one = |k: &str| -> String {
+        match k {
+            "number" => "n".into(),
+            "integer" => "int".into(),
+            "boolean" => "bool".into(),
+            "string" => "s".into(),
+            "array" => format!(
+                "[{}]",
+                v.get("items")
+                    .map(signature)
+                    .unwrap_or_else(|| "any".into())
+            ),
+            "object" => match v.get("properties").and_then(Value::as_object) {
+                Some(props) => {
+                    let required: Vec<&str> = v
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .map(|r| r.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+                    let parts: Vec<String> = props
+                        .iter()
+                        .map(|(k, p)| {
+                            let mark = if required.contains(&k.as_str()) {
+                                "!"
+                            } else {
+                                ""
+                            };
+                            match signature(p).as_str() {
+                                "s" => format!("{k}{mark}"),
+                                sig => format!("{k}{mark}:{sig}"),
+                            }
+                        })
+                        .collect();
+                    format!("{{{}}}", parts.join(", "))
+                }
+                None => "{…}".into(),
+            },
+            other => other.into(),
+        }
+    };
+    kinds.iter().map(|k| one(k)).collect::<Vec<_>>().join("|")
+}
+
+/// Large properties of a compact schema (lists of shapes, layers, solids)
+/// become their signature: the same keys, without the JSON schema around
+/// each one, which is most of the tool list's tokens.
+fn sign_large(schema: &mut Value) {
+    /// Properties at least this long (JSON characters) are signed.
+    const LARGE: usize = 160;
+    let Some(Value::Object(props)) = schema.get_mut("properties") else {
+        return;
+    };
+    for prop in props.values_mut() {
+        if prop.get("description").is_some() || prop.to_string().len() < LARGE {
+            continue;
+        }
+        let kind = prop.get("type").cloned().unwrap_or(json!("object"));
+        let mut short = json!({"type": kind.clone(), "description": signature(prop)});
+        if kind == "array" {
+            short["items"] = json!({"type": "object"});
+        }
+        *prop = short;
+    }
+}
+
 /// Size of what a model actually receives for these tools (name,
 /// description and input schema), in JSON characters.
 pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
@@ -2090,6 +2247,12 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
                 }
                 strip_descriptions(&mut d.input_schema);
                 share_repeats(&mut d.input_schema);
+                if let Some(line) = on_demand_description(&d.name) {
+                    d.description = line.into();
+                    on_demand_schema(&mut d.input_schema);
+                } else {
+                    sign_large(&mut d.input_schema);
+                }
             }
             d
         })
@@ -2243,20 +2406,30 @@ mod tests {
     }
 
     #[test]
-    fn compact_schemas_send_a_repeated_schema_once() {
+    fn compact_schemas_are_small_and_complete_on_demand() {
         use crate::config::ToolsConfig;
         let compact = definitions_for(&ToolsConfig::default());
-        for name in ["design", "scene"] {
+        // Tools few tasks need: one line, each parameter's type, and help.
+        for name in ON_DEMAND {
             let d = compact.iter().find(|d| d.name == name).unwrap();
-            let props = &d.input_schema["properties"];
-            assert!(props["add"]["items"]["properties"].is_object(), "{name}");
-            assert_eq!(
-                props["change"]["items"],
-                json!({"type": "object"}),
-                "{name}"
-            );
-            assert_eq!(props["change"]["description"], "Same keys as add.");
+            assert!(d.description.contains("help=true"), "{name}");
+            let props = d.input_schema["properties"].as_object().unwrap();
+            assert_eq!(props["help"], json!({"type": "boolean"}), "{name}");
+            for (k, v) in props {
+                assert!(v.as_object().unwrap().len() == 1, "{name}.{k}: {v}");
+            }
+            assert!(d.input_schema.get("required").is_none(), "{name}");
+            // help=true gives the whole schema.
+            let help = help_text(name).unwrap();
+            assert!(help.contains("Parameters (JSON schema)"), "{name}");
         }
+        assert!(help_text("design").unwrap().contains("\"mirror\""));
+        // Large nested parameters of other tools become a signature.
+        let shot = compact.iter().find(|d| d.name == "screenshot").unwrap();
+        assert_eq!(
+            shot.input_schema["properties"]["canvas"]["description"],
+            "{box:[n], range:[n], size:[n]}"
+        );
         // Full descriptions keep every schema as it is.
         let full = definitions();
         let design = full.iter().find(|d| d.name == "design").unwrap();

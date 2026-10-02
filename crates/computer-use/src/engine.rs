@@ -1748,6 +1748,14 @@ impl<B: Backend> Engine<B> {
     pub fn call_tool(&mut self, name: &str, args: serde_json::Value) -> ToolOutput {
         self.reload_if_changed();
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
+        // help=true: the tool's full description and parameters (compact
+        // mode shows some tools in one line). The script tool has its own.
+        if args.get("help").and_then(serde_json::Value::as_bool) == Some(true)
+            && name != "script"
+            && let Some(text) = crate::tools::help_text(name)
+        {
+            return ToolOutput::text(text);
+        }
         // A bug in one tool call must not take the whole server down.
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // A saved script is a tool of its own.
@@ -4423,13 +4431,50 @@ impl<B: Backend> Engine<B> {
                 "screenshots are disabled (text_only / screenshot.enabled=false)".into(),
             ));
         }
-        let mode = args.mode.unwrap_or(if args.app.is_some() {
-            ScreenshotMode::Window
-        } else {
-            ScreenshotMode::Auto
+        // x/y/width/height: a part of the screen, or (with app) of the
+        // window's picture. Never silently left out.
+        let region = match (args.x, args.y, args.width, args.height) {
+            (None, None, None, None) => None,
+            (Some(x), Some(y), Some(w), Some(h))
+                if [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0 =>
+            {
+                Some(Rect::new(x, y, w, h))
+            }
+            _ => {
+                return Err(Error::InvalidArgs(
+                    "a part of the screen or window needs x, y, width and height (width and height above 0)".into(),
+                ));
+            }
+        };
+        let mode = args.mode.unwrap_or(match (&args.app, region) {
+            (Some(_), _) => ScreenshotMode::Window,
+            (None, Some(_)) => ScreenshotMode::Region,
+            (None, None) => ScreenshotMode::Auto,
         });
+        if region.is_some() && matches!(mode, ScreenshotMode::Auto | ScreenshotMode::Full) {
+            return Err(Error::InvalidArgs(
+                "x/y/width/height pick a part: use mode=region (screen coordinates), or app for a part of its window; mode=full is the whole screen".into(),
+            ));
+        }
+        // A window's picture compared with the last one the model has of it
+        // (only the change, or nothing when nothing changed) unless the
+        // whole window was asked for (mode=window) or more than a picture.
+        let smart_window = args.mode.is_none()
+            && region.is_none()
+            && args.element_index.is_none()
+            && !args.annotate
+            && args.zoom.is_none()
+            && args.canvas.is_none()
+            && args.grid.is_none()
+            && !args.palette
+            && args.pick.is_none()
+            && args.compare.is_none()
+            && !args.cells
+            && args.cell.is_none();
         // An element to zoom into (screen rect).
         let mut zoom: Option<Rect> = None;
+        // A window's picture: whose (pid, window id).
+        let mut window_shot: Option<(u32, u64)> = None;
         // What grid labels and `pick` points are in: screen coordinates,
         // or the x/y actions use for the window.
         let mut space = LabelSpace::Screen;
@@ -4516,6 +4561,7 @@ impl<B: Backend> Engine<B> {
                 } else {
                     None
                 };
+                window_shot = Some((app.pid, window.id));
                 (cap, marks, label)
             }
         };
@@ -4592,6 +4638,52 @@ impl<B: Backend> Engine<B> {
             );
             let px = imaging::widen(px, 8, 0, capture.width, capture.height);
             capture = imaging::crop(&capture, px);
+        }
+
+        // A part of the window's picture, in the x/y actions take.
+        if let (Some(r), ScreenshotMode::Window) = (region, mode) {
+            let (out_w, _) = imaging::fit(capture.width, capture.height, cfg.max_dimension.max(64));
+            let to_px = |x: f64, y: f64| -> Result<(f64, f64)> {
+                match space {
+                    LabelSpace::Map(map) => to_capture(&capture, &map, x, y),
+                    _ => {
+                        // No picture of it seen yet: the picture it would be.
+                        let k = f64::from(capture.width) / f64::from(out_w.max(1));
+                        Ok((x * k, y * k))
+                    }
+                }
+            };
+            let (x0, y0) = to_px(r.x, r.y)?;
+            let (x1, y1) = to_px(r.x + r.width, r.y + r.height)?;
+            let (cw, ch) = (f64::from(capture.width), f64::from(capture.height));
+            let (l, t) = (x0.min(x1).clamp(0.0, cw), y0.min(y1).clamp(0.0, ch));
+            let (rr, b) = (x0.max(x1).clamp(0.0, cw), y0.max(y1).clamp(0.0, ch));
+            if rr - l < 1.0 || b - t < 1.0 {
+                return Err(Error::InvalidArgs(format!(
+                    "({}, {}) {}x{} is outside the window's picture",
+                    r.x, r.y, r.width, r.height
+                )));
+            }
+            capture = imaging::crop(
+                &capture,
+                (
+                    l as u32,
+                    t as u32,
+                    (rr - l).ceil() as u32,
+                    (b - t).ceil() as u32,
+                ),
+            );
+            let (img, _) = imaging::encode(capture, &cfg)?;
+            let text = format!(
+                "Screenshot of {label}, the part x {}–{}, y {}–{} of its picture: {}x{} px. x/y for actions still refer to the whole window's picture.{note}",
+                r.x,
+                r.x + r.width,
+                r.y,
+                r.y + r.height,
+                img.width,
+                img.height
+            );
+            return Ok(image(img, text));
         }
 
         // Exact colours and coordinates, read before anything is drawn on it.
@@ -4717,6 +4809,74 @@ impl<B: Backend> Engine<B> {
             }
             let (img, map) = imaging::encode(capture, &cfg)?;
             self.pending_screen_shot = Some((sig, map));
+            let text = format!(
+                "Screenshot of {label}: {}x{} px.{note}",
+                img.width, img.height
+            );
+            return Ok(image(img, text));
+        }
+
+        // A window: compared with the model's last picture of it.
+        if let Some((pid, wid)) = window_shot
+            && marks_free(&args)
+        {
+            let grid = self.store.config.cache.pixel_grid;
+            let tolerance = self.store.config.cache.pixel_tolerance;
+            let sig = PixelSig::of(&capture, grid);
+            let known = self
+                .states
+                .get(&pid)
+                .filter(|st| st.window_id == Some(wid))
+                .and_then(|st| st.known.as_ref())
+                .filter(|k| k.shot)
+                .and_then(|k| Some((k.id, k.pixels.clone()?, k.coord?)));
+            if smart_window
+                && self.store.config.cache.dedupe_screenshots
+                && let Some((_, old, map)) = &known
+                && map.bounds == capture.bounds
+            {
+                if sig.same_as(old, tolerance) {
+                    let text = if self.explain_first("window-same") {
+                        format!(
+                            "{label} looks the same as in your last picture of it; not re-sent (mode=window sends it anyway).{note}"
+                        )
+                    } else {
+                        format!("{label}: unchanged since your last picture of it.{note}")
+                    };
+                    return Ok(ToolOutput::text(text));
+                }
+                if let Some(part) = self.changed_part(&capture, Some(&sig), Some(old), Some(*map)) {
+                    let (img, (ox, oy)) = imaging::encode_part(&capture, part, map, &cfg)?;
+                    let (w, h, x1, y1) = (img.width, img.height, ox + img.width, oy + img.height);
+                    let text = if self.explain_first("window-part") {
+                        format!(
+                            "Screenshot of {label}: only the part that changed since your last picture of it, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that picture (same scale; the rest is unchanged; mode=window sends the whole window).{note}"
+                        )
+                    } else {
+                        format!(
+                            "Screenshot of {label}: changed part only, x {ox}–{x1}, y {oy}–{y1} of your last picture of it.{note}"
+                        )
+                    };
+                    let screen = known.as_ref().map(|k| k.0).unwrap_or_default();
+                    self.pending_images.push(PendingImage {
+                        pid,
+                        screen,
+                        coord: *map,
+                        pixels: Some(sig),
+                    });
+                    return Ok(image(img, text));
+                }
+            }
+            // The whole window: from now on the model's picture of it.
+            let (img, map) = imaging::encode(capture, &cfg)?;
+            if let Some((screen, _, _)) = known {
+                self.pending_images.push(PendingImage {
+                    pid,
+                    screen,
+                    coord: map,
+                    pixels: Some(sig),
+                });
+            }
             let text = format!(
                 "Screenshot of {label}: {}x{} px.{note}",
                 img.width, img.height
@@ -5759,6 +5919,18 @@ fn cell_view(
 }
 
 /// The capture pixel an x/y point (screenshot pixels) falls on.
+/// A screenshot that is the plain picture (nothing drawn on it): one the
+/// model's picture of the window can be compared with or replaced by.
+fn marks_free(args: &ScreenshotArgs) -> bool {
+    !args.annotate
+        && args.grid.is_none()
+        && args.canvas.is_none()
+        && !args.cells
+        && args.cell.is_none()
+        && args.element_index.is_none()
+        && args.zoom.is_none()
+}
+
 fn to_capture(cap: &Capture, map: &CoordMap, x: f64, y: f64) -> Result<(f64, f64)> {
     let p = map.to_screen(x, y)?;
     let b = cap.bounds;
@@ -9024,7 +9196,10 @@ mod tests {
         let out = state_of(&mut e, serde_json::json!({}));
         assert!(!out.text.contains("folded") && out.text.contains("Item 150"));
         // Or keep more of each list.
-        let mut e = long_list_engine(|c| c.tree.fold_keep = 40);
+        let mut e = long_list_engine(|c| {
+            c.tree.fold_keep = 40;
+            c.tree.max_tokens = 800;
+        });
         let out = state_of(&mut e, serde_json::json!({}));
         assert!(out.text.contains("Item 39") && !out.text.contains("Item 40\""));
     }

@@ -105,9 +105,11 @@ pub fn contains(haystack: &str, needle: &str) -> bool {
     fold(haystack).contains(&fold(needle))
 }
 
-/// A rough count of the tokens `s` costs a model: about four characters
-/// per token for ASCII, about two for other scripts (they tokenize less
-/// densely). Used to keep tool results inside their token budgets.
+/// A count of the tokens `s` costs a model, as measured with a current
+/// Claude model's own counts (`benchmarks/tokens`): about 2.2 characters per
+/// token for English, trees, JSON and code (the common "4" undercounts these
+/// by 1.8x), about 1.4 for other scripts (Persian, Arabic, CJK). Used to keep
+/// tool results inside their token budgets.
 pub fn estimate_tokens(s: &str) -> usize {
     let (mut ascii, mut other) = (0usize, 0usize);
     for c in s.chars() {
@@ -117,7 +119,7 @@ pub fn estimate_tokens(s: &str) -> usize {
             other += 1;
         }
     }
-    ascii.div_ceil(4) + other.div_ceil(2)
+    (ascii * 5).div_ceil(11) + (other * 5).div_ceil(7)
 }
 
 #[cfg(test)]
@@ -127,8 +129,11 @@ mod tests {
     #[test]
     fn token_estimates() {
         assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("abcdefgh"), 2);
-        assert_eq!(estimate_tokens("\u{05E9}\u{05DC}\u{05D5}\u{05DD}"), 2);
+        // Measured: the tree of a large app, 4,506 characters, 2,008 tokens.
+        assert_eq!(estimate_tokens(&"a".repeat(4506)), 2049);
+        assert_eq!(estimate_tokens("abcdefgh"), 4);
+        // Persian, measured: 534 characters, 379 tokens.
+        assert_eq!(estimate_tokens(&"\u{0633}".repeat(534)), 382);
     }
 
     #[test]

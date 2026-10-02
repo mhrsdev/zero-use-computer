@@ -269,7 +269,7 @@ fn run() -> Result<()> {
             eprintln!(
                 "{} tools, ~{} tokens per model request",
                 defs.len(),
-                tools::model_visible_len(&defs).div_ceil(4)
+                (tools::model_visible_len(&defs) * 5).div_ceil(11)
             );
             Ok(())
         }
@@ -499,7 +499,7 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         "tools:    {} exposed ({:?} descriptions, ~{} tokens/request)",
         defs.len(),
         c.tools.descriptions,
-        tools::model_visible_len(&defs).div_ceil(4)
+        (tools::model_visible_len(&defs) * 5).div_ceil(11)
     );
     println!(
         "images:   {} (attach {:?}, max {} px)",
