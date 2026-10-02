@@ -1554,11 +1554,16 @@ impl<B: Backend> Engine<B> {
                     out.text = if d.is_empty() {
                         tree::render_diff(&d, nodes)
                     } else {
-                        let intro = self.explain(
-                            "diff",
-                            tree::DIFF_INTRO,
-                            "Changes (+ added, ~ changed, - removed):",
-                        );
+                        // In full once, the legend once more, then a word.
+                        let intro = if self.explain_first("diff") {
+                            tree::DIFF_INTRO
+                        } else {
+                            self.explain(
+                                "diff-legend",
+                                "Changes (+ added, ~ changed, - removed):",
+                                "Changes:",
+                            )
+                        };
                         tree::render_diff_with(&d, nodes, intro, tcfg.compact)
                     };
                     if !restless.is_empty() {
@@ -5520,9 +5525,12 @@ impl<B: Backend> Engine<B> {
         cell_size: Option<f64>,
         summary: String,
     ) -> Result<ToolOutput> {
-        let text = format!(
-            "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the blue cells (A1 top-left, their lines labelled) are in the coordinates you gave. Call draw again without preview to draw them."
+        let legend = self.explain(
+            "draw-preview",
+            " Red: the strokes (green: where each starts); the blue cells (A1 top-left, their lines labelled) are in the coordinates you gave. Call draw again without preview to draw them.",
+            "",
         );
+        let text = format!("Preview only, nothing was drawn: {summary}{legend}");
         let Some(mut cap) = cap else {
             return Ok(ToolOutput::text(text));
         };
@@ -6169,10 +6177,17 @@ impl<B: Backend> Engine<B> {
             let used = imaging::draw_grid(&mut pic, ax, ay, 0.0, 1.0, None);
             let under = imaging::color_at(&capture, at.0, at.1).unwrap_or_default();
             let (img, _) = imaging::encode(pic, &cfg)?;
-            let text = format!(
-                "Magnified around ({x}, {y}) in {label}: each square is one pixel of the screen picture ({:.2} of the x/y click takes); the crosshair is the point, on {under}. The grid is labelled in the x/y click takes, a line every {used}: read an exact point off it.{note}",
-                1.0 / per_x.abs().max(1e-9)
-            );
+            let text = if self.explain_first("loupe") {
+                format!(
+                    "Magnified around ({x}, {y}) in {label}: each square is one pixel of the screen picture ({:.2} of the x/y click takes); the crosshair is the point, on {under}. The grid is labelled in the x/y click takes, a line every {used}: read an exact point off it.{note}",
+                    1.0 / per_x.abs().max(1e-9)
+                )
+            } else {
+                format!(
+                    "Magnified around ({x}, {y}) in {label}: a square a pixel ({:.2} of x/y); crosshair on {under}; grid in x/y, a line every {used}.{note}",
+                    1.0 / per_x.abs().max(1e-9)
+                )
+            };
             return Ok(image(img, text));
         }
 
@@ -6275,8 +6290,13 @@ impl<B: Backend> Engine<B> {
 
         if zoom.is_some() {
             let (img, _) = imaging::encode(capture, &cfg)?;
+            let how = self.explain(
+                "zoomed",
+                " It is its own picture: x/y for actions still refer to get_app_state's screenshot.",
+                "",
+            );
             let text = format!(
-                "Screenshot of {label}, zoomed in: {}x{} px. It is its own picture: x/y for actions still refer to get_app_state's screenshot.{note}",
+                "Screenshot of {label}, zoomed in: {}x{} px.{how}{note}",
                 img.width, img.height
             );
             return Ok(image(img, text));
@@ -6972,8 +6992,8 @@ impl<B: Backend> Engine<B> {
                 } else {
                     format!("{} change(s)", r.changes)
                 };
-                out.text
-                    .push_str(&format!("\n\n{title} {count}; get_app_state shows them."));
+                let how = self.explain("report-brief", "; get_app_state shows them.", ".");
+                out.text.push_str(&format!("\n\n{title} {count}{how}"));
                 return out;
             }
             Report::Relevant if !r.full => {
@@ -6983,8 +7003,9 @@ impl<B: Backend> Engine<B> {
                 } else {
                     let max = self.store.config.tree.report_changes_max_lines.max(1);
                     let lines: Vec<&str> = text.lines().take(max).collect();
+                    let how = self.explain("report-others", "; get_app_state shows them", "");
                     out.text.push_str(&format!(
-                        "\n\n{title}\n{}\n[{others} other change(s) elsewhere; get_app_state shows them]",
+                        "\n\n{title}\n{}\n[{others} other change(s) elsewhere{how}]",
                         lines.join("\n")
                     ));
                     return out;
@@ -6999,10 +7020,9 @@ impl<B: Backend> Engine<B> {
         out.text.push('\n');
         if lines.len() > max {
             out.text.push_str(&lines[..max].join("\n"));
-            out.text.push_str(&format!(
-                "\n[+{} more lines; call get_app_state for the rest]",
-                lines.len() - max
-            ));
+            let how = self.explain("report-more", "; call get_app_state for the rest", "");
+            out.text
+                .push_str(&format!("\n[+{} more lines{how}]", lines.len() - max));
             // The model hasn't seen all of it: the next get_app_state
             // reports against what it had seen before, and sends only the
             // rest if nothing changed (when the model reads this result
