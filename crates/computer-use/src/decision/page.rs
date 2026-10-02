@@ -92,17 +92,41 @@ pub fn open_browser(url: &str) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        use windows::core::{HSTRING, w};
-        let target = HSTRING::from(url);
-        // SAFETY: plain strings for the shell to open; no window handle.
-        let r = unsafe { ShellExecuteW(None, w!("open"), &target, None, None, SW_SHOWNORMAL) };
-        // ShellExecute reports success with a value above 32.
-        if r.0 as usize <= 32 {
-            return Err(Error::Platform(format!(
-                "couldn't open the browser (error {}); open {url} yourself",
+        // The shell may hand the address to COM objects: on a thread of
+        // its own, with COM set up there.
+        let target = url.to_string();
+        let code = std::thread::spawn(move || {
+            use windows::Win32::System::Com::{
+                COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+            };
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            use windows::core::{HSTRING, PCWSTR, w};
+            let file = HSTRING::from(target.as_str());
+            // SAFETY: COM set up and torn down on this thread; plain
+            // strings for the shell to open, no window handle.
+            unsafe {
+                let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                let r = ShellExecuteW(
+                    None,
+                    w!("open"),
+                    &file,
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                );
+                if init.is_ok() {
+                    CoUninitialize();
+                }
                 r.0 as usize
+            }
+        })
+        .join()
+        .unwrap_or(0);
+        // ShellExecute reports success with a value above 32.
+        if code <= 32 {
+            return Err(Error::Platform(format!(
+                "couldn't open the browser (error {code}); open {url} yourself"
             )));
         }
         Ok(())
@@ -141,11 +165,11 @@ pub fn open_browser(url: &str) -> Result<()> {
 /// 128 random bits as hex.
 fn token() -> String {
     let mut bytes = [0u8; 16];
-    let mut filled = false;
     #[cfg(unix)]
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        filled = f.read_exact(&mut bytes).is_ok();
-    }
+    let filled =
+        std::fs::File::open("/dev/urandom").is_ok_and(|mut f| f.read_exact(&mut bytes).is_ok());
+    #[cfg(not(unix))]
+    let filled = false;
     if !filled {
         // The standard library seeds its hash keys from the system's
         // random source: hashing with fresh keys gives unguessable bits.

@@ -384,9 +384,8 @@ impl<B: Backend> Engine<B> {
                         .map_err(Error::ActionFailed)
                 }
                 "remove" | "clear" | "delete" => {
-                    match self.store.path.clone() {
-                        Some(path) => decision::page::remove_settings(&path)?,
-                        None => {}
+                    if let Some(path) = self.store.path.clone() {
+                        decision::page::remove_settings(&path)?;
                     }
                     self.store.config.decision = crate::config::DecisionConfig::default();
                     self.reload_now();
@@ -529,7 +528,7 @@ impl<B: Backend> Engine<B> {
 fn items_report(
     decider: &Decider,
     questions: &[Question],
-    results: &[Result<(Vec<(String, Answer)>, Duration)>],
+    results: &[decision::Asked],
     took: Duration,
 ) -> String {
     let mut out = format!(
@@ -588,7 +587,7 @@ fn items_report(
                         }
                     }
                 }
-                counts.sort_by(|a, b| b.1.cmp(&a.1));
+                counts.sort_by_key(|c| std::cmp::Reverse(c.1));
                 let parts: Vec<String> = counts.iter().map(|(c, n)| format!("{c} {n}")).collect();
                 out.push_str(&format!("Counts: {}.", parts.join(", ")));
             }

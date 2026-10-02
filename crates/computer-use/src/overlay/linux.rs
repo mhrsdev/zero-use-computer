@@ -36,7 +36,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::draw;
-use super::helper::{Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -203,16 +203,27 @@ pub struct X11Surface {
     idle_since: Option<Instant>,
     last_raise: Instant,
     last_refresh: Instant,
-    /// The stop key's passive grab: keycode and modifiers.
-    hotkey: Option<(u8, ModMask)>,
-    /// The stop key is held down (key repeat is not a new press), and when
-    /// it last reported a press.
-    hotkey_down: bool,
-    hotkey_pressed: u32,
-    /// When the stop key was last released (X sends release + press with
-    /// the same time for each key repeat).
-    hotkey_released: Option<u32>,
+    /// The global keys' passive grabs (stop key, settings key).
+    grabs: [Option<Grab>; 2],
 }
+
+/// A global key's passive grab, and its state.
+#[derive(Debug, Clone, Copy)]
+struct Grab {
+    code: u8,
+    mods: ModMask,
+    /// Held down (key repeat is not a new press), and when it last
+    /// reported a press.
+    down: bool,
+    pressed: u32,
+    /// When it was last released (X sends release + press with the same
+    /// time for each key repeat).
+    released: Option<u32>,
+}
+
+/// The modifier bits a global key is told apart by (Shift, Control, Mod1,
+/// Mod4), without the lock keys'.
+const MOD_BITS: u16 = 0x0001 | 0x0004 | 0x0008 | 0x0040;
 
 /// NumLock (Mod2) and CapsLock variants, so the stop key works whatever
 /// state those locks are in.
@@ -351,10 +362,7 @@ impl X11Surface {
             idle_since: None,
             last_raise: Instant::now(),
             last_refresh: Instant::now(),
-            hotkey: None,
-            hotkey_down: false,
-            hotkey_pressed: 0,
-            hotkey_released: None,
+            grabs: [None; 2],
         };
         s.refresh();
         Ok(s)
@@ -427,15 +435,22 @@ impl X11Surface {
             .map(|i| min + i as u8)
     }
 
-    fn ungrab_hotkey(&mut self) {
-        if let Some((code, mods)) = self.hotkey.take() {
+    fn ungrab_hotkey(&mut self, which: Hotkey) {
+        if let Some(g) = self.grabs[which.index()].take() {
             for lock in LOCKS {
                 let _ = self
                     .conn
-                    .ungrab_key(code, self.root, mods | ModMask::from(lock));
+                    .ungrab_key(g.code, self.root, g.mods | ModMask::from(lock));
             }
             let _ = self.conn.flush();
         }
+    }
+
+    /// Which global key a key event with this keycode and modifier state is.
+    fn grab_of(&self, code: u8, state: u16) -> Option<usize> {
+        self.grabs.iter().position(|g| {
+            g.is_some_and(|g| g.code == code && (state & MOD_BITS) == u16::from(g.mods))
+        })
     }
 
     /// Depth, visual and colormap for new windows.
@@ -830,9 +845,8 @@ impl Surface for X11Surface {
         }
     }
 
-    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
-        self.ungrab_hotkey();
-        self.hotkey_down = false;
+    fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
+        self.ungrab_hotkey(which);
         let Some(combo) = combo else {
             return false;
         };
@@ -874,9 +888,15 @@ impl Surface for X11Surface {
                 break;
             }
         }
-        self.hotkey = Some((code, mods));
+        self.grabs[which.index()] = Some(Grab {
+            code,
+            mods,
+            down: false,
+            pressed: 0,
+            released: None,
+        });
         if !ok {
-            self.ungrab_hotkey();
+            self.ungrab_hotkey(which);
         }
         let _ = self.conn.flush();
         ok
@@ -889,24 +909,32 @@ impl Surface for X11Surface {
             match ev {
                 // A compositor started or stopped.
                 Event::XfixesSelectionNotify(_) => refresh = true,
-                Event::KeyPress(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
+                Event::KeyPress(e) => {
+                    let Some(i) = self.grab_of(e.detail, u16::from(e.state)) else {
+                        continue;
+                    };
+                    let Some(g) = self.grabs[i].as_mut() else {
+                        continue;
+                    };
                     // Holding the key repeats it: only a fresh press counts.
                     // (A press long after the last one is new even if its
                     // release got lost.)
-                    let repeat = (self.hotkey_down
-                        && e.time.wrapping_sub(self.hotkey_pressed) < 1000)
-                        || self
-                            .hotkey_released
-                            .is_some_and(|t| e.time.wrapping_sub(t) <= 1);
-                    self.hotkey_down = true;
-                    self.hotkey_pressed = e.time;
+                    let repeat = (g.down && e.time.wrapping_sub(g.pressed) < 1000)
+                        || g.released.is_some_and(|t| e.time.wrapping_sub(t) <= 1);
+                    g.down = true;
+                    g.pressed = e.time;
                     if !repeat {
-                        events.push(SurfaceEvent::Hotkey);
+                        events.push(SurfaceEvent::Hotkey(Hotkey::ALL[i]));
                     }
                 }
-                Event::KeyRelease(e) if self.hotkey.is_some_and(|(code, _)| code == e.detail) => {
-                    self.hotkey_down = false;
-                    self.hotkey_released = Some(e.time);
+                Event::KeyRelease(e) => {
+                    // A release may come with the modifiers already up.
+                    for g in self.grabs.iter_mut().flatten() {
+                        if g.code == e.detail {
+                            g.down = false;
+                            g.released = Some(e.time);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -929,7 +957,9 @@ impl Surface for X11Surface {
     }
 
     fn close(&mut self) {
-        self.ungrab_hotkey();
+        for which in Hotkey::ALL {
+            self.ungrab_hotkey(which);
+        }
         // Just hidden at the end of the fade-out, most likely.
         self.drop_windows(false);
     }

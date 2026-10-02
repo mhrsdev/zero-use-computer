@@ -82,6 +82,9 @@ pub enum Cmd {
         /// The emergency stop key the helper listens for ("" = none).
         #[serde(default)]
         hotkey: String,
+        /// The key that opens the decision model's settings page ("" = none).
+        #[serde(default)]
+        settings_key: String,
         /// Whether the agent is stopped right now.
         #[serde(default)]
         stopped: bool,
@@ -146,6 +149,13 @@ pub enum Reply {
         key: String,
         ok: bool,
     },
+    /// Whether the system accepted the settings key.
+    SettingsKey {
+        key: String,
+        ok: bool,
+    },
+    /// The user pressed the settings key.
+    Settings,
 }
 
 /// Replies kept for a later `wait_for` at most.
@@ -170,6 +180,19 @@ impl Launcher {
     }
 }
 
+/// What to do when the user presses the settings key (called on the
+/// helper's reader thread, so it runs even while the engine is busy).
+pub type OnSettings = Arc<dyn Fn() + Send + Sync>;
+
+/// The global keys the helper listens for ("" = none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keys {
+    /// The emergency stop key.
+    pub stop: String,
+    /// Opens the decision model's settings page.
+    pub settings: String,
+}
+
 /// The engine's handle on the helper. Every method is best-effort and
 /// non-blocking (except the explicit waits below, which are bounded).
 pub struct Overlay {
@@ -183,18 +206,22 @@ pub struct Overlay {
     /// The stop key the helper last reported on, and whether the system
     /// accepted it (`None` until the helper says).
     hotkey: Arc<Mutex<Option<(String, bool)>>>,
+    /// The same for the settings key.
+    settings_key: Arc<Mutex<Option<(String, bool)>>>,
     excluded: bool,
     next_id: u64,
 }
 
 impl Overlay {
-    /// Start the helper. `hotkey` is the emergency stop key it listens for;
-    /// pressing it sets (and pressing it again clears) `stop`.
+    /// Start the helper. It listens for `keys`: pressing the stop key sets
+    /// (and pressing it again clears) `stop`; the settings key calls
+    /// `on_settings`.
     pub fn spawn(
         launcher: &Launcher,
         config: &OverlayConfig,
-        hotkey: &str,
+        keys: &Keys,
         stop: Arc<AtomicBool>,
+        on_settings: Option<OnSettings>,
     ) -> std::io::Result<Self> {
         let mut cmd = Command::new(&launcher.program);
         cmd.args(&launcher.args)
@@ -238,6 +265,8 @@ impl Overlay {
         let flag = stop.clone();
         let hotkey_state = Arc::new(Mutex::new(None));
         let hk = hotkey_state.clone();
+        let settings_state = Arc::new(Mutex::new(None));
+        let sk = settings_state.clone();
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
@@ -267,6 +296,22 @@ impl Overlay {
                                 *h = Some((key, ok));
                             }
                         }
+                        Reply::SettingsKey { key, ok } => {
+                            if !ok {
+                                log::info!(
+                                    "the settings key {key} could not be registered (another program may use it); `computer-use-mcp settings` opens the page too"
+                                );
+                            }
+                            if let Ok(mut h) = sk.lock() {
+                                *h = Some((key, ok));
+                            }
+                        }
+                        Reply::Settings => {
+                            log::info!("the user pressed the settings key");
+                            if let Some(f) = &on_settings {
+                                f();
+                            }
+                        }
                         r => {
                             if rtx.send(r).is_err() {
                                 break;
@@ -285,18 +330,20 @@ impl Overlay {
             alive,
             stop,
             hotkey: hotkey_state,
+            settings_key: settings_state,
             excluded: false,
             next_id: 0,
         };
-        o.configure(config, hotkey);
+        o.configure(config, keys);
         Ok(o)
     }
 
     /// Send (new) settings.
-    pub fn configure(&self, config: &OverlayConfig, hotkey: &str) {
+    pub fn configure(&self, config: &OverlayConfig, keys: &Keys) {
         self.send(&Cmd::Config {
             config: Box::new(config.clone()),
-            hotkey: hotkey.to_string(),
+            hotkey: keys.stop.clone(),
+            settings_key: keys.settings.clone(),
             stopped: self.stop.load(Ordering::SeqCst),
         });
     }
@@ -309,6 +356,14 @@ impl Overlay {
     /// helper has said, or if it last reported on another key).
     pub fn hotkey_ok(&self, key: &str) -> Option<bool> {
         let h = self.hotkey.lock().ok()?;
+        h.as_ref()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
+            .map(|(_, ok)| *ok)
+    }
+
+    /// The same for the settings key.
+    pub fn settings_key_ok(&self, key: &str) -> Option<bool> {
+        let h = self.settings_key.lock().ok()?;
         h.as_ref()
             .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
             .map(|(_, ok)| *ok)
@@ -491,6 +546,7 @@ mod tests {
             Cmd::Config {
                 config: Box::default(),
                 hotkey: "ctrl+alt+escape".into(),
+                settings_key: "ctrl+alt+j".into(),
                 stopped: true,
             },
         ];
@@ -506,7 +562,9 @@ mod tests {
     fn a_missing_helper_is_harmless() {
         let l = Launcher::helper("/nonexistent/computer-use-mcp");
         let stop = Arc::new(AtomicBool::new(false));
-        assert!(Overlay::spawn(&l, &OverlayConfig::default(), "", stop).is_err());
+        assert!(
+            Overlay::spawn(&l, &OverlayConfig::default(), &Keys::default(), stop, None).is_err()
+        );
         // Old helpers' config lines (no hotkey fields) still parse.
         let line = r#"{"t":"config","config":{}}"#;
         assert!(matches!(

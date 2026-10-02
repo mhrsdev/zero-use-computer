@@ -27,11 +27,31 @@ pub enum Layer {
 
 const EDGES: [Layer; 4] = [Layer::Top, Layer::Right, Layer::Bottom, Layer::Left];
 
+/// The global keys the helper listens for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hotkey {
+    /// The emergency stop key.
+    Stop,
+    /// Opens the decision model's settings page.
+    Settings,
+}
+
+impl Hotkey {
+    pub const ALL: [Hotkey; 2] = [Hotkey::Stop, Hotkey::Settings];
+
+    pub fn index(self) -> usize {
+        match self {
+            Hotkey::Stop => 0,
+            Hotkey::Settings => 1,
+        }
+    }
+}
+
 /// Something that happened on the surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceEvent {
-    /// The user pressed the emergency stop key.
-    Hotkey,
+    /// The user pressed one of the global keys.
+    Hotkey(Hotkey),
 }
 
 /// A platform's way of putting images on screen: always on top,
@@ -69,13 +89,13 @@ pub trait Surface {
     fn set_opacity(&mut self, _opacity: f32) -> bool {
         false
     }
-    /// Listen for the emergency stop key anywhere on the system (`None`
-    /// stops listening). Only this one key combination is received, never
+    /// Listen for one of the global keys anywhere on the system (`None`
+    /// stops listening). Only these key combinations are received, never
     /// other keys. Returns whether the system accepted it.
-    fn set_hotkey(&mut self, _combo: Option<crate::keys::KeyCombo>) -> bool {
+    fn set_hotkey(&mut self, _which: Hotkey, _combo: Option<crate::keys::KeyCombo>) -> bool {
         false
     }
-    /// Handle native events; returns stop-key presses.
+    /// Handle native events; returns global key presses.
     fn pump(&mut self) -> Vec<SurfaceEvent>;
     fn close(&mut self);
 }
@@ -380,6 +400,7 @@ impl Machine {
                 config,
                 hotkey,
                 stopped,
+                ..
             } => {
                 self.colors = Colors::from(&config);
                 self.cfg = *config;
@@ -956,13 +977,24 @@ pub fn run(args: &[String]) -> i32 {
             // The stop key needs the same display connection, so it can't
             // be listened for either: say so, so the engine can tell the user.
             while let Ok(Input::Cmd(cmd)) = rx.recv() {
-                if let Cmd::Config { hotkey, .. } = cmd
-                    && !hotkey.trim().is_empty()
+                if let Cmd::Config {
+                    hotkey,
+                    settings_key,
+                    ..
+                } = cmd
                 {
-                    reply(&Reply::Hotkey {
-                        key: hotkey,
-                        ok: false,
-                    });
+                    if !hotkey.trim().is_empty() {
+                        reply(&Reply::Hotkey {
+                            key: hotkey,
+                            ok: false,
+                        });
+                    }
+                    if !settings_key.trim().is_empty() {
+                        reply(&Reply::SettingsKey {
+                            key: settings_key,
+                            ok: false,
+                        });
+                    }
                 }
             }
             return 1;
@@ -979,9 +1011,11 @@ pub fn run(args: &[String]) -> i32 {
     let mut painter = Painter::default();
     let mut hidden = false;
     let mut hotkey_now = String::new();
-    /// Within this of the previous one, a stop-key press is key repeat.
+    let mut settings_now = String::new();
+    /// Within this of the previous one, a key press is key repeat.
     const HOTKEY_QUIET: Duration = Duration::from_millis(400);
     let mut last_hotkey: Option<Instant> = None;
+    let mut last_settings: Option<Instant> = None;
     let mut last_parent_check = Instant::now();
     // Set once told to stop: fade out, then exit.
     let mut quitting: Option<Instant> = None;
@@ -1038,7 +1072,13 @@ pub fn run(args: &[String]) -> i32 {
                     hidden = false;
                 }
                 other => {
-                    if let Cmd::Config { config, hotkey, .. } = &other {
+                    if let Cmd::Config {
+                        config,
+                        hotkey,
+                        settings_key,
+                        ..
+                    } = &other
+                    {
                         if config.font != font_path {
                             font_path = config.font.clone();
                             fonts = Fonts::load(&font_path);
@@ -1046,10 +1086,21 @@ pub fn run(args: &[String]) -> i32 {
                         if *hotkey != hotkey_now {
                             hotkey_now = hotkey.clone();
                             let combo = crate::keys::parse_combo(hotkey.trim()).ok();
-                            let ok = surface.set_hotkey(combo);
+                            let ok = surface.set_hotkey(Hotkey::Stop, combo);
                             if !hotkey.trim().is_empty() {
                                 reply(&Reply::Hotkey {
                                     key: hotkey.clone(),
+                                    ok,
+                                });
+                            }
+                        }
+                        if *settings_key != settings_now {
+                            settings_now = settings_key.clone();
+                            let combo = crate::keys::parse_combo(settings_key.trim()).ok();
+                            let ok = surface.set_hotkey(Hotkey::Settings, combo);
+                            if !settings_key.trim().is_empty() {
+                                reply(&Reply::SettingsKey {
+                                    key: settings_key.clone(),
                                     ok,
                                 });
                             }
@@ -1064,7 +1115,14 @@ pub fn run(args: &[String]) -> i32 {
 
         for ev in surface.pump() {
             match ev {
-                SurfaceEvent::Hotkey => {
+                SurfaceEvent::Hotkey(Hotkey::Settings) => {
+                    let repeat = last_settings.is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
+                    last_settings = Some(Instant::now());
+                    if quitting.is_none() && !repeat {
+                        reply(&Reply::Settings);
+                    }
+                }
+                SurfaceEvent::Hotkey(Hotkey::Stop) => {
                     // Presses in quick succession are key repeat, not a
                     // second press. Every press restarts the quiet time, so
                     // holding the key down can't toggle stop off again.
@@ -1144,6 +1202,7 @@ fn demo_script(tx: mpsc::Sender<Input>) {
     send(Cmd::Config {
         config: Box::new(cfg),
         hotkey: "ctrl+alt+escape".into(),
+        settings_key: String::new(),
         stopped: false,
     });
     send(Cmd::Target {
@@ -1251,6 +1310,7 @@ mod tests {
             Cmd::Config {
                 config: Box::new(cfg()),
                 hotkey: "ctrl+alt+escape".into(),
+                settings_key: String::new(),
                 stopped: false,
             },
             t0,
@@ -1521,6 +1581,7 @@ mod tests {
             Cmd::Config {
                 config: Box::new(no_label),
                 hotkey: String::new(),
+                settings_key: String::new(),
                 stopped: false,
             },
             later,

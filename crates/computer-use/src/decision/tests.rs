@@ -6,9 +6,12 @@ use super::*;
 
 /// A one-route HTTP server on 127.0.0.1: answers every request with
 /// `reply(body)` (status, JSON) and keeps what it was sent.
+/// A request the fake server got: path, headers, body.
+pub(crate) type Seen = (String, Vec<(String, String)>, String);
+
 pub(crate) struct Fake {
     pub url: String,
-    pub seen: Arc<Mutex<Vec<(String, Vec<(String, String)>, String)>>>,
+    pub seen: Arc<Mutex<Vec<Seen>>>,
 }
 
 pub(crate) fn fake(reply: impl Fn(&str) -> (u16, String) + Send + Sync + 'static) -> Fake {

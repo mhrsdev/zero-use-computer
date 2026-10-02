@@ -33,6 +33,11 @@ pub const MAX_QUESTIONS: usize = 64;
 /// The most options (or levels) of one question.
 pub const MAX_OPTIONS: usize = 64;
 
+/// Each question's name and its answer, in the questions' order.
+pub type Answers = Vec<(String, Answer)>;
+/// What asking once gives: the answers and how long they took.
+pub type Asked = Result<(Answers, Duration)>;
+
 /// What a question wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -416,7 +421,7 @@ impl Decider {
         state: &str,
         questions: &[Question],
         halted: &(dyn Fn() -> bool + Sync),
-    ) -> Result<(Vec<(String, Answer)>, Duration)> {
+    ) -> Asked {
         if questions.is_empty() {
             return Err(Error::InvalidArgs("no question to ask".into()));
         }
@@ -479,12 +484,11 @@ impl Decider {
         states: &[String],
         questions: &[Question],
         halted: &(dyn Fn() -> bool + Sync),
-    ) -> Vec<Result<(Vec<(String, Answer)>, Duration)>> {
+    ) -> Vec<Asked> {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let next = AtomicUsize::new(0);
-        let results: Vec<Mutex<Option<Result<(Vec<(String, Answer)>, Duration)>>>> =
-            states.iter().map(|_| Mutex::new(None)).collect();
+        let results: Vec<Mutex<Option<Asked>>> = states.iter().map(|_| Mutex::new(None)).collect();
         let workers = self.parallel.min(states.len()).max(1);
         std::thread::scope(|s| {
             for _ in 0..workers {
@@ -797,7 +801,7 @@ fn num(v: &Value) -> Option<f64> {
     .filter(|f: &f64| f.is_finite())
 }
 
-fn parse_systemone(v: &Value, questions: &[Question]) -> Result<Vec<(String, Answer)>> {
+fn parse_systemone(v: &Value, questions: &[Question]) -> Result<Answers> {
     let answers = v.get("answers").and_then(Value::as_object).ok_or_else(|| {
         Error::ActionFailed(format!(
             "the decision model's reply has no answers: {}",
@@ -973,7 +977,7 @@ fn json_in(text: &str) -> Option<Value> {
         .flatten()
 }
 
-fn parse_chat(v: &Value, questions: &[Question]) -> Result<Vec<(String, Answer)>> {
+fn parse_chat(v: &Value, questions: &[Question]) -> Result<Answers> {
     let content = v
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)

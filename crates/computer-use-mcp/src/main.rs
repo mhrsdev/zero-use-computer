@@ -97,6 +97,13 @@ enum Command {
     },
     /// Report platform, permissions and config.
     Doctor,
+    /// Open the decision model's settings page in your browser (what
+    /// Ctrl+Alt+J does), and serve it until you press Done.
+    Settings {
+        /// Print the page's address instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// (internal) The on-screen overlay helper the server starts. `--demo`
     /// shows every state once, to check how it looks on this machine.
     #[command(hide = true)]
@@ -268,7 +275,25 @@ fn run() -> Result<()> {
         }
         Command::Config { .. } | Command::Overlay { .. } => unreachable!("handled above"),
         Command::Doctor => doctor(&cli.common, store),
+        Command::Settings { no_browser } => {
+            let path = config_path(&cli.common);
+            computer_use::decision::page::serve(Some(path), !no_browser, |url| {
+                println!("The decision model's settings page: {url}");
+                println!(
+                    "(only this computer can open it; press Done on the page, or Ctrl+C, when finished)"
+                );
+            })?;
+            Ok(())
+        }
     }
+}
+
+/// The settings as they may be shown: an API key only by its end.
+fn shown(mut cfg: Config) -> Config {
+    if !cfg.decision.api_key.is_empty() {
+        cfg.decision.api_key = config::masked_key(&cfg.decision.api_key);
+    }
+    cfg
 }
 
 fn warn_unknown_keys(path: &std::path::Path) {
@@ -293,7 +318,7 @@ fn config_cmd(common: &Common, action: &ConfigCmd) -> Result<()> {
             } else {
                 ConfigStore::load(Some(&path))?.config
             };
-            print!("{}", toml::to_string_pretty(&cfg)?);
+            print!("{}", toml::to_string_pretty(&shown(cfg))?);
         }
         ConfigCmd::Keys => {
             for key in config::known_keys() {
@@ -301,7 +326,7 @@ fn config_cmd(common: &Common, action: &ConfigCmd) -> Result<()> {
             }
         }
         ConfigCmd::Get { key } => {
-            let cfg = ConfigStore::load(Some(&path))?.config;
+            let cfg = shown(ConfigStore::load(Some(&path))?.config);
             match config::get_value(&cfg, key) {
                 Some(v) => println!("{v}"),
                 None => anyhow::bail!("unknown setting `{key}` (see `config keys`)"),
@@ -341,7 +366,7 @@ fn config_cmd(common: &Common, action: &ConfigCmd) -> Result<()> {
 }
 
 fn print_setting(path: &std::path::Path, key: &str) -> Result<()> {
-    let cfg = ConfigStore::load(Some(path))?.config;
+    let cfg = shown(ConfigStore::load(Some(path))?.config);
     if let Some(v) = config::get_value(&cfg, key) {
         println!("{key} = {v}");
     }
@@ -488,6 +513,8 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
     );
 
     let stop_key = c.control.stop_hotkey.trim().to_string();
+    let settings_key = c.control.settings_hotkey.trim().to_string();
+    let decision = c.decision.clone();
     match build_engine(common, store) {
         Ok(engine) => {
             let mut engine = with_overlay(engine);
@@ -512,8 +539,40 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
                     Err(why) => println!("stop key: ✗ {stop_key} — {why}"),
                 }
             }
+            if settings_key.is_empty() {
+                println!(
+                    "settings key: none (control.settings_hotkey is empty; `computer-use-mcp settings` opens the page)"
+                );
+            } else {
+                match engine.settings_key_ok(std::time::Duration::from_secs(3)) {
+                    Some(true) => println!(
+                        "settings key: ✓ {settings_key} opens the decision model's settings page"
+                    ),
+                    Some(false) => println!(
+                        "settings key: ✗ {settings_key} — the system refused it (another program may use it); set control.settings_hotkey to another combination, or run `computer-use-mcp settings`"
+                    ),
+                    None => println!(
+                        "settings key: ? {settings_key} — the helper didn't confirm it in time"
+                    ),
+                }
+            }
         }
         Err(e) => println!("backend:  ERROR: {e:#}"),
+    }
+    match computer_use::decision::Decider::from_config(&decision) {
+        Ok(None) => println!(
+            "decision: none — press {} (or run `computer-use-mcp settings`) to add one",
+            if settings_key.is_empty() {
+                "nothing".to_string()
+            } else {
+                settings_key.clone()
+            }
+        ),
+        Ok(Some(d)) => match computer_use::decision::page::try_model(&decision) {
+            Ok(msg) => println!("decision: ✓ {msg}"),
+            Err(e) => println!("decision: ✗ {} — {e}", d.label()),
+        },
+        Err(e) => println!("decision: ✗ {e}"),
     }
     Ok(())
 }

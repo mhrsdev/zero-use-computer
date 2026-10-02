@@ -375,11 +375,11 @@ impl<B: Backend> Engine<B> {
     /// The running overlay helper, started on first use. Never fails: when
     /// it can't run, the engine simply works without it.
     fn overlay(&mut self) -> Option<&mut Overlay> {
+        let keys = self.global_keys();
         let cfg = &self.store.config.overlay;
-        // The helper also listens for the stop key, so it runs when either
+        // The helper also listens for the global keys, so it runs when any
         // is wanted (with the overlay off it draws nothing).
-        let hotkey = self.store.config.control.stop_hotkey.trim().to_string();
-        if !cfg.enabled && hotkey.is_empty() {
+        if !cfg.enabled && keys == crate::overlay::Keys::default() {
             self.overlay = None;
             return None;
         }
@@ -409,7 +409,8 @@ impl<B: Backend> Engine<B> {
             if self.overlay_retry_at.is_some_and(|t| (self.clock)() < t) {
                 return None;
             }
-            match Overlay::spawn(&launcher, cfg, &hotkey, self.stop.clone()) {
+            let on_settings = self.settings_handler();
+            match Overlay::spawn(&launcher, cfg, &keys, self.stop.clone(), Some(on_settings)) {
                 Ok(o) => {
                     self.overlay = Some(o);
                     self.overlay_error = None;
@@ -433,14 +434,62 @@ impl<B: Backend> Engine<B> {
 
     fn overlay_reconfigure(&mut self) {
         let cfg = self.store.config.overlay.clone();
-        let hotkey = self.store.config.control.stop_hotkey.trim().to_string();
-        if !cfg.enabled && hotkey.is_empty() {
+        let keys = self.global_keys();
+        if !cfg.enabled && keys == crate::overlay::Keys::default() {
             self.overlay = None;
         } else if let Some(o) = &self.overlay {
-            o.configure(&cfg, &hotkey);
-        } else if !hotkey.is_empty() {
-            // Listen for the stop key from now on, not only once work starts.
+            o.configure(&cfg, &keys);
+        } else if keys != crate::overlay::Keys::default() {
+            // Listen for the keys from now on, not only once work starts.
             self.overlay();
+        }
+    }
+
+    /// The global keys the helper listens for.
+    fn global_keys(&self) -> crate::overlay::Keys {
+        let c = &self.store.config.control;
+        crate::overlay::Keys {
+            stop: c.stop_hotkey.trim().to_string(),
+            settings: c.settings_hotkey.trim().to_string(),
+        }
+    }
+
+    /// What the settings key does: open the decision model's settings page
+    /// (from the helper's reader thread, whatever the engine is doing).
+    fn settings_handler(&self) -> crate::overlay::OnSettings {
+        let path = self.store.path.clone();
+        Arc::new(move || {
+            if let Err(e) = crate::decision::page::open(path.clone()) {
+                log::warn!("couldn't open the settings page: {e}");
+            }
+        })
+    }
+
+    /// Whether the settings key works: `None` when there is none, or the
+    /// helper hasn't said yet.
+    pub fn settings_key_ok(&mut self, timeout: Duration) -> Option<bool> {
+        let key = self.store.config.control.settings_hotkey.trim().to_string();
+        if key.is_empty() {
+            return None;
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.overlay.is_none() {
+                self.overlay();
+            }
+            match &self.overlay {
+                Some(o) if !o.alive() => return Some(false),
+                Some(o) => {
+                    if let Some(ok) = o.settings_key_ok(&key) {
+                        return Some(ok);
+                    }
+                }
+                None => return Some(false),
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 

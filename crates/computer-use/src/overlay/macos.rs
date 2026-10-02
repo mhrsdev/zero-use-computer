@@ -19,7 +19,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 use tiny_skia::Pixmap;
 
-use super::helper::{Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -32,6 +32,7 @@ struct EventTypeSpec {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct EventHotKeyID {
     signature: u32,
     id: u32,
@@ -60,11 +61,24 @@ unsafe extern "C" {
     ) -> i32;
     fn UnregisterEventHotKey(hot_key: *mut c_void) -> i32;
     fn GetEventKind(event: *mut c_void) -> u32;
+    fn GetEventParameter(
+        event: *mut c_void,
+        name: u32,
+        desired_type: u32,
+        actual_type: *mut u32,
+        buffer_size: usize,
+        actual_size: *mut usize,
+        data: *mut c_void,
+    ) -> i32;
 }
 
 const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
 const K_EVENT_HOT_KEY_RELEASED: u32 = 6;
+const K_EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
+/// Our hot keys' signature; their ids are 1 + `Hotkey::index`.
+const HOTKEY_SIGNATURE: u32 = u32::from_be_bytes(*b"ZSTP");
 
 /// The helper's input closed, or it was told to quit.
 static INPUT_CLOSED: AtomicBool = AtomicBool::new(false);
@@ -106,18 +120,37 @@ pub fn start_watchdog(parent: Option<u32>) {
     }
 }
 
-/// Set by the hot key handler, read by `pump`.
-static HOTKEY_HIT: AtomicBool = AtomicBool::new(false);
-/// The hot key is held down (a repeat is not a new press).
-static HOTKEY_DOWN: AtomicBool = AtomicBool::new(false);
+/// Set by the hot key handler, read by `pump` (one per global key).
+static HOTKEY_HIT: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+/// A hot key is held down (a repeat is not a new press).
+static HOTKEY_DOWN: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 extern "C" fn on_hotkey(_next: *mut c_void, event: *mut c_void, _data: *mut c_void) -> i32 {
-    // SAFETY: `event` is the event this handler was called for.
+    // Which of our keys it is.
+    let mut id = EventHotKeyID::default();
+    // SAFETY: `event` is the event this handler was called for, and `id`
+    // is a buffer of the size given.
+    let read = unsafe {
+        GetEventParameter(
+            event,
+            K_EVENT_PARAM_DIRECT_OBJECT,
+            TYPE_EVENT_HOT_KEY_ID,
+            std::ptr::null_mut(),
+            std::mem::size_of::<EventHotKeyID>(),
+            std::ptr::null_mut(),
+            (&raw mut id).cast(),
+        )
+    };
+    if read != 0 || id.signature != HOTKEY_SIGNATURE || !(1..=2).contains(&id.id) {
+        return 0; // not ours
+    }
+    let i = (id.id - 1) as usize;
+    // SAFETY: as above.
     match unsafe { GetEventKind(event) } {
-        K_EVENT_HOT_KEY_RELEASED => HOTKEY_DOWN.store(false, Ordering::SeqCst),
+        K_EVENT_HOT_KEY_RELEASED => HOTKEY_DOWN[i].store(false, Ordering::SeqCst),
         _ => {
-            if !HOTKEY_DOWN.swap(true, Ordering::SeqCst) {
-                HOTKEY_HIT.store(true, Ordering::SeqCst);
+            if !HOTKEY_DOWN[i].swap(true, Ordering::SeqCst) {
+                HOTKEY_HIT[i].store(true, Ordering::SeqCst);
             }
         }
     }
@@ -194,8 +227,9 @@ pub struct MacSurface {
     hidden: bool,
     /// Current fade level, applied to every window.
     opacity: f32,
-    /// The registered stop key, and whether the handler is installed.
-    hotkey: Option<*mut c_void>,
+    /// The registered global keys (stop, settings), and whether the
+    /// handler is installed.
+    hotkeys: [Option<*mut c_void>; 2],
     handler: bool,
 }
 
@@ -216,7 +250,7 @@ impl MacSurface {
                 layers: HashMap::new(),
                 hidden: false,
                 opacity: 1.0,
-                hotkey: None,
+                hotkeys: [None; 2],
                 handler: false,
             })
         })
@@ -402,13 +436,14 @@ impl Surface for MacSurface {
         true
     }
 
-    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
-        if let Some(r) = self.hotkey.take() {
+    fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
+        let i = which.index();
+        if let Some(r) = self.hotkeys[i].take() {
             // SAFETY: unregistering the hot key we registered.
             unsafe { UnregisterEventHotKey(r) };
         }
         // The old key's release (if it is held) never arrives now.
-        HOTKEY_DOWN.store(false, Ordering::SeqCst);
+        HOTKEY_DOWN[i].store(false, Ordering::SeqCst);
         let Some(combo) = combo else {
             return false;
         };
@@ -448,17 +483,17 @@ impl Surface for MacSurface {
                 }
             }
             let id = EventHotKeyID {
-                signature: u32::from_be_bytes(*b"ZSTP"),
-                id: 1,
+                signature: HOTKEY_SIGNATURE,
+                id: i as u32 + 1,
             };
             let mut r = std::ptr::null_mut();
             if self.handler
                 && RegisterEventHotKey(u32::from(code), mods, id, target, 0, &mut r) == 0
             {
-                self.hotkey = Some(r);
+                self.hotkeys[i] = Some(r);
             }
         }
-        self.hotkey.is_some()
+        self.hotkeys[i].is_some()
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
@@ -480,14 +515,18 @@ impl Surface for MacSurface {
             }
         });
         let mut events = Vec::new();
-        if HOTKEY_HIT.swap(false, Ordering::SeqCst) {
-            events.push(SurfaceEvent::Hotkey);
+        for which in Hotkey::ALL {
+            if HOTKEY_HIT[which.index()].swap(false, Ordering::SeqCst) {
+                events.push(SurfaceEvent::Hotkey(which));
+            }
         }
         events
     }
 
     fn close(&mut self) {
-        self.set_hotkey(None);
+        for which in Hotkey::ALL {
+            self.set_hotkey(which, None);
+        }
         autoreleasepool(|_| {
             for (_, w) in self.layers.drain() {
                 w.window.orderOut(None);

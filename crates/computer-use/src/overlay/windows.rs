@@ -43,13 +43,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use super::draw;
-use super::helper::{Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
 const CLASS: PCWSTR = w!("ComputerUseOverlay");
-/// Id of the stop key registration (thread-wide, no window).
-const HOTKEY_ID: i32 = 0x5A01;
+/// Ids of the global keys' registrations (thread-wide, no window): the
+/// stop key's, then the settings key's.
+const HOTKEY_IDS: [i32; 2] = [0x5A01, 0x5A02];
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_NCHITTEST {
@@ -72,7 +73,8 @@ pub struct WinSurface {
     hidden: bool,
     /// Current fade level (the windows' constant alpha).
     opacity: f32,
-    hotkey: bool,
+    /// Which global keys are registered.
+    hotkeys: [bool; 2],
 }
 
 impl WinSurface {
@@ -98,7 +100,7 @@ impl WinSurface {
             excluded: capture_exclusion_supported(),
             hidden: false,
             opacity: 1.0,
-            hotkey: false,
+            hotkeys: [false; 2],
         };
         // Find out now whether captures can leave us out, before telling the
         // engine: a never-shown test window.
@@ -388,13 +390,14 @@ impl Surface for WinSurface {
         true
     }
 
-    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
-        if self.hotkey {
+    fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
+        let (i, id) = (which.index(), HOTKEY_IDS[which.index()]);
+        if self.hotkeys[i] {
             // SAFETY: removing our own thread's registration.
             unsafe {
-                let _ = UnregisterHotKey(None, HOTKEY_ID);
+                let _ = UnregisterHotKey(None, id);
             }
-            self.hotkey = false;
+            self.hotkeys[i] = false;
         }
         let Some(combo) = combo else {
             return false;
@@ -417,10 +420,9 @@ impl Surface for WinSurface {
         // RegisterHotKey delivers WM_HOTKEY for this one combination only;
         // it fails if another program already registered it.
         // SAFETY: a thread-wide registration (no window), removed in close().
-        self.hotkey =
-            unsafe { RegisterHotKey(None, HOTKEY_ID, HOT_KEY_MODIFIERS(mods.0), u32::from(vk.0)) }
-                .is_ok();
-        self.hotkey
+        self.hotkeys[i] =
+            unsafe { RegisterHotKey(None, id, HOT_KEY_MODIFIERS(mods.0), u32::from(vk.0)) }.is_ok();
+        self.hotkeys[i]
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
@@ -429,8 +431,12 @@ impl Surface for WinSurface {
         // SAFETY: the standard non-blocking message pump for this thread.
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == WM_HOTKEY && msg.wParam.0 == HOTKEY_ID as usize {
-                    events.push(SurfaceEvent::Hotkey);
+                if msg.message == WM_HOTKEY
+                    && let Some(i) = HOTKEY_IDS
+                        .iter()
+                        .position(|id| msg.wParam.0 == *id as usize)
+                {
+                    events.push(SurfaceEvent::Hotkey(Hotkey::ALL[i]));
                     continue;
                 }
                 let _ = TranslateMessage(&msg);
@@ -441,7 +447,9 @@ impl Surface for WinSurface {
     }
 
     fn close(&mut self) {
-        self.set_hotkey(None);
+        for which in Hotkey::ALL {
+            self.set_hotkey(which, None);
+        }
         for (_, w) in self.layers.drain() {
             // SAFETY: destroying our own windows.
             unsafe {

@@ -31,7 +31,7 @@ use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zx
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use super::draw;
-use super::helper::{Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -250,7 +250,8 @@ pub struct WaylandSurface {
     viewporter: Option<wp_viewporter::WpViewporter>,
     surfs: HashMap<Layer, Surf>,
     hidden: bool,
-    stop_key: super::wayland_stop::StopKey,
+    /// The global keys, bound in the compositor (stop, settings).
+    keys: [super::wayland_stop::BoundKey; 2],
 }
 
 impl WaylandSurface {
@@ -285,7 +286,7 @@ impl WaylandSurface {
             viewporter,
             surfs: HashMap::new(),
             hidden: false,
-            stop_key: super::wayland_stop::StopKey::new(),
+            keys: Hotkey::ALL.map(super::wayland_stop::BoundKey::new),
         };
         s.bind_outputs();
         s.sync();
@@ -673,8 +674,8 @@ impl Surface for WaylandSurface {
         self.sync();
     }
 
-    fn set_hotkey(&mut self, combo: Option<KeyCombo>) -> bool {
-        self.stop_key.set(combo)
+    fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
+        self.keys[which.index()].set(combo)
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
@@ -685,16 +686,20 @@ impl Surface for WaylandSurface {
             // Its output went away: it gets a new surface when next shown.
             self.surfs.remove(&layer);
         }
-        self.stop_key.refresh();
         let mut events = Vec::new();
-        if self.stop_key.pressed() {
-            events.push(SurfaceEvent::Hotkey);
+        for (key, which) in self.keys.iter_mut().zip(Hotkey::ALL) {
+            key.refresh();
+            if key.pressed() {
+                events.push(SurfaceEvent::Hotkey(which));
+            }
         }
         events
     }
 
     fn close(&mut self) {
-        self.stop_key.set(None);
+        for key in &mut self.keys {
+            key.set(None);
+        }
         self.surfs.clear();
         let _ = self.conn.flush();
     }
