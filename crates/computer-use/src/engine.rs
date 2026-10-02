@@ -90,6 +90,34 @@ struct DraftSeen {
     cells: String,
 }
 
+/// What the result of the current top-level call holds, for hosts that
+/// drop results a later one repeats ([server] result_meta).
+#[derive(Default)]
+struct ResultNote {
+    /// Apps whose whole tree it shows (a look), and apps it looked at
+    /// with a diff.
+    looks_full: Vec<u32>,
+    looks_diff: Vec<u32>,
+    /// Apps it has a whole picture of, and a changed part of.
+    pictures_whole: Vec<u32>,
+    pictures_part: Vec<u32>,
+    /// Designs and scenes ("design:<name>") it shows whole, or what
+    /// changed in them, and those it has a picture of.
+    drafts_full: Vec<String>,
+    drafts_diff: Vec<String>,
+    drafts_picture: Vec<String>,
+}
+
+/// The results that showed something, by what they showed, for
+/// [`ResultNote`].
+#[derive(Default)]
+struct Results {
+    looks: HashMap<u32, Vec<u64>>,
+    pictures: HashMap<u32, Vec<u64>>,
+    drafts: HashMap<String, Vec<u64>>,
+    draft_pictures: HashMap<String, Vec<u64>>,
+}
+
 /// What an action's `expect` found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
@@ -255,6 +283,12 @@ pub struct Engine<B: Backend> {
     /// What each design and scene looked like in its last answer, by
     /// "design:<name>" / "scene:<name>".
     drafts_seen: HashMap<String, DraftSeen>,
+    /// Top-level results so far, what the current one holds, what earlier
+    /// ones held, and the `_meta` for the last one ([server] result_meta).
+    result_id: u64,
+    note: ResultNote,
+    results: Results,
+    result_meta: Option<serde_json::Value>,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -393,6 +427,10 @@ impl<B: Backend> Engine<B> {
             last_expect: None,
             sent_tokens: 0,
             drafts_seen: HashMap::new(),
+            result_id: 0,
+            note: ResultNote::default(),
+            results: Results::default(),
+            result_meta: None,
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -2370,6 +2408,9 @@ impl<B: Backend> Engine<B> {
     /// Parse and run a raw tool call, returning a tool result even on error.
     pub fn call_tool(&mut self, name: &str, args: serde_json::Value) -> ToolOutput {
         self.reload_if_changed();
+        self.result_id += 1;
+        self.note = ResultNote::default();
+        self.result_meta = None;
         let manager = self.store.config.tools.manager != crate::config::ToolManager::Off;
         // use_tool runs the tool it names, as if called directly.
         let (name, mut args) = if manager && name == "use_tool" {
@@ -2470,8 +2511,63 @@ impl<B: Backend> Engine<B> {
             ));
         }
         self.sent_tokens = self.sent_tokens.saturating_add(out.estimated_tokens());
+        if !out.is_error {
+            self.note_result();
+        }
         self.audit(name, app.as_deref(), &out);
         out
+    }
+
+    /// The `_meta` of the last result for an MCP host ([server]
+    /// result_meta): its number, and the earlier results it makes
+    /// redundant: `supersedes` (looks at an app, or answers about a design
+    /// or scene, that this one repeats whole) and `supersedes-images`
+    /// (pictures of the same window or design that this one's picture
+    /// replaces). A host may drop those from its context.
+    pub fn take_result_meta(&mut self) -> Option<serde_json::Value> {
+        self.result_meta.take()
+    }
+
+    fn note_result(&mut self) {
+        let id = self.result_id;
+        let note = std::mem::take(&mut self.note);
+        let r = &mut self.results;
+        let mut sup: Vec<u64> = Vec::new();
+        let mut images: Vec<u64> = Vec::new();
+        for pid in note.looks_full {
+            sup.extend(r.looks.insert(pid, vec![id]).unwrap_or_default());
+        }
+        for pid in note.looks_diff {
+            r.looks.entry(pid).or_default().push(id);
+        }
+        for pid in note.pictures_whole {
+            images.extend(r.pictures.insert(pid, vec![id]).unwrap_or_default());
+        }
+        for pid in note.pictures_part {
+            r.pictures.entry(pid).or_default().push(id);
+        }
+        for k in note.drafts_full {
+            sup.extend(r.drafts.insert(k, vec![id]).unwrap_or_default());
+        }
+        for k in note.drafts_diff {
+            r.drafts.entry(k).or_default().push(id);
+        }
+        for k in note.drafts_picture {
+            images.extend(r.draft_pictures.insert(k, vec![id]).unwrap_or_default());
+        }
+        sup.retain(|x| *x != id);
+        sup.sort_unstable();
+        sup.dedup();
+        images.retain(|x| *x != id && !sup.contains(x));
+        images.sort_unstable();
+        images.dedup();
+        if self.store.config.server.result_meta {
+            self.result_meta = Some(serde_json::json!({
+                "zero-use-computer/result": id,
+                "zero-use-computer/supersedes": sup,
+                "zero-use-computer/supersedes-images": images,
+            }));
+        }
     }
 
     /// The tools of a category, or whose name or description has the words
@@ -2714,7 +2810,17 @@ impl<B: Backend> Engine<B> {
         if let Some(index) = args.within {
             return self.part_of_tree(&app, &window, index, args.max_tokens);
         }
+        if let Some(about) = args.about.as_deref().filter(|a| !a.trim().is_empty()) {
+            return self.about_parts(&app, &window, about, args.max_tokens);
+        }
         let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
+        if self.depth == 1 {
+            if r.full {
+                self.note.looks_full.push(app.pid);
+            } else {
+                self.note.looks_diff.push(app.pid);
+            }
+        }
         if r.full {
             let sent = self.sent_tokens;
             if let Some(st) = self.states.get_mut(&app.pid) {
@@ -2920,6 +3026,9 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
+                            if self.depth == 1 {
+                                self.note.pictures_part.push(app.pid);
+                            }
                             let (w, h, (ox, oy)) = (img.width, img.height, at);
                             let (x1, y1) = (ox + w, oy + h);
                             header.push_str(&match base {
@@ -2942,6 +3051,9 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
+                            if self.depth == 1 {
+                                self.note.pictures_whole.push(app.pid);
+                            }
                             header.push_str(&format!(
                                 "\nScreenshot #{id}: {}x{} px.",
                                 img.width, img.height
@@ -4254,6 +4366,13 @@ impl<B: Backend> Engine<B> {
             picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
             cells: String::new(),
         };
+        if self.depth == 1 {
+            if prev.is_none() {
+                self.note.drafts_full.push(seen_key.clone());
+            } else {
+                self.note.drafts_diff.push(seen_key.clone());
+            }
+        }
         let Some(picture) = picture.filter(|_| !self.store.config.text_only && cfg.enabled) else {
             self.drafts_seen.insert(seen_key, seen);
             return Ok(ToolOutput::text(text));
@@ -4266,6 +4385,9 @@ impl<B: Backend> Engine<B> {
             return Ok(ToolOutput::text(text));
         }
         seen.picture = hash;
+        if self.depth == 1 {
+            self.note.drafts_picture.push(seen_key.clone());
+        }
         self.drafts_seen.insert(seen_key, seen);
         if !s.objects.is_empty() {
             let long = format!(
@@ -4428,6 +4550,13 @@ impl<B: Backend> Engine<B> {
             picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
             cells: prev.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
         };
+        if self.depth == 1 {
+            if prev.is_none() {
+                self.note.drafts_full.push(seen_key.clone());
+            } else {
+                self.note.drafts_diff.push(seen_key.clone());
+            }
+        }
         if let Some(format) = args.export {
             let (bytes, ext) = match format {
                 ExportFormat::Png => (d.png(&mut self.fonts).map_err(Error::InvalidArgs)?, "png"),
@@ -4493,6 +4622,9 @@ impl<B: Backend> Engine<B> {
             seen.cells = described;
         }
         seen.picture = hash;
+        if self.depth == 1 {
+            self.note.drafts_picture.push(seen_key.clone());
+        }
         self.drafts_seen.insert(seen_key, seen);
         let (img, _) = imaging::encode(picture, &cfg)?;
         Ok(ToolOutput {
@@ -6066,6 +6198,9 @@ impl<B: Backend> Engine<B> {
                     Picture::Part {
                         img, id, base, at, ..
                     } => {
+                        if self.depth == 1 {
+                            self.note.pictures_part.push(pid);
+                        }
                         let (ox, oy) = at;
                         let (x1, y1) = (ox + img.width, oy + img.height);
                         let of = base
@@ -6078,6 +6213,9 @@ impl<B: Backend> Engine<B> {
                         image(img, text)
                     }
                     Picture::Whole { img, id, .. } => {
+                        if self.depth == 1 {
+                            self.note.pictures_whole.push(pid);
+                        }
                         let text = format!(
                             "Screenshot #{id} of {label}: {}x{} px.{note}",
                             img.width, img.height
@@ -12096,5 +12234,37 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    #[test]
+    fn results_say_which_earlier_ones_they_repeat() {
+        let mut cfg = Config::default();
+        cfg.server.result_meta = true;
+        let mut e = dialog_engine(cfg);
+        let meta = |e: &mut Engine<MockBackend>| e.take_result_meta().expect("meta");
+        state_of(&mut e, serde_json::json!({}));
+        let m = meta(&mut e);
+        assert_eq!(m["zero-use-computer/result"], 1);
+        assert_eq!(m["zero-use-computer/supersedes"], serde_json::json!([]));
+        let bold = index_named(&e, 4242, "Bold");
+        press(&mut e, bold);
+        assert_eq!(meta(&mut e)["zero-use-computer/result"], 2);
+        // A diff with a whole new picture: the old picture is replaced.
+        let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+        assert!(out.image.is_some());
+        let m = meta(&mut e);
+        assert_eq!(m["zero-use-computer/supersedes"], serde_json::json!([]));
+        assert_eq!(
+            m["zero-use-computer/supersedes-images"],
+            serde_json::json!([1])
+        );
+        // The whole tree again: both looks are repeated by it.
+        state_of(&mut e, serde_json::json!({"rebase": true}));
+        let m = meta(&mut e);
+        assert_eq!(m["zero-use-computer/supersedes"], serde_json::json!([1, 3]));
+        // Off (the default): no meta.
+        let mut e = dialog_engine(Config::default());
+        state_of(&mut e, serde_json::json!({}));
+        assert!(e.take_result_meta().is_none());
     }
 }

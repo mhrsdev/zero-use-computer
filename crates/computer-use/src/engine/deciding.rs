@@ -149,7 +149,7 @@ impl<B: Backend> Engine<B> {
             let app = args.app.as_deref().ok_or_else(|| {
                 Error::InvalidArgs("pick needs app: the app whose element to find".into())
             })?;
-            return self.decide_pick(&decider, app, args.window.as_deref(), what);
+            return self.decide_pick(&decider, app, args.window.as_deref(), what, args.read);
         }
         let questions = questions_of(&args)?;
         let mut state = args.state.as_ref().map(text_of).unwrap_or_default();
@@ -217,6 +217,137 @@ impl<B: Backend> Engine<B> {
         )))
     }
 
+    /// get_app_state(about): the parts of the window that have to do with
+    /// `about`, the others folded to a line each. Which parts: the
+    /// decision model's judgment when one is set up, else the words of
+    /// `about` found in them. Like `within`, a look that doesn't change
+    /// what later diffs are against.
+    pub(super) fn about_parts(
+        &mut self,
+        app: &AppInfo,
+        window: &WindowInfo,
+        about: &str,
+        max_tokens: Option<usize>,
+    ) -> Result<ToolOutput> {
+        let st = self.state(app.pid)?;
+        let nodes = st.nodes.clone();
+        let parts = window_parts(&nodes);
+        let size = |p: usize| {
+            1 + nodes[p + 1..]
+                .iter()
+                .take_while(|n| n.depth > nodes[p].depth)
+                .count()
+        };
+        let texts: Vec<String> = parts
+            .iter()
+            .map(|&p| {
+                let mut t = String::new();
+                for n in &nodes[p..p + size(p)] {
+                    t.push_str(&n.line);
+                    t.push('\n');
+                    if t.len() > 1500 {
+                        break;
+                    }
+                }
+                t
+            })
+            .collect();
+        let mut how = "words matched".to_string();
+        let mut keep: Vec<bool> = match self.decider() {
+            Ok(decider) if parts.len() > 1 => {
+                how = decider.label();
+                let q = Question::yes_no(
+                    "about",
+                    &format!("Does this part of an app's window have to do with: {about}?"),
+                );
+                let halted = self.halt_watch();
+                let results = decider.ask_each(&texts, &[q], &halted);
+                if self.halted() {
+                    return Err(self.stopped_error());
+                }
+                results
+                    .iter()
+                    .map(|r| match r {
+                        Ok((a, _)) => match a.first() {
+                            Some((_, Answer::YesNo { yes })) => *yes >= 0.3,
+                            _ => true,
+                        },
+                        Err(_) => true,
+                    })
+                    .collect()
+            }
+            _ => {
+                let words: Vec<String> = crate::text::fold(about)
+                    .split_whitespace()
+                    .filter(|w| w.chars().count() >= 3)
+                    .map(str::to_string)
+                    .collect();
+                parts
+                    .iter()
+                    .map(|&p| {
+                        // Names and values, not roles ("text" isn't every field).
+                        nodes[p..p + size(p)].iter().any(|n| {
+                            let t = node_text(n);
+                            words.iter().any(|w| t.contains(w.as_str()))
+                        })
+                    })
+                    .collect()
+            }
+        };
+        // The focused element's part always stays.
+        for (k, &p) in parts.iter().enumerate() {
+            if nodes[p..p + size(p)].iter().any(|n| n.states.focused) {
+                keep[k] = true;
+            }
+        }
+        let mut note = String::new();
+        if !keep.iter().any(|k| *k) {
+            keep.iter_mut().for_each(|k| *k = true);
+            note = " (no part matched, so all of them are here)".into();
+        }
+        // The kept nodes, with each left-out part folded into its first line.
+        let mut hidden = vec![false; nodes.len()];
+        let mut folded: HashMap<usize, usize> = HashMap::new();
+        for (k, &p) in parts.iter().enumerate() {
+            if !keep[k] {
+                let n = size(p);
+                hidden[p + 1..p + n].iter_mut().for_each(|h| *h = true);
+                folded.insert(p, n - 1);
+            }
+        }
+        let mut map: HashMap<usize, usize> = HashMap::new();
+        let mut shown: Vec<Node> = Vec::new();
+        for (pos, n) in nodes.iter().enumerate() {
+            if hidden[pos] {
+                continue;
+            }
+            map.insert(pos, shown.len());
+            let mut n = n.clone();
+            n.parent = n.parent.and_then(|p| map.get(&p).copied());
+            if let Some(inside) = folded.get(&pos).filter(|i| **i > 0) {
+                n.line.push_str(&format!(
+                    " [{inside} inside, about something else: within={} shows them]",
+                    n.index
+                ));
+            }
+            shown.push(n);
+        }
+        let tcfg = &self.store.config.tree;
+        let mut budget = tree::Budget::from_config(tcfg);
+        if let Some(tokens) = max_tokens {
+            budget.tokens = tokens;
+        }
+        let text = tree::render_full_within(&shown, tcfg.indent, budget);
+        let kept = keep.iter().filter(|k| **k).count();
+        Ok(ToolOutput::text(format!(
+            "App: {} · window \"{}\" · the parts about \"{}\": {kept} of {} ({how}){note}:\n{text}",
+            app.name,
+            window.title,
+            tree::truncate(about, 60),
+            parts.len()
+        )))
+    }
+
     /// The element of an app's window that `what` describes.
     fn decide_pick(
         &mut self,
@@ -224,6 +355,7 @@ impl<B: Backend> Engine<B> {
         app_query: &str,
         window: Option<&str>,
         what: &str,
+        read: bool,
     ) -> Result<ToolOutput> {
         let app = self.resolve_app(app_query)?;
         let win = self.resolve_window(&app, window, false)?;
@@ -341,6 +473,23 @@ impl<B: Backend> Engine<B> {
         }
         if p.is_some_and(|p| p < 0.4) {
             out.push_str("\nThe model is unsure: check the element before acting on it.");
+        }
+        // Extraction: the element's whole text, read by the server (the
+        // model needn't read the window for it).
+        if read
+            && let Ok(index) = choice.parse::<u32>()
+            && let Ok(n) = self.node_by_index(&app, index)
+        {
+            let text = if crate::privacy::is_password(&n.role) {
+                "(masked: a password field)".to_string()
+            } else {
+                match (&n.name, &n.value) {
+                    (_, Some(v)) if !v.trim().is_empty() => v.clone(),
+                    (Some(name), _) => name.clone(),
+                    _ => String::new(),
+                }
+            };
+            out.push_str(&format!("\nIt reads: \"{}\"", tree::truncate(&text, 4000)));
         }
         Ok(ToolOutput::text(out))
     }
@@ -533,6 +682,37 @@ impl<B: Backend> Engine<B> {
 }
 
 /// The answers for each item, and a summary.
+/// The parts of a window, as positions in its nodes: the root's
+/// children, with a part that holds most of the window split into its own
+/// children (up to three times).
+fn window_parts(nodes: &[Node]) -> Vec<usize> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+    let size = |p: usize| {
+        1 + nodes[p + 1..]
+            .iter()
+            .take_while(|n| n.depth > nodes[p].depth)
+            .count()
+    };
+    let children = |p: usize| -> Vec<usize> {
+        (p + 1..p + size(p))
+            .filter(|&c| nodes[c].parent == Some(p))
+            .collect()
+    };
+    let mut parts = children(0);
+    for _ in 0..3 {
+        let big = parts
+            .iter()
+            .position(|&p| size(p) * 10 > nodes.len() * 7 && children(p).len() >= 2);
+        let Some(k) = big else { break };
+        let p = parts.remove(k);
+        let kids = children(p);
+        parts.splice(k..k, kids);
+    }
+    parts
+}
+
 fn items_report(
     decider: &Decider,
     questions: &[Question],
@@ -770,6 +950,62 @@ mod tests {
         let click = e.call_tool("click", json!({"app": "TextEdit", "element_index": index}));
         assert!(!click.is_error, "{}", click.text);
         assert!(out.text.contains("Bold"), "{}", out.text);
+    }
+
+    #[test]
+    fn pick_can_read_what_it_finds() {
+        let f = system_one(|_, q| {
+            let crit = q["criteria"].as_object().unwrap();
+            let (idx, _) = crit
+                .iter()
+                .find(|(_, line)| line.as_str().unwrap().contains("Document"))
+                .unwrap();
+            json!({"type": "choice", "choice": idx, "confidence": 0.9, "probabilities": {idx.clone(): 0.9}})
+        });
+        let mut e = engine(jev(&f.url));
+        let out = e.call_tool(
+            "decide",
+            json!({"app": "TextEdit", "pick": "the document's text", "read": true}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("It reads: \"Hello\""), "{}", out.text);
+    }
+
+    #[test]
+    fn about_shows_the_parts_that_matter() {
+        // Without a decision model: the words of `about`.
+        let mut e = engine(DecisionConfig::default());
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "bold text"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("the parts about \"bold text\": 1 of 2 (words matched)"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("button \"Bold\""), "{}", out.text);
+        // Nothing matches: all of it.
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "zebra"}),
+        );
+        assert!(out.text.contains("no part matched"), "{}", out.text);
+        // With one: its judgment.
+        let f = system_one(
+            |state, _| json!({"type": "noul", "noul": if state.contains("Bold") { 0.9 } else { 0.05 }}),
+        );
+        let mut e = engine(jev(&f.url));
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "formatting"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains(": 1 of 2 ("), "{}", out.text);
+        assert!(!out.text.contains("words matched"), "{}", out.text);
+        assert!(out.text.contains("button \"Bold\""), "{}", out.text);
     }
 
     #[test]

@@ -139,6 +139,11 @@ pub struct GetAppStateArgs {
     /// what later diffs are against).
     #[serde(default, deserialize_with = "de_opt_index")]
     pub within: Option<u32>,
+    /// Only the parts of the window that have to do with this (the other
+    /// parts folded, each to one line): words matched, or the decision
+    /// model's judgment when one is set up.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub about: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -591,6 +596,10 @@ pub struct DecideArgs {
     /// Which element of the app's window this describes: its index.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub pick: Option<String>,
+    /// With pick: also read the element's text or value (whole), so the
+    /// window needn't be read to get it.
+    #[serde(default)]
+    pub read: bool,
     /// "status", "open" (the settings page), "test", "remove", or the
     /// settings: {provider, base_url, model, api_key}.
     #[serde(default)]
@@ -1974,6 +1983,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."},
                     "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."},
                     "within": index_prop("Only this element and what is in it (a table, a panel, a dialog's part)."),
+                    "about": {"type": "string", "description": "Only the parts of the window that have to do with this (\"shipping address\"); the others are folded to a line each."},
                 }),
                 &[],
             ),
@@ -2405,6 +2415,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "app": {"type": "string", "description": "Judge this app's window (or pick in it)."},
                     "window": {"type": "string", "description": "Window id or title substring."},
                     "pick": {"type": "string", "description": "With app: describe an element (\"the button that adds it to the cart\"); returns its element_index."},
+                    "read": {"type": "boolean", "description": "With pick: also return the element's whole text or value (\"the order total\")."},
                     "setup": {"type": ["string", "object"], "description": "\"status\", \"open\", \"test\", \"remove\", or {provider, base_url, model, api_key} (only when the user asks for it)."}
                 },
                 "additionalProperties": false
@@ -2441,7 +2452,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
         }
         "click" => {
             "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
@@ -2498,7 +2509,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Run a script (Rhai, like JavaScript: let, if, for x in range(a, b), fn, |x| closures, [arrays], #{maps}) for loops over tools, maths, file or web data and graph-paper pictures. tool(name, #{args}) → text (try_tool() → #{ok, text, image}); set_app; elements(app, #{role, name, text}) → maps; colors(app, [[x,y]]); page(name, w, h, #{cell}) → p.rect/circle/line/path/polygon/text/fill_cell(\"C4\", colour)/text_in/cell(\"C4\")/at(x,y)/show/steps/export; cells(w, h, size); read_text/read_json/read_csv/write_text, fetch/fetch_json/download, remember/recall, regex_find, numbers, random, sleep, print; data/args = what you pass. help=true: every function. save=name (+description, params) keeps it as a tool of its own; run=name, list, show, delete."
         }
         "decide" => {
-            "Fast typed answers from the decision model (Jev, or a model the user added with the settings key): question (yes/no → probability), + options (choice) or scale (score, low→high); questions={name: {type, question, options|scale}} for several. About state (text/JSON), each of items (in parallel), or app's window; pick=\"description\" + app → element_index. setup=status|open (settings page)|test|remove|{provider, base_url, model, api_key}."
+            "Fast typed answers from the decision model (Jev, or a model the user added with the settings key): question (yes/no → probability), + options (choice) or scale (score, low→high); questions={name: {type, question, options|scale}} for several. About state (text/JSON), each of items (in parallel), or app's window; pick=\"description\" + app → element_index (read=true: and its whole text). setup=status|open (settings page)|test|remove|{provider, base_url, model, api_key}."
         }
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
@@ -2532,6 +2543,10 @@ fn strip_descriptions(v: &mut Value) {
                 }
             }
             if let Some(items) = map.get_mut("items") {
+                // A list's items are described by the tool's short text.
+                if let Value::Object(i) = items {
+                    i.remove("description");
+                }
                 strip_descriptions(items);
             }
         }
@@ -3105,7 +3120,7 @@ mod tests {
         let decide = json!({
             "question": "q", "options": ["a", "b"], "scale": ["lo", "hi"],
             "questions": {"n": {"question": "q"}}, "state": {"any": "json"},
-            "items": ["x", {"y": 1}], "app": "X", "window": "1", "pick": "the button",
+            "items": ["x", {"y": 1}], "app": "X", "window": "1", "pick": "the button", "read": true,
             "setup": "status"
         });
         for d in definitions() {
@@ -3249,6 +3264,7 @@ mod tests {
                 ocr: false,
                 max_tokens: None,
                 within: None,
+                about: None,
             })
         );
         let c = ToolCall::parse(

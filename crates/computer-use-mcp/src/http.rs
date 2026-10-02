@@ -244,7 +244,11 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let out = engine.call_tool(name, args);
-                reply(id, out.to_mcp_result())
+                let mut result = out.to_mcp_result();
+                if let Some(meta) = engine.take_result_meta() {
+                    result["_meta"] = meta;
+                }
+                reply(id, result)
             }
             None => error(id, INVALID_PARAMS, "tools/call requires `name`"),
         },

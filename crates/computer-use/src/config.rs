@@ -947,6 +947,11 @@ pub struct ServerConfig {
     /// safety rules in a few lines, for clients that load the skills) or
     /// "off".
     pub instructions: Instructions,
+    /// Add `_meta` to tool results for hosts that trim their context: a
+    /// number for each result and the earlier ones it repeats whole
+    /// (`zero-use-computer/supersedes`) or whose pictures it replaces
+    /// (`zero-use-computer/supersedes-images`).
+    pub result_meta: bool,
 }
 
 /// How much the MCP `instructions` say ([server] instructions).
@@ -966,6 +971,7 @@ impl Default for ServerConfig {
             http_addr: String::new(),
             http_token: String::new(),
             instructions: Instructions::Full,
+            result_meta: false,
         }
     }
 }

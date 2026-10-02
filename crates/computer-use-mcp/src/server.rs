@@ -376,7 +376,11 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         }
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
         let out = engine.call_tool(&name, args);
-        Response::ok(id, out.to_mcp_result())
+        let mut result = out.to_mcp_result();
+        if let Some(meta) = engine.take_result_meta() {
+            result["_meta"] = meta;
+        }
+        Response::ok(id, result)
     }
 }
 

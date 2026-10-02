@@ -34,6 +34,8 @@ const HUGE_CHILD_COUNT: i32 = 2000;
 /// How many children of such a container (or of one that manages its
 /// descendants) are read, one by one.
 const CHILD_CAP: i32 = 256;
+/// AT-SPI's relation "labelled by" (AtspiRelationType).
+const RELATION_LABELLED_BY: u32 = 2;
 
 /// Number of D-Bus round trips made so far (diagnostics / benchmarking).
 static IPC_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -455,6 +457,9 @@ pub struct NodeData {
     pub actions: Vec<String>,
     /// Text content, for text elements.
     pub text: Option<String>,
+    /// The text of the label it is "labelled by", for a control without a
+    /// name of its own (GTK's mnemonic labels, `aria-labelledby`).
+    pub label: Option<String>,
     pub children: Vec<ObjRef>,
     /// The element answered none of the basic queries (name, role, state),
     /// and why: gone, or its app is frozen (timed out).
@@ -495,6 +500,27 @@ fn wants_text(acc: &Accessible) -> bool {
             acc.role_name.as_str(),
             "entry" | "text" | "label" | "static" | "paragraph" | "heading"
         )
+}
+
+/// Controls that a separate label names, when they have no name of their
+/// own (AT-SPI role names).
+fn labelled(role: &str) -> bool {
+    matches!(
+        role,
+        "text"
+            | "entry"
+            | "password text"
+            | "spin button"
+            | "combo box"
+            | "slider"
+            | "list"
+            | "list box"
+            | "table"
+            | "tree table"
+            | "tree"
+            | "progress bar"
+            | "date editor"
+    )
 }
 
 /// One element waiting to be read by [`AtspiConnection::walk`].
@@ -567,6 +593,7 @@ impl AtspiConnection {
                 .map(|a| a.into_iter().map(|(n, d, _)| action_name(n, d)).collect())
                 .unwrap_or_default(),
             text: None,
+            label: None,
             children: Vec::new(),
             fail: err.as_ref().map(|e| e.fail),
             timed_out: fails.contains(&Fail::Timeout),
@@ -574,17 +601,18 @@ impl AtspiConnection {
         (nd, err)
     }
 
-    /// An element's children (when wanted) and text content (when worth
-    /// reading); whether either timed out.
+    /// An element's children (when wanted), text content (when worth
+    /// reading) and the label it is labelled by (when it has no name);
+    /// whether any timed out.
     async fn fetch_rest(
         &self,
         r: &ObjRef,
         nd: &NodeData,
         kids: bool,
         text_end: i32,
-    ) -> (Vec<ObjRef>, Option<String>, bool) {
+    ) -> (Vec<ObjRef>, Option<String>, Option<String>, bool) {
         if nd.fail.is_some() {
-            return (Vec::new(), None, false);
+            return (Vec::new(), None, None, false);
         }
         let children = async {
             if !kids {
@@ -620,8 +648,36 @@ impl AtspiConnection {
                 Err(e) => (None, e.fail == Fail::Timeout),
             }
         };
-        let ((children, t1), (text, t2)) = futures_util::join!(children, text);
-        (children, text, t1 || t2)
+        let label = async {
+            if !nd.acc.name.is_empty() || !labelled(&nd.acc.role_name) {
+                return None;
+            }
+            let rels = self
+                .acall::<_, Vec<(u32, Vec<(String, OwnedObjectPath)>)>>(
+                    r,
+                    A11Y_IFACE,
+                    "GetRelationSet",
+                    &(),
+                )
+                .await
+                .ok()?;
+            let target = rels
+                .into_iter()
+                .filter(|(kind, _)| *kind == RELATION_LABELLED_BY)
+                .flat_map(|(_, targets)| targets)
+                .map(to_ref)
+                .find(|t| !t.is_null())?;
+            let name: OwnedValue = self
+                .acall(&target, PROPS_IFACE, "Get", &(A11Y_IFACE, "Name"))
+                .await
+                .ok()?;
+            let name = owned_string(&name)?;
+            // "Name:" names the field "Name".
+            let name = name.trim().trim_end_matches(':').trim().to_string();
+            (!name.is_empty()).then_some(name)
+        };
+        let ((children, t1), (text, t2), label) = futures_util::join!(children, text, label);
+        (children, text, label, t1 || t2)
     }
 
     /// Read a batch of elements: first their properties, then (knowing
@@ -639,9 +695,10 @@ impl AtspiConnection {
                 .map(|((r, kids), nd)| self.fetch_rest(r, nd, *kids, text_end)),
         )
         .await;
-        for (nd, (children, text, timed_out)) in nodes.iter_mut().zip(rest) {
+        for (nd, (children, text, label, timed_out)) in nodes.iter_mut().zip(rest) {
             nd.children = children;
             nd.text = text;
+            nd.label = label;
             nd.timed_out |= timed_out;
         }
         nodes

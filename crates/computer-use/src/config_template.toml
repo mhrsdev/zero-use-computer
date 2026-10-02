@@ -320,6 +320,10 @@ http_token = ""             # bearer token, required when http_addr is set
 # The MCP instructions sent at connection: "full", "short" (the loop and
 # the safety rules in a few lines, for clients that load the skills) or "off".
 instructions = "full"
+# For hosts that trim their context: each tool result's _meta gets a number
+# and the earlier results it repeats whole ("zero-use-computer/supersedes")
+# or whose pictures it replaces ("zero-use-computer/supersedes-images").
+result_meta = false
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently
