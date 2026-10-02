@@ -60,6 +60,10 @@ struct AppState {
     /// The last picture those areas were found and read in: its
     /// fingerprint, the areas and the text read in them.
     blind_cache: Option<(PixelSig, Vec<Rect>, Vec<OcrLine>)>,
+    /// The text last read in each blind area, by its place and a hash of
+    /// its exact pixels: an area that didn't change isn't read again when
+    /// another part of the window did (a caret, a clock).
+    area_reads: Vec<(Rect, u64, Vec<OcrLine>)>,
     /// The header of the last get_app_state (app, window, place): the next
     /// one is short if it is the same ([tree] compact).
     header_seen: Option<String>,
@@ -232,6 +236,9 @@ pub struct Engine<B: Backend> {
     pending_images: Vec<PendingImage>,
     /// Nesting of `call` (batch steps run inside a call).
     depth: u32,
+    /// The call depth of a batch's steps: their reports are never shown
+    /// (the batch reports once, at the end), so they aren't made.
+    quiet_depth: Option<u32>,
     /// The on-screen indicator (a separate helper process), if running.
     overlay: Option<Overlay>,
     /// How to start it; set by the host (`with_overlay`).
@@ -412,6 +419,7 @@ impl<B: Backend> Engine<B> {
             epoch: 0,
             pending_images: Vec::new(),
             depth: 0,
+            quiet_depth: None,
             overlay: None,
             overlay_launcher: None,
             overlay_failures: 0,
@@ -1405,18 +1413,41 @@ impl<B: Backend> Engine<B> {
                     .collect();
                 let mut lines = Vec::new();
                 if self.store.config.ocr.mode != crate::config::OcrMode::Off {
+                    let before = self
+                        .states
+                        .get_mut(&app.pid)
+                        .map(|s| std::mem::take(&mut s.area_reads))
+                        .unwrap_or_default();
+                    let mut reads = Vec::new();
                     for r in &areas {
                         if let Some(px) = crate::coverage::pixels_of(&cap, *r) {
-                            let read = self.run_area_ocr(&imaging::crop(&cap, px));
-                            // Only what is in the area (an engine may read
-                            // around it).
-                            lines.extend(read.into_iter().filter(|l| {
-                                let b = l.bounds;
-                                r.contains(Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0))
-                                    && crate::ocr::plausible(l)
-                            }));
+                            let crop = imaging::crop(&cap, px);
+                            let hash = pixels_hash(&crop);
+                            let kept = before
+                                .iter()
+                                .find(|(rect, h, _)| rect == r && *h == hash)
+                                .map(|(_, _, read)| read.clone());
+                            let read: Vec<OcrLine> = match kept {
+                                Some(read) => read,
+                                None => self
+                                    .run_area_ocr(&crop)
+                                    .into_iter()
+                                    // Only what is in the area (an engine
+                                    // may read around it).
+                                    .filter(|l| {
+                                        let b = l.bounds;
+                                        r.contains(Point::new(
+                                            b.x + b.width / 2.0,
+                                            b.y + b.height / 2.0,
+                                        )) && crate::ocr::plausible(l)
+                                    })
+                                    .collect(),
+                            };
+                            lines.extend(read.iter().cloned());
+                            reads.push((*r, hash, read));
                         }
                     }
+                    self.states.entry(app.pid).or_default().area_reads = reads;
                 }
                 (areas, lines)
             }
@@ -1935,6 +1966,10 @@ impl<B: Backend> Engine<B> {
         let mut waited = Duration::from_millis(cfg.timing.settle_ms);
         // Text read off the screen isn't read again for every look.
         let reuse = std::mem::replace(&mut self.ocr_reuse, true);
+        // While reads still show the state from before, they come further
+        // apart (up to 4 polls): a change is still seen within one of them,
+        // and an action that changed nothing costs half the reads.
+        let mut interval = poll;
         while let Ok(window) = self.pick_window(app, None, true) {
             if self.observe(app, &window, true).is_err() {
                 break;
@@ -1945,12 +1980,18 @@ impl<B: Backend> Engine<B> {
             if !adaptive || (steady && (now != before || waited >= NO_CHANGE_GRACE)) {
                 break;
             }
+            let unchanged = now.is_some() && now == before;
             last = now;
             if self.halted() || (self.clock)() >= deadline || waited >= max {
                 break;
             }
-            (self.sleep)(poll);
-            waited += poll;
+            (self.sleep)(interval);
+            waited += interval;
+            interval = if unchanged {
+                (interval * 2).min(poll * 4)
+            } else {
+                poll
+            };
         }
         self.ocr_reuse = reuse;
     }
@@ -2019,6 +2060,9 @@ impl<B: Backend> Engine<B> {
         }
         if self.depth == 0 {
             self.target = None;
+            // A picture is reused within the call that took it, never by a
+            // later one (the screen may have moved on by itself).
+            self.last_capture = None;
         }
         self.depth += 1;
         if self.depth == 1 {
@@ -2076,7 +2120,9 @@ impl<B: Backend> Engine<B> {
             // Don't act while the user is using the mouse or keyboard.
             self.wait_for_user()?;
         }
-        let report_app = acting.filter(|_| self.store.config.tree.report_changes);
+        let report_app = acting.filter(|_| {
+            self.store.config.tree.report_changes && self.quiet_depth != Some(self.depth)
+        });
         let pixels_of_app = pixel_use(&call).map(str::to_string);
         // `expect`: the app as it was, to tell what the action did.
         let expecting = expectation(&call);
@@ -5839,6 +5885,8 @@ impl<B: Backend> Engine<B> {
             _ => None,
         };
         let matchers = role.is_some() || name.is_some() || text.is_some();
+        // The text the decision model last said no about.
+        let mut asked = None;
 
         loop {
             if let Ok(window) = self.resolve_window(&app, args.window.as_deref(), true)
@@ -5868,9 +5916,13 @@ impl<B: Backend> Engine<B> {
                     (Some((question, decider)), found) if found.is_some() || !matchers => {
                         let decider = decider.clone();
                         let window = args.window.clone();
-                        if let Some(yes) =
-                            self.until_yes(&decider, question, &args.app, window.as_deref())?
-                        {
+                        if let Some(yes) = self.until_yes(
+                            &decider,
+                            question,
+                            &args.app,
+                            window.as_deref(),
+                            &mut asked,
+                        )? {
                             let waited = (self.clock)().saturating_duration_since(start);
                             let mut out = format!(
                                 "Yes after {:.1} s ({yes:.2}): {question}",
@@ -6025,7 +6077,15 @@ impl<B: Backend> Engine<B> {
                     })?);
                     label = format!("{} in {}", node.label(), app.name);
                 }
-                let cap = self.capture_clean(|b| b.capture(&app, &window))?;
+                // The picture this call's look just took, if any.
+                let cap = match self.last_capture.take() {
+                    Some((pid, wid, epoch, cap))
+                        if pid == app.pid && wid == window.id && epoch == self.epoch =>
+                    {
+                        cap
+                    }
+                    _ => self.capture_clean(|b| b.capture(&app, &window))?,
+                };
                 space = match self.states.get(&app.pid) {
                     Some(st) if st.window_id == Some(window.id) => {
                         st.coord.map_or(LabelSpace::Image, LabelSpace::Map)
@@ -6379,7 +6439,9 @@ impl<B: Backend> Engine<B> {
             let acting = parsed.as_ref().ok().and_then(mutating_app);
             let before = self.pending_images.len();
             let shot_before = self.pending_screen_shot.take();
+            let quiet = self.quiet_depth.replace(self.depth + 1);
             let result = parsed.and_then(|c| self.call(c));
+            self.quiet_depth = quiet;
             ran += 1;
             if acting.is_some() {
                 acted_on = acting;
@@ -7682,6 +7744,15 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
 }
 
 /// A hash of a rendered tree, to tell whether it is the same text.
+/// A hash of a picture's exact pixels (and size).
+fn pixels_hash(cap: &Capture) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (cap.width, cap.height).hash(&mut h);
+    cap.rgba.hash(&mut h);
+    h.finish()
+}
+
 fn text_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();

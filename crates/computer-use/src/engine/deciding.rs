@@ -496,16 +496,33 @@ impl<B: Backend> Engine<B> {
 
     /// `wait_for` with `until`: ask the decision model about the window
     /// until it says yes. `Ok(Some(answer))` once it does.
+    /// The decision model's yes (its probability) to `question` about the
+    /// app's window, or `None`. The window is the one just looked at
+    /// (wait_for looks before asking). `asked` holds a hash of the text a
+    /// "no" was last given about, and when: the same text is asked about
+    /// again only after [`REASK`].
     pub(super) fn until_yes(
         &mut self,
         decider: &Decider,
         question: &str,
         app: &str,
         window: Option<&str>,
+        asked: &mut Option<(u64, Instant)>,
     ) -> Result<Option<f64>> {
-        let text = self.window_text(app, window, true)?;
+        /// How long a "no" about the same text stands.
+        const REASK: Duration = Duration::from_secs(5);
+        let text = self.window_text(app, window, false)?;
+        let hash = super::text_hash(&text);
+        let now = (self.clock)();
+        if let Some((h, at)) = *asked
+            && h == hash
+            && now.saturating_duration_since(at) < REASK
+        {
+            return Ok(None);
+        }
         let halted = self.halt_watch();
         let (answers, _) = decider.ask(&text, &[Question::yes_no("answer", question)], &halted)?;
+        *asked = Some((hash, now));
         Ok(match answers.first() {
             Some((_, Answer::YesNo { yes })) if *yes >= 0.5 => Some(*yes),
             _ => None,
@@ -1013,8 +1030,8 @@ mod tests {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c = calls.clone();
         let f = system_one(move |_, _| {
-            let n = c.fetch_add(1, Ordering::SeqCst);
-            json!({"type": "noul", "noul": if n >= 2 { 0.8 } else { 0.2 }})
+            c.fetch_add(1, Ordering::SeqCst);
+            json!({"type": "noul", "noul": 0.8})
         });
         let mut e = engine(jev(&f.url));
         let out = e.call_tool(
@@ -1023,7 +1040,28 @@ mod tests {
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.starts_with("Yes after"), "{}", out.text);
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wait_for_until_asks_once_about_a_window_that_didnt_change() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let f = system_one(move |_, _| {
+            c.fetch_add(1, Ordering::SeqCst);
+            json!({"type": "noul", "noul": 0.2})
+        });
+        let mut e = engine(jev(&f.url)).with_time(Instant::now, std::thread::sleep);
+        let out = e.call_tool(
+            "wait_for",
+            json!({"app": "TextEdit", "until": "Has the document loaded?", "poll_ms": 20, "timeout_ms": 400}),
+        );
+        assert!(
+            out.is_error && out.text.contains("never answered yes"),
+            "{}",
+            out.text
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

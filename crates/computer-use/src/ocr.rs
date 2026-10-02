@@ -167,13 +167,18 @@ pub fn tesseract_both(
 ) -> Result<Vec<OcrLine>> {
     // Grid and ruler lines read as glyphs or join text into blocks.
     let clean = without_lines(cap);
-    let big = if clean.width.max(clean.height) <= 2400 {
-        tesseract_at(&clean, languages, program, 2, layout)?
-    } else {
-        Vec::new()
-    };
-    let small = tesseract_at(&clean, languages, program, 1, layout)?;
-    Ok(merge(small, big))
+    // The two readings are two Tesseract processes: run them side by side.
+    let (big, small) = std::thread::scope(|s| {
+        let big = (clean.width.max(clean.height) <= 2400)
+            .then(|| s.spawn(|| tesseract_at(&clean, languages, program, 2, layout)));
+        let small = tesseract_at(&clean, languages, program, 1, layout);
+        let big = match big {
+            Some(h) => h.join().unwrap_or_else(|_| Ok(Vec::new())),
+            None => Ok(Vec::new()),
+        };
+        (big, small)
+    });
+    Ok(merge(small?, big?))
 }
 
 /// A copy of a picture without the thin straight lines that cross most of
