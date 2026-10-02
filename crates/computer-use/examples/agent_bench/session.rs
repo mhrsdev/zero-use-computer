@@ -16,7 +16,7 @@ pub type Eng = Engine<Box<dyn computer_use::Backend>>;
 /// version over MCP (`--server`).
 pub enum Tools {
     Local(Box<Eng>),
-    Remote(crate::remote::Remote, crate::remote::Launch),
+    Remote(Box<crate::remote::Remote>, crate::remote::Launch),
 }
 
 impl Tools {
@@ -52,7 +52,7 @@ impl Tools {
                 **e = Engine::new(backend, ConfigStore::in_memory(cfg));
             }
             Tools::Remote(r, launch) => {
-                *r = crate::remote::Remote::start(launch)?;
+                **r = crate::remote::Remote::start(launch)?;
             }
         }
         Ok(())
@@ -166,7 +166,10 @@ impl Session {
             .spawn()
             .map_err(|e| format!("can't start the fixture with {python}: {e}"))?;
         let engine = match server {
-            Some(launch) => Tools::Remote(crate::remote::Remote::start(launch)?, launch.clone()),
+            Some(launch) => Tools::Remote(
+                Box::new(crate::remote::Remote::start(launch)?),
+                launch.clone(),
+            ),
             None => {
                 let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
                 Tools::Local(Box::new(Engine::new(backend, ConfigStore::in_memory(cfg))))
