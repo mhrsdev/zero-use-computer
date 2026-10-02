@@ -16,6 +16,27 @@ agent), or embed the **library** (`computer-use`) in your own agent.
 
 ## What's new
 
+**v3.5.0** (in progress; [roadmap](docs/ROADMAP.md)) — tokens measured
+the way they are spent:
+
+- An **agent benchmark** ([bench/](bench/README.md)): six tasks in real
+  apps (a form, a 300-row table, a canvas with painted labels under a full
+  toolbar, a canvas without text, a mixed form-and-dialog task, a longer
+  session), checked from the app's own record, run by Claude through the
+  API with the real input, output and cache tokens and the cost of each,
+  or scripted without a key (estimates, labelled as such).
+- **Screenshots** are never silently wrong: `x`/`y`/`width`/`height`
+  without a mode is a region; `screenshot(app)` doesn't send a picture the
+  model already has, sends only the part that changed when that is small,
+  and every screenshot is numbered so a changed part names the one it
+  patches.
+- **Blind areas** (opt-in, `ocr.blind_regions`): a canvas or picture the
+  tree says nothing about is found however many buttons the rest of the
+  window has; its text is read off the screen (as it is and enlarged,
+  keeping the surer reading of each place) and its pixels are checked on
+  every look. On the benchmark's canvas task: half the calls and half the
+  tokens (scripted estimate).
+
 **v3.2.0** — a **decision model** for speed: add TypeSafe's **Jev** (or any
 fast OpenAI-compatible model) and the agent hands it the judgments that
 cost it the most — "is this review positive?" over 50 reviews at once,
@@ -46,10 +67,11 @@ Wayland, macOS, Windows). [Changelog](CHANGELOG.md).
 - **Per-platform fixes**: hung windows and the foreground lock on Windows,
   bounded accessibility calls and steady memory on macOS, keys only to the
   right app and any keyboard layout on Linux.
-- **Fewer tokens, less memory**: **6.8x fewer tokens** than Codex-style
-  computer use in the same session (85% saved, 2 screenshots instead of
-  21, each look ~3x faster), and the server holds **14.7 MiB** (v2.6:
-  24.3). See [Performance](#performance).
+- **Fewer tokens, less memory**: **6.8x fewer tokens** than a simulation
+  of Codex-style computer use in the same session (85% saved, 2
+  screenshots instead of 21, each look ~3x faster; estimated, not measured
+  against Codex itself), and the server holds **14.7 MiB** (v2.6: 24.3).
+  See [Performance](#performance).
 
 ## Why it mirrors Codex
 
@@ -308,7 +330,13 @@ other element, found by `find_element`, and clicked by `element_index` (at
 their place on screen). They can't be set or selected.
 
 It runs by itself when a window has fewer than `ocr.sparse_threshold`
-interactive elements (`ocr.mode = "auto"`). The agent can ask for it with
+interactive elements (`ocr.mode = "auto"`). With `ocr.blind_regions = true`
+(opt-in until the [benchmark](bench/README.md) has measured it with a real
+model), it also finds the areas a tree says nothing about however many
+elements the rest of the window has, such as a canvas under a full toolbar
+or a painted notice next to a form, reads just those areas (as they are
+and enlarged, keeping the surer reading of each place, and leaving out what
+looks like shapes rather than text), and checks their pixels on every look. The agent can ask for it with
 `get_app_state(ocr: true)`; `"always"` and `"off"` are also possible. Lines
 that repeat what the tree already says there are left out, as is glyph noise.
 A picture that hasn't changed isn't read again, and the picture read is also
@@ -382,9 +410,15 @@ screen, the engine compares the new pixels with that picture
   (`screenshot: true`): the whole window is sent.
 - **Nothing changed**: nothing is sent.
 
-The `screenshot` tool works the same way for the whole screen: `mode: "auto"`
-(the default without `app`) sends only what changed since the last
-full-screen screenshot, and `mode: "full"` always sends all of it. The model
+The `screenshot` tool works the same way: for a window (`app`), nothing if
+it looks as in the model's last picture of that screen, else only what
+changed when that is small, else all of it (`mode: "window"` always sends
+all of it); for the whole screen, `mode: "auto"` (the default without
+`app`) sends only what changed since the last full-screen screenshot, and
+`mode: "full"` always sends all of it. `x`/`y`/`width`/`height` are a
+screen region (`mode: "region"` need not be said), never silently ignored.
+Every screenshot is numbered ("Screenshot #7"), and a changed part names
+the screenshot it patches. The model
 can also pick the part itself: `element_index` zooms into one element of a
 window at full resolution, for small text. `scope = "full"` turns the
 automatic choice off.
@@ -727,7 +761,8 @@ the checks are cheap compared with reading the app:
 | **Overview screenshots** (opt-in) | Off by default, since it trades detail for tokens. Turned on, a screenshot attached on its own to a window whose tree already says what is there is a smaller overview (768 px ≈ 60% fewer image tokens than 1280 px); `screenshot=true` always gets full size. | `screenshot.overview_max_dimension` (0 = off) |
 | **Say it once** | Explanations (what a diff, a partial screenshot or a returning screen means) come in full the first time and as a few words after that. | `tree.brief_repeats` (false = always in full) |
 | **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
-| **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part. | `cache.dedupe_screenshots`, `screenshot.scope` |
+| **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part, whether it comes with `get_app_state` or from `screenshot(app)`. Every screenshot is numbered, and a changed part names the one it patches. | `cache.dedupe_screenshots`, `screenshot.scope` |
+| **Blind areas** (opt-in) | A canvas or picture the tree says nothing about, found however many elements the rest of the window has: its text is read off the screen and its pixels checked on every look, so the model doesn't have to ask. | `ocr.blind_regions` |
 | **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
 | **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (they change only when you change the settings or a script is saved or deleted), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled`, `script.saved_as_tools` |
 | **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |
@@ -779,16 +814,19 @@ v3.0.0: the server holds **14.7 MiB** (v2.6.0: 24.3) and the overlay helper
 10.9 MiB (13.1); the server's peak is 22 MiB. Fonts are memory-mapped, and
 memory freed by a big call goes back to the system.
 
-### Compared with Codex's behaviour
+### Compared with Codex's behaviour (simulated)
 
 `examples/compare.rs` runs one agent session twice on the real backend:
-look at the app, open another page, look, come back, look again. Once the
-way Codex's computer use behaves (a screenshot with every
+look at the app, open another page, look, come back, look again. Once
+configured the way Codex's computer use behaves (a screenshot with every
 `get_app_state`, no screen memory, no picture dedupe, whole-window
 pictures, no change report after an action), once with this server's
-defaults. Same app (`gtk3-widget-factory`), same calls, v3.0.0:
+defaults. This is a **simulation of Codex's behaviour with this server,
+not a run of Codex**, with the same fixed calls in both, and its token
+counts are estimates (text ≈ 4 characters a token, images width × height /
+750). Same app (`gtk3-widget-factory`), same calls, v3.0.0:
 
-| 10 round trips, 61 calls | Codex-style | computer-use defaults |
+| 10 round trips, 61 calls | Codex-style (simulated) | computer-use defaults |
 |---|---|---|
 | tokens the model receives | ~46,300 | **~6,800** (6.8x fewer, 85% saved) |
 | screenshots sent | 21 | **2** |
@@ -825,6 +863,16 @@ APPS="gtk3-widget-factory" BENCH_NAV="Page 2|Page 1" scripts/desktop-session.sh 
 
 `BENCH_NAV` names two buttons that switch between screens; the benchmark then
 compares coming back to a screen with the screen memory off and on.
+
+### What finishing a task costs
+
+The numbers above are per call. [`bench/`](bench/README.md) measures
+whole tasks in real apps, checked from what the app recorded: run by
+Claude through the API, it reports the real input, output and cache
+tokens, the cost, the turns and the screenshots of each run; scripted
+(no key) it reports estimates, labelled as such. Every change to the
+token budget is measured there before it is turned on by default
+(`bench/results/` keeps the summaries).
 
 ## Platform setup
 

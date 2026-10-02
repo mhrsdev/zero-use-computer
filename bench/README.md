@@ -90,5 +90,18 @@ why a check failed, how the agent stopped, turns, every call with its
 estimated tokens, real usage and cost); a Markdown summary goes next to it,
 median (min–max) over the runs of each scenario.
 
-`results/` keeps the summaries worth comparing against. `results/v3.2/`
-is the scripted baseline of v3.2, taken before any v3.5 change.
+`results/` keeps the summaries worth comparing against, with what changed
+between them: [results/README.md](results/README.md). `results/v3.2/` is
+the scripted baseline of v3.2, taken before any v3.5 change.
+
+## A/B
+
+A change to what the tools return is added behind a setting, off, and
+measured both ways before it is turned on by default:
+
+```bash
+bench/run.sh --runs 5 --label v3.5-default
+bench/run.sh --runs 5 --label v3.5-blind --config bench/configs/blind-regions.toml
+```
+
+`configs/` holds the settings files for those runs.

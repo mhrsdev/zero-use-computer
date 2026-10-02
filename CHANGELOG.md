@@ -1,5 +1,63 @@
 # Changelog
 
+## v3.5.0 (in progress)
+
+The first step of the road to v4.0 ([roadmap](docs/ROADMAP.md)): spend
+fewer tokens on finishing a task, measured with the real model before
+anything is turned on by default.
+
+### Measured, not assumed
+
+- **`bench/`**: an agent benchmark. Six tasks in real apps (a form, a
+  300-row table, a canvas with painted labels under a full toolbar, a
+  canvas without text, a mixed form-and-dialog task, a longer session),
+  from one GTK fixture app that records what was done: success is checked
+  from the app, never from what the model says. Each run starts the app
+  afresh.
+- **Real runs** drive Claude through the Messages API (`curl`, the key on
+  its input) and record every request's input, output, cache-read and
+  cache-write tokens, the model that served it and the cost; `--calibrate`
+  counts each tool result's real tokens to check the server's estimates.
+  **Scripted runs** need no key and give estimates, labelled as such.
+- `bench/results/v3.2` is the scripted v3.2 baseline, taken before any
+  change below; `bench/results/README.md` sets every change against it,
+  costs included.
+- The README's comparison with Codex is labelled for what it is: a
+  simulation of Codex's behaviour with this server, with estimated tokens.
+
+### Screenshots
+
+- `x`/`y`/`width`/`height` without a mode is a region of the screen. With
+  another mode, or with `app`, it is an error that says what to use
+  instead; they used to be silently ignored.
+- `screenshot(app)` goes the way `get_app_state`'s picture goes: nothing
+  when the window looks as in the model's last picture of that screen,
+  only the part that changed when that is small, else all of it, which
+  then is the picture `x`/`y` refer to. `mode: "window"` still always
+  sends all of it.
+- Every window and full-screen screenshot is numbered ("Screenshot #7"),
+  and a changed part names the one it patches.
+
+### Blind areas (opt-in: `ocr.blind_regions`)
+
+- How many elements a window has no longer decides alone whether its text
+  is read: the areas the tree says nothing about (an element with nothing
+  informative in or under it, such as a drawing area or a picture, and
+  what no element covers) are found however full the rest of the window
+  is, and kept only if they show something, never the empty margins of a
+  form.
+- Just those areas are read off the screen; Tesseract reads each as it is
+  and enlarged and keeps the surer line of each place (enlarged alone, a
+  canvas's framed labels came out as "Ecce"), and leaves out lines that
+  look like shapes rather than text.
+- `get_app_state` says once per screen that part of the window has no
+  accessibility information, and checks those pixels on every look (an
+  unchanged picture is still not sent again).
+- Scripted benchmark: the canvas task takes 2 calls and 1 picture instead
+  of 4 and 2 (−47% result tokens), the mixed task 4 calls instead of 5;
+  it costs about half a second of reading on canvas windows. Off until a
+  real-model run shows it doesn't cost success.
+
 ## v3.2.0
 
 A decision model for speed, set up with Ctrl+Alt+J; apps without
