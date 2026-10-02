@@ -107,10 +107,12 @@
   characters of a longer clipboard.
 - `get_notifications(app?, limit?)`: recent desktop notifications, when the
   user turned it on. Codes in them are masked on purpose.
-- `find_tools(category | query)` (when the tool manager is on): the tools
-  not in your list yet, with their arguments: design (draw, design, scene,
-  trace_image, locate), windows, scripts, clipboard, notifications,
-  decisions. Run them as it says: directly, or `use_tool(name,
-  arguments)`.
+- `find_tools(category | name | query)` (the tool manager, on by
+  default): the tools not in your list, with their arguments: design
+  (draw, design, scene, trace_image, locate), windows, scripts, clipboard,
+  notifications, decisions. A tool's arguments come once; asked again, a
+  line says so (`again=true` repeats them). Run them with `use_tool(name,
+  arguments)` (or directly, if your list has them); a wrong call shows the
+  arguments.
 - `find_element(…, offset=20)`: the next page of matches.
 - `get_app_state(within=index)`: one element and what is in it.

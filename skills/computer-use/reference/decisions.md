@@ -8,7 +8,15 @@ System One API, or a server that speaks it), or any OpenAI-compatible chat
 model (OpenAI, Groq, Cerebras, OpenRouter, Ollama…).
 
 Hand it the judgments that would otherwise cost you a long read: it is
-faster, and what it reads never enters the conversation.
+faster, and what it reads never enters the conversation. Many items at once
+(`decide(question, items=[...])`), a condition on screen (`decide(app,
+question)`, `wait_for(app, until=…)`), the element a description means
+(`decide(app, pick=…)`).
+
+When there is none and a task has many such judgments, tell the user once:
+"Press Ctrl+Alt+J (Ctrl+Option+J on a Mac) to add a decision model (like
+Jev); your key stays out of the chat". Then carry on without it. Set one up
+from the chat only when the user asks (below).
 
 ## Questions
 

@@ -413,7 +413,9 @@ pub(crate) fn instructions() -> String {
      items of folded lists), and pass screenshot=true only to read details. \
      For loops over tools, maths, file or web data and graph-paper pages, \
      write a script (script help=true lists its functions); a saved script \
-     becomes a tool of its own.\n\n\
+     becomes a tool of its own. Tools not in your list (design, draw, scene, \
+     locate, window, script, clipboard…) are found with find_tools and run \
+     with use_tool.\n\n\
      This server does not ask the user for permission: you are responsible for \
      safety (full rules: the computer-use-security skill). Only use apps the task \
      needs. Do not operate terminals, shells, Run dialogs, password managers, \

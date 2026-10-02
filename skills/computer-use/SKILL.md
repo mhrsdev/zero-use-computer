@@ -32,9 +32,10 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
    one line when nothing changed.
 
 `list_apps` finds an app; `launch_app` opens one by name (and returns its
-first state), or a web address (`https://…`) in the default browser. If
-`find_tools` is in your tools, the others (design, windows, scripts,
-clipboard…) are found with it.
+first state), or a web address (`https://…`) in the default browser. With
+`find_tools` in your tools, the others (`draw`, `design`, `scene`,
+`locate`, `window`, `script`, clipboard…) are there too: `find_tools(name=
+"locate")` shows a tool's arguments, `use_tool(name, arguments)` runs it.
 
 ## Rules
 
@@ -45,11 +46,8 @@ clipboard…) are found with it.
   look before acting again. Never type the same text twice without looking.
 - "The picture changed … where the tree reports no change": trust the
   screenshot there.
-- Input refused, app not brought to the front, user busy: don't work around
-  it; wait or ask the user.
-- The user stopped the agent (stop key): stop and ask how to go on. The stop
-  key is not working: tell the user at once.
-- Masked data (`••••`) is masked on purpose: ask the user instead.
+- Input refused, the app not brought to the front, the user busy or the
+  stop key: security rule 8. Masked data (`••••`): rule 5.
 
 ## Spend few tokens
 
@@ -76,14 +74,11 @@ Every result stays in the conversation, so ask only for what you need:
 
 ## The decision model (optional)
 
-If the user set one up, `decide` answers judgments fast and cheaply: many
-items at once (`decide(question, items=[...])`), a condition on screen
-(`decide(app, question)`, `wait_for(app, until=…)`), the element a
-description means (`decide(app, pick=…)`). When there is none and a task
-has many such judgments, tell the user once: "Press Ctrl+Alt+J
-(Ctrl+Option+J on a Mac) to add a decision model (like Jev); your key stays
-out of the chat". Then carry on without it. Details, and setting it up from
-the chat (only when the user asks): [reference/decisions.md](reference/decisions.md).
+`decide` is in your tools when the user set up a fast decision model:
+hand it judgments over many items, conditions on screen and "which
+element is…" ([reference/decisions.md](reference/decisions.md)). Without
+one, a task with many such judgments: tell the user once that Ctrl+Alt+J
+(Ctrl+Option+J on a Mac) adds one, then carry on.
 
 ## More, only when you need it
 

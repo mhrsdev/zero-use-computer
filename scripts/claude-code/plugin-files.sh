@@ -2,6 +2,7 @@
 # Make a release folder a valid Claude plugin as well as a plain MCP bundle:
 #   <dir>/.claude-plugin/plugin.json   manifest (what "Upload local plugin" looks for)
 #   <dir>/.mcp.json                    starts the bundled binary via ${CLAUDE_PLUGIN_ROOT}
+#                                      (short instructions: the plugin brings the skills)
 #   <dir>/skills/computer-use/...      the agent guide (SKILL.md + reference/)
 #   <dir>/skills/computer-use-security/... the safety rules (load first)
 # Usage: plugin-files.sh <dir> <binary-file-name> [version] [bundled|installed]
@@ -42,7 +43,7 @@ cat > "$dir/.mcp.json" <<JSON
   "mcpServers": {
     "computer-use": {
       "command": "$command",
-      "args": ["serve"]
+      "args": ["serve", "--instructions", "short"]
     }
   }
 }

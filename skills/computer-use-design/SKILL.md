@@ -15,6 +15,10 @@ app, turn the request into a spec of sizes, positions and colours, and see
 it on the design board (2D) or in a scene (3D). Then build it with the most
 exact method the app has, and check every step against the spec.
 
+`design`, `scene`, `draw`, `trace_image` and `locate` may not be in your
+tool list: `find_tools(category="design")` shows their arguments once, and
+`use_tool(name, arguments)` runs them.
+
 ## The method
 
 1. **Spec first.** Write a SPEC block in your reply before acting. Use the
