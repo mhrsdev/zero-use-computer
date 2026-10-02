@@ -1,1003 +1,152 @@
 # Zero Use Computer
 
-**[Download v3.6.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
-· [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
-· [License](LICENSE)
+**Desktop control for AI agents.** Your agent reads the app the way a
+screen reader does, acts on real controls, and looks at pixels only when
+they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-A Codex-style **computer use** capability for agents, in Rust. It gives any
-agent the same desktop-control surface OpenAI's Codex app exposes — see and
-operate real GUI apps by clicking, typing, reading on-screen state and running
-multi-app workflows — built on each OS's native **accessibility API** plus
-**screenshots**. Windows, macOS and Linux.
+[Download v3.7.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+· [Connect a client](docs/CONNECT.md)
+· [Guide](docs/GUIDE.md)
+· [Benchmarks](bench/README.md)
+· [Changelog](CHANGELOG.md)
 
-It is a standalone building block: run it as an **MCP server**
-(`computer-use-mcp`; works with Claude Code, Codex, Cursor or any MCP-capable
-agent), or embed the **library** (`computer-use`) in your own agent.
+---
 
-## What's new
-
-**v3.6.0** ([changelog](CHANGELOG.md), [upgrading](docs/MIGRATING.md))
-— everything the [roadmap](docs/ROADMAP.md) planned up to v4.0, in one
-release; the defaults wait for real-model A/B runs:
-
-- **Each thing said once**: look-alike siblings as records, a table a row
-  a line, no flags the role implies, one line for a look that changed
-  nothing (`tree.compact`, on). Scripted benchmark: the 300-row table
-  task −39% result tokens, the long session −26%.
-- **Actions that check themselves and need fewer turns**: `expect` (a
-  dialog, a value, a text to see: confirmed, not seen or uncertain),
-  `click(name="Save")`, `batch` steps as lines (`set 4 "Ada"`, `click
-  "Save" expect dialog`) that stop on a window they didn't expect and end
-  with one report, `launch_app` returning the first state. The form task
-  takes 2 calls instead of 6 (scripted).
-- **Looking at less**: `get_app_state(within=…)`, `get_app_state(about=
-  "shipping address")`, `find_element(offset)`, reports in levels.
-- **A lighter tool surface** (opt-in): lean schemas, a tool manager
-  (`find_tools` + `use_tool`), a small preset for smaller models, short
-  server instructions.
-- **OCR** reads framed and gridded text at two sizes without the lines,
-  leaves out rulers and shapes, and marks unsure lines; on Linux, fields
-  get the name of their label.
-- **Design and scene** answer with what changed, send no picture twice,
-  and take layers as lines (`"sun ellipse 80 20 12 12 fill #ffcc00"`).
-- **Optional layers**: `decide(pick, read=true)` reads a value out of a
-  window; `_meta` on results tells a host which earlier ones it can drop.
-  Nothing depends on the decision model.
-
-**v3.5** (part of v3.6.0) — tokens measured the way they are spent:
-
-- An **agent benchmark** ([bench/](bench/README.md)): six tasks in real
-  apps (a form, a 300-row table, a canvas with painted labels under a full
-  toolbar, a canvas without text, a mixed form-and-dialog task, a longer
-  session), checked from the app's own record, run by Claude through the
-  API with the real input, output and cache tokens and the cost of each,
-  or scripted without a key (estimates, labelled as such).
-- **Screenshots** are never silently wrong: `x`/`y`/`width`/`height`
-  without a mode is a region; `screenshot(app)` doesn't send a picture the
-  model already has, sends only the part that changed when that is small,
-  and every screenshot is numbered so a changed part names the one it
-  patches.
-- **Blind areas** (opt-in, `ocr.blind_regions`): a canvas or picture the
-  tree says nothing about is found however many buttons the rest of the
-  window has; its text is read off the screen (as it is and enlarged,
-  keeping the surer reading of each place) and its pixels are checked on
-  every look. On the benchmark's canvas task: half the calls and half the
-  tokens (scripted estimate).
-
-**v3.2.0** — a **decision model** for speed: add TypeSafe's **Jev** (or any
-fast OpenAI-compatible model) and the agent hands it the judgments that
-cost it the most — "is this review positive?" over 50 reviews at once,
-"has the page loaded?", "which element is the add-to-cart button?" — and
-gets typed answers in well under a second, without reading it all itself
-(the `decide` tool, `wait_for(until)`, and `ask`/`choose`/`score` in
-scripts). **Press Ctrl+Alt+J** (Ctrl+Option+J on a Mac) anywhere: a settings page opens in your
-browser for the model and its key, which never goes through the chat.
-Also on Linux: apps without accessibility (terminals, some Electron apps)
-work through screenshots, the mouse and the keyboard; browsers show the
-page's address; `launch_app` opens web addresses. [Changelog](CHANGELOG.md).
-
-**v3.1.0** — Wayland: on **Hyprland**, **sway** and other wlroots-family
-compositors, window positions, clicks, typing (any language), screenshots,
-window changes and the stop key all go through the compositor, and the
-overlay no longer flickers or replays animations under compositors (X11,
-Wayland, macOS, Windows). [Changelog](CHANGELOG.md).
-
-**v3.0.0** — stability first:
-
-- **It never gets stuck.** Every accessibility call has a timeout, every
-  tool has limits, and a hung or busy app gives what was read and a "not
-  responding" message instead of freezing the server. The client can
-  cancel a call and it stops at once.
-- **An action is never done twice.** When an app doesn't answer a click in
-  time (busy, or the click opened a dialog), the model is told it may have
-  happened and to look first; nothing is retried behind its back.
-- **Per-platform fixes**: hung windows and the foreground lock on Windows,
-  bounded accessibility calls and steady memory on macOS, keys only to the
-  right app and any keyboard layout on Linux.
-- **Fewer tokens, less memory**: **6.8x fewer tokens** than a simulation
-  of Codex-style computer use in the same session (85% saved, 2
-  screenshots instead of 21, each look ~3x faster; estimated, not measured
-  against Codex itself), and the server holds **14.7 MiB** (v2.6: 24.3).
-  See [Performance](#performance).
-
-## Why it mirrors Codex
-
-Codex's computer use is accessibility-first: it reads an app's accessibility
-tree, acts on elements semantically, and only falls back to pixels when it must.
-This project follows the same architecture and behaviour:
-
-- **Accessibility tree + screenshot.** `get_app_state` returns a pruned, numbered
-  accessibility tree *and* a screenshot of the window. Actions target an
-  `element_index` and go through the platform's native action (press, set value,
-  toggle…), so they work on background/occluded windows.
-- **Turn-scoped indices with diffs.** Element indices are valid only until the
-  next `get_app_state`; subsequent calls return a **diff** (unless
-  `disable_diff` is set), keeping token use low.
-- **Screen memory (beyond Codex).** When the app returns to a screen the model
-  has already seen — it went back a page, closed a dialog, reopened a panel —
-  the engine recognises it, gives back the element indices the model saw then,
-  and sends only what changed: no new tree, and a new screenshot only if the
-  pixels differ from the one the model has.
-  See [Screen memory & caching](#screen-memory--caching).
-- **The same ten tools** Codex's Computer Use plugin exposes — `list_apps`,
-  `get_app_state`, `click`, `perform_secondary_action`, `set_value`,
-  `select_text`, `scroll`, `drag`, `press_key`, `type_text` — plus `launch_app`,
-  `draw` (shapes and parametric curves with the mouse held down),
-  `trace_image` (a reference picture as flat colours to paint), `design` (a
-  2D design board) and `scene` (a 3D model planned as solids), and `locate`
-  (exact places to aim at).
-- **On-screen indicator (beyond Codex).** Its own cursor, a glow around the
-  screen and a status label in state colours, click-through and invisible to
-  the agent's screenshots. See [On-screen indicator](#on-screen-indicator-overlay).
-- **Safety lives in the agent, not the server.** The server has no
-  approvals or action confirmations. Which apps the agent may use and which
-  actions need the user's OK is set by the
-  [`computer-use-security`](skills/computer-use-security/SKILL.md) skill (also
-  summarised in the server's MCP instructions). The server keeps only what an
-  agent can't do for itself: input goes only to the app it is meant for,
-  `launch_app` never runs a command line, password fields and card numbers
-  are masked, and the user has an emergency stop key.
-
-## Tools
-
-| Tool | What it does |
-|------|--------------|
-| `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments), wait for a window and return its first state; or open a web address in the default browser. |
-| `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. `within` shows one element's part, `about` only the parts about something, `rebase` all of it again. |
-| `click` | Click an element by `element_index` (uses its accessibility action), by `name` (and `role`) when one element has it, or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. `expect` (here and on the other actions) waits for a dialog, a change, a value or a text and says whether it came. |
-| `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
-| `set_value` | Set a field's text, a slider, or a checkbox/switch directly. |
-| `select_text` | Select a substring (or all) in a text element. |
-| `scroll` | Scroll an element or the area at a point. |
-| `drag` | Drag between elements or points (`snap` as for `click`). |
-| `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `fill` paints a closed shape solid with the brush (shapes painted back to front cover each other). `preview` shows the strokes over a screenshot first, on named cells (graph paper sized to the drawing); the result says which cells the drawing covers and where a bucket click fills each closed outline, checked on the real pixels (one click per piece when other lines cut it, or where a fill would leak out). |
-| `trace_image` | Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes, as steps to paint back to front with `draw`; `screenshot` with `compare` then shows where the canvas still differs. |
-| `design` | A design board, like Canva: a picture composed from layers (the shapes `draw` takes, and text) that can be added, changed, mirrored, aligned, distributed and reordered. Returns the rendered picture on named cells, the layers' boxes, checks (off the page, nearly centred, not quite symmetric, hard-to-read text) and the steps to paint it; then `draw` paints a step, or `export` writes a temporary SVG or PNG to import. |
-| `scene` | A 3D model planned as solids (box, cylinder, sphere, cone, torus, plane) with exact sizes, centres and rotations, Z up. Returns the front, right and top views to one scale and a perspective view with shadows, the parts' extents, checks (what floats, sinks into the ground or runs into another part, and by how much) and the numbers to build it in Blender or another 3D app; `export` writes a temporary OBJ with its colours. |
-| `locate` | Exact places in a window, in click coordinates: every area of a colour, every look-alike of an icon or marker, or the exact corner, edge or centre next to a rough point. |
-| `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
-| `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
-| `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
-| `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout; or, with `until`, until the decision model answers yes about the window ("have the results loaded?"). |
-| `decide` | Typed answers from a **decision model** (Jev, or a fast OpenAI-compatible model): yes/no with a probability, one of some options, or a score on a scale, about text, each of many items in parallel, or an app's window; `pick` returns the element a description means (`read` also its value). See [Decision model](#decision-model-jev). |
-| `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does, **cells** lays named graph paper over the document and `cell` magnifies one cell. `zoom` magnifies around a point to aim exactly. |
-| `batch` | Run several tools in one call (fill a form, then submit), as lines (`set 4 "Ada"`, `click "Save" expect dialog`, `key cmd+s`) or objects; stops on a window a step didn't expect, and ends with one report of what changed. |
-| `script` | Run a small program inside the server for what the tools can't do in one call: loops and conditions over any tool, maths, data from files or the web, pictures built on a graph-paper page. `save` keeps a script as a **new tool** of its own. See [Scripts](#scripts). |
-| `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
-
-Beyond Codex's ten, the extra tools (`find_element`, `wait_for`, `batch`,
-`script`, region/full `screenshot`, clipboard) cut round-trips and token
-use, and an optional **audit log** records every call.
-
-### Scripts
-
-The tools cover what most tasks need; `script` covers the rest. The model
-writes a short program (in [Rhai](https://rhai.rs), a sandboxed language
-that reads like JavaScript) and the server runs it:
-
-- **Any tool, with logic around it.** `tool("click", #{app: "Paint", x:
-  10, y: 20})` runs a tool and gives its text; loops, conditions, retries
-  and waits go around it. `elements(app, #{role: "button"})` gives the
-  matching elements as data, and `colors(app, points)` the exact pixel
-  colours. Every call is an ordinary tool call: the stop key, the pause
-  while you work and the masking of private data all apply.
-- **The graph-paper page.** `page("chess", 800, 800, #{cell: 100})` is a
-  design on the design board with named cells (A1 to H8 here). A script
-  fills, labels and measures cells by name (`p.fill_cell("C4",
-  "#222222")`, `p.cell("C4")`) and adds any shape or text. The picture
-  comes back with the result, and the page can be exported or painted into
-  an app step by step like any design. `cells(w, h, size)` gives the same
-  cells for any canvas, and `cell_size` on `design`, `draw` and `screenshot`
-  makes them all name the same cells.
-- **Data.** Whatever the model passes in `data` and `args`; files (CSV,
-  JSON, text: read anywhere, written in the scripts' own folder by
-  default); the web through `curl` (`fetch`, `fetch_json`, `download`);
-  values remembered between runs; regular expressions, maths, random
-  numbers, colours and dates.
-- **New tools.** `script(save="chessboard", code=..., description=...,
-  params=...)` keeps a script in `~/.computer-use/scripts/chessboard.rhai`.
-  From then on it is a tool of its own (the server tells the client its
-  tool list changed), it can be run by name, and other scripts can run it.
-  The files are plain text you can read and edit.
-
-A script can't reach the system except through these functions. Each run
-has a time limit (`[script] max_seconds`, 5 minutes by default), and the
-stop key ends it at once. `[script]` also sets which files scripts may use
-(`none`, `workspace`, `read` or `all`) and whether they may use the web.
-The function reference is
-[`skills/computer-use/reference/scripts.md`](skills/computer-use/reference/scripts.md),
-also returned by `script(help=true)`.
-
-Files that `design` and `scene` export are temporary. They go to a
-`computer-use-exports` folder in the system's temp directory and are
-deleted when the server stops. Files there older than a day are removed,
-and the folder is kept under 200 MB, so exports never pile up on disk.
-
-The model should load two skills:
-
-- [`skills/computer-use/SKILL.md`](skills/computer-use/SKILL.md): how to use
-  the tools;
-- [`skills/computer-use-security/SKILL.md`](skills/computer-use-security/SKILL.md):
-  which apps and actions are off limits or need the user's OK, prompt
-  injection, secrets. The server enforces none of this, so this skill is not
-  optional.
-
-For design work there is a third:
-[`skills/computer-use-design/SKILL.md`](skills/computer-use-design/SKILL.md).
-It covers images, logos, UI, vector art, 3D and building/CAD drawings in
-Photoshop, Paint, GIMP, Krita, Illustrator, Inkscape, Figma, Blender,
-Revit, AutoCAD and SketchUp, from a text brief or a reference image. It is
-written so that smaller models get good results too:
-
-- a spec of exact numbers comes first;
-- each step uses the most exact method the app has (numeric fields, typed
-  commands, `draw` in document units);
-- the spec goes on a board first: `design` renders a 2D picture from
-  layers and `scene` a 3D model from solids, with checks (nothing off the
-  page, symmetric pairs symmetric, no part floating or sunk), before the
-  app is touched;
-- the spec's shapes map one to one to `draw` strokes (rect, ellipse,
-  polygon, star, arc, Bézier, plots with axes, repeats), previewed over the
-  canvas on named cells before anything is painted, and painted solid back
-  to front;
-- a photo is copied with `trace_image`: flat colour steps the model paints
-  in order, then checks against the trace;
-- every pass is checked with grid screenshots, cell by cell where it
-  matters, and exact colour readings; small targets are hit with `locate`,
-  `snap` and a magnified `zoom`;
-- each app has a playbook, and there are recipes for common jobs.
-
-Each is a short core the model keeps loaded, plus `reference/` files it reads
-only when a situation calls for them (see [Token use](#token-use)). Install
-them as skills in your agent (for Claude Code: copy `skills/*` into
-`~/.claude/skills/` or the project's `.claude/skills/`).
-
-## Decision model (Jev)
-
-A big model is slow at small judgments: to find the cheapest wired
-headphones with good reviews it reads every product page and every review
-itself, one turn at a time. A **decision model** does that part: it
-answers typed questions about a state — yes/no (the probability of yes),
-one of some options, a score on a scale — in tens to hundreds of
-milliseconds, and writes no text. The agent asks it through:
-
-- `decide(question, items=[…])`: each item judged on its own, all at once,
-  with a summary ("yes for 7 of 50: 3, 8, 12…");
-- `decide(app, question)`: about an app's window, which never enters the
-  conversation; `decide(app, pick="the add-to-cart button")`: the element
-  that is, as an `element_index`;
-- `wait_for(app, until="have the results loaded?")`;
-- `ask`, `choose`, `score`, `decide`, `decide_each` in [scripts](#scripts),
-  so a saved script can judge as it goes.
-
-**Setting it up:** press **Ctrl+Alt+J** (Ctrl+Option+J on a Mac;
-`control.settings_hotkey`) from any app, or run `computer-use-mcp settings`. A page opens in your browser:
-choose **Jev** (TypeSafe's System One API, or a server that speaks it, like
-local-jev) or an **OpenAI-compatible** model (OpenAI, Groq, Cerebras,
-OpenRouter, Ollama…), give its address, model and API key, press Test and
-Save. The server uses it at once. The agent's skill suggests Ctrl+Alt+J the
-first time a task would gain from it. You can also give the settings to
-the agent in the chat (`decide setup={…}`), but a key typed there stays in
-the chat's history.
-
-The key is saved in `config.toml` under `[decision]`, which is then
-readable by you only; it reaches `curl` on its input (never on a command
-line), and is never shown again — the page, `doctor`, `config show` and
-the tool show only its last four characters. The page lives on 127.0.0.1
-at a random address, refuses other sites and other host names, and goes
-away after 15 minutes unused. What a decision is about is sent to the
-model you chose; masked data stays masked.
-
-## Screen memory & caching
-
-An agent spends most of its tokens and time re-reading screens. The engine
-keeps several layers of cache so it never makes the model look at the same
-thing twice:
-
-| Layer | What it saves | Setting |
-|---|---|---|
-| **Screen memory** | Every screen the model has been shown is remembered compactly (per element: hashes, its index, its rendered line). When a view matches a remembered screen, its old indices come back and only the difference from *what the model saw then* is sent. | `[cache] enabled`, `max_screens`, `max_memory_kb`, `match_threshold` |
-| **Screenshot dedupe** | A 64-cell luminance fingerprint of every screenshot sent. An identical picture of the same screen is not encoded or sent again (`screenshot=true` still forces one). | `dedupe_screenshots`, `pixel_grid`, `pixel_tolerance` |
-| **Read reuse** | A tree snapshot / window list taken moments ago is reused when no action ran since (e.g. `find_element` then `get_app_state`, or `get_app_state` right after an action's change report). Any action invalidates it. | `snapshot_ttl_ms` |
-| **App list** | The running-app list is reused briefly between calls. | `timing.app_cache_ms` |
-
-A round trip — look at a screen, press a button, confirm, come back — goes
-like this:
+Most computer-use agents send a screenshot every turn and guess where to
+click. Zero gives the model the window's accessibility tree with numbered
+elements, so `click(12)` presses the Save button through the OS's own
+accessibility API. Most actions work on windows in the background without
+touching the user's mouse, and the whole loop costs a fraction of the
+tokens.
 
 ```text
-get_app_state  → App: Mail … · screen #1 (new)        full tree + screenshot
-click "Delete" → State after the action: now on screen #2 (new), window "Confirm":
-                 6 dialog "Confirm" / 7 text "Delete 3 messages?" / 8 button "OK"
-click 8        → State after the action: back on screen #1 (seen before), window "Inbox":
-                 Changes since you last saw screen #1 (+ added, ~ changed, - removed) …
-                 - 14 list item "Meeting notes"
-get_app_state  → … · screen #1
-                 Screenshot: not attached …  Tree: No changes …
+> get_app_state(app="Settings")
+App: Settings · window "Settings" · screen #1 (new)
+Screenshot #1: 720x360 px.
+ 26 button "Save"
+ 27 checkbox "Subscribe to newsletter" (unchecked)
+ 5 × radio button:
+ 28 "Canada" (checked) · 29 "Germany" (unchecked) · 31 "Japan" (unchecked) …
+ 34 text field "Email"
+ 36 text field "Full name"
+
+> batch(["set 36 \"Ada Lovelace\"", "set 34 \"ada@example.com\"",
+         "click \"Japan\"", "click \"Subscribe to newsletter\"", "click \"Save\""])
+Ran 5 step(s):
+1. set_value — Set text field "Full name"; it shows the new value.
+…
+State after the steps:
+~ 27 checkbox "Subscribe to newsletter" (checked)
+~ 31 radio button "Japan" (checked)
+~ 36 text field "Full name" value="Ada Lovelace"
 ```
 
-How it works:
+(Trimmed from a real run of the benchmark's form task: two calls.)
 
-- **Recognition.** Each element gets an identity key (the backend's own id, or
-  a hash chain of role + label + position among siblings) and a *shape* (that
-  structural hash). A view is matched to a remembered screen by the Jaccard
-  similarity of its shapes (`match_threshold`, default 0.8), so a dialog that
-  was closed and opened again is recognised even though its accessibility
-  objects are new.
-- **Indices never change meaning.** Numbers are handed out once per app and
-  never reused. A returning screen's elements get the numbers the model saw
-  then; a stale number from a screen that has gone away fails with "unknown
-  element_index" instead of clicking something else.
-- **The model's view is the baseline.** Diffs are computed against what the
-  model was actually shown, not against the last internal read. So
-  `find_element`, `wait_for` and a truncated change report never hide a
-  change from the next `get_app_state`, and only the image that actually came
-  back from a `batch` counts as seen.
-- **Dialogs are followed.** When an action opens a new window (a dialog, a
-  menu), the change report and the next `get_app_state` switch to it
-  (`follow_new_windows`); when it closes, the window below is recognised.
-- **Screenshots are checked, not assumed.** When the tree changed, or the app
-  came back to an earlier screen, the window is captured and compared with
-  the picture the model has: the same picture isn't sent again, a different
-  one is (or just the part that changed). The model's screenshot keeps
-  working for `x`/`y` clicks (shifted if the window moved; replaced if the
-  window changed size).
+## What makes it different
 
-Measured on `gtk3-widget-factory` switching between two pages (`BENCH_NAV`,
-below): coming back to a page costs **~79 tokens** instead of **~2,500** (1,250
-text + 1,265 image), and is ~15% faster because nothing is encoded. The memory
-holds ~7.5 KiB per screen; peak process memory is unchanged.
+- **It remembers screens.** Go back a page or close a dialog and the model
+  gets "screen #1 (seen before)": the indices it already knows and only
+  what changed. A picture the model already has is never sent twice.
+- **Each action reports its own result.** The state after a click comes
+  with the click, and `expect` says whether the dialog opened or the value
+  stuck (confirmed, not seen, or uncertain). No look-again-to-be-sure turns.
+- **A small tool list that can reach everything.** The model starts with
+  the 15 tools most tasks use. Drawing, design, 3D, exact aiming, windows,
+  scripts and the clipboard are one `find_tools` away, and the list never
+  changes, so the prompt cache holds.
+- **It reads what the tree can't.** Canvases and painted text are read off
+  the screen and become clickable `ocr text` elements.
+- **You stay in control.** An on-screen indicator, an emergency stop key
+  (Ctrl+Alt+Esc), a pause while you use the mouse, masked passwords and
+  card numbers, and keystrokes that only ever go to the app they're meant
+  for. Which apps the agent may touch is set by a
+  [security skill](skills/computer-use-security/SKILL.md).
 
-### Text read off the screen (OCR)
+## Numbers
 
-Some apps show almost nothing to accessibility APIs: games, canvases, remote
-desktops, some custom toolkits. For those, the engine reads the text off the
-window. The lines become `ocr text` elements in the tree: numbered like any
-other element, found by `find_element`, and clicked by `element_index` (at
-their place on screen). They can't be set or selected.
+Six real tasks in a GTK app (a form, a 300-row table, a canvas, a dialog
+flow, a longer session), success checked from the app's own record.
+Scripted runs, three each; tokens are estimates (4 characters a token,
+an image width × height / 750, no prompt cache).
+[Full tables](bench/results/v3.7-releases/step.md).
 
-It runs by itself when a window has fewer than `ocr.sparse_threshold`
-interactive elements (`ocr.mode = "auto"`). With `ocr.blind_regions = true`
-(opt-in until the [benchmark](bench/README.md) has measured it with a real
-model), it also finds the areas a tree says nothing about however many
-elements the rest of the window has, such as a canvas under a full toolbar
-or a painted notice next to a form, reads just those areas (as they are
-and enlarged, keeping the surer reading of each place, and leaving out what
-looks like shapes rather than text), and checks their pixels on every look. The agent can ask for it with
-`get_app_state(ocr: true)`; `"always"` and `"off"` are also possible. Lines
-that repeat what the tree already says there are left out, as is glyph noise.
-A picture that hasn't changed isn't read again, and the picture read is also
-used as the screenshot. Card numbers read this way are masked like any other
-text (`[privacy]`).
-
-| Engine | Where |
-|---|---|
-| `Windows.Media.Ocr` (the languages the user installed) | Windows |
-| Vision framework (`VNRecognizeTextRequest`, accurate) | macOS |
-| Tesseract (`tesseract` on `PATH`, `ocr.tesseract_path`) | Linux, and anywhere the built-in engine is missing |
-
-`ocr.engine` picks one; `ocr.languages` sets what to read (`["en", "de"]`).
-If no engine is available, the agent is told once.
-
-### Notifications
-
-`get_notifications` reads the user's recent desktop notifications: app,
-title, text and how long ago. It is **off by default** because notifications
-carry other apps' content; turn it on with
-`computer-use-mcp config set notifications.enabled true`.
-
-- `notifications.apps` can narrow it to a list of apps.
-- Card numbers and anything that looks like a one-time or verification code
-  are masked (`notifications.mask_codes`).
-
-| | How | What it sees |
-|---|---|---|
-| Linux | Listens on the session bus for `org.freedesktop.Notifications.Notify` calls (the D-Bus monitoring interface `dbus-monitor` uses) while enabled | Everything sent since the server started (`notifications.keep`) |
-| Windows | `UserNotificationListener`; Windows asks the user once for access | The notifications in Action Center |
-| macOS | Notification Center's banners, read through Accessibility (there is no public API) | What is on screen now |
-
-### Windows and screens
-
-The `window` tool arranges app windows. Its actions:
-
-- `list`: the app's windows, with position, size and state;
-- `focus`, `move` (x, y, optionally width, height), `resize`;
-- `maximize`, `minimize`, `restore`, `fullscreen` / `exit_fullscreen`,
-  `close` (as the close button does, so the app can still ask to save);
-- `tile_left` / `tile_right` / `tile_top` / `tile_bottom` (half of a display)
-  and `center`;
-- `move_to_display`, `move_to_desktop`;
-- `displays`: every monitor's area and usable area (without task bar, dock or
-  menu bar), plus the virtual desktops.
-
-Positions are screen coordinates, the same as the window line of
-`get_app_state`. Each result reports where the window really ended up, and
-notes when the app or window manager adjusted it (a minimum size, say).
-After a move the next `get_app_state` takes a fresh screenshot.
-
-| | Linux (X11) | Windows | macOS |
+| | v3.0 | v3.6 | **v3.7** |
 |---|---|---|---|
-| Placement, state, close | EWMH/ICCCM messages to the window manager (plain X requests without one) | `SetWindowPos`, `ShowWindow`, `WM_CLOSE` | the window's AX position, size, minimized and full-screen attributes, its close button |
-| Displays | RandR, work area from `_NET_WORKAREA` | monitor list with work areas | CoreGraphics, AppKit's visible frame |
-| Virtual desktops | `_NET_WM_DESKTOP` | not available (Windows only lets a program move its own windows) | not available (no public API for Spaces) |
+| Sent with every request (instructions, skills, tools) | 6,718 | 7,783 | **4,938** |
+| Tool definitions | 4,363 | 4,990 | **2,167** |
+| Input to finish four tasks | 349,873 | 367,006 | **250,701** |
 
-### Smart screenshots: the whole window, or just the part that changed
+v3.7 sends **37% less per request and 32% less per task** than v3.6. With
+`batch`, all six tasks: 325,339 → 225,628 (−31%).
 
-When a screenshot is attached and the model already has a picture of the same
-screen, the engine compares the new pixels with that picture
-(`screenshot.scope = "auto"`):
+### Against Codex-style computer use
 
-- **Only a small part changed** (a menu, a tooltip, a ticked box, a new line
-  of text): only that part is sent, with a margin (`region_padding`,
-  `region_min_size`), at the same scale. The model is told where it goes:
-  "the area x 400–600, y 300–500 of your earlier screenshot". Coordinates keep
-  referring to the whole screenshot, so nothing shifts.
-- **Much of it changed** (more than `region_max_ratio` of the window), the
-  window changed size, the screen is new, or the model asked
-  (`screenshot: true`): the whole window is sent.
-- **Nothing changed**: nothing is sent.
+Codex's computer use is the model this project started from: the same ten
+core tools, accessibility first. The benchmark can run Zero the way Codex
+behaves (a screenshot with every look, no screen memory, no change report
+after an action, every tool listed) and compare. This is a **simulation of
+Codex's behaviour on this server, not a run of Codex**.
+[Full table](bench/results/v3.7-codex/compare.md).
 
-The `screenshot` tool works the same way: for a window (`app`), nothing if
-it looks as in the model's last picture of that screen, else only what
-changed when that is small, else all of it (`mode: "window"` always sends
-all of it); for the whole screen, `mode: "auto"` (the default without
-`app`) sends only what changed since the last full-screen screenshot, and
-`mode: "full"` always sends all of it. `x`/`y`/`width`/`height` are a
-screen region (`mode: "region"` need not be said), never silently ignored.
-Every screenshot is numbered ("Screenshot #7"), and a changed part names
-the screenshot it patches. The model
-can also pick the part itself: `element_index` zooms into one element of a
-window at full resolution, for small text. `scope = "full"` turns the
-automatic choice off.
-
-## On-screen indicator (overlay)
-
-While the agent works, the user sees what it is doing — without it ever taking
-their mouse:
-
-- **The agent's own cursor.** A separate pointer — a rounded arrowhead in its
-  own colour with a soft shadow, a white edge, an outline and glow in the
-  state colour, and a small name tag ("Zero", `cursor_tag`) — glides to where
-  the agent acts and ripples where it clicks. The real mouse is never moved, locked or restyled:
-  element actions go through accessibility APIs, and the coordinate fallbacks
-  on Windows and Linux put the pointer straight back (`restore_pointer`;
-  macOS posts events to the app without moving it).
-- **A glow around the screen** (or around the window being worked on:
-  `overlay.border_target = "window"`) and a small **label** such as
-  "Zero is using the computer".
-- **State colours**, for the glow, the label and the cursor's ring:
-
-| State | Colour | When |
-|---|---|---|
-| thinking | gold | between actions, while the model works out its next step |
-| working | blue | an action is running |
-| error | red | the last action failed |
-| done | green | the task is finished — then everything disappears |
-| paused | grey | waiting while you use the mouse or keyboard |
-| stopped | orange | you pressed the emergency stop key |
-
-- **Nothing pops.** It fades in when it appears, blends from one state colour
-  to the next, and fades out slowly when the work is done (`fade_in_ms`,
-  `transition_ms`, `fade_out_ms`). All of its texts are English by default
-  and configurable (`label_*`).
-
-How it stays out of the way:
-
-- It runs in a **separate helper process** (`computer-use-mcp overlay`). The
-  engine never waits on it; if it fails to start or crashes, computer use
-  carries on without it.
-- If the server exits, the helper fades out and quits; if the server is
-  killed, the helper's input pipe closes and it does the same; and if the
-  helper itself is killed, its windows belong to its process, so the OS
-  removes them. **Nothing is ever left on screen.** It also fades away on
-  "done", and after `done_after_ms` without any action.
-- Its windows are **click-through**, never take focus, and are **left out of
-  the agent's screenshots**: `WDA_EXCLUDEFROMCAPTURE` on Windows,
-  `sharingType = none` on macOS, and on X11 (which can't exclude a window)
-  it is hidden for the instant of a capture.
-- Native on each OS: layered windows on Windows, `NSWindow`s on macOS,
-  override-redirect windows with an empty input shape on X11 (smooth glow with
-  a compositing manager; a solid band without one).
-
-A host agent that knows more (e.g. when its model is generating, or when the
-task is complete) can say so with a JSON-RPC notification:
-
-```json
-{"jsonrpc": "2.0", "method": "computer_use/status", "params": {"state": "thinking"}}
-```
-
-(`thinking`, `working`, `done`, `error`, `hidden`; the library has
-`Engine::set_status`). Every text, colour, size and timing is in `[overlay]`;
-`computer-use-mcp overlay --demo` shows each state once on your screen.
-
-## You stay in control
-
-- **Emergency stop key** — `Ctrl+Alt+Esc` by default (`Ctrl+Option+Esc` on a
-  Mac; `control.stop_hotkey`),
-  from any app. The agent stops at once: every tool call is refused with a
-  message telling the model that the user stopped it and to ask how to
-  proceed; a batch, a wait or an on-screen question in progress ends too.
-  The label turns orange ("Zero stopped. Press Ctrl+Alt+Esc to let it
-  continue"). Press the key again to let it continue. The overlay helper
-  registers exactly that one combination with the OS (`RegisterHotKey` on
-  Windows, a passive key grab on X11, `RegisterEventHotKey` on macOS), so it
-  receives that key and nothing else. If another program already owns the
-  combination, a warning is logged: pick another one. Hosts can stop the agent
-  too (`Engine::stop_handle`, `set_stopped`).
-- **Settings key** — `Ctrl+Alt+J` (`control.settings_hotkey`) opens the
-  decision model's settings page, registered the same way (a binding in
-  Hyprland or sway).
-- **Pause while you work** (`control.pause_on_user_input`, on by default).
-  Before each action, the engine checks how long ago anyone last used the
-  mouse or keyboard (the system idle time: `GetLastInputInfo`,
-  `CGEventSourceSecondsSinceLastEventType`, the X11 screen-saver idle
-  counter). While you are active it waits (grey "Paused while you use the
-  computer"). It continues once you have been idle for `resume_after_idle_ms`.
-  After `max_pause_secs` it gives up and tells the model why. Only the time of
-  the last input is read — never which key or where — and the engine's own
-  synthesized input is not taken for yours. Reading (trees, screenshots) is
-  never held up.
-- **Private data is kept from the model** (`[privacy]`). These are masked in
-  element text and blacked out of every screenshot before it is sent:
-  - password fields (never even their length);
-  - payment card numbers (13–19 digits passing the Luhn check; text keeps
-    the last four digits);
-  - fields whose label contains `cvv`, `security code`, `one-time code`…
-    (`redact_labels`).
-
-  Tool results say how many areas were hidden. `style = "fill"` (a solid box,
-  default) or `"pixelate"`; each rule can be switched off. Full-screen
-  captures use the private areas of the app windows the agent has read.
-
-## Waits for the UI, checks its work
-
-- **Smart waiting.** After an action the engine doesn't just sleep for a fixed
-  time. It re-reads the app until two reads in a row agree (the UI has
-  finished reacting), up to `timing.settle_max_ms`. That is
-  `timing.settle = "adaptive"`; `"fixed"` goes back to a plain `settle_ms`
-  pause. Reads that still show exactly the state from before the action are
-  trusted only after half a second: many apps (browsers, Electron apps)
-  report a change a moment after making it. The last read is reused for the
-  change report.
-- **Verification** (`[verify]`). Each action's result is checked. If a value
-  didn't take, typed text didn't land in the field, or nothing changed after a
-  press, the model is told so ("Nothing on screen changed after it; check
-  before repeating it").
-- **Retry another way** when an action clearly failed (`verify.retry`):
-
-  | Failure | Retry |
-  |---|---|
-  | an accessibility press errors | a mouse click on the element |
-  | a value didn't take | focus, select all, type (replaces the value) |
-  | a scroll didn't move | the mouse wheel |
-  | a field won't take focus | click it |
-
-  Typed text is **never** typed again on its own (that would enter it
-  twice); if the field doesn't show it, the model is told to look first. A
-  press that simply changed nothing is not repeated unless
-  `verify.retry_on_no_change = true` (off by default: a send or a payment can
-  show its effect late, and must not be repeated).
-- **Sent but not answered is not a failure.** When the app doesn't answer
-  an action in time (busy, hung, or the action opened a dialog), the action
-  may well have happened: it is reported as "sent, may or may not have
-  happened; look before repeating it" and never retried another way.
-
-## Never stuck
-
-Every call ends, whatever the app or the input does:
-
-- Accessibility reads have timeouts and a time budget per tree (Windows UI
-  Automation, macOS AX, Linux AT-SPI): a hung app gives what was read and a
-  "not responding" message, never a frozen server. Windows checks
-  `IsHungAppWindow` before touching a window.
-- The client can cancel a call (`notifications/cancelled`): it ends at
-  once, as the stop key would.
-- Each call has limits: 100,000 typed characters (typed in pieces, the stop
-  key checked between them), 500 key presses, 50 scroll pages, 30,000
-  clipboard characters, 500 design layers, 50-megapixel pictures; calls nest
-  at most 8 deep.
-- Helper programs (Tesseract, `curl`, clipboard tools) run with time limits
-  and are always waited for; scripts touch only regular files; settings are
-  written atomically.
-
-## Architecture
-
-```
-        agent (Codex / Claude Code / your own)
-                     │  tools
-        ┌────────────┴─────────────┐
-        │   computer-use-mcp        │  MCP stdio server + CLI
-        │   (JSON-RPC)              │
-        └────────────┬─────────────┘
-                     │  Engine::call_tool
-        ┌────────────┴─────────────┐
-        │        computer-use        │  engine: tree pruning, stable indices,
-        │      (platform-agnostic)   │  diffs, screen memory, coord map
-        └───┬───────────┬───────────┬┘
-            │           │           │   Backend trait
-     ┌──────┴──┐  ┌─────┴────┐  ┌───┴──────┐
-     │ macOS   │  │ Windows  │  │ Linux    │
-     │ AX API  │  │ UI Auto- │  │ AT-SPI2  │
-     │ CGEvent │  │ mation   │  │ (D-Bus)  │
-     │ CGWindow│  │ SendInput│  │ XTest    │
-     │ List    │  │ PrintWin │  │ X11 img  │
-     └─────────┘  └──────────┘  └──────────┘
-```
-
-The **engine** is platform-agnostic and holds all the behaviour that must be
-identical everywhere: pruning the raw accessibility tree into a sparse numbered
-outline, assigning stable per-turn element indices, diffing snapshots, mapping
-screenshot pixels to screen coordinates, and keeping input on the target app. Each
-**backend** is a thin adapter over one OS:
-
-| | macOS | Windows | Linux |
+| Five tasks (form, table, board, shapes, long) | Codex-style (simulated) | Zero v3.7 | Zero v3.7 + `batch` |
 |---|---|---|---|
-| Tree & actions | Accessibility (AX) API | UI Automation | AT-SPI2 over D-Bus |
-| Input | `CGEvent` posted to the target pid (background, cursor doesn't move) | `SendInput` | XTest |
-| Capture | `CGWindowListCreateImage` (+ `_AXUIElementGetWindow`) | `PrintWindow` (`PW_RENDERFULLCONTENT`) | X11 `GetImage` |
+| Input tokens | 364,354 | **245,147** (−33%) | **183,860** (−50%) |
+| Screenshots sent | 11 | **5** | **5** |
+| Image tokens | 7,702 | **3,330** (−57%) | **3,330** |
+| Tool calls | 41 | 36 | **26** |
 
-## Use it as an MCP server
+| | Codex-style | Zero |
+|---|---|---|
+| Each look | tree and a screenshot | the tree or what changed; a picture only when it adds something |
+| Coming back to a screen | everything again | "seen before", only the changes |
+| After an action | look again | the change comes with the action |
+| Checking an action worked | look and compare | `expect`: confirmed, not seen, uncertain |
+| Several known steps | one call each | one `batch`, which stops on an unexpected window |
+| Text only in pixels | in the screenshot | read off the screen, clickable |
+| Tool list | every tool, every request | 15 tools plus `find_tools`; the rest on demand |
+| Clients | | any MCP client: Claude Code, Codex, Cursor, VS Code, Claude Desktop |
+| Extras | | 2D design board, 3D scene planner, exact aiming, scripts, a fast decision model |
 
-**Download** a ready-made build from the
-[latest release](https://github.com/mhrsdev/zero-use-computer/releases/latest):
+## Quick start
 
-| System | File |
-|---|---|
-| Windows (x64) | `computer-use-mcp-windows-x64.zip` |
-| macOS, Apple silicon | `computer-use-mcp-macos-arm64.zip` |
-| macOS, Intel | `computer-use-mcp-macos-x64.zip` |
-| Linux (x64) | `computer-use-mcp-linux-x64.zip` |
+1. Download the zip for your system from the
+   [latest release](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+   and extract it somewhere permanent.
+2. **Claude Code:** run `./install.sh` (macOS, Linux) or `install.cmd`
+   (Windows). It registers the server; `claude mcp list` shows it.
+   **Anything else:** point your client at `computer-use-mcp serve`.
+   Configs for Codex, Cursor, VS Code and Claude Desktop are in
+   [`examples/`](examples) and [docs/CONNECT.md](docs/CONNECT.md).
+3. Give the agent the [skills](skills/) (the zip is also a Claude plugin
+   that brings them).
 
-Each zip contains the binary, the skills, installers for Claude Code,
-ready-to-copy client configs in [`examples/`](examples) and the connection
-guide [`docs/CONNECT.md`](docs/CONNECT.md). It is also a valid Claude plugin
-(`.claude-plugin/plugin.json` + `.mcp.json`); the small
-`computer-use-plugin-<platform>.zip` is the plugin without the program, for
-hosts that refuse executables. The binaries are not code-signed, so Windows
-SmartScreen may ask you to confirm. Builds of every push to `main` are under
-the repository's **Actions** tab (*CI* run ▸ **Artifacts**).
+`computer-use-mcp doctor` checks permissions and the stop key. On macOS,
+allow Accessibility and Screen Recording for the app that starts the
+server. On Linux it needs the AT-SPI bus (X11, or Wayland with Hyprland,
+sway and other wlroots compositors).
 
-**Claude Code in one step:** extract the zip to a permanent folder and run
-`install.cmd` (Windows) or `./install.sh` (macOS / Linux). It registers the
-server with `claude mcp add` (`--scope user` by default) and writes a
-settings file if there is none; `claude mcp list` checks it.
-
-Or build it:
+Build it yourself:
 
 ```bash
 cargo build --release -p computer-use-mcp
-# binary at target/release/computer-use-mcp (computer-use-mcp.exe on Windows)
-scripts/package-claude-code.sh   # the same bundle the installers come in
 ```
 
-Then point any MCP client at `computer-use-mcp serve`, e.g. Claude Code's
-`.mcp.json`:
+Or embed the library (`computer-use`) in your own agent:
+[Guide › Embed the library](docs/GUIDE.md#embed-the-library).
 
-```json
-{
-  "mcpServers": {
-    "computer-use": {
-      "command": "/path/to/target/release/computer-use-mcp",
-      "args": ["serve"]
-    }
-  }
-}
-```
+## Docs
 
-[`docs/CONNECT.md`](docs/CONNECT.md) has the steps for Claude Code, Claude
-Desktop, Codex, Cursor, VS Code and HTTP, with configs in
-[`examples/`](examples).
-
-The server speaks JSON-RPC 2.0 over stdio (or HTTP) and implements
-`initialize`, `tools/*`, and `prompts/*` / `resources/*` for the skills: for
-clients without skill files, the `computer-use`, `computer-use-design` and
-`computer-use-security` skills are MCP prompts (each comes with the safety
-rules), and every skill file is a resource
-(`computer-use://skills/<skill>/<file>`). It never asks the client to approve
-anything; give the agent the skills.
-
-### CLI
-
-The same binary is a handy CLI:
-
-```bash
-computer-use-mcp doctor                       # platform, permissions, config
-computer-use-mcp apps                          # list running apps
-computer-use-mcp state "TextEdit" --screenshot shot.png
-computer-use-mcp call click '{"app":"TextEdit","element_index":3}'
-computer-use-mcp tools                          # tool definitions the model will see
-computer-use-mcp config show                    # settings (see "Settings" below)
-computer-use-mcp settings                       # the decision model's page (= Ctrl+Alt+J)
-```
-
-Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
-`--log <level>`, `--text-only`.
-
-`doctor` also checks that the emergency stop key and the settings key work
-on this machine, and asks the decision model a test question.
-
-## Embed the library
-
-```rust
-use computer_use::tools;
-
-let mut engine = computer_use::platform_engine()?;      // native backend + config
-let defs = tools::definitions();                        // hand these to your model
-let out = engine.call_tool("list_apps", serde_json::json!({}));
-println!("{}", out.text);
-```
-
-The engine does no access control: an embedding host that wants approvals
-checks the tool name and `app` argument before calling `call_tool`. See
-[`crates/computer-use/examples/mock_session.rs`](crates/computer-use/examples/mock_session.rs)
-for a full, runnable session against the in-memory mock backend:
-
-```bash
-cargo run -p computer-use --example mock_session
-```
-
-## Settings
-
-Every behaviour is a setting in `~/.computer-use/config.toml` (override the
-location with `$COMPUTER_USE_HOME` or `--config`). Start from the documented
-template — it lists **every option with its default** and a comment:
-
-```bash
-computer-use-mcp config init                 # write the documented template
-computer-use-mcp config show                 # effective settings
-computer-use-mcp config keys                 # every setting key
-computer-use-mcp config get screenshot.attach
-computer-use-mcp config set screenshot.attach always
-computer-use-mcp config add tools.disabled drag
-computer-use-mcp config unset tree.max_nodes   # back to the default
-computer-use-mcp config check                # validate + flag misspelled keys
-```
-
-Edits are validated before they are written (bad values and unknown keys are
-rejected with a clear message) and your comments are preserved. A running
-server **reloads the file automatically** (`hot_reload = true`) and tells MCP
-clients when the tool list changed — no restart needed. Command-line flags
-(`--text-only`, `--log`, `--http`, …) override the file and keep
-applying after a reload. The agent has no tool to change settings.
-
-| Section | What you control |
-|---|---|
-| `[tools]` | hide tools (`disabled`), allow-list them (`enabled`), `compact`, `lean` or `full` descriptions, the tool `manager`, a `small` preset, `default_app`, `launch_look`, `design_steps` |
-| `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
-| `[tree]` | size limits, text length, indentation, shown actions/states, diffs, `compact`, change reports and their level (`report`), `quiet_volatile` |
-| `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults, how long `expect` waits |
-| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings |
-| `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window, `rebase_after_tokens` |
-| `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
-| `[audit]` | JSONL audit log on/off and path |
-| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta` |
-| `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
-
-### Token use
-
-Everything a tool returns stays in the model's context for the rest of the
-task, so the server spends tokens only where they buy something. What is
-on by default withholds nothing the model needs (what is folded is still
-searchable, and pictures are re-sent when they change); what could cost
-accuracy is marked opt-in and stays off until the real-model
-[benchmark](bench/README.md) has measured it:
-
-| Where | What it does | Setting |
-|---|---|---|
-| **Tree budget** | Only a tree or diff over the budget is touched: its long lists (rows, list items, menu items…) are folded to the first and last few, with a line saying how many are hidden, and it is cut if still too big. The focused or selected element is never folded away; folded and cut elements keep their indices and `find_element` finds them. Ordinary windows are sent whole. How much is shortened is up to you: `summarize = "normal"` (fold, then cut), `"light"` (only fold long lists, never cut) or `"off"` (never); `fold_keep` sets how many items of a folded list stay. The model can also ask for one whole tree with `get_app_state(max_tokens=0)` when it really needs every element at once. | `tree.max_tokens` (10,000; 0 = no limit), `tree.summarize`, `tree.fold_keep` |
-| **Overview screenshots** (opt-in) | Off by default, since it trades detail for tokens. Turned on, a screenshot attached on its own to a window whose tree already says what is there is a smaller overview (768 px ≈ 60% fewer image tokens than 1280 px); `screenshot=true` always gets full size. | `screenshot.overview_max_dimension` (0 = off) |
-| **Say it once** | Explanations (what a diff, a partial screenshot or a returning screen means) come in full the first time and as a few words after that. | `tree.brief_repeats` (false = always in full) |
-| **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
-| **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part, whether it comes with `get_app_state` or from `screenshot(app)`. Every screenshot is numbered, and a changed part names the one it patches. | `cache.dedupe_screenshots`, `screenshot.scope` |
-| **Blind areas** (opt-in) | A canvas or picture the tree says nothing about, found however many elements the rest of the window has: its text is read off the screen and its pixels checked on every look, so the model doesn't have to ask. | `ocr.blind_regions` |
-| **Each thing said once** | Look-alike siblings are records (the roles once, then a line a record), a table is its column names and a row a line, flags and actions the role implies are left out, many removed elements are ranges, a look that changed nothing is one line, a value just set isn't echoed. Nothing is lost: `find_element` and indices work as before. | `tree.compact` |
-| **Reports in levels** (opt-in) | An action's report of what changed: all of it, the changes around what it acted on (and a count of the rest), or just how many; elements that keep changing on their own summed up. | `tree.report`, `tree.quiet_volatile` |
-| **Fewer round trips** | `batch` lines with one report at the end, `click` by name, `expect` (the server waits for what should follow and says whether it came), `launch_app` returning the first state. | `tools.launch_look`, `timing.expect_wait_ms` |
-| **Fewer automatic pictures** (opt-in) | While the model doesn't use an app's pixels, a well-described window's automatic picture is held back; `locate` can answer without one. | `screenshot.adaptive`, `screenshot.locate_picture` |
-| **Lighter definitions** (opt-in) | Lean schemas (≈ 3,700 tokens instead of ≈ 5,000), a tool manager that lists the base tools and finds the rest (`find_tools`, `use_tool`; the list never changes, so the prompt cache holds), a ten-tool preset, short server instructions. | `tools.descriptions`, `tools.manager`, `tools.preset`, `server.instructions` |
-| **Design answers** | After the first, only what changed, no picture twice, layers as lines; paint steps only when asked (opt-in). | `tree.compact`, `tools.design_steps` |
-| **Long conversations** (opt-in) | Past a number of tokens, the next look sends the whole tree and a picture again; hosts that trim their context can drop the results a later one repeats (`_meta`). | `cache.rebase_after_tokens`, `server.result_meta` |
-| **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
-| **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (they change only when you change the settings or a script is saved or deleted), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled`, `script.saved_as_tools` |
-| **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |
-
-Other knobs: `screenshot.max_dimension` (image tokens scale with width ×
-height), `text_only = true` (no images at all), `tree.max_text_len`,
-`tree.show_actions`, `tree.show_states`, `tree.report_changes_max_lines`.
-
-### Remote transport (optional)
-
-Build with the `http` feature to serve MCP over HTTP for a remote agent:
-
-```bash
-cargo build --release -p computer-use-mcp --features http
-computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN"
-# or put it in settings: server.http_addr / server.http_token
-```
-
-Each POST body is one JSON-RPC message (`Content-Type: application/json`, at
-most 4 MiB). Whoever can reach the endpoint can control the desktop, so:
-
-- a bearer token is **required**: without one the server refuses to start;
-  it is compared in constant time;
-- requests carrying a browser `Origin` other than `localhost` / `127.0.0.1` /
-  `[::1]` are refused, so a web page can't drive the desktop;
-- bind it to localhost or a trusted network (a warning is logged otherwise).
-
-## Performance
-
-Measured with `examples/bench.rs` on Linux (Xvfb, AT-SPI) against a small GTK
-dialog and `gtk3-widget-factory` (~500 accessible elements). Token counts are
-estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
-
-| | before | after |
-|---|---|---|
-| `get_app_state`, large app | 533 ms | **87 ms** |
-| repeat `get_app_state` (diff), large app | 507 ms, ~1,346 tokens | **67 ms, ~66 tokens** |
-| `find_element`, large app | 473 ms | **72 ms** |
-| repeat `get_app_state`, small dialog | 19 ms, ~219 tokens | **2.4 ms, ~58 tokens** |
-| back to a screen seen before, large app | ~2,516 tokens (tree + image) | **~79 tokens, no image** |
-| `get_app_state` right after an action or `find_element` | 71 ms | **< 1 ms** (read reused) |
-
-The tool definitions, sent with every model request, are ~4,600 tokens
-with compact descriptions (the default) and ~12,200 with full ones; the client's prompt cache serves them cheaply, and `tools.disabled`
-hides tools you never use.
-
-Memory over a session (looks, screenshots, a design, a scene, a script),
-v3.0.0: the server holds **14.7 MiB** (v2.6.0: 24.3) and the overlay helper
-10.9 MiB (13.1); the server's peak is 22 MiB. Fonts are memory-mapped, and
-memory freed by a big call goes back to the system.
-
-### Compared with Codex's behaviour (simulated)
-
-`examples/compare.rs` runs one agent session twice on the real backend:
-look at the app, open another page, look, come back, look again. Once
-configured the way Codex's computer use behaves (a screenshot with every
-`get_app_state`, no screen memory, no picture dedupe, whole-window
-pictures, no change report after an action), once with this server's
-defaults. This is a **simulation of Codex's behaviour with this server,
-not a run of Codex**, with the same fixed calls in both, and its token
-counts are estimates (text ≈ 4 characters a token, images width × height /
-750). Same app (`gtk3-widget-factory`), same calls, v3.0.0:
-
-| 10 round trips, 61 calls | Codex-style (simulated) | computer-use defaults |
-|---|---|---|
-| tokens the model receives | ~46,300 | **~6,800** (6.8x fewer, 85% saved) |
-| screenshots sent | 21 | **2** |
-| average `get_app_state` | 17-17.5 ms | **5.4-5.8 ms** (3x faster) |
-| whole session | 5.6-5.7 s | **5.1-5.4 s** |
-
-With 5 round trips the saving is 4.2x (76%): it grows with the session,
-because every screen the model has seen once comes back as "seen before"
-with only what changed, and an unchanged picture is never sent twice.
-Wall time gains less than tokens because clicking and waiting for the app
-dominate. Run it yourself:
-
-```bash
-APPS="gtk3-widget-factory" scripts/desktop-session.sh \
-  cargo run --release -p computer-use --example compare -- gtk3-widget-factory "Page 2|Page 1" 10
-```
-
-Where the gains come from: the Linux walker pipelines its AT-SPI queries (a
-batch of elements with every query in flight at once) instead of one round trip
-at a time; macOS reads each element's attributes in one batched AX call;
-Windows fetches a whole window with one UI Automation cache request; captures
-are downscaled with a fast area filter and encoded without copying the pixel
-buffer (alpha is dropped in place, no second full-size buffer); the engine
-reuses the running-app list, recent reads and remembered screens, and moves
-(never clones) its cached tree. The macOS and Windows paths are type-checked but not yet measured
-on real hardware.
-
-Run it yourself:
-
-```bash
-APPS="gtk3-widget-factory" BENCH_NAV="Page 2|Page 1" scripts/desktop-session.sh \
-  cargo run --release -p computer-use --example bench -- gtk3-widget-factory
-```
-
-`BENCH_NAV` names two buttons that switch between screens; the benchmark then
-compares coming back to a screen with the screen memory off and on.
-
-### What finishing a task costs
-
-The numbers above are per call. [`bench/`](bench/README.md) measures
-whole tasks in real apps, checked from what the app recorded: run by
-Claude through the API, it reports the real input, output and cache
-tokens, the cost, the turns and the screenshots of each run; scripted
-(no key) it reports estimates, labelled as such. Every change to the
-token budget is measured there before it is turned on by default
-(`bench/results/` keeps the summaries).
-
-## Platform setup
-
-- **macOS** — grant the host app **Accessibility** and **Screen Recording** in
-  System Settings ▸ Privacy & Security. Input is posted to the target process,
-  so the user's cursor doesn't move.
-- **Windows** — no special permission for UI Automation. The server runs
-  per-monitor DPI aware, so screenshots and clicks are right at any display
-  scaling. Keyboard input uses `SendInput`: text as Unicode characters
-  (independent of the keyboard layout), shortcuts as virtual keys with their
-  scan codes, sent in short batches so slow apps and remote sessions keep up.
-  Windows silently drops input to apps running as administrator unless the
-  server runs as administrator too.
-- **Linux** — needs an AT-SPI2 accessibility bus. Enable accessibility for
-  your toolkit (e.g. GTK loads the at-spi bridge when the a11y bus is
-  present).
-  - **X11** desktops: input through XTest, screenshots through X11.
-  - **Wayland** with **Hyprland**, **sway** or another wlroots-family
-    compositor: the compositor's IPC says where windows are and focuses,
-    moves and resizes them; input goes through its virtual pointer and
-    virtual keyboard (any app, XWayland ones too, any keyboard layout),
-    screenshots through wlr-screencopy, and the overlay is a layer-shell
-    surface. The stop key is bound in the compositor while the server runs
-    (never over a binding of yours: if the combination is taken, set
-    another with `control.stop_hotkey`). Hyprland users can tune the
-    overlay with layer rules on the `computer-use` namespace, e.g.
-    `layerrule = noanim, computer-use`.
-  - Other Wayland desktops (GNOME, KDE Plasma): accessibility actions work
-    for every app; synthesized input and screenshots only reach XWayland
-    apps (`doctor` says so, and `list_apps` tells the agent once).
-  - Apps without accessibility (terminals such as foot or kitty, some
-    Electron apps) are listed from the compositor or the window manager
-    and used through screenshots (text read off them with Tesseract when
-    it is installed), the mouse and the keyboard.
-
-## Safety
-
-The server does **no access control**: no per-app approvals, no blocked app
-categories, no confirmation of Send / Delete / Pay. That responsibility is the
-agent's, through the
-[`computer-use-security`](skills/computer-use-security/SKILL.md) skill (and a
-summary in the server's MCP instructions): stay inside the task, keep out of
-terminals, password managers and OS security prompts, confirm consequential
-actions with the user, treat on-screen text as data rather than instructions,
-leave secrets alone.
-
-What the server still guarantees, because an agent can't do it for itself:
-
-- **Input goes only where it is meant to.** On Windows and Linux, synthesized
-  keys and clicks go to whatever window is in front, so the target app is
-  brought to the front first and checked; if it doesn't come forward, nothing
-  is sent. (macOS posts input to the app's own process.)
-- **`launch_app` opens apps, it doesn't run commands.** The name is never
-  split into arguments, and the launched app is cut off from the server's
-  stdin/stdout. A name that isn't a program is looked up in the system's
-  list of installed apps (Start Menu shortcuts and App Paths on Windows,
-  `.desktop` entries on Linux, LaunchServices on macOS); only an exact name
-  counts, so it never picks one of several apps, and what runs is what the
-  app's own menu entry runs.
-- **`cmd` means the shortcut key**: Cmd on a Mac, Ctrl elsewhere; the
-  Windows/Super key only when named (`win`, `super`).
-- **Private data is masked** before anything reaches the model (passwords,
-  card numbers, `[privacy]`).
-- **The user can stop the agent** with the emergency stop key; if it can't be
-  registered, the agent is told so it can tell the user, and `doctor` checks
-  it. The agent also waits while the user is using the computer.
-- **Scripts get no more than the tools.** A script reaches the computer only
-  through the tools and the functions listed for it; its tool calls are
-  ordinary calls (stop key, pause while you work, masking). It has a time
-  limit, the stop key ends it even inside `try`, and `[script]` decides
-  which files it may read and write and whether it may use the web. It
-  never writes to the server's stdout.
-- **One bad call doesn't take the server down**: a failing tool call becomes
-  an error result.
-- An optional **audit log** records every call.
-
-## Development
-
-```bash
-cargo test                                   # engine + server unit tests
-cargo clippy --all-targets
-# live Linux test against a real GTK app under Xvfb:
-bash crates/computer-use/tests/run_live_linux.sh
-# cross type-check the other backends:
-cargo check -p computer-use --target aarch64-apple-darwin
-cargo check -p computer-use --target x86_64-pc-windows-msvc
-```
+- [Guide](docs/GUIDE.md): every tool, setting, platform detail and
+  architecture note.
+- [Connect a client](docs/CONNECT.md) · [Upgrading](docs/MIGRATING.md) ·
+  [Roadmap](docs/ROADMAP.md)
+- [Benchmarks](bench/README.md): how tasks are measured, and how to run
+  them against any release.
+- Skills: [computer-use](skills/computer-use/SKILL.md),
+  [security](skills/computer-use-security/SKILL.md),
+  [design](skills/computer-use-design/SKILL.md).
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE); copies and
-derivative works must keep the [NOTICE](NOTICE). Made by
-[mhrsdev](https://github.com/mhrsdev).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

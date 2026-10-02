@@ -87,6 +87,36 @@ The decision model is never set up by the benchmark: it is optional, and a
 run measures the tools on their own. A `--config` file can set one up for a
 run of its own.
 
+## Earlier releases (`--server`)
+
+The same scenarios against a server of any release, run as it ships and
+spoken to over MCP, with that release's own skills and MCP instructions in
+front of the model:
+
+```bash
+bench/run.sh --scripted --label v3.6.0 --server path/to/v3.6.0/computer-use-mcp \
+  --skills path/to/v3.6.0/skills
+bench/run.sh --scripted --label v0.1.0 --server path/to/v0.1.0/computer-use-mcp \
+  --server-args "--approval allow-all --headless-approve allow" \
+  --server-config v010.toml --skills path/to/v0.1.0/skill   # [guard] mode = "allow"
+bench/compare.py target/bench v0.1.0 v3.0.0 v3.6.0 v3.7.0 --base v3.7.0
+```
+
+| option | |
+|---|---|
+| `--server BIN` | the server to measure (its own process, a fresh one for every run) |
+| `--server-args "…"` | its arguments before `serve` (`--instructions short`, an early release's approvals) |
+| `--server-config FILE` | its settings (copied in as its `config.toml`; default: its defaults) |
+| `--skills DIR` | the skills the model gets: `computer-use` and `computer-use-security` in it, or an early release's single `SKILL.md` |
+
+The fixed prefix is then reported by part: the benchmark's framing, the
+server's instructions, the skills and the tool definitions.
+`bench/compare.py` puts labels side by side: the prefix by part, a task's
+tokens by part (each part of the prefix times the turns, the results, the
+conversation read again), and each scenario. A tool the model doesn't see
+goes through `find_tools` and `use_tool` only when the server has a tool
+manager; an earlier release without the tool fails as it would.
+
 ## Results
 
 Each run is one JSON line in `<out>/<label>/<mode>-<time>.jsonl` (success,

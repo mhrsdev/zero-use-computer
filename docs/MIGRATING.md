@@ -1,3 +1,29 @@
+# Upgrading to v3.7
+
+v3.7 turns on every token-saving setting and changes the wording of some
+results. Nothing is removed: every call that worked in v3.6 still works,
+and every row below has a setting that brings the old way back.
+
+| What changed | Before | Now | The old way |
+|---|---|---|---|
+| The tool list | every tool | the base tools, `find_tools` and `use_tool`; the others found and run through `use_tool` (a direct call still works where a client allows it) | `tools.manager = "off"` |
+| Tool schemas | compact | lean: nested objects as their keys, no `window` (still accepted), no defaults | `tools.descriptions = "compact"` |
+| `decide` | always listed | listed once a decision model is set up (it can always be called) | `tools.descriptions = "full"` |
+| An action's report | every change | the changes around what it acted on, new windows, added elements, and how many others | `tree.report = "full"` |
+| Elements that keep changing (clocks, spinners) | listed each time | summed up in a line after a few reports | `tree.quiet_volatile = false` |
+| Automatic pictures | as before | held back for a well-described window while the model hasn't used pixels there | `screenshot.adaptive = false` |
+| `locate` | with a picture of the places | the places only (`picture: true` asks) | `screenshot.locate_picture = true` |
+| Canvases and painted text next to a full toolbar | only through `ocr=true` | read and watched on every look (`ocr text` elements) | `ocr.blind_regions = false` |
+| `design` | the paint steps with every answer | how many; `show.steps` lists them | `tools.design_steps = "always"` |
+| Tool results' `_meta` | none | which earlier results each one repeats | `server.result_meta = false` |
+| A diff's intro, the third time on | `Changes (+ added, ~ changed, - removed):` | `Changes:` | `tree.brief_repeats = false` |
+| Report footers, after the first | `…; get_app_state shows them` | the count only | `tree.brief_repeats = false` |
+| draw preview, loupe, zoomed screenshot notes, after the first | in full | short | `tree.brief_repeats = false` |
+| Tesseract | its own thread count | `OMP_THREAD_LIMIT=1` unless the environment sets one | set `OMP_THREAD_LIMIT` |
+
+New: `--instructions full|short|off` on the command line (the Claude Code
+plugin uses `short`, as it brings the skills).
+
 # Upgrading to v3.6
 
 v3.6 changes what some tool results look like, and how a few tools
@@ -57,7 +83,7 @@ real-model benchmark has measured them ([roadmap](ROADMAP.md)).
 | `screenshot.locate_picture` | `true` | `false`: `locate` answers without its picture |
 | `screenshot.icon_sprite` | `false` | a strip of the unnamed buttons' icons (experimental) |
 | `tools.descriptions` | `"compact"` | `"lean"`: lighter schemas |
-| `tools.manager` | `"off"` | `"dispatch"` or `"list_changed"`: base tools plus `find_tools` |
+| `tools.manager` | `"off"` (v3.7: `"dispatch"`) | `"dispatch"` or `"list_changed"`: base tools plus `find_tools` |
 | `tools.preset` | `"full"` | `"small"`: ten tools for smaller models |
 | `tools.default_app` | `false` | a call without `app` acts on the last app |
 | `tools.launch_look` | `true` | `launch_app` returns the first state |

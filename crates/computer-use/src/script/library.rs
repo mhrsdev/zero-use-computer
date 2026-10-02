@@ -47,6 +47,9 @@ pub struct Library {
     saved: Vec<Saved>,
     /// (file name, modified, size) of every file when last read.
     stamp: Option<Vec<(String, Option<SystemTime>, u64)>>,
+    /// Goes up whenever the saved scripts change (for caches of the tool
+    /// list).
+    generation: u64,
 }
 
 /// A saved script's name: a tool name too, so lowercase letters, digits,
@@ -73,6 +76,7 @@ impl Library {
             dir,
             saved: Vec::new(),
             stamp: None,
+            generation: 0,
         }
     }
 
@@ -83,8 +87,16 @@ impl Library {
     /// Use another folder (the settings changed).
     pub fn set_dir(&mut self, dir: PathBuf) {
         if dir != self.dir {
+            let generation = self.generation + 1;
             *self = Library::new(dir);
+            self.generation = generation;
         }
+    }
+
+    /// A number that changes whenever the saved scripts do.
+    pub fn generation(&mut self) -> u64 {
+        self.refresh();
+        self.generation
     }
 
     /// Every saved script, by name.
@@ -176,6 +188,7 @@ impl Library {
         if self.stamp.as_ref() == Some(&stamp) {
             return;
         }
+        self.generation += 1;
         self.saved = stamp
             .iter()
             .filter(|(_, _, len)| *len <= MAX_BYTES)

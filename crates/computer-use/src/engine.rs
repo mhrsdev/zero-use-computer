@@ -60,6 +60,10 @@ struct AppState {
     /// The last picture those areas were found and read in: its
     /// fingerprint, the areas and the text read in them.
     blind_cache: Option<(PixelSig, Vec<Rect>, Vec<OcrLine>)>,
+    /// The text last read in each blind area, by its place and a hash of
+    /// its exact pixels: an area that didn't change isn't read again when
+    /// another part of the window did (a caret, a clock).
+    area_reads: Vec<(Rect, u64, Vec<OcrLine>)>,
     /// The header of the last get_app_state (app, window, place): the next
     /// one is short if it is the same ([tree] compact).
     header_seen: Option<String>,
@@ -232,6 +236,9 @@ pub struct Engine<B: Backend> {
     pending_images: Vec<PendingImage>,
     /// Nesting of `call` (batch steps run inside a call).
     depth: u32,
+    /// The call depth of a batch's steps: their reports are never shown
+    /// (the batch reports once, at the end), so they aren't made.
+    quiet_depth: Option<u32>,
     /// The on-screen indicator (a separate helper process), if running.
     overlay: Option<Overlay>,
     /// How to start it; set by the host (`with_overlay`).
@@ -272,6 +279,11 @@ pub struct Engine<B: Backend> {
     /// Tool categories `find_tools` has added to the tool list ([tools]
     /// manager = "list_changed"); they stay.
     active_tools: HashSet<&'static str>,
+    /// The tool lists, until what they depend on changes.
+    tools_cache: Option<scripting::ToolsCache>,
+    /// Tools whose arguments the tool manager has shown, with a hash of
+    /// what it showed: shown again only if they changed, or when asked.
+    schemas_shown: HashMap<String, u64>,
     /// The app the last call named ([tools] default_app).
     last_app: Option<String>,
     /// What the last action's `expect` found (a batch stops on anything
@@ -407,6 +419,7 @@ impl<B: Backend> Engine<B> {
             epoch: 0,
             pending_images: Vec::new(),
             depth: 0,
+            quiet_depth: None,
             overlay: None,
             overlay_launcher: None,
             overlay_failures: 0,
@@ -423,6 +436,8 @@ impl<B: Backend> Engine<B> {
             shots: 0,
             target: None,
             active_tools: HashSet::new(),
+            tools_cache: None,
+            schemas_shown: HashMap::new(),
             last_app: None,
             last_expect: None,
             sent_tokens: 0,
@@ -1142,11 +1157,39 @@ impl<B: Backend> Engine<B> {
         let sig = PixelSig::of(&cap, cache.pixel_grid);
         let lines = match cached {
             Some((old, lines)) if old.same_as(&sig, cache.pixel_tolerance) => lines,
-            _ => self.run_ocr(&cap),
+            _ => {
+                let mut lines = self.run_ocr(&cap);
+                lines.retain(|l| !self.overlay_text(&l.text));
+                lines
+            }
         };
         self.states.entry(app.pid).or_default().ocr_cache = Some((sig, lines.clone()));
         self.last_capture = Some((app.pid, window.id, self.epoch, cap));
         lines
+    }
+
+    /// Whether text read off the screen is the on-screen indicator's own
+    /// label (a picture can catch it where the platform can't leave it
+    /// out): never the app's text.
+    fn overlay_text(&self, text: &str) -> bool {
+        let o = &self.store.config.overlay;
+        if !o.enabled || self.overlay.is_none() {
+            return false;
+        }
+        let read = crate::text::fold(text.trim().trim_end_matches(['…', '.']));
+        if read.chars().count() < 4 {
+            return false;
+        }
+        [
+            &o.label_working,
+            &o.label_thinking,
+            &o.label_error,
+            &o.label_done,
+            &o.label_paused,
+            &o.label_stopped,
+        ]
+        .iter()
+        .any(|label| reads_as_start_of(&read, &crate::text::fold(label)))
     }
 
     /// Recognise the text in a capture with the configured engine.
@@ -1398,18 +1441,42 @@ impl<B: Backend> Engine<B> {
                     .collect();
                 let mut lines = Vec::new();
                 if self.store.config.ocr.mode != crate::config::OcrMode::Off {
+                    let before = self
+                        .states
+                        .get_mut(&app.pid)
+                        .map(|s| std::mem::take(&mut s.area_reads))
+                        .unwrap_or_default();
+                    let mut reads = Vec::new();
                     for r in &areas {
                         if let Some(px) = crate::coverage::pixels_of(&cap, *r) {
-                            let read = self.run_area_ocr(&imaging::crop(&cap, px));
-                            // Only what is in the area (an engine may read
-                            // around it).
-                            lines.extend(read.into_iter().filter(|l| {
-                                let b = l.bounds;
-                                r.contains(Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0))
-                                    && crate::ocr::plausible(l)
-                            }));
+                            let crop = imaging::crop(&cap, px);
+                            let hash = pixels_hash(&crop);
+                            let kept = before
+                                .iter()
+                                .find(|(rect, h, _)| rect == r && *h == hash)
+                                .map(|(_, _, read)| read.clone());
+                            let read: Vec<OcrLine> = match kept {
+                                Some(read) => read,
+                                None => self
+                                    .run_area_ocr(&crop)
+                                    .into_iter()
+                                    // Only what is in the area (an engine
+                                    // may read around it).
+                                    .filter(|l| {
+                                        let b = l.bounds;
+                                        r.contains(Point::new(
+                                            b.x + b.width / 2.0,
+                                            b.y + b.height / 2.0,
+                                        )) && crate::ocr::plausible(l)
+                                            && !self.overlay_text(&l.text)
+                                    })
+                                    .collect(),
+                            };
+                            lines.extend(read.iter().cloned());
+                            reads.push((*r, hash, read));
                         }
                     }
+                    self.states.entry(app.pid).or_default().area_reads = reads;
                 }
                 (areas, lines)
             }
@@ -1516,11 +1583,16 @@ impl<B: Backend> Engine<B> {
                     out.text = if d.is_empty() {
                         tree::render_diff(&d, nodes)
                     } else {
-                        let intro = self.explain(
-                            "diff",
-                            tree::DIFF_INTRO,
-                            "Changes (+ added, ~ changed, - removed):",
-                        );
+                        // In full once, the legend once more, then a word.
+                        let intro = if self.explain_first("diff") {
+                            tree::DIFF_INTRO
+                        } else {
+                            self.explain(
+                                "diff-legend",
+                                "Changes (+ added, ~ changed, - removed):",
+                                "Changes:",
+                            )
+                        };
                         tree::render_diff_with(&d, nodes, intro, tcfg.compact)
                     };
                     if !restless.is_empty() {
@@ -1928,6 +2000,10 @@ impl<B: Backend> Engine<B> {
         let mut waited = Duration::from_millis(cfg.timing.settle_ms);
         // Text read off the screen isn't read again for every look.
         let reuse = std::mem::replace(&mut self.ocr_reuse, true);
+        // While reads still show the state from before, they come further
+        // apart (up to 2 polls): a change is still seen within one of them,
+        // and an action that changed nothing costs half the reads.
+        let mut interval = poll;
         while let Ok(window) = self.pick_window(app, None, true) {
             if self.observe(app, &window, true).is_err() {
                 break;
@@ -1938,12 +2014,18 @@ impl<B: Backend> Engine<B> {
             if !adaptive || (steady && (now != before || waited >= NO_CHANGE_GRACE)) {
                 break;
             }
+            let unchanged = now.is_some() && now == before;
             last = now;
             if self.halted() || (self.clock)() >= deadline || waited >= max {
                 break;
             }
-            (self.sleep)(poll);
-            waited += poll;
+            (self.sleep)(interval);
+            waited += interval;
+            interval = if unchanged {
+                (interval * 2).min(poll * 2)
+            } else {
+                poll
+            };
         }
         self.ocr_reuse = reuse;
     }
@@ -2012,6 +2094,9 @@ impl<B: Backend> Engine<B> {
         }
         if self.depth == 0 {
             self.target = None;
+            // A picture is reused within the call that took it, never by a
+            // later one (the screen may have moved on by itself).
+            self.last_capture = None;
         }
         self.depth += 1;
         if self.depth == 1 {
@@ -2069,7 +2154,9 @@ impl<B: Backend> Engine<B> {
             // Don't act while the user is using the mouse or keyboard.
             self.wait_for_user()?;
         }
-        let report_app = acting.filter(|_| self.store.config.tree.report_changes);
+        let report_app = acting.filter(|_| {
+            self.store.config.tree.report_changes && self.quiet_depth != Some(self.depth)
+        });
         let pixels_of_app = pixel_use(&call).map(str::to_string);
         // `expect`: the app as it was, to tell what the action did.
         let expecting = expectation(&call);
@@ -2459,6 +2546,7 @@ impl<B: Backend> Engine<B> {
             }
         }
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
+        let mut wrong_args = false;
         // A bug in one tool call must not take the whole server down.
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // A saved script is a tool of its own.
@@ -2470,11 +2558,18 @@ impl<B: Backend> Engine<B> {
                 })),
                 None => ToolCall::parse(name, args),
             };
+            wrong_args = matches!(call, Err(Error::InvalidArgs(_)));
             call.and_then(|c| self.call(c))
         }));
         let mut out = match run {
             Ok(Ok(out)) => out,
-            Ok(Err(e)) => ToolOutput::error(&e),
+            Ok(Err(e)) => {
+                let mut out = ToolOutput::error(&e);
+                if wrong_args && let Some(schema) = self.schema_for_wrong_call(name) {
+                    out.text.push_str(&schema);
+                }
+                out
+            }
             Err(panic) => {
                 let what = panic
                     .downcast_ref::<&str>()
@@ -2575,24 +2670,66 @@ impl<B: Backend> Engine<B> {
     /// "list_changed", their categories join the tool list for good.
     fn find_tools(&mut self, args: &serde_json::Value) -> ToolOutput {
         use crate::config::ToolManager;
+        /// Tools a query returns at most (a category or names return all).
+        const MOST: usize = 3;
         let category = args.get("category").and_then(serde_json::Value::as_str);
-        let query = args
+        let again = args
+            .get("again")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let names: Vec<String> = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|n| {
+                n.split(|c: char| c == ',' || c.is_whitespace())
+                    .filter(|w| !w.is_empty())
+                    .map(|w| w.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let words = args
             .get("query")
             .and_then(serde_json::Value::as_str)
-            .map(crate::text::fold);
-        let found: Vec<ToolDefinition> = self
-            .all_tool_definitions()
-            .into_iter()
-            .filter(|d| !crate::tools::BASE_TOOLS.contains(&&*d.name))
-            .filter(|d| {
-                let in_category = category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
-                let matches = query.as_deref().is_none_or(|q| {
-                    let hay = crate::text::fold(&format!("{} {}", d.name, d.description));
-                    q.split_whitespace().any(|w| hay.contains(w))
-                });
-                in_category && matches && (category.is_some() || query.is_some())
-            })
-            .collect();
+            .map(crate::tools::query_words)
+            .unwrap_or_default();
+        let all = self.all_tool_definitions();
+        let hidden = |d: &&ToolDefinition| !crate::tools::BASE_TOOLS.contains(&&*d.name);
+        let in_category =
+            |d: &&ToolDefinition| category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
+        let mut more = Vec::new();
+        let found: Vec<&ToolDefinition> = if !names.is_empty() {
+            all.iter()
+                .filter(|d| names.contains(&d.name.to_string()))
+                .collect()
+        } else if words.is_empty() {
+            // A category on its own: all of it.
+            all.iter()
+                .filter(hidden)
+                .filter(in_category)
+                .filter(|_| category.is_some())
+                .collect()
+        } else {
+            // By what they do: the best few, words in the name counting most.
+            let mut scored: Vec<(usize, &ToolDefinition)> = all
+                .iter()
+                .filter(hidden)
+                .filter(in_category)
+                .map(|d| {
+                    (
+                        crate::tools::query_score(&words, &d.name, &d.description),
+                        d,
+                    )
+                })
+                .filter(|(score, _)| *score > 0)
+                .collect();
+            scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+            more = scored
+                .iter()
+                .skip(MOST)
+                .map(|(_, d)| d.name.to_string())
+                .collect();
+            scored.into_iter().take(MOST).map(|(_, d)| d).collect()
+        };
         if found.is_empty() {
             let cats: Vec<&str> = crate::tools::CATEGORIES.iter().map(|c| c.0).collect();
             return ToolOutput::text(format!("No tools match. Categories: {}.", cats.join(", ")));
@@ -2600,10 +2737,22 @@ impl<B: Backend> Engine<B> {
         let dispatch = self.store.config.tools.manager == ToolManager::Dispatch;
         let mut out = String::new();
         for d in &found {
-            out.push_str(&format!(
-                "{}: {}\n  arguments: {}\n",
-                d.name, d.description, d.input_schema
-            ));
+            out.push_str(&format!("{}: {}\n", d.name, d.description));
+            // With list_changed the arguments come with the tool list.
+            if !dispatch {
+                continue;
+            }
+            let schema = d.input_schema.to_string();
+            let hash = text_hash(&schema);
+            if !again && self.schemas_shown.get(&*d.name) == Some(&hash) {
+                out.push_str("  arguments: as shown before (again=true repeats them)\n");
+            } else {
+                out.push_str(&format!("  arguments: {schema}\n"));
+                self.schemas_shown.insert(d.name.to_string(), hash);
+            }
+        }
+        if !more.is_empty() {
+            out.push_str(&format!("Also matching: {}.\n", more.join(", ")));
         }
         if dispatch {
             out.push_str("Run one with use_tool(name, arguments).");
@@ -2618,6 +2767,28 @@ impl<B: Backend> Engine<B> {
             ));
         }
         ToolOutput::text(out)
+    }
+
+    /// A tool the model hasn't been shown was called with arguments it
+    /// doesn't take: its arguments, once, so the next call can be right
+    /// without a find_tools first.
+    fn schema_for_wrong_call(&mut self, name: &str) -> Option<String> {
+        if self.store.config.tools.manager == crate::config::ToolManager::Off
+            || self.tool_definitions().iter().any(|d| d.name == name)
+        {
+            return None;
+        }
+        let d = self
+            .all_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == name)?;
+        let schema = d.input_schema.to_string();
+        let hash = text_hash(&schema);
+        if self.schemas_shown.get(name) == Some(&hash) {
+            return None;
+        }
+        self.schemas_shown.insert(name.to_string(), hash);
+        Some(format!("\n{name} takes: {schema}"))
     }
 
     /// Append a bounded JSONL record of the call, if auditing is enabled. Only
@@ -5383,9 +5554,12 @@ impl<B: Backend> Engine<B> {
         cell_size: Option<f64>,
         summary: String,
     ) -> Result<ToolOutput> {
-        let text = format!(
-            "Preview only, nothing was drawn: {summary} Red: the strokes (green: where each starts); the blue cells (A1 top-left, their lines labelled) are in the coordinates you gave. Call draw again without preview to draw them."
+        let legend = self.explain(
+            "draw-preview",
+            " Red: the strokes (green: where each starts); the blue cells (A1 top-left, their lines labelled) are in the coordinates you gave. Call draw again without preview to draw them.",
+            "",
         );
+        let text = format!("Preview only, nothing was drawn: {summary}{legend}");
         let Some(mut cap) = cap else {
             return Ok(ToolOutput::text(text));
         };
@@ -5748,6 +5922,8 @@ impl<B: Backend> Engine<B> {
             _ => None,
         };
         let matchers = role.is_some() || name.is_some() || text.is_some();
+        // The text the decision model last said no about.
+        let mut asked = None;
 
         loop {
             if let Ok(window) = self.resolve_window(&app, args.window.as_deref(), true)
@@ -5777,9 +5953,13 @@ impl<B: Backend> Engine<B> {
                     (Some((question, decider)), found) if found.is_some() || !matchers => {
                         let decider = decider.clone();
                         let window = args.window.clone();
-                        if let Some(yes) =
-                            self.until_yes(&decider, question, &args.app, window.as_deref())?
-                        {
+                        if let Some(yes) = self.until_yes(
+                            &decider,
+                            question,
+                            &args.app,
+                            window.as_deref(),
+                            &mut asked,
+                        )? {
                             let waited = (self.clock)().saturating_duration_since(start);
                             let mut out = format!(
                                 "Yes after {:.1} s ({yes:.2}): {question}",
@@ -5934,7 +6114,15 @@ impl<B: Backend> Engine<B> {
                     })?);
                     label = format!("{} in {}", node.label(), app.name);
                 }
-                let cap = self.capture_clean(|b| b.capture(&app, &window))?;
+                // The picture this call's look just took, if any.
+                let cap = match self.last_capture.take() {
+                    Some((pid, wid, epoch, cap))
+                        if pid == app.pid && wid == window.id && epoch == self.epoch =>
+                    {
+                        cap
+                    }
+                    _ => self.capture_clean(|b| b.capture(&app, &window))?,
+                };
                 space = match self.states.get(&app.pid) {
                     Some(st) if st.window_id == Some(window.id) => {
                         st.coord.map_or(LabelSpace::Image, LabelSpace::Map)
@@ -6018,10 +6206,17 @@ impl<B: Backend> Engine<B> {
             let used = imaging::draw_grid(&mut pic, ax, ay, 0.0, 1.0, None);
             let under = imaging::color_at(&capture, at.0, at.1).unwrap_or_default();
             let (img, _) = imaging::encode(pic, &cfg)?;
-            let text = format!(
-                "Magnified around ({x}, {y}) in {label}: each square is one pixel of the screen picture ({:.2} of the x/y click takes); the crosshair is the point, on {under}. The grid is labelled in the x/y click takes, a line every {used}: read an exact point off it.{note}",
-                1.0 / per_x.abs().max(1e-9)
-            );
+            let text = if self.explain_first("loupe") {
+                format!(
+                    "Magnified around ({x}, {y}) in {label}: each square is one pixel of the screen picture ({:.2} of the x/y click takes); the crosshair is the point, on {under}. The grid is labelled in the x/y click takes, a line every {used}: read an exact point off it.{note}",
+                    1.0 / per_x.abs().max(1e-9)
+                )
+            } else {
+                format!(
+                    "Magnified around ({x}, {y}) in {label}: a square a pixel ({:.2} of x/y); crosshair on {under}; grid in x/y, a line every {used}.{note}",
+                    1.0 / per_x.abs().max(1e-9)
+                )
+            };
             return Ok(image(img, text));
         }
 
@@ -6124,8 +6319,13 @@ impl<B: Backend> Engine<B> {
 
         if zoom.is_some() {
             let (img, _) = imaging::encode(capture, &cfg)?;
+            let how = self.explain(
+                "zoomed",
+                " It is its own picture: x/y for actions still refer to get_app_state's screenshot.",
+                "",
+            );
             let text = format!(
-                "Screenshot of {label}, zoomed in: {}x{} px. It is its own picture: x/y for actions still refer to get_app_state's screenshot.{note}",
+                "Screenshot of {label}, zoomed in: {}x{} px.{how}{note}",
                 img.width, img.height
             );
             return Ok(image(img, text));
@@ -6288,7 +6488,9 @@ impl<B: Backend> Engine<B> {
             let acting = parsed.as_ref().ok().and_then(mutating_app);
             let before = self.pending_images.len();
             let shot_before = self.pending_screen_shot.take();
+            let quiet = self.quiet_depth.replace(self.depth + 1);
             let result = parsed.and_then(|c| self.call(c));
+            self.quiet_depth = quiet;
             ran += 1;
             if acting.is_some() {
                 acted_on = acting;
@@ -6819,8 +7021,8 @@ impl<B: Backend> Engine<B> {
                 } else {
                     format!("{} change(s)", r.changes)
                 };
-                out.text
-                    .push_str(&format!("\n\n{title} {count}; get_app_state shows them."));
+                let how = self.explain("report-brief", "; get_app_state shows them.", ".");
+                out.text.push_str(&format!("\n\n{title} {count}{how}"));
                 return out;
             }
             Report::Relevant if !r.full => {
@@ -6830,8 +7032,9 @@ impl<B: Backend> Engine<B> {
                 } else {
                     let max = self.store.config.tree.report_changes_max_lines.max(1);
                     let lines: Vec<&str> = text.lines().take(max).collect();
+                    let how = self.explain("report-others", "; get_app_state shows them", "");
                     out.text.push_str(&format!(
-                        "\n\n{title}\n{}\n[{others} other change(s) elsewhere; get_app_state shows them]",
+                        "\n\n{title}\n{}\n[{others} other change(s) elsewhere{how}]",
                         lines.join("\n")
                     ));
                     return out;
@@ -6846,10 +7049,9 @@ impl<B: Backend> Engine<B> {
         out.text.push('\n');
         if lines.len() > max {
             out.text.push_str(&lines[..max].join("\n"));
-            out.text.push_str(&format!(
-                "\n[+{} more lines; call get_app_state for the rest]",
-                lines.len() - max
-            ));
+            let how = self.explain("report-more", "; call get_app_state for the rest", "");
+            out.text
+                .push_str(&format!("\n[+{} more lines{how}]", lines.len() - max));
             // The model hasn't seen all of it: the next get_app_state
             // reports against what it had seen before, and sends only the
             // rest if nothing changed (when the model reads this result
@@ -7591,6 +7793,38 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
 }
 
 /// A hash of a rendered tree, to tell whether it is the same text.
+/// Whether `read` (text read off the screen) is the start of `label`, with
+/// at most one misread character in six ("zero is thir" for "zero is
+/// thinking").
+fn reads_as_start_of(read: &str, label: &str) -> bool {
+    let a: Vec<char> = read.chars().collect();
+    let b: Vec<char> = label.chars().take(a.len()).collect();
+    if b.len() < a.len() {
+        return false;
+    }
+    // Levenshtein distance between the two.
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()] <= (a.len() / 6).max(usize::from(a.len() >= 6))
+}
+
+/// A hash of a picture's exact pixels (and size).
+fn pixels_hash(cap: &Capture) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (cap.width, cap.height).hash(&mut h);
+    cap.rgba.hash(&mut h);
+    h.finish()
+}
+
 fn text_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -7797,6 +8031,15 @@ mod tests {
     use crate::config::Config;
     use crate::mock::{Event, MockBackend};
     use crate::tree::{expand, index_of};
+
+    /// An engine whose `design` lists its paint steps with every answer.
+    fn steps_engine() -> Engine<MockBackend> {
+        let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.tools.design_steps = crate::config::DesignSteps::Always;
+        e.set_config(ConfigStore::in_memory(cfg));
+        e
+    }
 
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
@@ -9285,7 +9528,7 @@ mod tests {
 
     #[test]
     fn designs_are_composed_seen_and_painted_step_by_step() {
-        let mut e = engine();
+        let mut e = steps_engine();
         state_of(&mut e, serde_json::json!({}));
         // A name nobody started yet needs a size.
         let out = e.call_tool("design", serde_json::json!({"name": "Badge"}));
@@ -9506,6 +9749,9 @@ mod tests {
     #[test]
     fn pixel_targeting_snaps_finds_and_magnifies() {
         let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.screenshot.locate_picture = true;
+        e.set_config(ConfigStore::in_memory(cfg));
         state_of(&mut e, serde_json::json!({}));
         // A dark square drawn on the (mock) window: 200..260 x 150..210.
         e.backend_mut().patch = Some((Rect::new(200.0, 150.0, 60.0, 60.0), 20));
@@ -11072,11 +11318,23 @@ mod tests {
     }
 
     #[test]
+    fn the_indicator_label_is_never_the_apps_text() {
+        assert!(reads_as_start_of("zero is thir", "zero is thinking…"));
+        assert!(reads_as_start_of("zero", "zero is done"));
+        assert!(!reads_as_start_of("zero balance", "zero is done"));
+        assert!(!reads_as_start_of("save", "zero is done"));
+    }
+
+    #[test]
     fn the_tool_manager_shows_the_base_and_finds_the_rest() {
         use crate::config::ToolManager;
         let mut e = engine();
-        let all = e.tool_definitions().len();
+        // The default.
+        assert_eq!(e.store().config.tools.manager, ToolManager::Dispatch);
         let mut cfg = e.store().config.clone();
+        cfg.tools.manager = ToolManager::Off;
+        e.set_config(ConfigStore::in_memory(cfg.clone()));
+        let all = e.tool_definitions().len();
         cfg.tools.manager = ToolManager::Dispatch;
         e.set_config(ConfigStore::in_memory(cfg.clone()));
         let names = |e: &mut Engine<MockBackend>| -> Vec<String> {
@@ -11120,6 +11378,40 @@ mod tests {
             e.call_tool("use_tool", serde_json::json!({"name": "nope"}))
                 .is_error
         );
+
+        // Words that name nothing find nothing; a query brings the best few.
+        let out = e.call_tool("find_tools", serde_json::json!({"query": "the a to"}));
+        assert!(out.text.starts_with("No tools match"), "{}", out.text);
+        let out = e.call_tool("find_tools", serde_json::json!({"query": "draw a star"}));
+        assert!(out.text.starts_with("draw: "), "{}", out.text);
+        assert!(
+            out.text.matches("arguments: {").count() <= 3,
+            "{}",
+            out.text
+        );
+        // Arguments once: asked again, a line; again=true repeats them.
+        let out = e.call_tool("find_tools", serde_json::json!({"name": "window"}));
+        assert!(
+            out.text.contains("arguments: as shown before"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "find_tools",
+            serde_json::json!({"name": "window", "again": true}),
+        );
+        assert!(out.text.contains("arguments: {"), "{}", out.text);
+        // A tool never shown, called wrong: its arguments come with the
+        // error, once.
+        let wrong = serde_json::json!({"name": "locate", "arguments": {"nope": 1}});
+        let out = e.call_tool("use_tool", wrong.clone());
+        assert!(
+            out.is_error && out.text.contains("locate takes: {"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool("use_tool", wrong);
+        assert!(!out.text.contains("locate takes"), "{}", out.text);
 
         // list_changed: what is found joins the list, and stays.
         cfg.tools.manager = ToolManager::ListChanged;
@@ -12113,7 +12405,7 @@ mod tests {
 
     #[test]
     fn designs_and_scenes_say_what_changed() {
-        let mut e = engine();
+        let mut e = steps_engine();
         let out = e.call_tool(
             "design",
             serde_json::json!({"name": "logo", "size": [200, 100], "background": "#FFFFFF",
@@ -12262,8 +12554,11 @@ mod tests {
         state_of(&mut e, serde_json::json!({"rebase": true}));
         let m = meta(&mut e);
         assert_eq!(m["zero-use-computer/supersedes"], serde_json::json!([1, 3]));
-        // Off (the default): no meta.
-        let mut e = dialog_engine(Config::default());
+        // Off: no meta.
+        assert!(Config::default().server.result_meta);
+        let mut off = Config::default();
+        off.server.result_meta = false;
+        let mut e = dialog_engine(off);
         state_of(&mut e, serde_json::json!({}));
         assert!(e.take_result_meta().is_none());
     }

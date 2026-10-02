@@ -7,10 +7,57 @@ use std::time::{Duration, Instant};
 
 use computer_use::config::{Config, ConfigStore};
 use computer_use::engine::Engine;
-use computer_use::tools::ToolOutput;
+use computer_use::tools::{ToolDefinition, ToolOutput};
 use serde_json::{Value, json};
 
 pub type Eng = Engine<Box<dyn computer_use::Backend>>;
+
+/// Where the tools run: an engine in this process, or a server of any
+/// version over MCP (`--server`).
+pub enum Tools {
+    Local(Box<Eng>),
+    Remote(Box<crate::remote::Remote>, crate::remote::Launch),
+}
+
+impl Tools {
+    pub fn call_tool(&mut self, name: &str, args: Value) -> ToolOutput {
+        match self {
+            Tools::Local(e) => e.call_tool(name, args),
+            Tools::Remote(r, _) => r.call_tool(name, args),
+        }
+    }
+
+    pub fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        match self {
+            Tools::Local(e) => e.tool_definitions(),
+            Tools::Remote(r, _) => r.tool_definitions(),
+        }
+    }
+
+    /// The MCP instructions a client would put in front of the model (the
+    /// in-process engine has none: the server writes them).
+    pub fn instructions(&self) -> String {
+        match self {
+            Tools::Local(_) => String::new(),
+            Tools::Remote(r, _) => r.instructions.clone(),
+        }
+    }
+
+    /// The same kind of tools, starting afresh.
+    fn restart(&mut self) -> Result<(), String> {
+        match self {
+            Tools::Local(e) => {
+                let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
+                let cfg = e.store().config.clone();
+                **e = Engine::new(backend, ConfigStore::in_memory(cfg));
+            }
+            Tools::Remote(r, launch) => {
+                **r = crate::remote::Remote::start(launch)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// One tool call as the model would receive it.
 #[derive(Debug, Clone)]
@@ -45,7 +92,7 @@ impl CallRecord {
 }
 
 pub struct Session {
-    pub engine: Eng,
+    pub engine: Tools,
     pub app: String,
     pub calls: Vec<CallRecord>,
     /// Text of every result so far, newest last (what the model has seen).
@@ -56,6 +103,8 @@ pub struct Session {
     pub state_file: PathBuf,
     /// Print every call and its result (`--verbose`).
     pub verbose: bool,
+    /// Tools find_tools was asked about (the tool manager).
+    found: Vec<String>,
 }
 
 /// Settings for a run: defaults (or a file) with the parts that must not
@@ -81,6 +130,12 @@ pub fn config(file: Option<&Path>, preset: &str, scripts: &Path) -> Result<Confi
             cfg.cache.enabled = false;
             cfg.cache.dedupe_screenshots = false;
             cfg.tree.report_changes = false;
+            // And none of what this server adds on top: every tool listed,
+            // no reading of what the tree doesn't have, no pictures held
+            // back.
+            cfg.tools.manager = computer_use::config::ToolManager::Off;
+            cfg.ocr.blind_regions = false;
+            cfg.screenshot.adaptive = false;
         }
         other => return Err(format!("unknown preset {other} (default, codex)")),
     }
@@ -98,6 +153,7 @@ impl Session {
         scenario: &str,
         app: &str,
         cfg: Config,
+        server: Option<&crate::remote::Launch>,
         state_file: PathBuf,
     ) -> Result<Self, String> {
         let _ = std::fs::remove_file(&state_file);
@@ -109,8 +165,16 @@ impl Session {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("can't start the fixture with {python}: {e}"))?;
-        let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
-        let engine = Engine::new(backend, ConfigStore::in_memory(cfg));
+        let engine = match server {
+            Some(launch) => Tools::Remote(
+                Box::new(crate::remote::Remote::start(launch)?),
+                launch.clone(),
+            ),
+            None => {
+                let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
+                Tools::Local(Box::new(Engine::new(backend, ConfigStore::in_memory(cfg))))
+            }
+        };
         let mut s = Self {
             engine,
             app: app.to_string(),
@@ -120,6 +184,7 @@ impl Session {
             fixture: child,
             state_file,
             verbose: false,
+            found: Vec::new(),
         };
         // Wait until the app is listed and its window answers.
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -138,10 +203,8 @@ impl Session {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        // A fresh engine for the run: nothing it learnt while waiting.
-        let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
-        let cfg = s.engine.store().config.clone();
-        s.engine = Engine::new(backend, ConfigStore::in_memory(cfg));
+        // Fresh tools for the run: nothing they learnt while waiting.
+        s.engine.restart()?;
         Ok(s)
     }
 
@@ -161,8 +224,26 @@ impl Session {
         }
     }
 
-    /// Run a tool and record it, whatever it returns.
+    /// Run a tool and record it, whatever it returns. A tool the model
+    /// doesn't see (the tool manager) is run the way a model would: its
+    /// arguments asked of find_tools once, then use_tool.
     pub fn call_raw(&mut self, tool: &str, args: Value) -> ToolOutput {
+        let defs = self.engine.tool_definitions();
+        let shown = defs.iter().any(|d| d.name == tool);
+        // Without a tool manager (an earlier release) a tool not listed is
+        // called as it is, and fails as it would.
+        let manager = defs.iter().any(|d| d.name == "find_tools");
+        if shown || !manager {
+            return self.record(tool, args);
+        }
+        if !self.found.iter().any(|t| t == tool) {
+            self.found.push(tool.to_string());
+            self.record("find_tools", json!({"name": tool}));
+        }
+        self.record("use_tool", json!({"name": tool, "arguments": args}))
+    }
+
+    fn record(&mut self, tool: &str, args: Value) -> ToolOutput {
         let args_tokens = computer_use::text::estimate_tokens(&args.to_string());
         if self.verbose {
             eprintln!("> {tool} {args}");

@@ -57,6 +57,11 @@ struct Common {
     /// Override text_only = true (never send screenshots).
     #[arg(long, global = true)]
     text_only: bool,
+
+    /// Override server.instructions: full, short (the client loads the
+    /// skills, which say the rest) or off.
+    #[arg(long, global = true, value_parser = ["full", "short", "off"])]
+    instructions: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -160,7 +165,15 @@ fn apply_overrides(common: &Common) -> impl Fn(&mut Config) + Send + 'static {
     let http_token = common.http_token.clone();
     let log = common.log.clone();
     let text_only = common.text_only;
+    let instructions = common.instructions.as_deref().map(|i| match i {
+        "short" => computer_use::config::Instructions::Short,
+        "off" => computer_use::config::Instructions::Off,
+        _ => computer_use::config::Instructions::Full,
+    });
     move |c: &mut Config| {
+        if let Some(i) = instructions {
+            c.server.instructions = i;
+        }
         if let Some(a) = &http {
             c.server.http_addr = a.clone();
         }

@@ -1949,8 +1949,13 @@ fn acting(title: &str) -> Value {
     json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true})
 }
 
-/// Tool definitions, ready to hand to an LLM or list over MCP.
+/// Tool definitions, ready to hand to an LLM or list over MCP. Built once.
 pub fn definitions() -> Vec<ToolDefinition> {
+    static DEFS: std::sync::OnceLock<Vec<ToolDefinition>> = std::sync::OnceLock::new();
+    DEFS.get_or_init(build_definitions).clone()
+}
+
+fn build_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "list_apps".into(),
@@ -1974,7 +1979,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "get_app_state".into(),
             title: "Get app state".into(),
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.".into(),
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first, before acting on an app; each action then reports the state after it, so call it again only when you need more. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -2452,7 +2457,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first; actions then report the state after them, so call again only for more. Element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
         }
         "click" => {
             "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
@@ -2502,7 +2507,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Run steps in order, one report at the end. A step is a line (click 12 · click \"Save\" · double 12 · right 12 · set 4 \"Ada\" · type [4] \"text\" · key cmd+s · scroll [7] down [2] · select 4 \"word\" · action 9 name · wait \"text\" · find \"text\" · look; actions may end with expect …) or {tool, arguments}. Stops on an error, or on a window a step didn't expect (through_windows=true goes on)."
         }
         "window" => {
-            "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
+            "Windows and screens: one action (list, focus, move, resize, tile_…, displays…); x/y/width/height in screen coordinates."
         }
         "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
         "script" => {
@@ -2602,7 +2607,7 @@ pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
 /// tools hidden because their feature is switched off (clipboard, screenshots).
 pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
     let screenshots = config.screenshot.enabled && !config.text_only;
-    let lean = config.tools.descriptions == crate::config::DescriptionStyle::Lean;
+    let full = config.tools.descriptions == crate::config::DescriptionStyle::Full;
     let decisions = !config.decision.provider.trim().is_empty();
     definitions_for(&config.tools)
         .into_iter()
@@ -2610,8 +2615,9 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
-            // Lean: the decision model's tool once there is one.
-            "decide" => !lean || decisions,
+            // The decision model's tool once there is one (it can still be
+            // called, to set one up; full descriptions always list it).
+            "decide" => full || decisions,
             _ => true,
         })
         .collect()
@@ -2680,14 +2686,54 @@ pub fn category_of(name: &str) -> &'static str {
         .map_or("scripts", |(c, _, _)| c)
 }
 
+/// Words that say nothing about which tool is meant.
+const STOP_WORDS: &[&str] = &[
+    "the", "and", "for", "with", "that", "this", "from", "into", "what", "which", "tool", "tools",
+    "use", "can", "how", "want", "need", "some", "any", "all", "its", "are", "was", "will", "you",
+    "your", "get", "make", "out", "about", "there", "then", "than",
+];
+
+/// The words of a `find_tools` query worth matching: folded, three
+/// letters or more, no stop words.
+pub fn query_words(query: &str) -> Vec<String> {
+    crate::text::fold(query)
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| w.chars().count() >= 3 && !STOP_WORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How well a tool matches query words: a word in its name counts 3, in
+/// its description 1.
+pub fn query_score(words: &[String], name: &str, description: &str) -> usize {
+    let name = crate::text::fold(name);
+    let hay = crate::text::fold(description);
+    words
+        .iter()
+        .map(|w| {
+            if name.contains(w.as_str()) {
+                3
+            } else {
+                usize::from(hay.contains(w.as_str()))
+            }
+        })
+        .sum()
+}
+
 /// `find_tools` (and `use_tool` when tools are run through it).
 pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
     let categories: Vec<String> = CATEGORIES
         .iter()
-        .map(|(c, about, _)| format!("{c} ({about})"))
+        .map(|(c, about, tools)| {
+            if *c == "scripts" {
+                format!("{c}: {} + saved scripts ({about})", tools.join(", "))
+            } else {
+                format!("{c}: {} ({about})", tools.join(", "))
+            }
+        })
         .collect();
     let then = if dispatch {
-        "run one with use_tool(name, arguments)"
+        "run one with use_tool(name, arguments) (a wrong call shows the arguments)"
     } else {
         "it is added to your tools"
     };
@@ -2695,15 +2741,17 @@ pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
         name: "find_tools".into(),
         title: "Find tools".into(),
         description: format!(
-            "More tools, by category or by what they do: {}. Returns each tool with its arguments; {then}.",
-            categories.join(", ")
+            "More tools, by category, name or what they do: {}. Returns each tool with its arguments; {then}.",
+            categories.join("; ")
         )
         .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "category": {"type": "string", "enum": CATEGORIES.iter().map(|c| c.0).collect::<Vec<_>>()},
-                "query": {"type": "string", "description": "Words for what the tool should do."}
+                "name": {"type": "string", "description": "Tool names, comma-separated."},
+                "query": {"type": "string", "description": "Words for what the tool should do."},
+                "again": {"type": "boolean", "description": "Repeat arguments shown before."}
             },
             "additionalProperties": false
         }),
@@ -2713,7 +2761,7 @@ pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
         defs.push(ToolDefinition {
             name: "use_tool".into(),
             title: "Use a tool".into(),
-            description: "Run a tool find_tools showed: name and its arguments.".into(),
+            description: "Run a tool by name with its arguments.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -2809,12 +2857,33 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
 /// Tools whose schema requires `app`: the ones [tools] default_app fills
 /// in.
 pub fn needs_app(name: &str) -> bool {
-    definitions().iter().any(|d| {
-        d.name == name
-            && d.input_schema
-                .get("required")
-                .and_then(Value::as_array)
-                .is_some_and(|r| r.iter().any(|v| v == "app"))
+    static NAMES: std::sync::OnceLock<Vec<Cow<'static, str>>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            definitions()
+                .into_iter()
+                .filter(|d| {
+                    d.input_schema
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|r| r.iter().any(|v| v == "app"))
+                })
+                .map(|d| d.name)
+                .collect()
+        })
+        .iter()
+        .any(|n| n == name)
+}
+
+/// Tools that take an `app` argument (a script's `set_app` fills it in).
+pub fn takes_app() -> &'static [Cow<'static, str>] {
+    static NAMES: std::sync::OnceLock<Vec<Cow<'static, str>>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        definitions()
+            .into_iter()
+            .filter(|d| d.input_schema["properties"].get("app").is_some())
+            .map(|d| d.name)
+            .collect()
     })
 }
 
@@ -3143,6 +3212,9 @@ mod tests {
     fn lean_definitions_are_smaller_still_and_lose_no_tool() {
         use crate::config::{Config, DescriptionStyle, ToolPreset};
         let mut cfg = Config::default();
+        // Lean is the default.
+        assert_eq!(cfg.tools.descriptions, DescriptionStyle::Lean);
+        cfg.tools.descriptions = DescriptionStyle::Compact;
         let compact = definitions_from(&cfg);
         cfg.tools.descriptions = DescriptionStyle::Lean;
         let lean = definitions_from(&cfg);
@@ -3152,9 +3224,14 @@ mod tests {
             model_visible_len(&lean),
             model_visible_len(&compact)
         );
-        // decide waits for a decision model; every other tool is there.
-        assert_eq!(lean.len() + 1, compact.len());
+        // decide waits for a decision model (compact too); every other
+        // tool is there.
+        assert_eq!(lean.len(), compact.len());
         assert!(!lean.iter().any(|d| d.name == "decide"));
+        assert!(!compact.iter().any(|d| d.name == "decide"));
+        cfg.tools.descriptions = DescriptionStyle::Full;
+        assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
+        cfg.tools.descriptions = DescriptionStyle::Lean;
         cfg.decision.provider = "jev".into();
         assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
         // No window; a design's layers as the list of their keys.
@@ -3196,8 +3273,10 @@ mod tests {
     fn compact_definitions_are_smaller_and_filterable() {
         use crate::config::{DescriptionStyle, ToolsConfig};
         let full = model_visible_len(&definitions());
-        let compact_cfg = ToolsConfig::default();
-        assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
+        let compact_cfg = ToolsConfig {
+            descriptions: DescriptionStyle::Compact,
+            ..ToolsConfig::default()
+        };
         let compact = definitions_for(&compact_cfg);
         assert_eq!(compact.len(), 26);
         let compact_len = model_visible_len(&compact);
@@ -3229,7 +3308,10 @@ mod tests {
     #[test]
     fn compact_schemas_send_a_repeated_schema_once() {
         use crate::config::ToolsConfig;
-        let compact = definitions_for(&ToolsConfig::default());
+        let compact = definitions_for(&ToolsConfig {
+            descriptions: crate::config::DescriptionStyle::Compact,
+            ..ToolsConfig::default()
+        });
         for name in ["design", "scene"] {
             let d = compact.iter().find(|d| d.name == name).unwrap();
             let props = &d.input_schema["properties"];

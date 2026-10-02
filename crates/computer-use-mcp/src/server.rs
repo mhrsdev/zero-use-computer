@@ -43,7 +43,7 @@ pub struct Server<R: BufRead, W: Write, B: Backend> {
     writer: W,
     shutdown: bool,
     /// Tool set last announced to the client, to detect settings changes.
-    tools_sig: Option<String>,
+    tools_sig: Option<u64>,
 }
 
 /// What the reader thread passes on.
@@ -254,7 +254,7 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             self.write_msg(&resp)?;
         }
         // A hot-reloaded config can change which tools exist; tell the client.
-        if let Some(prev) = self.tools_sig.clone() {
+        if let Some(prev) = self.tools_sig {
             let now = self.tools_signature();
             if now != prev {
                 self.tools_sig = Some(now);
@@ -332,14 +332,11 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         reply
     }
 
-    fn tools_signature(&mut self) -> String {
-        let engine = self.engine.as_mut().expect("engine present");
-        engine
-            .tool_definitions()
-            .iter()
-            .map(|d| format!("{}:{}", d.name, d.description))
-            .collect::<Vec<_>>()
-            .join("|")
+    fn tools_signature(&mut self) -> u64 {
+        self.engine
+            .as_mut()
+            .expect("engine present")
+            .tools_signature()
     }
 
     fn tools_list(&mut self) -> Value {
@@ -403,8 +400,9 @@ const SHORT_INSTRUCTIONS: &str = "Control desktop apps through their accessibili
 
 pub(crate) fn instructions() -> String {
     "Control desktop apps through their accessibility tree plus screenshots. \
-     On every turn, call get_app_state(app) first: it returns the app's numbered \
-     accessibility tree and a screenshot. Act on elements by their element_index \
+     Call get_app_state(app) first: it returns the app's numbered \
+     accessibility tree and a screenshot. Each action then returns the state \
+     after it; call get_app_state again only when you need more. Act on elements by their element_index \
      (click, set_value, perform_secondary_action, select_text, scroll, drag, \
      press_key, type_text); indices are only valid until the next get_app_state, \
      which afterwards returns a diff. Prefer element_index over x/y coordinates. \
@@ -415,7 +413,9 @@ pub(crate) fn instructions() -> String {
      items of folded lists), and pass screenshot=true only to read details. \
      For loops over tools, maths, file or web data and graph-paper pages, \
      write a script (script help=true lists its functions); a saved script \
-     becomes a tool of its own.\n\n\
+     becomes a tool of its own. Tools not in your list (design, draw, scene, \
+     locate, window, script, clipboard…) are found with find_tools and run \
+     with use_tool.\n\n\
      This server does not ask the user for permission: you are responsible for \
      safety (full rules: the computer-use-security skill). Only use apps the task \
      needs. Do not operate terminals, shells, Run dialogs, password managers, \
@@ -450,6 +450,8 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         let mut config = Config::default();
         config.script.dir = Some(dir.to_path_buf());
+        // Every tool listed (the tool manager has tests of its own).
+        config.tools.manager = computer_use::config::ToolManager::Off;
         Engine::new(backend, ConfigStore::in_memory(config))
             .with_time(std::time::Instant::now, |_| {})
     }
@@ -491,7 +493,9 @@ mod tests {
         // initialize
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "computer-use");
         // tools/list has every tool the default settings expose
-        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        let mut every = computer_use::Config::default();
+        every.tools.manager = computer_use::config::ToolManager::Off;
+        let all = computer_use::tools::definitions_from(&every).len();
         assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), all);
         // list_apps ran
         let text = out[2]["result"]["content"][0]["text"].as_str().unwrap();
@@ -535,6 +539,48 @@ mod tests {
         );
         let out = converse_with(&init, |c| c.server.instructions = Instructions::Off);
         assert!(out[0]["result"].get("instructions").is_none());
+    }
+
+    #[test]
+    fn by_default_the_list_is_the_base_and_the_rest_runs_through_use_tool() {
+        let input = format!(
+            "{}{}{}{}{}",
+            line("initialize", 1, json!({"capabilities":{}})),
+            line("tools/list", 2, json!({})),
+            line(
+                "tools/call",
+                3,
+                json!({"name":"find_tools","arguments":{"query":"arrange the windows"}})
+            ),
+            line(
+                "tools/call",
+                4,
+                json!({"name":"use_tool","arguments":{"name":"window","arguments":{"app":"TextEdit","action":"list"}}})
+            ),
+            line("tools/list", 5, json!({})),
+        );
+        let out = converse_with(&input, |c| {
+            c.tools.manager = computer_use::config::ToolManager::default()
+        });
+        let names = |v: &Value| -> Vec<String> {
+            v["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let first = names(&out[1]);
+        assert!(first.contains(&"use_tool".to_string()) && !first.contains(&"design".to_string()));
+        let found = out[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(found.starts_with("window: "), "{found}");
+        assert_eq!(out[3]["result"]["isError"], false, "{:?}", out[3]);
+        // The list never changed, so no notification and the same tools.
+        assert!(
+            !out.iter()
+                .any(|m| m["method"] == "notifications/tools/list_changed")
+        );
+        assert_eq!(names(&out[4]), first);
     }
 
     #[test]
@@ -596,7 +642,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-hot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[tree]\nmax_nodes = 300\n").unwrap();
+        std::fs::write(
+            &path,
+            "[tree]\nmax_nodes = 300\n[tools]\nmanager = \"off\"\n",
+        )
+        .unwrap();
 
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
@@ -645,7 +695,7 @@ mod tests {
                         // Disable a tool and bump the mtime so the change is seen.
                         std::fs::write(
                             &self.path,
-                            "[tree]\nmax_nodes = 300\n[tools]\ndisabled = [\"drag\"]\n",
+                            "[tree]\nmax_nodes = 300\n[tools]\nmanager = \"off\"\ndisabled = [\"drag\"]\n",
                         )?;
                         let f = std::fs::File::options().write(true).open(&self.path)?;
                         f.set_modified(SystemTime::now() + Duration::from_secs(5))?;
@@ -693,7 +743,9 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         let first = msgs.iter().find(|m| m["id"] == 2).unwrap();
-        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        let mut every = computer_use::Config::default();
+        every.tools.manager = computer_use::config::ToolManager::Off;
+        let all = computer_use::tools::definitions_from(&every).len();
         assert_eq!(first["result"]["tools"].as_array().unwrap().len(), all);
         assert!(
             msgs.iter()

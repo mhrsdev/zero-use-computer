@@ -350,7 +350,9 @@ fn memory_and_text_helpers() {
 #[test]
 fn saved_scripts_become_tools() {
     let dir = library("saved");
-    let mut e = engine_with(&dir, |_| {});
+    let mut e = engine_with(&dir, |c| {
+        c.tools.manager = crate::config::ToolManager::Off;
+    });
     let saved = e.call_tool(
         "script",
         json!({

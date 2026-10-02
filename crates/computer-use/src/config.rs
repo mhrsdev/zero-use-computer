@@ -140,8 +140,8 @@ impl Default for ScreenshotConfig {
             region_max_ratio: 0.5,
             region_padding: 24,
             region_min_size: 200,
-            adaptive: false,
-            locate_picture: true,
+            adaptive: true,
+            locate_picture: false,
             icon_sprite: false,
         }
     }
@@ -200,11 +200,11 @@ pub struct TreeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Report {
-    /// Every change, up to `report_changes_max_lines`. Default.
-    #[default]
+    /// Every change, up to `report_changes_max_lines`.
     Full,
     /// Changes in and around what the action acted on, new windows and
-    /// added elements; how many others there are.
+    /// added elements; how many others there are. Default.
+    #[default]
     Relevant,
     /// How many changes there are, and a new screen or window.
     Brief,
@@ -244,8 +244,8 @@ impl Default for TreeConfig {
             fold_keep: 5,
             brief_repeats: true,
             compact: true,
-            report: Report::Full,
-            quiet_volatile: false,
+            report: Report::Relevant,
+            quiet_volatile: true,
         }
     }
 }
@@ -256,14 +256,14 @@ impl Default for TreeConfig {
 pub enum DescriptionStyle {
     /// Detailed descriptions for every tool and parameter.
     Full,
-    /// One-line tool descriptions, no per-parameter prose. Default; the tool
-    /// list is sent with every model request, so this saves the most tokens.
-    #[default]
+    /// One-line tool descriptions, no per-parameter prose.
     Compact,
     /// Compact, and lighter schemas still: the keys of nested objects (a
     /// design's layers, a drawing's strokes) listed by name instead of
     /// typed one by one, no `window` (still accepted) and no defaults;
-    /// `decide` only once a decision model is set up.
+    /// `decide` only once a decision model is set up. Default: the tool
+    /// list is sent with every model request.
+    #[default]
     Lean,
 }
 
@@ -271,12 +271,12 @@ pub enum DescriptionStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolManager {
-    /// Every tool, always. Default.
-    #[default]
+    /// Every tool, always.
     Off,
     /// The base tools and `find_tools`; the others are found by name or
     /// category and run through `use_tool`. The tool list never changes,
-    /// so a client's prompt cache keeps working, with any client.
+    /// so a client's prompt cache keeps working, with any client. Default.
+    #[default]
     Dispatch,
     /// The base tools and `find_tools`; a category it finds is added to the
     /// tool list (the client is told the list changed) and stays.
@@ -336,10 +336,11 @@ pub struct ToolsConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DesignSteps {
-    /// With every answer (default).
-    #[default]
+    /// With every answer.
     Always,
     /// When asked (show steps=true); otherwise only how many there are.
+    /// Default.
+    #[default]
     Asked,
 }
 
@@ -353,7 +354,7 @@ impl Default for ToolsConfig {
             preset: ToolPreset::default(),
             default_app: false,
             launch_look: true,
-            design_steps: DesignSteps::Always,
+            design_steps: DesignSteps::Asked,
         }
     }
 }
@@ -624,7 +625,7 @@ impl Default for OcrConfig {
             min_confidence: 0.4,
             max_lines: 150,
             tesseract_path: "tesseract".into(),
-            blind_regions: false,
+            blind_regions: true,
         }
     }
 }
@@ -971,7 +972,7 @@ impl Default for ServerConfig {
             http_addr: String::new(),
             http_token: String::new(),
             instructions: Instructions::Full,
-            result_meta: false,
+            result_meta: true,
         }
     }
 }

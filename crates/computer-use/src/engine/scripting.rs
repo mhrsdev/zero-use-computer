@@ -22,26 +22,106 @@ const KEEP_IMAGES: usize = 16;
 /// How long a script that ran out of time gets to end on its own.
 const GRACE: Duration = Duration::from_secs(10);
 
+/// What the tool lists depend on.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ToolsKey {
+    tools: crate::config::ToolsConfig,
+    screenshots: bool,
+    decisions: bool,
+    clipboard: bool,
+    notifications: bool,
+    /// The saved scripts' generation, when they are tools.
+    scripts: Option<u64>,
+    active: Vec<&'static str>,
+}
+
+/// The tool lists, as last built.
+pub(super) struct ToolsCache {
+    key: ToolsKey,
+    all: Vec<ToolDefinition>,
+    shown: Vec<ToolDefinition>,
+    signature: u64,
+}
+
 impl<B: Backend> Engine<B> {
     /// The tools to offer: the built-in ones the settings allow, and saved
     /// scripts as tools of their own; with the tool manager on, the base
     /// tools, the categories found so far ("list_changed") and the
     /// manager's own tools.
     pub fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        self.tools_cache().shown.clone()
+    }
+
+    /// A number that changes when [`Self::tool_definitions`] would (a
+    /// server tells its client the list changed).
+    pub fn tools_signature(&mut self) -> u64 {
+        self.tools_cache().signature
+    }
+
+    /// Every tool the settings allow, the manager aside.
+    pub(super) fn all_tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        self.tools_cache().all.clone()
+    }
+
+    /// The tool lists, built again only when what they depend on changed:
+    /// the settings that choose and style tools, the saved scripts and the
+    /// categories found so far.
+    fn tools_cache(&mut self) -> &ToolsCache {
+        let cfg = &self.store.config;
+        let scripts_as_tools = cfg.script.saved_as_tools && cfg.tools.is_enabled("script");
+        let mut active: Vec<&'static str> = self.active_tools.iter().copied().collect();
+        active.sort_unstable();
+        let key = ToolsKey {
+            tools: cfg.tools.clone(),
+            screenshots: cfg.screenshot.enabled && !cfg.text_only,
+            decisions: !cfg.decision.provider.trim().is_empty(),
+            clipboard: cfg.clipboard,
+            notifications: cfg.notifications.enabled,
+            scripts: scripts_as_tools.then(|| self.scripts.generation()),
+            active,
+        };
+        if self.tools_cache.as_ref().is_none_or(|c| c.key != key) {
+            let all = self.build_all_tool_definitions(scripts_as_tools);
+            let shown = self.shown_tools(&all);
+            let signature = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                for d in &shown {
+                    d.name.hash(&mut h);
+                    d.description.hash(&mut h);
+                    d.input_schema.to_string().hash(&mut h);
+                }
+                h.finish()
+            };
+            self.tools_cache = Some(ToolsCache {
+                key,
+                all,
+                shown,
+                signature,
+            });
+        }
+        self.tools_cache.as_ref().expect("just built")
+    }
+
+    fn shown_tools(&self, all: &[ToolDefinition]) -> Vec<ToolDefinition> {
         use crate::config::ToolManager;
-        let all = self.all_tool_definitions();
         let manager = self.store.config.tools.manager;
-        if manager == ToolManager::Off {
-            return all;
+        // Nothing to find (a small preset, a short `enabled`): no manager.
+        let hides = all
+            .iter()
+            .any(|d| !crate::tools::BASE_TOOLS.contains(&&*d.name));
+        if manager == ToolManager::Off || !hides {
+            return all.to_vec();
         }
         let mut shown: Vec<ToolDefinition> = all
-            .into_iter()
+            .iter()
             .filter(|d| {
                 crate::tools::BASE_TOOLS.contains(&&*d.name)
                     || self
                         .active_tools
                         .contains(crate::tools::category_of(&d.name))
             })
+            .cloned()
             .collect();
         shown.extend(crate::tools::manager_definitions(
             manager == ToolManager::Dispatch,
@@ -49,15 +129,13 @@ impl<B: Backend> Engine<B> {
         shown
     }
 
-    /// Every tool the settings allow, the manager aside.
-    pub(super) fn all_tool_definitions(&mut self) -> Vec<ToolDefinition> {
+    fn build_all_tool_definitions(&mut self, scripts_as_tools: bool) -> Vec<ToolDefinition> {
         let mut defs = crate::tools::definitions_from(&self.store.config);
-        let cfg = &self.store.config;
-        if !(cfg.script.saved_as_tools && cfg.tools.is_enabled("script")) {
+        if !scripts_as_tools {
             return defs;
         }
         for s in self.scripts.list() {
-            if BUILTIN.contains(&s.name.as_str()) || !cfg.tools.is_enabled(&s.name) {
+            if BUILTIN.contains(&s.name.as_str()) || !self.store.config.tools.is_enabled(&s.name) {
                 continue;
             }
             defs.push(ToolDefinition {
@@ -238,10 +316,9 @@ impl<B: Backend> Engine<B> {
         data: Value,
     ) -> Result<ToolOutput> {
         let cfg = self.store.config.script.clone();
-        let app_tools = crate::tools::definitions()
+        let app_tools = crate::tools::takes_app()
             .iter()
-            .filter(|d| d.input_schema["properties"].get("app").is_some())
-            .map(|d| d.name.to_string())
+            .map(|n| n.to_string())
             .collect();
         let env = script::Env {
             files: cfg.files,
