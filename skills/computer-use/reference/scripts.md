@@ -175,6 +175,35 @@ may touch is the user's setting `[script] files`: by default it reads any
 file and writes only in its own folder. `fetch` and `download` use `curl`
 and can be switched off (`[script] web`).
 
+## Decisions
+
+With a decision model set up (see [decisions.md](decisions.md); the user
+adds one with Ctrl+Alt+J), a script can judge as it goes, fast, without
+reading everything into the conversation:
+
+| Function | Does |
+|---|---|
+| `ask(state, question)` | the probability (0 to 1) that the answer is yes |
+| `choose(state, question, options)` | one of the options (`["a", "b"]`, or `#{a: "what a means"}`) |
+| `score(state, question, levels)` | a number on the scale (0 = the first, lowest level) |
+| `decide(state, #{name: #{type, question, options \| scale}})` | several answers at once, as a map |
+| `decide_each(states, #{...})` | the same questions about each of many states, in parallel |
+
+`state` is text, or any value (sent as JSON). Without a decision model
+these stop the script with a message saying how to add one.
+
+```rhai
+// Keep the reviews that recommend the product, and how sure.
+let reviews = data;
+let answers = decide_each(reviews, #{rec: #{question: "Does it recommend the product?"}});
+let kept = [];
+for i in range(0, reviews.len()) {
+    if answers[i].rec.answer { kept.push(#{text: reviews[i], p: answers[i].rec.yes}); }
+}
+print(`${kept.len()} of ${reviews.len()} recommend it`);
+kept
+```
+
 ## Maths, chance and colour
 
 - Every maths function takes whole numbers too: `sin`, `cos`, `tan`,

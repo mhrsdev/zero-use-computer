@@ -19,6 +19,7 @@ const ACTION_IFACE: &str = "org.a11y.atspi.Action";
 const TEXT_IFACE: &str = "org.a11y.atspi.Text";
 const EDITABLE_IFACE: &str = "org.a11y.atspi.EditableText";
 const VALUE_IFACE: &str = "org.a11y.atspi.Value";
+const DOCUMENT_IFACE: &str = "org.a11y.atspi.Document";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 /// How long any one app may take to answer: a frozen app times out instead
@@ -371,7 +372,9 @@ impl AtspiConnection {
         self.call::<_, bool>(r, ACTION_IFACE, "DoAction", &(index,))
     }
 
-    /// Index of the named action (case-insensitive), if the element has it.
+    /// Index of the named action (case-insensitive, named as a snapshot
+    /// names it), if the element has it. `#N` is the Nth action, for one
+    /// with no name.
     pub fn action_index(&self, r: &ObjRef, name: &str) -> CallResult<Option<i32>> {
         let actions = match self.actions(r) {
             Ok(a) => a,
@@ -379,10 +382,24 @@ impl AtspiConnection {
             Err(e) if e.fail == Fail::Other => return Ok(None),
             Err(e) => return Err(e),
         };
+        if let Some(i) = name.strip_prefix('#').and_then(|n| n.parse::<usize>().ok()) {
+            return Ok((i < actions.len()).then_some(i as i32));
+        }
         Ok(actions
             .into_iter()
-            .position(|(n, _, _)| n.eq_ignore_ascii_case(name))
+            .position(|(n, d, _)| action_name(n, d).eq_ignore_ascii_case(name))
             .map(|i| i as i32))
+    }
+
+    /// The address of a web page (a browser's document), when it says:
+    /// Firefox as "DocURL", Chromium as "URI".
+    pub fn doc_url(&self, r: &ObjRef) -> Option<String> {
+        ["DocURL", "URI"].into_iter().find_map(|attr| {
+            self.call::<_, String>(r, DOCUMENT_IFACE, "GetAttributeValue", &(attr,))
+                .ok()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+        })
     }
 
     pub fn grab_focus(&self, r: &ObjRef) -> CallResult<bool> {
@@ -451,6 +468,21 @@ pub struct Walked {
     pub r: ObjRef,
     pub data: NodeData,
     pub parent: Option<usize>,
+}
+
+/// An action's name as an app gives it (name, description). Some leave the
+/// name empty, or put the key binding there (Firefox: ";;"): then the
+/// description names it, else it is "action N" by its place — so every
+/// action keeps its index, and none is shown as punctuation.
+fn action_name(name: String, description: String) -> String {
+    let word = |s: &str| s.chars().any(char::is_alphanumeric);
+    if word(&name) && !name.contains(';') {
+        return name;
+    }
+    if word(&description) && description.split_whitespace().count() <= 4 {
+        return description;
+    }
+    String::new()
 }
 
 /// Whether an element's text content is worth reading (never passwords).
@@ -532,7 +564,7 @@ impl AtspiConnection {
             acc,
             extents: ext.ok(),
             actions: acts
-                .map(|a| a.into_iter().map(|(n, _, _)| n).collect())
+                .map(|a| a.into_iter().map(|(n, d, _)| action_name(n, d)).collect())
                 .unwrap_or_default(),
             text: None,
             children: Vec::new(),
@@ -816,6 +848,20 @@ fn bus_err(e: impl std::fmt::Display) -> Error {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn actions_without_a_name_take_their_description_or_none() {
+        assert_eq!(action_name("jump".into(), String::new()), "jump");
+        // Firefox puts a key binding where the name goes.
+        assert_eq!(action_name(";;".into(), "Jump".into()), "Jump");
+        assert_eq!(action_name(String::new(), "click".into()), "click");
+        assert_eq!(action_name(";;".into(), String::new()), "");
+        // A description that is a sentence names nothing.
+        assert_eq!(
+            action_name(String::new(), "Activates the link the cursor is on".into()),
+            ""
+        );
+    }
 
     #[test]
     fn timeouts_and_gone_elements_are_told_apart() {

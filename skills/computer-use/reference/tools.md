@@ -6,6 +6,11 @@
 - `wait_for(app, role/name/text, state, timeout_ms)`: after something slow
   (loading, a dialog opening), wait for an element (`present`, `visible`,
   `enabled`, `focused`, `gone`…) instead of polling. At most two minutes.
+  With a decision model, `until: "Have the results loaded?"` waits for a
+  yes about the whole window instead (see [decisions.md](decisions.md)).
+- `decide(question, …)`: typed answers from the decision model about text,
+  many items at once, or an app's window; `pick` finds an element by
+  description. See [decisions.md](decisions.md).
 - `batch(app, steps=[{tool, arguments}, …])`: several steps in one call,
   stopping at the first error. The report has one line per step, so call
   `get_app_state` afterwards to see the result.

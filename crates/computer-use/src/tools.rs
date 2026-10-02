@@ -1445,10 +1445,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app".into(),
             title: "Launch app".into(),
-            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
+            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window; or open a web address (https://…) in the default browser. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments)."}},
+                "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments), or an https:// address to open in the browser."}},
                 "required": ["app"],
                 "additionalProperties": false
             }),
@@ -1921,7 +1921,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
 fn short_description(name: &str) -> Option<&'static str> {
     Some(match name {
         "list_apps" => "List running apps (name, id, pid).",
-        "launch_app" => "Start an app by name/id and wait for its window.",
+        "launch_app" => {
+            "Start an app by name/id and wait for its window, or open an https:// address in the browser."
+        }
         "get_app_state" => {
             "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded."
         }

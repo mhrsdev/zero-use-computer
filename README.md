@@ -1,6 +1,6 @@
 # Zero Use Computer
 
-**[Download v3.1.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
+**[Download v3.2.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
 · [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
 · [License](LICENSE)
 
@@ -15,6 +15,18 @@ It is a standalone building block: run it as an **MCP server**
 agent), or embed the **library** (`computer-use`) in your own agent.
 
 ## What's new
+
+**v3.2.0** — a **decision model** for speed: add TypeSafe's **Jev** (or any
+fast OpenAI-compatible model) and the agent hands it the judgments that
+cost it the most — "is this review positive?" over 50 reviews at once,
+"has the page loaded?", "which element is the add-to-cart button?" — and
+gets typed answers in well under a second, without reading it all itself
+(the `decide` tool, `wait_for(until)`, and `ask`/`choose`/`score` in
+scripts). **Press Ctrl+Alt+J** anywhere: a settings page opens in your
+browser for the model and its key, which never goes through the chat.
+Also on Linux: apps without accessibility (terminals, some Electron apps)
+work through screenshots, the mouse and the keyboard; browsers show the
+page's address; `launch_app` opens web addresses. [Changelog](CHANGELOG.md).
 
 **v3.1.0** — Wayland: on **Hyprland**, **sway** and other wlroots-family
 compositors, window positions, clicks, typing (any language), screenshots,
@@ -82,7 +94,7 @@ This project follows the same architecture and behaviour:
 | Tool | What it does |
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments) and wait for a window. |
+| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments) and wait for a window; or open a web address in the default browser. |
 | `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
 | `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
@@ -98,7 +110,8 @@ This project follows the same architecture and behaviour:
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
 | `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
-| `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout. |
+| `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout; or, with `until`, until the decision model answers yes about the window ("have the results loaded?"). |
+| `decide` | Typed answers from a **decision model** (Jev, or a fast OpenAI-compatible model): yes/no with a probability, one of some options, or a score on a scale, about text, each of many items in parallel, or an app's window; `pick` returns the element a description means. See [Decision model](#decision-model-jev). |
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does, **cells** lays named graph paper over the document and `cell` magnifies one cell. `zoom` magnifies around a point to aim exactly. |
 | `batch` | Run several tools in one call (fill a form, then submit). |
 | `script` | Run a small program inside the server for what the tools can't do in one call: loops and conditions over any tool, maths, data from files or the web, pictures built on a graph-paper page. `save` keeps a script as a **new tool** of its own. See [Scripts](#scripts). |
@@ -190,6 +203,42 @@ Each is a short core the model keeps loaded, plus `reference/` files it reads
 only when a situation calls for them (see [Token use](#token-use)). Install
 them as skills in your agent (for Claude Code: copy `skills/*` into
 `~/.claude/skills/` or the project's `.claude/skills/`).
+
+## Decision model (Jev)
+
+A big model is slow at small judgments: to find the cheapest wired
+headphones with good reviews it reads every product page and every review
+itself, one turn at a time. A **decision model** does that part: it
+answers typed questions about a state — yes/no (the probability of yes),
+one of some options, a score on a scale — in tens to hundreds of
+milliseconds, and writes no text. The agent asks it through:
+
+- `decide(question, items=[…])`: each item judged on its own, all at once,
+  with a summary ("yes for 7 of 50: 3, 8, 12…");
+- `decide(app, question)`: about an app's window, which never enters the
+  conversation; `decide(app, pick="the add-to-cart button")`: the element
+  that is, as an `element_index`;
+- `wait_for(app, until="have the results loaded?")`;
+- `ask`, `choose`, `score`, `decide`, `decide_each` in [scripts](#scripts),
+  so a saved script can judge as it goes.
+
+**Setting it up:** press **Ctrl+Alt+J** (`control.settings_hotkey`) from
+any app, or run `computer-use-mcp settings`. A page opens in your browser:
+choose **Jev** (TypeSafe's System One API, or a server that speaks it, like
+local-jev) or an **OpenAI-compatible** model (OpenAI, Groq, Cerebras,
+OpenRouter, Ollama…), give its address, model and API key, press Test and
+Save. The server uses it at once. The agent's skill suggests Ctrl+Alt+J the
+first time a task would gain from it. You can also give the settings to
+the agent in the chat (`decide setup={…}`), but a key typed there stays in
+the chat's history.
+
+The key is saved in `config.toml` under `[decision]`, which is then
+readable by you only; it reaches `curl` on its input (never on a command
+line), and is never shown again — the page, `doctor`, `config show` and
+the tool show only its last four characters. The page lives on 127.0.0.1
+at a random address, refuses other sites and other host names, and goes
+away after 15 minutes unused. What a decision is about is sent to the
+model you chose; masked data stays masked.
 
 ## Screen memory & caching
 
@@ -414,6 +463,9 @@ task is complete) can say so with a JSON-RPC notification:
   receives that key and nothing else. If another program already owns the
   combination, a warning is logged: pick another one. Hosts can stop the agent
   too (`Engine::stop_handle`, `set_stopped`).
+- **Settings key** — `Ctrl+Alt+J` (`control.settings_hotkey`) opens the
+  decision model's settings page, registered the same way (a binding in
+  Hyprland or sway).
 - **Pause while you work** (`control.pause_on_user_input`, on by default).
   Before each action, the engine checks how long ago anyone last used the
   mouse or keyboard (the system idle time: `GetLastInputInfo`,
@@ -594,12 +646,14 @@ computer-use-mcp state "TextEdit" --screenshot shot.png
 computer-use-mcp call click '{"app":"TextEdit","element_index":3}'
 computer-use-mcp tools                          # tool definitions the model will see
 computer-use-mcp config show                    # settings (see "Settings" below)
+computer-use-mcp settings                       # the decision model's page (= Ctrl+Alt+J)
 ```
 
 Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
 `--log <level>`, `--text-only`.
 
-`doctor` also checks that the emergency stop key works on this machine.
+`doctor` also checks that the emergency stop key and the settings key work
+on this machine, and asks the decision model a test question.
 
 ## Embed the library
 
@@ -716,9 +770,8 @@ estimates (text ≈ 4 chars/token, images ≈ width × height / 750).
 | back to a screen seen before, large app | ~2,516 tokens (tree + image) | **~79 tokens, no image** |
 | `get_app_state` right after an action or `find_element` | 71 ms | **< 1 ms** (read reused) |
 
-The tool definitions, sent with every model request, are ~4,400 tokens for
-all 25 tools with compact descriptions (the default) and ~11,500 with full
-ones; the client's prompt cache serves them cheaply, and `tools.disabled`
+The tool definitions, sent with every model request, are ~4,600 tokens
+with compact descriptions (the default) and ~12,200 with full ones; the client's prompt cache serves them cheaply, and `tools.disabled`
 hides tools you never use.
 
 Memory over a session (looks, screenshots, a design, a scene, a script),
@@ -801,7 +854,11 @@ compares coming back to a screen with the screen memory off and on.
     `layerrule = noanim, computer-use`.
   - Other Wayland desktops (GNOME, KDE Plasma): accessibility actions work
     for every app; synthesized input and screenshots only reach XWayland
-    apps (`doctor` says so).
+    apps (`doctor` says so, and `list_apps` tells the agent once).
+  - Apps without accessibility (terminals such as foot or kitty, some
+    Electron apps) are listed from the compositor or the window manager
+    and used through screenshots (text read off them with Tesseract when
+    it is installed), the mouse and the keyboard.
 
 ## Safety
 

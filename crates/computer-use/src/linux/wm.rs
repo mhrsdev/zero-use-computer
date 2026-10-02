@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection as _;
 use x11rb::protocol::randr::ConnectionExt as _;
+use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask,
     InputFocus, MapState, StackMode, Window,
@@ -144,6 +145,25 @@ impl<'a> Wm<'a> {
             .filter(|p| *p != 0)
     }
 
+    /// The process that made a client window: as it says, else as the X
+    /// server knows (the XRes extension; older apps such as xcalc never say).
+    /// Never for a window manager's frame, which the window manager made.
+    fn owner_pid(&self, win: Window) -> Option<u32> {
+        self.pid_of(win).or_else(|| {
+            let spec = ClientIdSpec {
+                client: win,
+                mask: ClientIdMask::LOCAL_CLIENT_PID,
+            };
+            let reply = self.conn.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
+            reply
+                .ids
+                .iter()
+                .find(|id| u32::from(id.spec.mask) & u32::from(ClientIdMask::LOCAL_CLIENT_PID) != 0)
+                .and_then(|id| id.value.first().copied())
+                .filter(|p| *p != 0)
+        })
+    }
+
     /// A window's title.
     pub fn title(&self, win: Window) -> Option<String> {
         self.text(win).filter(|t| !t.is_empty())
@@ -210,7 +230,7 @@ impl<'a> Wm<'a> {
                 0 => Front::Nothing,
                 win => Front::Window {
                     win,
-                    pid: self.pid_of(win),
+                    pid: self.owner_pid(win),
                 },
             });
         }
@@ -232,10 +252,76 @@ impl<'a> Wm<'a> {
         })
     }
 
+    /// The process's windows on this display: the window, its title, where
+    /// it is, and whether it is on screen.
+    pub fn windows_of(&self, pid: u32) -> Vec<(Window, String, Option<Rect>, bool)> {
+        self.clients()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| self.owner_pid(*w) == Some(pid))
+            .map(|w| {
+                (
+                    w,
+                    self.title(w).unwrap_or_default(),
+                    self.geometry(w),
+                    self.viewable(w),
+                )
+            })
+            .collect()
+    }
+
+    /// The processes with ordinary windows the window manager manages
+    /// (`_NET_CLIENT_LIST`; none without a window manager): pid, class and
+    /// title of each one's first window. Docks, desktops and the like are
+    /// left out.
+    pub fn window_owners(&self) -> Vec<(u32, String, String)> {
+        if !self.has_wm() {
+            return Vec::new();
+        }
+        let Some(clients) = self
+            .prop32(self.root, "_NET_CLIENT_LIST", AtomEnum::WINDOW)
+            .filter(|v| !v.is_empty())
+        else {
+            return Vec::new();
+        };
+        let skip: Vec<Atom> = [
+            "_NET_WM_WINDOW_TYPE_DOCK",
+            "_NET_WM_WINDOW_TYPE_DESKTOP",
+            "_NET_WM_WINDOW_TYPE_TOOLBAR",
+            "_NET_WM_WINDOW_TYPE_MENU",
+            "_NET_WM_WINDOW_TYPE_SPLASH",
+            "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+        ]
+        .iter()
+        .filter_map(|n| self.atom(n))
+        .collect();
+        let mut out: Vec<(u32, String, String)> = Vec::new();
+        for w in clients {
+            let Some(pid) = self.owner_pid(w) else {
+                continue;
+            };
+            if out.iter().any(|(p, _, _)| *p == pid) {
+                continue;
+            }
+            let kinds = self
+                .prop32(w, "_NET_WM_WINDOW_TYPE", AtomEnum::ATOM)
+                .unwrap_or_default();
+            if kinds.iter().any(|k| skip.contains(k)) {
+                continue;
+            }
+            out.push((
+                pid,
+                self.class(w).unwrap_or_default(),
+                self.title(w).unwrap_or_default(),
+            ));
+        }
+        out
+    }
+
     /// Whether the process has a window on this display.
     pub fn has_window_of(&self, pid: u32) -> bool {
         self.clients()
-            .is_some_and(|c| c.into_iter().any(|w| self.pid_of(w) == Some(pid)))
+            .is_some_and(|c| c.into_iter().any(|w| self.owner_pid(w) == Some(pid)))
     }
 
     /// The X window behind an app window: same process, then the same title,
@@ -244,7 +330,7 @@ impl<'a> Wm<'a> {
         let mine: Vec<Window> = self
             .clients()?
             .into_iter()
-            .filter(|w| self.pid_of(*w) == Some(pid))
+            .filter(|w| self.owner_pid(*w) == Some(pid))
             .collect();
         let titled: Vec<Window> = mine
             .iter()
@@ -368,7 +454,7 @@ impl<'a> Wm<'a> {
     /// Wait until `win`, or another window of its app (a dialog it has
     /// open, which the window manager activates instead), has the keyboard.
     fn await_front(&self, win: Window) -> Result<()> {
-        let pid = self.pid_of(win);
+        let pid = self.owner_pid(win);
         let deadline = Instant::now() + ACTIVATE_WAIT;
         loop {
             match self.front() {

@@ -24,7 +24,8 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
 3. Read the "state after the action" each action returns; call
    `get_app_state` only when you need more. Later calls return a diff.
 
-`list_apps` finds an app; `launch_app` opens one by name.
+`list_apps` finds an app; `launch_app` opens one by name, or a web address
+(`https://…`) in the default browser.
 
 ## Rules
 
@@ -58,6 +59,30 @@ Every result stays in the conversation, so ask only for what you need:
   of many turns.
 - Trust `screen #N (seen before)`: what you learnt about it still holds.
 
+## Decide fast: the decision model
+
+`decide` hands judgments to a fast decision model (TypeSafe's Jev, or a
+small OpenAI-compatible model): yes/no (a probability), one of some
+options, or a score on a scale. It is quicker and cheaper than reading and
+judging yourself:
+
+- many things to judge (reviews, search results, rows, messages):
+  `decide(question, items=[...])` judges each at once and sums them up;
+- a condition on screen: `decide(app, question)`, or wait for it with
+  `wait_for(app, until="Have the results loaded?")`;
+- the element a description means: `decide(app, pick="the add-to-cart
+  button of the cheapest one")` returns its `element_index`;
+- in scripts: `ask`, `choose`, `score`, `decide_each`.
+
+When none is set up and the task has many such judgments, tell the user
+once, briefly: "Press Ctrl+Alt+J to add a decision model (like Jev); it
+makes this faster, and your key stays out of the chat". Then carry on
+without it; don't ask again. `decide(setup="open")` opens that page for
+them. Set it from the chat (`setup={provider, base_url, model, api_key}`)
+only when the user themself asks you to and gives the details; say that a
+key typed in the chat stays in its history. Details:
+[reference/decisions.md](reference/decisions.md).
+
 ## More, only when you need it
 
 - [reference/screens.md](reference/screens.md): screen numbers, diffs,
@@ -68,6 +93,8 @@ Every result stays in the conversation, so ask only for what you need:
 - [reference/special-content.md](reference/special-content.md): apps with
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
+- [reference/decisions.md](reference/decisions.md): `decide` (questions,
+  items, pick, setup), `wait_for(until)`, and decisions in scripts.
 - [reference/scripts.md](reference/scripts.md): `script`: a small
   program for what the tools can't do in one call (loops over tool calls,
   maths, data from files or the web, pictures on a graph-paper page), and

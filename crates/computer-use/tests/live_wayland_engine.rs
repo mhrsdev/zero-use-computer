@@ -267,4 +267,55 @@ fn engine_over_wayland() {
         apps.iter().any(|a| a.pid == app.pid && a.frontmost),
         "{apps:?}"
     );
+
+    screen_only_app(&mut e);
+}
+
+/// An app with no accessibility (the foot terminal): listed from the
+/// compositor, seen in screenshots, used with the keyboard.
+fn screen_only_app(e: &mut Engine<LinuxBackend>) {
+    if Command::new("foot").arg("--version").output().is_err() {
+        eprintln!("no foot terminal: the screen-only app check is skipped");
+        return;
+    }
+    swaymsg(&["exec", "foot"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let foot = loop {
+        let apps = e.backend_mut().list_apps().expect("apps");
+        if let Some(a) = apps.into_iter().find(|a| a.id == "foot") {
+            break a;
+        }
+        assert!(Instant::now() < deadline, "foot never showed up");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let mut out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": foot.pid.to_string(), "screenshot": true}),
+    );
+    // Its window may take a moment to be drawn.
+    for _ in 0..20 {
+        if !out.is_error {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        out = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": foot.pid.to_string(), "screenshot": true}),
+        );
+    }
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.image.is_some(), "no screenshot of the screen-only app");
+    let marker = std::env::temp_dir().join(format!("cu-foot-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let out = e.call_tool(
+        "type_text",
+        serde_json::json!({"app": foot.pid.to_string(), "text": format!("echo typed > {}\n", marker.display())}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the typing never reached foot");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = std::fs::remove_file(&marker);
 }

@@ -74,6 +74,19 @@ pub struct LinuxBackend {
     comp: Option<Compositor>,
     /// Window handle → the compositor's window, from the last listing.
     toplevels: HashMap<ElementHandle, Toplevel>,
+    /// Windows of apps that aren't on the accessibility bus (terminals,
+    /// some Electron apps), as the compositor or the X server lists them:
+    /// they are seen in screenshots (and text read off them) and used with
+    /// the mouse and keyboard.
+    bare: HashMap<ElementHandle, Bare>,
+}
+
+/// A window with no accessibility behind it.
+#[derive(Debug, Clone)]
+struct Bare {
+    pid: u32,
+    /// The compositor's or the X server's id for it.
+    key: String,
 }
 
 impl LinuxBackend {
@@ -110,6 +123,7 @@ impl LinuxBackend {
                 None
             },
             toplevels: HashMap::new(),
+            bare: HashMap::new(),
         })
     }
 
@@ -504,10 +518,17 @@ impl LinuxBackend {
             hidden: !(s.has(state::SHOWING) && s.has(state::VISIBLE)),
         };
 
+        // An action with no name: the first is the element's default one
+        // (a link's "jump" in some apps); others can't be told apart.
         let actions = data
             .actions
             .into_iter()
-            .map(|native| ActionDesc::new(roles::atspi_action(&native), native))
+            .enumerate()
+            .filter_map(|(i, native)| match (i, native.is_empty()) {
+                (_, false) => Some(ActionDesc::new(roles::atspi_action(&native), native)),
+                (0, true) => Some(ActionDesc::new("press", "#0")),
+                _ => None,
+            })
             .collect();
 
         let key = Some(r.path.clone());
@@ -604,6 +625,33 @@ impl Backend for LinuxBackend {
         out
     }
 
+    fn session_note(&mut self) -> Option<String> {
+        if !wayland_session() {
+            return None;
+        }
+        let mut missing = Vec::new();
+        if !self.wl_points() {
+            missing.push("click");
+        }
+        if !self.wl_types() {
+            missing.push("type");
+        }
+        if !self.wl_captures() {
+            missing.push("take screenshots");
+        }
+        if missing.is_empty() {
+            return None;
+        }
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .unwrap_or_else(|| "this desktop".into());
+        Some(format!(
+            "This is a Wayland session ({desktop}) that doesn't let other programs {} in its own Wayland apps. In those, act through accessibility: click by element_index, set_value, perform_secondary_action (keys and coordinate clicks can't reach them; set_value then a click on the page's own button submits a form). X11 (XWayland) apps work fully. Everything works under Hyprland or sway, or in an X11 (\"Xorg\") session.",
+            missing.join(", ")
+        ))
+    }
+
     fn list_apps(&mut self) -> Result<Vec<AppInfo>> {
         let apps = self.with_a11y(|b| b.refresh_apps())?;
         let refs: Vec<ObjRef> = apps.iter().map(|(r, _)| r.clone()).collect();
@@ -640,6 +688,40 @@ impl Backend for LinuxBackend {
                 name,
                 id: comm.unwrap_or_else(|| acc.name.clone()),
                 pid: *pid,
+                exe,
+                frontmost: false,
+                hidden: false,
+            });
+        }
+        // Apps with windows but no accessibility (terminals, some Electron
+        // apps), as the compositor or the window manager lists them: usable
+        // through screenshots and the mouse and keyboard.
+        let owners: Vec<(u32, String, String)> = match self.comp.as_ref().map(Compositor::toplevels)
+        {
+            Some(Ok(tops)) => tops
+                .into_iter()
+                .filter_map(|t| t.pid.map(|p| (p, t.app_id, t.title)))
+                .collect(),
+            Some(Err(_)) => Vec::new(),
+            None => self
+                .x11()
+                .map(|x| x.wm().window_owners())
+                .unwrap_or_default(),
+        };
+        let me = std::process::id();
+        for (pid, class, title) in owners {
+            if pid == me || pid == 0 || out.iter().any(|a| a.pid == pid) {
+                continue;
+            }
+            let (exe, comm) = proc_info(pid);
+            out.push(AppInfo {
+                name: if class.is_empty() {
+                    comm.clone().unwrap_or(title)
+                } else {
+                    class.clone()
+                },
+                id: comm.unwrap_or(class),
+                pid,
                 exe,
                 frontmost: false,
                 hidden: false,
@@ -688,23 +770,33 @@ impl Backend for LinuxBackend {
 
     fn list_windows(&mut self, app: &AppInfo) -> Result<Vec<WindowInfo>> {
         let pid = app.pid;
-        let windows = self
-            .with_a11y(|b| {
-                let app_ref = b.app_ref(pid)?;
-                b.windows_of(&app_ref)
-            })
-            .map_err(|e| match e {
-                // Listed for having the keyboard, but not on the bus.
-                Error::AppNotFound(_) if pid == 0 => Error::Unsupported(format!(
-                    "{} is listed because it has the keyboard, but it is no app whose windows can be read or used",
+        let listed = self.with_a11y(|b| {
+            let app_ref = b.app_ref(pid)?;
+            b.windows_of(&app_ref)
+        });
+        let windows = match listed {
+            Ok(w) => w,
+            // Listed because nothing else has the keyboard.
+            Err(Error::AppNotFound(_)) if pid == 0 => {
+                return Err(Error::ActionFailed(format!(
+                    "{} isn't an app: it is listed because no app window has the keyboard (an empty workspace, or the desktop itself). Bring an app forward (window action=focus, or launch_app), or look at the whole screen (screenshot).",
                     app.name
-                )),
-                Error::AppNotFound(_) if process_alive(pid) => Error::Unsupported(format!(
-                    "{} (pid {pid}) isn't on the accessibility bus (AT-SPI): it may still be starting (try again in a moment), or it doesn't support accessibility (a terminal, some Electron apps), so its windows can't be read or used",
+                )));
+            }
+            // Not on the bus: its windows as the compositor or the X
+            // server sees them.
+            Err(Error::AppNotFound(_)) if process_alive(pid) => {
+                let bare = self.bare_windows(app);
+                if !bare.is_empty() {
+                    return Ok(bare);
+                }
+                return Err(Error::ActionFailed(format!(
+                    "{} (pid {pid}) isn't on the accessibility bus (AT-SPI) and has no window this desktop shows other programs: it may still be starting (try again in a moment), or it has no window",
                     app.name
-                )),
-                e => e,
-            })?;
+                )));
+            }
+            Err(e) => return Err(e),
+        };
         // Windows no longer listed drop their handles.
         self.window_handles
             .retain(|r, (p, _)| *p != app.pid || windows.iter().any(|(w, _)| w == r));
@@ -771,6 +863,28 @@ impl Backend for LinuxBackend {
         window: &WindowInfo,
         opts: &SnapshotOptions,
     ) -> Result<Vec<RawNode>> {
+        if let Some(b) = self.bare.get(&window.handle) {
+            // Nothing but the window: what is in it is read off the screen.
+            return Ok(vec![RawNode {
+                handle: window.handle,
+                parent: None,
+                key: Some(b.key.clone()),
+                role: "window".into(),
+                native_role: "frame".into(),
+                name: Some(window.title.clone()).filter(|t| !t.is_empty()),
+                description: None,
+                value: None,
+                placeholder: None,
+                identifier: None,
+                bounds: window.bounds,
+                actions: Vec::new(),
+                states: NodeStates {
+                    enabled: true,
+                    focused: window.focused,
+                    ..NodeStates::default()
+                },
+            }]);
+        }
         self.revive_a11y();
         let root = self.resolve(window.handle)?;
         // Handles from this app's previous views are no longer needed; its
@@ -790,9 +904,25 @@ impl Backend for LinuxBackend {
             .get(&window.handle)
             .filter(|t| !t.xwayland)
             .map(|t| (t.rect, wayland_offset(&walked, t.rect)));
+        // A web page's address, as its document's value (browsers show it
+        // only in the address bar, which may be out of date or hidden).
+        let urls: Vec<Option<String>> = walked
+            .iter()
+            .map(|w| {
+                let d = &w.data.acc;
+                (matches!(d.role_name.as_str(), "document web" | "document frame")
+                    && d.has_iface("Document"))
+                .then(|| self.a11y.doc_url(&w.r))
+                .flatten()
+            })
+            .collect();
         let mut out = Vec::with_capacity(walked.len());
-        for w in walked {
-            out.push(self.build_node(app.pid, w));
+        for (w, url) in walked.into_iter().zip(urls) {
+            let mut node = self.build_node(app.pid, w);
+            if let Some(url) = url.filter(|u| u.starts_with("http") || u.starts_with("file:")) {
+                node.value = Some(url);
+            }
+            out.push(node);
         }
         if let Some((rect, (dx, dy))) = shift {
             for n in &mut out {
@@ -1149,6 +1279,85 @@ impl Backend for LinuxBackend {
         }
         self.x11_reaches(target.pid, "Typing")?;
         self.x11()?.type_text(text)
+    }
+}
+
+impl LinuxBackend {
+    /// The windows of an app that isn't on the accessibility bus, as the
+    /// compositor (Wayland) or the X server lists them.
+    fn bare_windows(&mut self, app: &AppInfo) -> Vec<WindowInfo> {
+        let pid = app.pid;
+        // (key, title, where, has the keyboard, on screen, the compositor's)
+        let mut found: Vec<(String, String, Rect, bool, bool, Option<Toplevel>)> = Vec::new();
+        if let Some(comp) = &self.comp {
+            for t in comp.toplevels().unwrap_or_default() {
+                if t.pid == Some(pid) {
+                    found.push((
+                        format!("wl:{}", t.id),
+                        t.title.clone(),
+                        t.rect,
+                        t.focused,
+                        t.visible,
+                        Some(t),
+                    ));
+                }
+            }
+        } else if let Ok(x) = self.x11() {
+            let wm = x.wm();
+            let front = wm.front();
+            for (win, title, rect, viewable) in wm.windows_of(pid) {
+                let Some(rect) = rect.filter(|r| !r.is_empty()) else {
+                    continue;
+                };
+                let focused = matches!(front, Some(Front::Window { win: w, .. }) if w == win);
+                found.push((format!("x11:{win}"), title, rect, focused, viewable, None));
+            }
+        }
+        // The same windows keep their handles.
+        let old: HashMap<String, ElementHandle> = self
+            .bare
+            .iter()
+            .filter(|(_, b)| b.pid == pid)
+            .map(|(h, b)| (b.key.clone(), *h))
+            .collect();
+        self.bare.retain(|_, b| b.pid != pid);
+        let mut out = Vec::new();
+        for (key, title, rect, focused, visible, top) in found {
+            let handle = old.get(&key).copied().unwrap_or_else(|| {
+                let h = self.next_handle;
+                self.next_handle += 1;
+                h
+            });
+            self.bare.insert(
+                handle,
+                Bare {
+                    pid,
+                    key: key.clone(),
+                },
+            );
+            match top {
+                Some(t) => {
+                    self.toplevels.insert(handle, t);
+                }
+                None => {
+                    self.toplevels.remove(&handle);
+                }
+            }
+            out.push(WindowInfo {
+                id: stable_id(&format!("{pid}:{key}")),
+                title: if title.is_empty() {
+                    app.name.clone()
+                } else {
+                    title
+                },
+                bounds: Some(rect),
+                focused,
+                main: focused,
+                minimized: !visible,
+                handle,
+            });
+        }
+        out
     }
 }
 

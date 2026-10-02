@@ -157,6 +157,13 @@ pub trait Backend {
         true
     }
 
+    /// What this desktop keeps the agent from doing, said once up front (a
+    /// Wayland desktop that doesn't let other programs click, type or take
+    /// screenshots in its apps). `None` when nothing is missing.
+    fn session_note(&mut self) -> Option<String> {
+        None
+    }
+
     /// How long ago anyone last used the mouse or keyboard: the system's
     /// idle time (synthesized input may count too; the engine allows for
     /// its own). Never what the input was. `None` if unknown.

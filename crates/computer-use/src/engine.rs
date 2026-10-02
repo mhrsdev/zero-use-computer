@@ -1871,6 +1871,12 @@ impl<B: Backend> Engine<B> {
                 a.name, a.id, a.pid, tags
             ));
         }
+        // What this desktop doesn't allow, said once.
+        if let Some(note) = self.backend.session_note()
+            && self.hints.first("session-note")
+        {
+            lines.push(format!("\nNote: {note}"));
+        }
         Ok(ToolOutput::text(lines.join("\n")))
     }
 
@@ -1883,6 +1889,14 @@ impl<B: Backend> Engine<B> {
                 "`app` must be an app name, bundle id or executable (no options or arguments)"
                     .into(),
             ));
+        }
+        // A web address: open it in the default browser.
+        if crate::launch::is_url(&args.app) {
+            crate::launch::open_url(&args.app)?;
+            return Ok(ToolOutput::text(format!(
+                "Opened {} in the default browser. Call list_apps, then get_app_state on the browser, to see it.",
+                args.app
+            )));
         }
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
         let program = self.backend.launch_app(&args.app)?;

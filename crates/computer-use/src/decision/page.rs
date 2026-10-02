@@ -54,7 +54,7 @@ pub fn open(path: Option<PathBuf>) -> Result<(String, std::result::Result<(), St
     }
     let server = Server::bind(path)?;
     let url = server.url.clone();
-    let alive = server.alive.clone();
+    let alive = server.page.alive.clone();
     std::thread::Builder::new()
         .name("settings-page".into())
         .spawn(move || server.run())
@@ -85,81 +85,7 @@ pub fn serve(path: Option<PathBuf>, browser: bool, ready: impl FnOnce(&str)) -> 
 
 /// Open `url` in the user's default browser.
 pub fn open_browser(url: &str) -> Result<()> {
-    if !(url.starts_with("http://") || url.starts_with("https://"))
-        || url.contains(char::is_whitespace)
-    {
-        return Err(Error::InvalidArgs(format!("not a web address: {url}")));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // The shell may hand the address to COM objects: on a thread of
-        // its own, with COM set up there.
-        let target = url.to_string();
-        let code = std::thread::spawn(move || {
-            use windows::Win32::System::Com::{
-                COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
-            };
-            use windows::Win32::UI::Shell::ShellExecuteW;
-            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            use windows::core::{HSTRING, PCWSTR, w};
-            let file = HSTRING::from(target.as_str());
-            // SAFETY: COM set up and torn down on this thread; plain
-            // strings for the shell to open, no window handle.
-            unsafe {
-                let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-                let r = ShellExecuteW(
-                    None,
-                    w!("open"),
-                    &file,
-                    PCWSTR::null(),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                );
-                if init.is_ok() {
-                    CoUninitialize();
-                }
-                r.0 as usize
-            }
-        })
-        .join()
-        .unwrap_or(0);
-        // ShellExecute reports success with a value above 32.
-        if code <= 32 {
-            return Err(Error::Platform(format!(
-                "couldn't open the browser (error {code}); open {url} yourself"
-            )));
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(url);
-        crate::backend::spawn_detached(cmd).map_err(|e| {
-            Error::Platform(format!(
-                "couldn't open the browser ({e}); open {url} yourself"
-            ))
-        })
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let mut last = None;
-        for opener in ["xdg-open", "gio", "sensible-browser", "x-www-browser"] {
-            let mut cmd = std::process::Command::new(opener);
-            if opener == "gio" {
-                cmd.arg("open");
-            }
-            cmd.arg(url);
-            match crate::backend::spawn_detached(cmd) {
-                Ok(()) => return Ok(()),
-                Err(e) => last = Some(e),
-            }
-        }
-        Err(Error::Platform(format!(
-            "couldn't open the browser ({}); open {url} yourself",
-            last.map(|e| e.to_string()).unwrap_or_default()
-        )))
-    }
+    crate::launch::open_url(url)
 }
 
 /// 128 random bits as hex.
@@ -192,11 +118,23 @@ fn token() -> String {
 struct Server {
     listener: TcpListener,
     url: String,
+    page: Arc<Page>,
+}
+
+/// What every connection's thread shares.
+struct Page {
     host: String,
     token: String,
     path: Option<PathBuf>,
     alive: Arc<AtomicBool>,
+    /// When the last request came.
+    last: Mutex<Instant>,
+    /// One change to the settings file at a time.
+    editing: Mutex<()>,
 }
+
+/// Connections served at once, at most (a browser opens a few spare ones).
+const MAX_CONNECTIONS: usize = 16;
 
 struct Request {
     method: String,
@@ -226,37 +164,55 @@ impl Server {
         let host = format!("127.0.0.1:{port}");
         Ok(Self {
             url: format!("http://{host}/{token}/"),
-            host,
-            token,
             listener,
-            path,
-            alive: Arc::new(AtomicBool::new(true)),
+            page: Arc::new(Page {
+                host,
+                token,
+                path,
+                alive: Arc::new(AtomicBool::new(true)),
+                last: Mutex::new(Instant::now()),
+                editing: Mutex::new(()),
+            }),
         })
     }
 
+    /// Serve until the page is closed or left unused. Each connection has
+    /// a thread of its own: a browser keeps spare connections open without
+    /// sending anything on them, and they must not hold up the page.
     fn run(self) {
+        use std::sync::atomic::AtomicUsize;
         let _ = self.listener.set_nonblocking(true);
-        let mut last = Instant::now();
-        while self.alive.load(Ordering::SeqCst) && last.elapsed() < IDLE {
+        let open = Arc::new(AtomicUsize::new(0));
+        let idle = |p: &Page| p.last.lock().map(|t| t.elapsed() >= IDLE).unwrap_or(true);
+        while self.page.alive.load(Ordering::SeqCst) && !idle(&self.page) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    last = Instant::now();
+                    if open.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                        continue; // dropped: the browser tries again
+                    }
                     let _ = stream.set_nonblocking(false);
-                    if let Some(done) = self.handle(stream)
-                        && done
-                    {
-                        break;
+                    open.fetch_add(1, Ordering::SeqCst);
+                    let (page, conns) = (self.page.clone(), open.clone());
+                    let spawned = std::thread::Builder::new()
+                        .name("settings-page-conn".into())
+                        .spawn(move || {
+                            if page.handle(stream) == Some(true) {
+                                page.alive.store(false, Ordering::SeqCst);
+                            }
+                            conns.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    if spawned.is_err() {
+                        open.fetch_sub(1, Ordering::SeqCst);
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => std::thread::sleep(Duration::from_millis(30)),
             }
         }
-        self.alive.store(false, Ordering::SeqCst);
+        self.page.alive.store(false, Ordering::SeqCst);
     }
+}
 
+impl Page {
     /// Answer one request; `Some(true)` when the user closed the page.
     fn handle(&self, mut stream: TcpStream) -> Option<bool> {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -268,6 +224,9 @@ impl Server {
                 return None;
             }
         };
+        if let Ok(mut t) = self.last.lock() {
+            *t = Instant::now();
+        }
         // DNS rebinding: a page of another site under a name that points
         // here sends its own Host.
         if req.header("host") != Some(self.host.as_str()) {
@@ -403,6 +362,7 @@ impl Server {
         if let Err(e) = Decider::from_config(&d) {
             return json!({"ok": false, "error": e.to_string()});
         }
+        let _one = self.editing.lock();
         match save_settings(path, &d) {
             Ok(()) => json!({
                 "ok": true,
@@ -417,6 +377,7 @@ impl Server {
         let Some(path) = &self.path else {
             return json!({"ok": false, "error": "this server keeps its settings in memory"});
         };
+        let _one = self.editing.lock();
         match remove_settings(path) {
             Ok(()) => {
                 json!({"ok": true, "message": "Removed. The agent has no decision model now."})
@@ -573,9 +534,9 @@ mod tests {
     fn start(path: Option<PathBuf>) -> (String, String, Arc<AtomicBool>) {
         let server = Server::bind(path).unwrap();
         let (host, token, alive) = (
-            server.host.clone(),
-            server.token.clone(),
-            server.alive.clone(),
+            server.page.host.clone(),
+            server.page.token.clone(),
+            server.page.alive.clone(),
         );
         std::thread::spawn(move || server.run());
         (host, token, alive)
@@ -692,6 +653,26 @@ mod tests {
         }
         assert!(!alive.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_silent_connection_doesnt_hold_up_the_page() {
+        let (host, token, alive) = start(None);
+        // A browser's spare connection: open, and nothing sent on it.
+        let _spare = TcpStream::connect(&host).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        let page = request(
+            &host,
+            &format!("GET /{token}/ HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        );
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        alive.store(false, Ordering::SeqCst);
     }
 
     #[test]

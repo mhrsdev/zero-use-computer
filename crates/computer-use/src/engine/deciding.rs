@@ -100,7 +100,15 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn decider(&self) -> Result<Decider> {
-        match Decider::from_config(&self.store.config.decision) {
+        // Without hot reload, settings saved on the page since the start are
+        // read from the file.
+        let fresh = (!self.store.config.hot_reload)
+            .then_some(self.store.path.as_deref())
+            .flatten()
+            .and_then(|p| ConfigStore::load(Some(p)).ok())
+            .map(|s| s.config.decision);
+        let settings = fresh.as_ref().unwrap_or(&self.store.config.decision);
+        match Decider::from_config(settings) {
             Ok(Some(d)) => Ok(d),
             Ok(None) => Err(Error::ActionFailed(self.not_set_up())),
             Err(e) => Err(Error::ActionFailed(format!(

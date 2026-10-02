@@ -14,6 +14,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result};
+
 /// How many near names a "not found" error suggests.
 const SUGGESTIONS: usize = 5;
 
@@ -353,9 +355,113 @@ pub fn application_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether `s` is a web address `open_url` takes: http or https, one
+/// line, no spaces.
+pub fn is_url(s: &str) -> bool {
+    let low = s.trim().to_ascii_lowercase();
+    (low.starts_with("http://") || low.starts_with("https://"))
+        && s.len() < 4096
+        && !s
+            .trim()
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+        && s.trim().len() > "https://".len()
+}
+
+/// Open a web address in the user's default browser (only http and https
+/// addresses, one line).
+pub fn open_url(url: &str) -> Result<()> {
+    let url = url.trim();
+    if !is_url(url) {
+        return Err(Error::InvalidArgs(format!("not a web address: {url}")));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // The shell may hand the address to COM objects: on a thread of
+        // its own, with COM set up there.
+        let target = url.to_string();
+        let code = std::thread::spawn(move || {
+            use windows::Win32::System::Com::{
+                COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+            };
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            use windows::core::{HSTRING, PCWSTR, w};
+            let file = HSTRING::from(target.as_str());
+            // SAFETY: COM set up and torn down on this thread; plain
+            // strings for the shell to open, no window handle.
+            unsafe {
+                let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                let r = ShellExecuteW(
+                    None,
+                    w!("open"),
+                    &file,
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                );
+                if init.is_ok() {
+                    CoUninitialize();
+                }
+                r.0 as usize
+            }
+        })
+        .join()
+        .unwrap_or(0);
+        // ShellExecute reports success with a value above 32.
+        if code <= 32 {
+            return Err(Error::Platform(format!(
+                "couldn't open the browser (error {code}); open {url} yourself"
+            )));
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(url);
+        crate::backend::spawn_detached(cmd).map_err(|e| {
+            Error::Platform(format!(
+                "couldn't open the browser ({e}); open {url} yourself"
+            ))
+        })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let mut last = None;
+        for opener in ["xdg-open", "gio", "sensible-browser", "x-www-browser"] {
+            let mut cmd = std::process::Command::new(opener);
+            if opener == "gio" {
+                cmd.arg("open");
+            }
+            cmd.arg(url);
+            match crate::backend::spawn_detached(cmd) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(Error::Platform(format!(
+            "couldn't open the browser ({}); open {url} yourself",
+            last.map(|e| e.to_string()).unwrap_or_default()
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_addresses_are_told_from_apps() {
+        assert!(is_url("https://www.digikala.com/search/?q=headphones"));
+        assert!(is_url("http://127.0.0.1:8080/x"));
+        assert!(!is_url("firefox"));
+        assert!(!is_url("https://"));
+        assert!(!is_url("https://a b"));
+        assert!(!is_url("file:///etc/passwd"));
+        assert!(!is_url("javascript:alert(1)"));
+        assert!(!is_url("https://x\n--flag"));
+    }
 
     #[test]
     fn program_keys_are_file_names_without_extension() {

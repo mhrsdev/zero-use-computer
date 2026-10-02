@@ -1,5 +1,63 @@
 # Changelog
 
+## v3.2.0
+
+A decision model for speed, set up with Ctrl+Alt+J; apps without
+accessibility on Linux; fixes from testing on Hyprland with Firefox
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.1.0...v3.2.0)).
+
+### Decision model (Jev)
+
+- **`decide`**: typed answers from a fast decision model — yes/no (the
+  probability of yes), one of some options, a score on a scale — about
+  text or JSON, **each of many items in parallel** (with a summary), or an
+  app's window (which never enters the conversation). `pick` returns the
+  `element_index` of the element a description means.
+- **`wait_for(until=…)`**: waits until the model answers yes about the
+  window ("have the results loaded?").
+- **Scripts**: `ask`, `choose`, `score`, `decide`, `decide_each`.
+- Speaks **TypeSafe's System One API** (Jev, and servers that speak it:
+  local-jev, jeff, LiteLLM) and any **OpenAI-compatible** chat API (a JSON
+  answer from a small, fast model).
+- **Ctrl+Alt+J** (`control.settings_hotkey`) opens a settings page in the
+  browser, from any app: kind of model, address, model, key; Test and
+  Save; used at once. Registered on X11, Hyprland and sway (a compositor
+  binding), Windows and macOS like the stop key. `computer-use-mcp
+  settings` opens it too. The skill suggests it once when a task would
+  gain from it; the agent sets the model from the chat only when the user
+  asks.
+- The key stays private: kept in `config.toml` (then readable by its owner
+  only), given to `curl` on its input, never shown back (the page,
+  `doctor`, `config show/get` and the tool show its last four characters).
+  The page lives on 127.0.0.1 at a random address, refuses other sites and
+  host names (DNS rebinding), and closes after 15 minutes unused.
+- `doctor` reports the settings key and asks the model a test question.
+
+### Linux
+
+- **Apps without accessibility** (terminals such as foot, kitty, xterm;
+  some Electron apps) are listed from the compositor (Hyprland, sway) or
+  the window manager (X11, including apps that never say their pid, found
+  through XRes), and their windows are used through screenshots (and OCR
+  when Tesseract is installed), the mouse and the keyboard. Before, they
+  only showed up when in front, and then as an error.
+- "Desktop" (listed when no app window has the keyboard) now says what it
+  is and what to do instead, not "not supported on this platform".
+- Browsers' pages show their address (Firefox's `DocURL`, Chromium's
+  `URI`) as the value of the web area.
+- Actions without a proper name (Firefox gives some a key binding as their
+  name, `;;`) are named from their description, or dropped; an unnamed
+  default action is still clickable.
+- A Wayland desktop that keeps input and screenshots from other programs
+  (GNOME, KDE Plasma) is named once in `list_apps`, with what still works.
+
+### Everywhere
+
+- `launch_app("https://…")` opens a web address in the default browser.
+- Browser notes in the skill: one way to enter an address (never set and
+  typed), the address in the tree, Wayland, and never working around the
+  tools with ydotool or wtype.
+
 ## v3.1.0
 
 Wayland: Hyprland, sway and the other wlroots-family compositors work in
