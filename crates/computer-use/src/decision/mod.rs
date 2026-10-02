@@ -333,6 +333,13 @@ impl std::fmt::Debug for Decider {
     }
 }
 
+/// The default settings key as this system names it.
+pub const SETTINGS_KEY: &str = if cfg!(target_os = "macos") {
+    "Ctrl+Option+J"
+} else {
+    "Ctrl+Alt+J"
+};
+
 /// How to reach the decision model when none is set up.
 pub const NOT_SET_UP: &str = "no decision model is set up. Ask the user to press Ctrl+Alt+J: a page opens in their browser where they add one (TypeSafe's Jev, or any OpenAI-compatible model) and its API key, which then never goes through the chat. Or decide setup=\"open\" opens that page for them.";
 
@@ -725,11 +732,11 @@ fn check_status(code: u16, text: &str, d: &Decider) -> Result<()> {
     let detail: String = detail.chars().take(400).collect();
     Err(Error::ActionFailed(match code {
         401 | 403 => format!(
-            "the decision model ({}) refused the API key (HTTP {code}: {detail}). The user can fix it on the settings page (Ctrl+Alt+J).",
+            "the decision model ({}) refused the API key (HTTP {code}: {detail}). The user can fix it on the settings page ({SETTINGS_KEY}).",
             d.label()
         ),
         404 => format!(
-            "the decision model ({}) wasn't found (HTTP 404: {detail}): the address or the model name is wrong. The user can fix it on the settings page (Ctrl+Alt+J).",
+            "the decision model ({}) wasn't found (HTTP 404: {detail}): the address or the model name is wrong. The user can fix it on the settings page ({SETTINGS_KEY}).",
             d.label()
         ),
         422 | 400 => format!("the decision model rejected the request (HTTP {code}): {detail}"),

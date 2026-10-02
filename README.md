@@ -22,7 +22,7 @@ cost it the most — "is this review positive?" over 50 reviews at once,
 "has the page loaded?", "which element is the add-to-cart button?" — and
 gets typed answers in well under a second, without reading it all itself
 (the `decide` tool, `wait_for(until)`, and `ask`/`choose`/`score` in
-scripts). **Press Ctrl+Alt+J** anywhere: a settings page opens in your
+scripts). **Press Ctrl+Alt+J** (Ctrl+Option+J on a Mac) anywhere: a settings page opens in your
 browser for the model and its key, which never goes through the chat.
 Also on Linux: apps without accessibility (terminals, some Electron apps)
 work through screenshots, the mouse and the keyboard; browsers show the
@@ -222,8 +222,8 @@ milliseconds, and writes no text. The agent asks it through:
 - `ask`, `choose`, `score`, `decide`, `decide_each` in [scripts](#scripts),
   so a saved script can judge as it goes.
 
-**Setting it up:** press **Ctrl+Alt+J** (`control.settings_hotkey`) from
-any app, or run `computer-use-mcp settings`. A page opens in your browser:
+**Setting it up:** press **Ctrl+Alt+J** (Ctrl+Option+J on a Mac;
+`control.settings_hotkey`) from any app, or run `computer-use-mcp settings`. A page opens in your browser:
 choose **Jev** (TypeSafe's System One API, or a server that speaks it, like
 local-jev) or an **OpenAI-compatible** model (OpenAI, Groq, Cerebras,
 OpenRouter, Ollama…), give its address, model and API key, press Test and

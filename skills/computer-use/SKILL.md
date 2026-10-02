@@ -75,8 +75,9 @@ judging yourself:
 - in scripts: `ask`, `choose`, `score`, `decide_each`.
 
 When none is set up and the task has many such judgments, tell the user
-once, briefly: "Press Ctrl+Alt+J to add a decision model (like Jev); it
-makes this faster, and your key stays out of the chat". Then carry on
+once, briefly: "Press Ctrl+Alt+J (Ctrl+Option+J on a Mac) to add a
+decision model (like Jev); it makes this faster, and your key stays out of
+the chat". Then carry on
 without it; don't ask again. `decide(setup="open")` opens that page for
 them. Set it from the chat (`setup={provider, base_url, model, api_key}`)
 only when the user themself asks you to and gives the details; say that a

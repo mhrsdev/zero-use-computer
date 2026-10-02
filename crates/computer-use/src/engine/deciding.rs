@@ -675,7 +675,8 @@ mod tests {
         let mut e = engine(DecisionConfig::default());
         let out = e.call_tool("decide", json!({"question": "Is it?", "state": "x"}));
         assert!(out.is_error);
-        assert!(out.text.contains("Ctrl+Alt+J"), "{}", out.text);
+        let key = crate::overlay::helper::pretty_key(&Config::default().control.settings_hotkey);
+        assert!(out.text.contains(&key), "{}", out.text);
         let status = e.call_tool("decide", json!({"setup": "status"}));
         assert!(status.text.contains("No decision model"), "{}", status.text);
     }

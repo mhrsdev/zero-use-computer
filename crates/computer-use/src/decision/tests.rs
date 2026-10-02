@@ -192,7 +192,7 @@ fn http_errors_say_what_to_do() {
         e.contains("refused the API key") && e.contains("invalid api key"),
         "{e}"
     );
-    assert!(e.contains("Ctrl+Alt+J"), "{e}");
+    assert!(e.contains(SETTINGS_KEY), "{e}");
 
     let f = fake(|_| (422, r#"{"detail":[{"msg":"too many labels"}]}"#.into()));
     let e = decider("jev", &f.url, "k")
