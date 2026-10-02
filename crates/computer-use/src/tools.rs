@@ -134,6 +134,10 @@ pub struct GetAppStateArgs {
     /// whole tree, nothing folded or cut.
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    /// Only this element and what is in it (a look that doesn't change
+    /// what later diffs are against).
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub within: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -501,6 +505,9 @@ pub struct FindElementArgs {
     pub editable: bool,
     #[serde(default = "twenty")]
     pub max_results: usize,
+    /// Skip this many matches (the next page of results).
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 fn twenty() -> usize {
@@ -1464,7 +1471,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
                     "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."},
                     "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."},
-                    "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."}
+                    "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."},
+                    "within": index_prop("Only this element and what is in it (a table, a panel, a dialog's part)."),
                 }),
                 &[],
             ),
@@ -1730,7 +1738,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "name": {"type": "string", "description": "Case-insensitive substring of the element's name/label."},
                     "text": {"type": "string", "description": "Case-insensitive substring of the element's name or value."},
                     "editable": {"type": "boolean", "default": false, "description": "Only editable elements."},
-                    "max_results": {"type": "integer", "minimum": 1, "default": 20}
+                    "max_results": {"type": "integer", "minimum": 1, "default": 20},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Skip this many matches: the next page."}
                 }),
                 &[],
             ),
@@ -1926,7 +1935,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Start an app by name/id and wait for its window, or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part."
         }
         "click" => {
             "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it."
@@ -1949,7 +1958,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "type_text" => {
             "Type text into the focused element (element_index focuses first; x,y points the mouse there first)."
         }
-        "find_element" => "Find elements by role/name/text; returns their indices.",
+        "find_element" => {
+            "Find elements by role/name/text; returns their indices (offset: the next page)."
+        }
         "wait_for" => {
             "Wait until an element matching role/name/text (and state) appears, or until the decision model answers yes to until=\"question about the window\"."
         }
@@ -2279,6 +2290,7 @@ mod tests {
                 screenshot: None,
                 ocr: false,
                 max_tokens: None,
+                within: None,
             })
         );
         let c = ToolCall::parse(

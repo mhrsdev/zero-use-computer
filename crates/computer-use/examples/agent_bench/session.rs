@@ -202,6 +202,8 @@ impl Session {
     /// `[+~] <index> <role> "<name>" …`).
     pub fn index(&self, pred: impl Fn(&str) -> bool) -> Option<u32> {
         for text in self.seen.iter().rev() {
+            // Records (look-alike siblings on one line) one a line.
+            let text = computer_use::tree::expand(text);
             for line in text.lines().rev() {
                 let l = line.trim_start();
                 let l = l

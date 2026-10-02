@@ -169,6 +169,32 @@ pub struct TreeConfig {
     /// Explanations (what a diff or a partial screenshot means) in full the
     /// first time and in a few words after that. false = in full every time.
     pub brief_repeats: bool,
+    /// Say each thing once, losing nothing: look-alike siblings as records
+    /// (roles once, one line a record), a table's cells a row a line,
+    /// flags and actions the role implies left out, many removed elements
+    /// as ranges of indices, added ones under their parent, a short header
+    /// when the window is as before, no echo of a value just set.
+    pub compact: bool,
+    /// What an action's result says of what changed (see [`Report`]).
+    pub report: Report,
+    /// Elements that change on their own (clocks, progress, spinners):
+    /// after a few reports in a row, summed up in one line instead of
+    /// listed every time.
+    pub quiet_volatile: bool,
+}
+
+/// How much of what changed an action's result reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Report {
+    /// Every change, up to `report_changes_max_lines`. Default.
+    #[default]
+    Full,
+    /// Changes in and around what the action acted on, new windows and
+    /// added elements; how many others there are.
+    Relevant,
+    /// How many changes there are, and a new screen or window.
+    Brief,
 }
 
 /// How much a tree over the token budget is shortened.
@@ -204,6 +230,9 @@ impl Default for TreeConfig {
             summarize: Summarize::Normal,
             fold_keep: 5,
             brief_repeats: true,
+            compact: true,
+            report: Report::Full,
+            quiet_volatile: false,
         }
     }
 }

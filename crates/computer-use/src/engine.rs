@@ -60,6 +60,12 @@ struct AppState {
     /// The last picture those areas were found and read in: its
     /// fingerprint, the areas and the text read in them.
     blind_cache: Option<(PixelSig, Vec<Rect>, Vec<OcrLine>)>,
+    /// The header of the last get_app_state (app, window, place): the next
+    /// one is short if it is the same ([tree] compact).
+    header_seen: Option<String>,
+    /// Elements whose line changed in the last reports, by key, and in how
+    /// many of them in a row ([tree] quiet_volatile).
+    volatile: HashMap<u64, u8>,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -84,13 +90,26 @@ enum Picture {
         id: u32,
         base: Option<u32>,
         at: (u32, u32),
+        changed: Option<Changed>,
     },
     /// The whole window (an overview when `overview`).
     Whole {
         img: EncodedImage,
         id: u32,
         overview: bool,
+        changed: Option<Changed>,
     },
+}
+
+/// Where a window's pixels changed since the model's last picture of it.
+#[derive(Clone, Copy)]
+struct Changed {
+    /// On screen.
+    screen: Rect,
+    /// In the screenshot the model has, as x/y take them.
+    shot: (u32, u32, u32, u32),
+    /// Share of the window.
+    share: f64,
 }
 
 /// The last full-screen screenshot the model got: its fingerprint, scale
@@ -181,6 +200,9 @@ pub struct Engine<B: Backend> {
     /// Screenshots handed out so far: each gets the next number, so a
     /// changed part can name the picture it patches.
     shots: u32,
+    /// The element the current action acts on (app pid, index), for a
+    /// report of the changes around it ([tree] report = "relevant").
+    target: Option<(u32, u32)>,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -270,6 +292,12 @@ struct Refreshed {
     changes: usize,
     /// Interactive elements in the pruned tree.
     interactive: usize,
+    /// Where the elements a diff reports added or changed are (screen).
+    touched: Vec<Rect>,
+    /// Elements a diff reports removed.
+    removed: usize,
+    /// Changes left out: elements that keep changing on their own.
+    restless: Vec<u32>,
 }
 
 /// A resolved click/scroll/drag anchor.
@@ -307,6 +335,7 @@ impl<B: Backend> Engine<B> {
             screen_shot: None,
             pending_screen_shot: None,
             shots: 0,
+            target: None,
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -1328,6 +1357,9 @@ impl<B: Backend> Engine<B> {
                 .iter()
                 .filter(|n| crate::roles::is_interactive(&n.role) || n.states.editable)
                 .count(),
+            touched: Vec::new(),
+            removed: 0,
+            restless: Vec::new(),
         };
         let mut budget = tree::Budget::from_config(tcfg);
         if let Some(tokens) = max_tokens {
@@ -1339,8 +1371,27 @@ impl<B: Backend> Engine<B> {
                 out.full = true;
             }
             Some(view) => {
-                let d = view.diff(nodes);
+                let mut d = view.diff(nodes);
+                // Elements that keep changing on their own: one line.
+                let mut restless: Vec<u32> = Vec::new();
+                if tcfg.quiet_volatile && seen == Seen::Same {
+                    d.changed.retain(|(pos, _)| {
+                        let n = &nodes[*pos];
+                        let busy = st.volatile.get(&n.key).is_some_and(|c| *c >= 2);
+                        if busy {
+                            restless.push(n.index);
+                        }
+                        !busy
+                    });
+                }
                 out.changes = d.len();
+                out.removed = d.removed.len();
+                out.touched = d
+                    .added
+                    .iter()
+                    .chain(d.changed.iter().map(|(p, _)| p))
+                    .filter_map(|&p| nodes[p].bounds)
+                    .collect();
                 let large = out.changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64;
                 if full || !tcfg.diff || large {
                     out.text = tree::render_full_within(nodes, tcfg.indent, budget);
@@ -1355,8 +1406,16 @@ impl<B: Backend> Engine<B> {
                             tree::DIFF_INTRO,
                             "Changes (+ added, ~ changed, - removed):",
                         );
-                        tree::render_diff_with(&d, nodes, intro)
+                        tree::render_diff_with(&d, nodes, intro, tcfg.compact)
                     };
+                    if !restless.is_empty() {
+                        out.text.push_str(&format!(
+                            "~ {} element(s) that keep changing on their own left out: {}\n",
+                            restless.len(),
+                            tree::ranges(&mut restless.clone())
+                        ));
+                    }
+                    out.restless = restless;
                 } else if d.is_empty() {
                     out.text = if self.explain_first("revisit") {
                         format!(
@@ -1375,7 +1434,7 @@ impl<B: Backend> Engine<B> {
                     } else {
                         format!("Changes since you saw screen #{} (+/~/-):", st.screen)
                     };
-                    out.text = tree::render_diff_with(&d, nodes, &intro);
+                    out.text = tree::render_diff_with(&d, nodes, &intro, tcfg.compact);
                 }
                 // A diff gets the same budget as a whole tree.
                 if !out.full
@@ -1405,11 +1464,34 @@ impl<B: Backend> Engine<B> {
         };
         let cache = self.store.config.cache.clone();
         let view = View::from_nodes(&st.nodes);
+        let target_key = self
+            .target
+            .filter(|(p, _)| *p == pid)
+            .and_then(|(_, i)| st.nodes.iter().find(|n| n.index == i))
+            .map(|n| n.key);
+        let quiet_volatile = self.store.config.tree.quiet_volatile;
         let size = window.bounds.map(|b| (b.width, b.height));
         let origin = window.bounds.map(|b| (b.x, b.y));
         let mut size_changed = false;
         match st.known.as_mut() {
             Some(k) if k.id == st.screen => {
+                // Which elements changed since the model's last look, and
+                // how many looks in a row they did (the acted-on element's
+                // change isn't its own doing).
+                if quiet_volatile {
+                    let d = k.view.diff(&st.nodes);
+                    let changed: HashSet<u64> =
+                        d.changed.iter().map(|(p, _)| st.nodes[*p].key).collect();
+                    st.volatile.retain(|key, _| changed.contains(key));
+                    for key in changed {
+                        if Some(key) != target_key {
+                            let c = st.volatile.entry(key).or_default();
+                            *c = c.saturating_add(1);
+                        } else {
+                            st.volatile.remove(&key);
+                        }
+                    }
+                }
                 // The same screen in a window that moved or changed size: the
                 // model's screenshot still names the same places only if the
                 // size is the same, shifted by the move. (The tree's text
@@ -1549,7 +1631,14 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Look up an element handle by index in the app's latest state.
-    fn element_by_index(&self, app: &AppInfo, index: u32) -> Result<ElementHandle> {
+    fn element_by_index(&mut self, app: &AppInfo, index: u32) -> Result<ElementHandle> {
+        self.target = Some((app.pid, index));
+        self.handle_of(app, index)
+    }
+
+    /// The handle of an element by index, without making it the action's
+    /// target.
+    fn handle_of(&self, app: &AppInfo, index: u32) -> Result<ElementHandle> {
         let state = self
             .states
             .get(&app.pid)
@@ -1649,7 +1738,7 @@ impl<B: Backend> Engine<B> {
 
     /// Convert an element index / coordinate pair into a screen anchor.
     fn anchor(
-        &self,
+        &mut self,
         app: &AppInfo,
         index: Option<u32>,
         x: Option<f64>,
@@ -1805,6 +1894,9 @@ impl<B: Backend> Engine<B> {
             return Err(Error::InvalidArgs(
                 "a script can't start another script, through batch or otherwise: run(name, args) runs a saved script inside it".into(),
             ));
+        }
+        if self.depth == 0 {
+            self.target = None;
         }
         self.depth += 1;
         if self.depth == 1 {
@@ -2103,6 +2195,9 @@ impl<B: Backend> Engine<B> {
         let observed = self.observe(&app, &window, args.ocr);
         self.force_ocr = false;
         observed?;
+        if let Some(index) = args.within {
+            return self.part_of_tree(&app, &window, index, args.max_tokens);
+        }
         let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
         // The action before this one showed the start of this very tree:
         // only the rest is sent.
@@ -2133,12 +2228,23 @@ impl<B: Backend> Engine<B> {
                 b.width, b.height, b.x, b.y
             ));
         }
-        header.push_str(&format!(") · screen #{}", r.screen));
+        header.push(')');
+        // The app and window as the last look gave them: named only.
+        let compact = self.store.config.tree.compact;
+        if let Some(st) = self.states.get_mut(&app.pid) {
+            let same = st.header_seen.as_deref() == Some(header.as_str());
+            st.header_seen = Some(header.clone());
+            if compact && same {
+                header = format!("App: {} · window \"{}\"", app.name, window.title);
+            }
+        }
+        header.push_str(&format!(" · screen #{}", r.screen));
         match r.seen {
             Seen::New => header.push_str(" (new)"),
             Seen::Revisit => header.push_str(" (seen before)"),
             Seen::Same => {}
         }
+        let head_len = header.len();
         let (ocr_lines, blind) = self
             .state(app.pid)
             .map(|s| (s.ocr_lines, s.blind.len()))
@@ -2215,6 +2321,7 @@ impl<B: Backend> Engine<B> {
             });
         let force = args.screenshot == Some(true);
         let mut image = None;
+        let mut stale: Option<Changed> = None;
         if want {
             // The picture just read for OCR, if any, is the screenshot.
             let reuse = match self.last_capture.take() {
@@ -2262,7 +2369,14 @@ impl<B: Backend> Engine<B> {
                                 format!("\nScreenshot: unchanged{at}, not re-sent.")
                             });
                         }
-                        Ok(Picture::Part { img, id, base, at }) => {
+                        Ok(Picture::Part {
+                            img,
+                            id,
+                            base,
+                            at,
+                            changed,
+                        }) => {
+                            stale = changed;
                             let (w, h, (ox, oy)) = (img.width, img.height, at);
                             let (x1, y1) = (ox + w, oy + h);
                             header.push_str(&match base {
@@ -2278,7 +2392,13 @@ impl<B: Backend> Engine<B> {
                             });
                             image = Some(img);
                         }
-                        Ok(Picture::Whole { img, id, overview }) => {
+                        Ok(Picture::Whole {
+                            img,
+                            id,
+                            overview,
+                            changed,
+                        }) => {
+                            stale = changed;
                             header.push_str(&format!(
                                 "\nScreenshot #{id}: {}x{} px.",
                                 img.width, img.height
@@ -2311,11 +2431,105 @@ impl<B: Backend> Engine<B> {
             ));
         }
 
+        // The pixels changed where the tree reports nothing (a toolkit that
+        // doesn't tell accessibility what it redrew): say where.
+        if let Some(c) = stale
+            && r.seen == Seen::Same
+            && !r.full
+            && r.removed == 0
+            && blind == 0
+            && c.share >= 0.1
+            && !r.touched.iter().any(|t| t.intersects(&c.screen))
+        {
+            let (x, y, w, h) = c.shot;
+            header.push_str(&format!(
+                "\n[The picture changed at x {x}–{}, y {y}–{} where the tree reports no change: the tree may be out of date there; trust the screenshot.]",
+                x + w,
+                y + h
+            ));
+        }
+        // Nothing new at all: one line says so.
+        let quiet = compact
+            && r.seen == Seen::Same
+            && r.changes == 0
+            && !r.full
+            && image.is_none()
+            && header[head_len..]
+                .lines()
+                .filter(|l| !l.is_empty())
+                .all(|l| {
+                    l.starts_with("Screenshot: unchanged")
+                        || l.starts_with("Screenshot: not attached")
+                });
+        if quiet {
+            let mut text = format!(
+                "{}: nothing changed since your last look (tree and screenshot)",
+                &header[..head_len]
+            );
+            if !r.restless.is_empty() {
+                text.push_str(&format!(
+                    ", but for {} element(s) that keep changing on their own: {}",
+                    r.restless.len(),
+                    tree::ranges(&mut r.restless.clone())
+                ));
+            }
+            text.push('.');
+            return Ok(ToolOutput::text(text));
+        }
         Ok(ToolOutput {
             text: format!("{header}\nTree:\n{}", r.text),
             image,
             is_error: false,
         })
+    }
+
+    /// One element and what is in it (get_app_state within=index): a look
+    /// that leaves what later diffs are against as it was.
+    fn part_of_tree(
+        &self,
+        app: &AppInfo,
+        window: &WindowInfo,
+        index: u32,
+        max_tokens: Option<usize>,
+    ) -> Result<ToolOutput> {
+        let st = self.state(app.pid)?;
+        let pos = st
+            .nodes
+            .iter()
+            .position(|n| n.index == index)
+            .ok_or_else(|| {
+                Error::InvalidArgs(format!(
+                    "unknown element_index {index}: call get_app_state for the current indices"
+                ))
+            })?;
+        let base = st.nodes[pos].depth;
+        let end = pos
+            + 1
+            + st.nodes[pos + 1..]
+                .iter()
+                .take_while(|n| n.depth > base)
+                .count();
+        let part: Vec<Node> = st.nodes[pos..end]
+            .iter()
+            .map(|n| {
+                let mut n = n.clone();
+                n.depth -= base;
+                n.parent = n.parent.filter(|p| *p >= pos).map(|p| p - pos);
+                n
+            })
+            .collect();
+        let tcfg = &self.store.config.tree;
+        let mut budget = tree::Budget::from_config(tcfg);
+        if let Some(tokens) = max_tokens {
+            budget.tokens = tokens;
+        }
+        let text = tree::render_full_within(&part, tcfg.indent, budget);
+        Ok(ToolOutput::text(format!(
+            "App: {} · window \"{}\" · element {index} and what is in it ({} element(s)):\n{text}",
+            app.name,
+            window.title,
+            part.len()
+        )))
     }
 
     /// What the model gets of a window's pixels, given what it already has
@@ -2348,6 +2562,37 @@ impl<B: Backend> Engine<B> {
             && cache.dedupe_screenshots
             && known_coord.is_some_and(|c| c.bounds == cap.bounds)
             && matches!((&sig, &known_pixels), (Some(a), Some(b)) if a.same_as(b, cache.pixel_tolerance));
+        // Where it changed, in screen and screenshot terms.
+        let changed = match (&sig, &known_pixels, known_coord) {
+            (Some(a), Some(b), Some(c)) if c.bounds == cap.bounds => a
+                .changed_area(b, cache.pixel_tolerance)
+                .map(|(x, y, w, h)| {
+                    let sx = cap.bounds.width / f64::from(cap.width.max(1));
+                    let sy = cap.bounds.height / f64::from(cap.height.max(1));
+                    let screen = Rect::new(
+                        cap.bounds.x + f64::from(x) * sx,
+                        cap.bounds.y + f64::from(y) * sy,
+                        f64::from(w) * sx,
+                        f64::from(h) * sy,
+                    );
+                    let kx = f64::from(c.width) / f64::from(cap.width.max(1));
+                    let ky = f64::from(c.height) / f64::from(cap.height.max(1));
+                    let shot = (
+                        (f64::from(x) * kx) as u32,
+                        (f64::from(y) * ky) as u32,
+                        (f64::from(w) * kx).ceil() as u32,
+                        (f64::from(h) * ky).ceil() as u32,
+                    );
+                    let share = f64::from(w) * f64::from(h)
+                        / (f64::from(cap.width) * f64::from(cap.height)).max(1.0);
+                    Changed {
+                        screen,
+                        shot,
+                        share,
+                    }
+                }),
+            _ => None,
+        };
         if unchanged {
             // The model already has this picture.
             if let Some(st) = self.states.get_mut(&pid) {
@@ -2371,7 +2616,13 @@ impl<B: Backend> Engine<B> {
                 pixels: sig,
                 id: base.unwrap_or(id),
             });
-            return Ok(Picture::Part { img, id, base, at });
+            return Ok(Picture::Part {
+                img,
+                id,
+                base,
+                at,
+                changed,
+            });
         }
         if overview {
             shot_cfg.max_dimension = shot_cfg.overview_max_dimension;
@@ -2385,7 +2636,12 @@ impl<B: Backend> Engine<B> {
             pixels: sig,
             id,
         });
-        Ok(Picture::Whole { img, id, overview })
+        Ok(Picture::Whole {
+            img,
+            id,
+            overview,
+            changed,
+        })
     }
 
     /// With `screenshot.scope = "auto"`: the pixel area of a new capture worth
@@ -2620,6 +2876,14 @@ impl<B: Backend> Engine<B> {
         self.settle_on(&app);
         let shown = tree::truncate(&args.value, 80);
         let mut msg = format!("Set {} to \"{shown}\".{how}", node.label());
+        // The field shows it: the value is the one just sent, not news.
+        if self.store.config.tree.compact
+            && how.is_empty()
+            && self.verified()
+            && self.value_took(&app, args.element_index, &args.value) == Some(true)
+        {
+            msg = format!("Set {}; it shows the new value.", node.label());
+        }
         if self.verified() && self.value_took(&app, args.element_index, &args.value) == Some(false)
         {
             let fresh = self.node_by_index(&app, args.element_index).ok().cloned();
@@ -2800,7 +3064,7 @@ impl<B: Backend> Engine<B> {
         // The element's box (screen coordinates).
         let element = match element_index {
             Some(i) => {
-                let h = self.element_by_index(app, i)?;
+                let h = self.handle_of(app, i)?;
                 let b = self
                     .state(app.pid)
                     .ok()
@@ -4512,7 +4776,7 @@ impl<B: Backend> Engine<B> {
         let name = args.name.map(|n| crate::text::fold(&n));
         let text = args.text.map(|t| crate::text::fold(&t));
         let state = self.state(app.pid)?;
-        let mut hits: Vec<&Node> = state
+        let hits: Vec<&Node> = state
             .nodes
             .iter()
             .filter(|n| {
@@ -4526,14 +4790,41 @@ impl<B: Backend> Engine<B> {
                     && (!args.editable || n.states.editable)
             })
             .collect();
-        hits.truncate(args.max_results.max(1));
+        let total = hits.len();
+        let offset = args.offset.unwrap_or(0);
+        let hits: Vec<&Node> = hits
+            .into_iter()
+            .skip(offset)
+            .take(args.max_results.max(1))
+            .collect();
         if hits.is_empty() {
-            return Ok(ToolOutput::text(format!(
-                "No elements in {} match. Try get_app_state to see the whole tree.",
-                app.name
-            )));
+            return Ok(ToolOutput::text(if total > 0 {
+                format!(
+                    "{total} element(s) in {} match; none after offset {offset}.",
+                    app.name
+                )
+            } else {
+                format!(
+                    "No elements in {} match. Try get_app_state to see the whole tree.",
+                    app.name
+                )
+            }));
         }
-        let mut out = format!("{} matching element(s) in {}:\n", hits.len(), app.name);
+        let next = offset + hits.len();
+        let mut out = if offset == 0 && next == total {
+            format!("{} matching element(s) in {}:\n", hits.len(), app.name)
+        } else {
+            format!(
+                "Matches {}–{next} of {total} in {}{}:\n",
+                offset + 1,
+                app.name,
+                if next < total {
+                    format!(" (offset={next} for the next ones)")
+                } else {
+                    String::new()
+                }
+            )
+        };
         for n in hits {
             out.push_str(&format!("{} {}\n", n.index, n.line));
         }
@@ -5012,7 +5303,9 @@ impl<B: Backend> Engine<B> {
                             "Screenshot of {label}: unchanged since your last screenshot of it{at}; not re-sent (mode=\"window\" sends it anyway).{note}"
                         ))
                     }
-                    Picture::Part { img, id, base, at } => {
+                    Picture::Part {
+                        img, id, base, at, ..
+                    } => {
                         let (ox, oy) = at;
                         let (x1, y1) = (ox + img.width, oy + img.height);
                         let of = base
@@ -5536,8 +5829,41 @@ impl<B: Backend> Engine<B> {
                 r.screen, window.title
             ),
         };
+        // How much of it to report ([tree] report). The model then hasn't
+        // seen all of it: the next get_app_state reports it.
+        use crate::config::Report;
+        let text = match self.store.config.tree.report {
+            Report::Brief => {
+                let count = if r.full {
+                    format!(
+                        "{} element(s)",
+                        self.state(app.pid).map(|s| s.nodes.len()).unwrap_or(0)
+                    )
+                } else {
+                    format!("{} change(s)", r.changes)
+                };
+                out.text
+                    .push_str(&format!("\n\n{title} {count}; get_app_state shows them."));
+                return out;
+            }
+            Report::Relevant if !r.full => {
+                let (text, others) = self.relevant_changes(app.pid, &r.text);
+                if others == 0 {
+                    r.text.clone()
+                } else {
+                    let max = self.store.config.tree.report_changes_max_lines.max(1);
+                    let lines: Vec<&str> = text.lines().take(max).collect();
+                    out.text.push_str(&format!(
+                        "\n\n{title}\n{}\n[{others} other change(s) elsewhere; get_app_state shows them]",
+                        lines.join("\n")
+                    ));
+                    return out;
+                }
+            }
+            _ => r.text.clone(),
+        };
         let max = self.store.config.tree.report_changes_max_lines.max(1);
-        let lines: Vec<&str> = r.text.lines().collect();
+        let lines: Vec<&str> = text.lines().collect();
         out.text.push_str("\n\n");
         out.text.push_str(&title);
         out.text.push('\n');
@@ -5559,6 +5885,65 @@ impl<B: Backend> Engine<B> {
             self.commit(app.pid, &window);
         }
         out
+    }
+
+    /// The lines of a change report about what the action acted on: the
+    /// changes in its container (its parent, or grandparent when the parent
+    /// holds little), added elements, the focused element; and how many
+    /// other changes there are.
+    fn relevant_changes(&self, pid: u32, text: &str) -> (String, usize) {
+        let Ok(st) = self.state(pid) else {
+            return (text.to_string(), 0);
+        };
+        let nodes = &st.nodes;
+        let mut keep: HashSet<u32> = nodes
+            .iter()
+            .filter(|n| n.states.focused)
+            .map(|n| n.index)
+            .collect();
+        if let Some((_, t)) = self.target.filter(|(p, _)| *p == pid)
+            && let Some(pos) = nodes.iter().position(|n| n.index == t)
+        {
+            let size = |p: usize| {
+                nodes[p + 1..]
+                    .iter()
+                    .take_while(|n| n.depth > nodes[p].depth)
+                    .count()
+            };
+            let mut container = nodes[pos].parent.unwrap_or(pos);
+            if size(container) < 4
+                && let Some(g) = nodes[container].parent
+            {
+                container = g;
+            }
+            let end = container + 1 + size(container);
+            keep.extend(nodes[container..end].iter().map(|n| n.index));
+        }
+        let mut out = String::new();
+        let mut others = 0;
+        for (i, line) in text.lines().enumerate() {
+            let changed = line
+                .strip_prefix("~ ")
+                .and_then(|l| l.split_whitespace().next())
+                .and_then(|t| t.parse::<u32>().ok());
+            let removed = line.starts_with("- ");
+            let shown = i == 0
+                || line.starts_with("+ ")
+                || line.starts_with("in ")
+                || changed.is_some_and(|x| keep.contains(&x))
+                || (changed.is_none() && !removed && !line.starts_with("~ "));
+            if shown {
+                out.push_str(line);
+                out.push('\n');
+            } else if let Some(rest) = line.strip_prefix("- ")
+                && let Some((n, _)) = rest.split_once(" removed:")
+            {
+                others += n.parse::<usize>().unwrap_or(1);
+            } else {
+                others += 1;
+            }
+        }
+        (out, others)
     }
 
     // -- describers --------------------------------------------------------
@@ -6344,6 +6729,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::mock::{Event, MockBackend};
+    use crate::tree::{expand, index_of};
 
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
@@ -7246,7 +7632,7 @@ mod tests {
         );
         // The report was the model's view of it: nothing new to say now.
         let out = state_of(&mut e, serde_json::json!({}));
-        assert!(out.text.contains("No changes"), "{}", out.text);
+        assert!(out.text.contains("nothing changed"), "{}", out.text);
         assert!(out.image.is_none());
     }
 
@@ -8946,11 +9332,7 @@ mod tests {
     // -- smart waiting and verification -------------------------------------
 
     fn index_of_name(out: &str, needle: &str) -> u32 {
-        out.lines()
-            .find(|l| l.contains(needle))
-            .and_then(|l| l.split_whitespace().next())
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_else(|| panic!("{needle} not in:\n{out}"))
+        index_of(out, needle).unwrap_or_else(|| panic!("{needle} not in:\n{out}"))
     }
 
     #[test]
@@ -9351,11 +9733,198 @@ mod tests {
     }
 
     #[test]
+    fn compact_looks_say_each_thing_once() {
+        let mut e = engine();
+        let first = state_of(&mut e, serde_json::json!({}));
+        assert!(
+            first
+                .text
+                .starts_with("App: TextEdit (com.apple.TextEdit, pid 4242) · window"),
+            "{}",
+            first.text
+        );
+        // A value the field now shows isn't echoed back.
+        let doc = index_of_name(&first.text, "\"Document\"");
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "Hi there"}),
+        );
+        assert!(
+            out.text
+                .starts_with("Set text area \"Document\"; it shows the new value."),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("value=\"Hi there\""),
+            "the report shows it: {}",
+            out.text
+        );
+        // Nothing new since: one line, the app and window named only.
+        let quiet = state_of(&mut e, serde_json::json!({}));
+        assert_eq!(
+            quiet.text,
+            "App: TextEdit · window \"Untitled\" · screen #1: nothing changed since your last look (tree and screenshot)."
+        );
+        // Part of the tree, without moving the baseline.
+        let toolbar = e
+            .state(4242)
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.role == "toolbar")
+            .unwrap()
+            .index;
+        let part = state_of(&mut e, serde_json::json!({"within": toolbar}));
+        assert!(
+            part.text.contains(&format!(
+                "element {toolbar} and what is in it (3 element(s))"
+            )),
+            "{}",
+            part.text
+        );
+        assert!(part.text.contains("Bold") && !part.text.contains("Document"));
+        let again = state_of(&mut e, serde_json::json!({}));
+        assert!(again.text.contains("nothing changed"), "{}", again.text);
+        let bad = e.call_tool(
+            "get_app_state",
+            serde_json::json!({"app": "TextEdit", "within": 999}),
+        );
+        assert!(bad.is_error && bad.text.contains("unknown element_index 999"));
+    }
+
+    #[test]
+    fn find_element_pages_through_many_matches() {
+        let mut e = long_list_engine(|_| {});
+        let out = e.call_tool(
+            "find_element",
+            serde_json::json!({"app": "TextEdit", "role": "list item", "max_results": 5, "offset": 5}),
+        );
+        assert!(out.text.starts_with("Matches 6–10 of 300"), "{}", out.text);
+        assert!(out.text.contains("offset=10"), "{}", out.text);
+        assert!(out.text.contains("Item 5\"") && out.text.contains("Item 9\""));
+        let out = e.call_tool(
+            "find_element",
+            serde_json::json!({"app": "TextEdit", "role": "list item", "offset": 400}),
+        );
+        assert!(out.text.contains("none after offset 400"), "{}", out.text);
+    }
+
+    #[test]
+    fn reports_can_be_brief_or_about_what_was_acted_on() {
+        // Brief: how many, and the new screen.
+        let mut e = nav_engine(true);
+        let mut cfg = e.store().config.clone();
+        cfg.tree.report = crate::config::Report::Brief;
+        e.set_config(ConfigStore::in_memory(cfg));
+        state_of(&mut e, serde_json::json!({}));
+        let out = press_named(&mut e, 7, "Next");
+        assert!(out.text.contains("now on screen #2 (new)"), "{}", out.text);
+        assert!(
+            out.text.contains("element(s); get_app_state shows them"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("Result 3"), "{}", out.text);
+        // The next look shows all of it.
+        let look = state_of(&mut e, serde_json::json!({}));
+        assert!(expand(&look.text).contains("Result 3"), "{}", look.text);
+
+        // Relevant: a toolbar of five buttons, a status line elsewhere.
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(9);
+        for (k, name) in ["Italic", "Underline", "Strike"].iter().enumerate() {
+            app.elements.push(
+                MockElement::new(
+                    40 + k as u64,
+                    "button",
+                    name,
+                    Rect::new(200.0 + 70.0 * k as f64, 8.0, 60.0, 24.0),
+                )
+                .child_of(2)
+                .with_actions(&["AXPress"]),
+            );
+        }
+        app.elements.push(
+            MockElement::new(
+                50,
+                "text",
+                "Status: ready",
+                Rect::new(0.0, 580.0, 300.0, 20.0),
+            )
+            .child_of(1),
+        );
+        let mut after = app.clone();
+        for el in after.elements.iter_mut() {
+            if el.handle == 50 {
+                el.name = Some("Status: bold on".into());
+            }
+            if el.handle == 41 {
+                el.name = Some("Underline (on)".into());
+            }
+        }
+        backend.add_app(app);
+        backend.on_press.insert(3, after);
+        let mut cfg = Config::default();
+        cfg.tree.report = crate::config::Report::Relevant;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        let first = e.call_tool("get_app_state", serde_json::json!({"app": "TextEdit"}));
+        let bold = index_of(&first.text, "\"Bold\"").unwrap();
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+        );
+        assert!(
+            out.text.contains("Underline (on)"),
+            "in the toolbar: {}",
+            out.text
+        );
+        assert!(!out.text.contains("bold on"), "elsewhere: {}", out.text);
+        assert!(
+            out.text.contains("[1 other change(s) elsewhere"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn what_changes_on_its_own_is_summed_up() {
+        let mut backend = MockBackend::new();
+        let mut app = MockBackend::text_editor(4242);
+        app.elements
+            .push(MockElement::new(60, "text", "", Rect::new(700.0, 8.0, 80.0, 20.0)).child_of(2));
+        backend.add_app(app);
+        for t in 0..8 {
+            backend
+                .snapshot_script
+                .push_back((60, format!("12:00:0{t}")));
+        }
+        let mut cfg = Config::default();
+        cfg.tree.quiet_volatile = true;
+        cfg.cache.snapshot_ttl_ms = 0;
+        let mut e =
+            Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let mut last = String::new();
+        for _ in 0..4 {
+            last = state_of(&mut e, serde_json::json!({})).text;
+        }
+        assert!(
+            last.contains("1 element(s) that keep changing on their own"),
+            "{last}"
+        );
+        assert!(!last.contains("value=\"12:00"), "{last}");
+    }
+
+    #[test]
     fn explanations_can_always_be_given_in_full() {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
         let mut cfg = Config::default();
         cfg.tree.brief_repeats = false;
+        // (A compact look that changed nothing is one line.)
+        cfg.tree.compact = false;
         let mut e =
             Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
         state_of(&mut e, serde_json::json!({}));
@@ -9373,6 +9942,9 @@ mod tests {
     #[test]
     fn explanations_are_given_once_then_kept_short() {
         let mut e = nav_engine(false);
+        let mut cfg = e.store().config.clone();
+        cfg.tree.compact = false;
+        e.set_config(ConfigStore::in_memory(cfg));
         state_of(&mut e, serde_json::json!({}));
         let first = state_of(&mut e, serde_json::json!({"screenshot": false}));
         assert!(

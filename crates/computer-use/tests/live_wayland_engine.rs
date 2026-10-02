@@ -218,13 +218,7 @@ fn engine_over_wayland() {
         "a screenshot of the window: {}",
         tree.text
     );
-    let entry = tree
-        .text
-        .lines()
-        .find(|l| l.contains("text field"))
-        .and_then(|l| l.split_whitespace().next())
-        .and_then(|t| t.parse::<u32>().ok())
-        .expect("entry index");
+    let entry = computer_use::tree::index_of(&tree.text, "text field").expect("entry index");
     let out = e.call_tool(
         "type_text",
         serde_json::json!({"app": app.id, "element_index": entry, "text": "héllo سلام ✓"}),

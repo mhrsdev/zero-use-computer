@@ -195,10 +195,16 @@ fn render_line(n: &RawNode, cfg: &TreeConfig) -> String {
         Some(false) => flags.push("collapsed"),
         None => {}
     }
+    let entry = cfg.compact && roles::is_text_entry(&n.role);
     if s.editable {
-        flags.push("editable");
+        // A text field is editable unless said otherwise.
+        if !entry {
+            flags.push("editable");
+        }
     } else if s.value_settable {
         flags.push("settable");
+    } else if entry {
+        flags.push("read-only");
     }
     if cfg.show_states && !flags.is_empty() {
         line.push_str(&format!(" ({})", flags.join(", ")));
@@ -211,6 +217,7 @@ fn render_line(n: &RawNode, cfg: &TreeConfig) -> String {
         .map(|a| a.name.as_str())
         .filter(|a| *a != "press" && *a != "scroll_to_visible")
         .filter(|a| interactive || *a != "show_menu")
+        .filter(|a| !(cfg.compact && roles::implied_action(&n.role, a, s.expanded.is_some())))
         .collect();
     if cfg.show_actions && !secondary.is_empty() {
         line.push_str(&format!(" actions=[{}]", secondary.join(", ")));
@@ -452,18 +459,425 @@ impl IndexAllocator {
 }
 
 pub fn render_full(nodes: &[Node], indent: usize) -> String {
+    render_nodes(nodes, indent, None, &HashMap::new(), false)
+}
+
+fn push_line(out: &mut String, n: &Node, indent: usize) {
+    pad(out, n.depth * indent);
+    out.push_str(&format!("{} {}\n", n.index, n.line));
+}
+
+fn pad(out: &mut String, spaces: usize) {
+    for _ in 0..spaces {
+        out.push(' ');
+    }
+}
+
+/// Where each element's subtree ends (exclusive) in a pre-order list.
+fn subtree_ends(nodes: &[Node]) -> Vec<usize> {
+    let mut end = vec![nodes.len(); nodes.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        while let Some(&t) = stack.last() {
+            if nodes[t].depth >= n.depth {
+                end[t] = i;
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        stack.push(i);
+    }
+    end
+}
+
+/// Render elements one a line, or, `compact`, look-alike siblings as
+/// records. Elements marked `hidden` are left out with their subtrees; a
+/// folded run says how many there are where it starts (`folded_at`).
+fn render_nodes(
+    nodes: &[Node],
+    indent: usize,
+    hidden: Option<&[bool]>,
+    folded_at: &HashMap<usize, usize>,
+    compact: bool,
+) -> String {
+    let none = vec![false; nodes.len()];
+    let hidden = hidden.unwrap_or(&none);
+    let end = subtree_ends(nodes);
+    let runs = if compact {
+        plan_runs(nodes, hidden, &end)
+    } else {
+        HashMap::new()
+    };
     let mut out = String::new();
-    for n in nodes {
+    let mut i = 0;
+    while i < nodes.len() {
+        let n = &nodes[i];
+        if hidden[i] {
+            if let Some(count) = folded_at.get(&i) {
+                pad(&mut out, n.depth * indent);
+                out.push_str(&format!(
+                    "[… {count} more \"{}\" folded; find_element finds them]\n",
+                    n.role
+                ));
+            }
+            // Skip the folded element and everything inside it.
+            i = end[i];
+            continue;
+        }
+        if let Some(run) = runs.get(&i) {
+            for line in &run.lines {
+                pad(&mut out, n.depth * indent);
+                out.push_str(line);
+                out.push('\n');
+            }
+            i = run.end;
+            continue;
+        }
         push_line(&mut out, n, indent);
+        i += 1;
     }
     out
 }
 
-fn push_line(out: &mut String, n: &Node, indent: usize) {
-    for _ in 0..n.depth * indent {
-        out.push(' ');
+/// Siblings drawn together: a header and their records.
+struct Run {
+    /// Lines, without indentation (they sit at the siblings' depth).
+    lines: Vec<String>,
+    /// Position after the run's last element.
+    end: usize,
+}
+
+/// Fewest look-alike siblings drawn as records.
+const MIN_RUN: usize = 3;
+/// Most elements in one record.
+const MAX_RECORD: usize = 6;
+/// Records of single elements on one line.
+const PER_LINE: usize = 6;
+
+/// An element's line without its role (records name the roles once), and
+/// without `common`, a suffix all its look-alikes share.
+fn bare(n: &Node, common: Option<&str>) -> String {
+    let mut rest = n.line.strip_prefix(n.role.as_str()).unwrap_or(&n.line);
+    if let Some(c) = common {
+        rest = rest.strip_suffix(c).unwrap_or(rest);
     }
-    out.push_str(&format!("{} {}\n", n.index, n.line));
+    format!("{}{}", n.index, rest)
+}
+
+/// The ` actions=[…]` ending of an element's line, if any.
+fn actions_suffix(line: &str) -> Option<&str> {
+    let at = line.rfind(" actions=[")?;
+    line.ends_with(']').then(|| &line[at..])
+}
+
+/// The suffix every element at the same place of each record shares.
+fn shared_suffix<'a>(nodes: &'a [Node], members: &[usize]) -> Option<&'a str> {
+    let first = actions_suffix(&nodes[*members.first()?].line)?;
+    members
+        .iter()
+        .all(|&m| actions_suffix(&nodes[m].line) == Some(first))
+        .then_some(first)
+}
+
+/// The runs of look-alike siblings worth drawing as records, by the
+/// position of their first element: a table's cells as rows, consecutive
+/// siblings whose subtrees have the same roles in the same shape (list
+/// items with their text, toolbar buttons) as records.
+fn plan_runs(nodes: &[Node], hidden: &[bool], end: &[usize]) -> HashMap<usize, Run> {
+    let mut kids: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        kids.entry(n.parent).or_default().push(i);
+    }
+    // A subtree's shape: the roles in it, by depth below its root.
+    let shape = |k: usize| -> Option<Vec<(usize, &str)>> {
+        if end[k] - k > MAX_RECORD || (k..end[k]).any(|p| hidden[p]) {
+            return None;
+        }
+        Some(
+            (k..end[k])
+                .map(|p| (nodes[p].depth - nodes[k].depth, nodes[p].role.as_str()))
+                .collect(),
+        )
+    };
+    let mut runs = HashMap::new();
+    for list in kids.values() {
+        // Column headers name the columns of the cells beside them.
+        let headers: Vec<usize> = list
+            .iter()
+            .copied()
+            .filter(|&k| roles::is_column_header(&nodes[k].role) && !hidden[k])
+            .collect();
+        let mut j = 0;
+        while j < list.len() {
+            let k = list[j];
+            // A table's cells, a row a line.
+            if roles::is_cell(&nodes[k].role) && end[k] == k + 1 && !hidden[k] {
+                let mut cells = vec![k];
+                while j + cells.len() < list.len() {
+                    let c = list[j + cells.len()];
+                    if roles::is_cell(&nodes[c].role) && end[c] == c + 1 && !hidden[c] {
+                        cells.push(c);
+                    } else {
+                        break;
+                    }
+                }
+                let cols = if headers.len() >= 2 {
+                    headers.len()
+                } else {
+                    // No headers: the cells in the first one's row.
+                    let y0 = nodes[k].bounds.map(|b| b.y);
+                    cells
+                        .iter()
+                        .take_while(|&&c| {
+                            matches!((nodes[c].bounds.map(|b| b.y), y0), (Some(a), Some(b)) if (a - b).abs() < 2.0)
+                        })
+                        .count()
+                };
+                if cols >= 2 && cells.len() >= 2 * cols {
+                    let common = shared_suffix(nodes, &cells);
+                    let names: Vec<String> = headers
+                        .iter()
+                        .filter_map(|&h| nodes[h].name.as_deref().map(|t| truncate(t, 24)))
+                        .collect();
+                    let mut head = String::from("cells, a row a line");
+                    if names.len() == cols {
+                        head.push_str(&format!(" ({})", names.join(" | ")));
+                    }
+                    if let Some(c) = common {
+                        head.push_str(&format!("; each{c}"));
+                    }
+                    head.push(':');
+                    let mut lines = vec![head];
+                    for row in cells.chunks(cols) {
+                        lines.push(
+                            row.iter()
+                                .map(|&c| bare(&nodes[c], common))
+                                .collect::<Vec<_>>()
+                                .join(" | "),
+                        );
+                    }
+                    let last = *cells.last().expect("cells");
+                    runs.insert(
+                        k,
+                        Run {
+                            lines,
+                            end: end[last],
+                        },
+                    );
+                    j += cells.len();
+                    continue;
+                }
+            }
+            // Look-alike siblings as records.
+            let Some(first) = shape(k) else {
+                j += 1;
+                continue;
+            };
+            let mut members = vec![k];
+            while j + members.len() < list.len()
+                && shape(list[j + members.len()]).as_ref() == Some(&first)
+            {
+                members.push(list[j + members.len()]);
+            }
+            if members.len() < MIN_RUN {
+                j += members.len();
+                continue;
+            }
+            let slots = first.len();
+            // What every element at the same place of each record shares.
+            let common: Vec<Option<&str>> = (0..slots)
+                .map(|s| shared_suffix(nodes, &members.iter().map(|&m| m + s).collect::<Vec<_>>()))
+                .collect();
+            let roles: Vec<&str> = first.iter().map(|(_, r)| *r).collect();
+            let mut head = format!("{} × {}", members.len(), roles.join(" › "));
+            for (s, c) in common.iter().enumerate() {
+                if let Some(c) = c {
+                    head.push_str(&format!("; each {}{c}", roles[s]));
+                }
+            }
+            head.push(':');
+            let mut lines = vec![head];
+            let records: Vec<String> = members
+                .iter()
+                .map(|&m| {
+                    (0..slots)
+                        .map(|s| bare(&nodes[m + s], common[s]))
+                        .collect::<Vec<_>>()
+                        .join(" › ")
+                })
+                .collect();
+            if slots == 1 {
+                for chunk in records.chunks(PER_LINE) {
+                    lines.push(chunk.join(" · "));
+                }
+            } else {
+                lines.extend(records);
+            }
+            let last = *members.last().expect("members");
+            runs.insert(
+                k,
+                Run {
+                    lines,
+                    end: end[last],
+                },
+            );
+            j += members.len();
+        }
+    }
+    runs
+}
+
+/// Split on `sep` outside quoted text.
+fn split_outside_quotes<'a>(text: &'a str, sep: &str) -> Vec<&'a str> {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if escaped {
+            escaped = false;
+        } else if c == b'\\' {
+            escaped = true;
+        } else if c == b'"' {
+            quoted = !quoted;
+        } else if !quoted && bytes[i..].starts_with(sep.as_bytes()) {
+            parts.push(&text[start..i]);
+            i += sep.len();
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// What a records header says.
+struct Template {
+    /// The roles of a record's elements.
+    roles: Vec<String>,
+    /// What each role's elements share (a suffix of their lines).
+    common: HashMap<String, String>,
+    /// A table's cells, a row a line.
+    cells: bool,
+}
+
+/// A records header, or None if `line` isn't one.
+fn records_header(line: &str) -> Option<Template> {
+    let body = line.strip_suffix(':')?;
+    let (lead, each) = match body.split_once("; each") {
+        Some((l, e)) => (l, Some(e)),
+        None => (body, None),
+    };
+    let (roles, cells) = if lead.starts_with("cells, a row a line") {
+        (vec!["cell".to_string()], true)
+    } else {
+        let (count, roles) = lead.split_once(" × ")?;
+        count.parse::<usize>().ok()?;
+        (roles.split(" › ").map(str::to_string).collect(), false)
+    };
+    let mut common = HashMap::new();
+    for part in each.into_iter().flat_map(|e| e.split("; each")) {
+        let at = part.find(" actions=[")?;
+        let role = part[..at].trim();
+        let role = if role.is_empty() {
+            roles[0].as_str()
+        } else {
+            role
+        };
+        common.insert(role.to_string(), part[at..].to_string());
+    }
+    Some(Template {
+        roles,
+        common,
+        cells,
+    })
+}
+
+/// Whether a line is a record (`12 "Name" · 13 …`), not an element's line
+/// (`12 button "Name"`): after the index comes no role.
+fn is_record_line(line: &str) -> bool {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits == 0 {
+        return false;
+    }
+    let rest = &line[digits..];
+    rest.is_empty()
+        || [
+            " \"",
+            " (",
+            " desc=",
+            " value=",
+            " placeholder=",
+            " actions=",
+            " ·",
+            " |",
+            " ›",
+        ]
+        .iter()
+        .any(|p| rest.starts_with(p))
+}
+
+/// A tree rendered with records back to one element a line with its role,
+/// for tools and tests that read trees line by line.
+pub fn expand(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut template: Option<(usize, Template)> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(h) = records_header(trimmed) {
+            template = Some((indent, h));
+            continue;
+        }
+        if let Some((at, t)) = &template
+            && *at == indent
+            && is_record_line(trimmed)
+        {
+            let (roles, common) = (&t.roles, &t.common);
+            let records = if t.cells {
+                split_outside_quotes(trimmed, " | ")
+            } else {
+                split_outside_quotes(trimmed, " · ")
+            };
+            for record in records {
+                for (k, member) in split_outside_quotes(record, " › ").into_iter().enumerate() {
+                    let role = &roles[k.min(roles.len() - 1)];
+                    let digits = member.chars().take_while(char::is_ascii_digit).count();
+                    let suffix = common.get(role).map(String::as_str).unwrap_or("");
+                    out.push_str(&line[..indent]);
+                    out.push_str(&format!(
+                        "{} {role}{}{suffix}\n",
+                        &member[..digits],
+                        &member[digits..]
+                    ));
+                }
+            }
+            continue;
+        }
+        template = None;
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The index of the first element whose line (records expanded) contains
+/// `needle`.
+pub fn index_of(text: &str, needle: &str) -> Option<u32> {
+    expand(text)
+        .lines()
+        .find(|l| l.contains(needle))
+        .and_then(|l| {
+            let l = l.trim_start();
+            let l = l
+                .strip_prefix("+ ")
+                .or_else(|| l.strip_prefix("~ "))
+                .unwrap_or(l);
+            l.split_whitespace().next()?.parse().ok()
+        })
 }
 
 /// Roles of the items that make long, repetitive lists (rows of a table,
@@ -491,6 +905,8 @@ pub struct Budget {
     pub level: crate::config::Summarize,
     /// Items kept at the start of a folded list.
     pub keep: usize,
+    /// Look-alike siblings as records ([tree] compact).
+    pub compact: bool,
 }
 
 impl Budget {
@@ -499,6 +915,7 @@ impl Budget {
             tokens: cfg.max_tokens,
             level: cfg.summarize,
             keep: cfg.fold_keep,
+            compact: cfg.compact,
         }
     }
 
@@ -515,17 +932,17 @@ impl Budget {
 /// elements keep their indices: `find_element` finds them.
 pub fn render_full_within(nodes: &[Node], indent: usize, budget: Budget) -> String {
     use crate::config::Summarize;
-    let full = render_full(nodes, indent);
+    let full = render_nodes(nodes, indent, None, &HashMap::new(), budget.compact);
     if !budget.active() || crate::text::estimate_tokens(&full) <= budget.tokens {
         return full;
     }
-    let lists = render_folded(nodes, indent, budget.keep, |role| {
+    let lists = render_folded(nodes, indent, budget.keep, budget.compact, |role| {
         LIST_ROLES.contains(&role)
     });
     if budget.level == Summarize::Light || crate::text::estimate_tokens(&lists) <= budget.tokens {
         return lists;
     }
-    let any = render_folded(nodes, indent, budget.keep, |_| true);
+    let any = render_folded(nodes, indent, budget.keep, budget.compact, |_| true);
     if crate::text::estimate_tokens(&any) <= budget.tokens {
         return any;
     }
@@ -538,6 +955,7 @@ fn render_folded(
     nodes: &[Node],
     indent: usize,
     keep: usize,
+    compact: bool,
     fold: impl Fn(&str) -> bool,
 ) -> String {
     let mut groups: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
@@ -563,12 +981,23 @@ fn render_folded(
     // First position of each folded run -> how many are folded there.
     let mut folded_at: HashMap<usize, usize> = HashMap::new();
     let mut hidden = vec![false; nodes.len()];
-    for members in groups
-        .values()
-        .filter(|m| m.len() >= keep + FOLD_TAIL + FOLD_MIN_HIDDEN)
-    {
+    // A table's cells fold by whole rows.
+    let mut cols: HashMap<Option<usize>, usize> = HashMap::new();
+    for n in nodes.iter().filter(|n| roles::is_column_header(&n.role)) {
+        *cols.entry(n.parent).or_default() += 1;
+    }
+    for ((parent, role), members) in &groups {
+        let per = if roles::is_cell(role) {
+            cols.get(parent).copied().unwrap_or(1).max(1)
+        } else {
+            1
+        };
+        let (head, tail) = (keep * per, FOLD_TAIL * per);
+        if members.len() < head + tail + FOLD_MIN_HIDDEN * per {
+            continue;
+        }
         let mut run: Option<usize> = None;
-        for &i in &members[keep..members.len() - FOLD_TAIL] {
+        for &i in &members[head..members.len() - tail] {
             if current[i] {
                 run = None;
                 continue;
@@ -583,31 +1012,7 @@ fn render_folded(
             }
         }
     }
-    let mut out = String::new();
-    let mut i = 0;
-    while i < nodes.len() {
-        let n = &nodes[i];
-        if !hidden[i] {
-            push_line(&mut out, n, indent);
-            i += 1;
-            continue;
-        }
-        if let Some(count) = folded_at.get(&i) {
-            for _ in 0..n.depth * indent {
-                out.push(' ');
-            }
-            out.push_str(&format!(
-                "[… {count} more \"{}\" folded; find_element finds them]\n",
-                n.role
-            ));
-        }
-        // Skip the folded element and everything inside it.
-        i += 1;
-        while i < nodes.len() && nodes[i].depth > n.depth {
-            i += 1;
-        }
-    }
-    out
+    render_nodes(nodes, indent, Some(&hidden), &folded_at, compact)
 }
 
 /// Cut rendered lines at about `budget` tokens, saying how many are left.
@@ -697,21 +1102,60 @@ pub fn render_diff(d: &Diff, new: &[Node]) -> String {
     if d.is_empty() {
         return "No changes to the accessibility tree since the previous get_app_state.\n".into();
     }
-    render_diff_with(d, new, DIFF_INTRO)
+    render_diff_with(d, new, DIFF_INTRO, false)
 }
 
-/// Render a diff under a custom intro line.
-pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str) -> String {
+/// More removed elements than this are given as ranges of indices
+/// (`compact`): the model has seen their lines.
+const REMOVED_LISTED: usize = 5;
+
+/// Render a diff under a custom intro line. `compact`: elements added
+/// together under one parent are listed under it once, and many removed
+/// elements are given as ranges of their indices.
+pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str, compact: bool) -> String {
     let mut out = String::with_capacity(intro.len() + 64 * d.len());
     out.push_str(intro);
     out.push('\n');
-    for &pos in &d.added {
-        let n = &new[pos];
-        let ctx = n
-            .parent
-            .map(|p| format!("  (in {} {})", new[p].index, new[p].label()))
-            .unwrap_or_default();
-        out.push_str(&format!("+ {} {}{}\n", n.index, n.line, ctx));
+    let added: HashSet<usize> = d.added.iter().copied().collect();
+    let mut i = 0;
+    while i < d.added.len() {
+        let n = &new[d.added[i]];
+        // An added element inside another added one needs no context.
+        let parent = n.parent.filter(|p| !added.contains(p));
+        let together = if compact {
+            d.added[i..]
+                .iter()
+                .take_while(|&&pos| {
+                    new[pos].parent == n.parent
+                        || new[pos].parent.is_some_and(|p| added.contains(&p))
+                })
+                .count()
+        } else {
+            1
+        };
+        match parent {
+            Some(p) if together >= 2 => {
+                out.push_str(&format!("in {} {}:\n", new[p].index, new[p].label()));
+                for &pos in &d.added[i..i + together] {
+                    out.push_str(&format!("+ {} {}\n", new[pos].index, new[pos].line));
+                }
+                i += together;
+            }
+            Some(p) => {
+                out.push_str(&format!(
+                    "+ {} {}  (in {} {})\n",
+                    n.index,
+                    n.line,
+                    new[p].index,
+                    new[p].label()
+                ));
+                i += 1;
+            }
+            None => {
+                out.push_str(&format!("+ {} {}\n", n.index, n.line));
+                i += 1;
+            }
+        }
     }
     for (pos, old_line) in &d.changed {
         let n = &new[*pos];
@@ -722,10 +1166,36 @@ pub fn render_diff_with(d: &Diff, new: &[Node], intro: &str) -> String {
             was(old_line, &n.line)
         ));
     }
-    for (idx, old_line) in &d.removed {
-        out.push_str(&format!("- {idx} {old_line}\n"));
+    if compact && d.removed.len() > REMOVED_LISTED {
+        let mut idx: Vec<u32> = d.removed.iter().map(|(i, _)| *i).collect();
+        out.push_str(&format!("- {} removed: {}\n", idx.len(), ranges(&mut idx)));
+    } else {
+        for (idx, old_line) in &d.removed {
+            out.push_str(&format!("- {idx} {old_line}\n"));
+        }
     }
     out
+}
+
+/// Indices as ranges: `12–35, 40`.
+pub fn ranges(idx: &mut [u32]) -> String {
+    idx.sort_unstable();
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < idx.len() {
+        let start = idx[i];
+        let mut j = i;
+        while j + 1 < idx.len() && idx[j + 1] == idx[j] + 1 {
+            j += 1;
+        }
+        parts.push(if j > i {
+            format!("{start}–{}", idx[j])
+        } else {
+            start.to_string()
+        });
+        i = j + 1;
+    }
+    parts.join(", ")
 }
 
 /// What a changed line was, without the start it shares with what it is
@@ -824,10 +1294,145 @@ mod tests {
         let mut p = prune(&sample(), None, &cfg());
         IndexAllocator::default().assign_fresh(&mut p.nodes);
         let text = render_full(&p.nodes, 2);
+        // A text field is editable unless said otherwise (compact).
         assert_eq!(
             text,
-            "0 window \"Doc\"\n  1 button \"Save\"\n  2 text field value=\"hello\" (editable)\n"
+            "0 window \"Doc\"\n  1 button \"Save\"\n  2 text field value=\"hello\"\n"
         );
+        let wordy = TreeConfig {
+            compact: false,
+            ..cfg()
+        };
+        let mut p = prune(&sample(), None, &wordy);
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        assert!(render_full(&p.nodes, 2).contains("value=\"hello\" (editable)"));
+        let mut raw = sample();
+        raw[4].states.editable = false;
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        assert!(render_full(&p.nodes, 2).contains("(read-only)"));
+    }
+
+    fn compact_budget() -> Budget {
+        Budget {
+            tokens: 0,
+            level: crate::config::Summarize::Normal,
+            keep: 5,
+            compact: true,
+        }
+    }
+
+    #[test]
+    fn look_alike_siblings_are_records_and_cells_rows() {
+        let mut raw = vec![
+            node(None, "window", "Shop"),
+            node(Some(0), "toolbar", "Tools"),
+        ];
+        for name in [
+            "Select", "Pen", "Pencil", "Brush", "Eraser", "Line", "Arrow",
+        ] {
+            raw.push(node(Some(1), "button", name));
+        }
+        let list = raw.len();
+        raw.push(node(Some(0), "list", "Sections"));
+        for name in ["General", "Profile", "Privacy"] {
+            let item = raw.len();
+            raw.push(node(Some(list), "list item", ""));
+            raw.push(node(Some(item), "text", name));
+        }
+        raw[list + 1].states.selected = true;
+        let table = raw.len();
+        raw.push(node(Some(0), "table", ""));
+        for h in ["SKU", "Price"] {
+            raw.push(node(Some(table), "table column header", h));
+        }
+        for r in 0..3 {
+            for (c, v) in [format!("K-{r}"), format!("{r}.00")].iter().enumerate() {
+                let mut cell = node(Some(table), "cell", v);
+                cell.bounds = Some(Rect::new(
+                    c as f64 * 50.0,
+                    20.0 + r as f64 * 20.0,
+                    50.0,
+                    20.0,
+                ));
+                cell.actions = vec![
+                    ActionDesc::new("press", "activate"),
+                    ActionDesc::new("edit", "edit"),
+                ];
+                raw.push(cell);
+            }
+        }
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let text = render_full_within(&p.nodes, 1, compact_budget());
+        // Buttons: the role once, six to a line.
+        assert!(text.contains(" 7 × button:\n"), "{text}");
+        assert!(text.contains("2 \"Select\" · 3 \"Pen\""), "{text}");
+        // List items with their text: one record a line.
+        assert!(text.contains("3 × list item › text:"), "{text}");
+        assert!(text.contains("(selected) › "), "{text}");
+        // Cells: a row a line under the column names, the shared actions once.
+        assert!(
+            text.contains("cells, a row a line (SKU | Price); each actions=[edit]:"),
+            "{text}"
+        );
+        assert!(text.contains("\"K-1\" | "), "{text}");
+        assert!(!text.contains("cell \"K-1\""), "{text}");
+        // Every index is still there, and the elements read back.
+        for n in &p.nodes {
+            assert!(
+                index_of(&text, &format!("\"{}\"", n.name.as_deref().unwrap_or("§"))).is_some()
+                    || n.name.is_none(),
+                "{} missing: {text}",
+                n.index
+            );
+        }
+        let expanded = expand(&text);
+        assert!(expanded.contains("button \"Pen\""), "{expanded}");
+        assert!(expanded.contains("cell \"K-1\""), "{expanded}");
+        assert!(expanded.contains("text \"Profile\""), "{expanded}");
+        // Shorter, losing nothing.
+        let plain = render_full(&p.nodes, 1);
+        assert!(
+            text.len() < plain.len(),
+            "{} vs {}",
+            text.len(),
+            plain.len()
+        );
+        // Off: one element a line, as before.
+        let off = render_full_within(
+            &p.nodes,
+            1,
+            Budget {
+                compact: false,
+                ..compact_budget()
+            },
+        );
+        assert_eq!(off, plain);
+    }
+
+    #[test]
+    fn diffs_group_what_was_added_and_range_what_was_removed() {
+        let mut raw = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
+        for i in 0..10 {
+            raw.push(node(Some(1), "list item", &format!("Message {i}")));
+        }
+        let mut alloc = IndexAllocator::default();
+        let mut a = prune(&raw, None, &cfg()).nodes;
+        alloc.assign_fresh(&mut a);
+        let mut raw2 = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
+        for i in 0..3 {
+            raw2.push(node(Some(1), "list item", &format!("New {i}")));
+        }
+        let mut b = prune(&raw2, None, &cfg()).nodes;
+        alloc.assign_stable(&mut b);
+        let d = diff(&a, &b);
+        let text = render_diff_with(&d, &b, DIFF_INTRO, true);
+        assert!(text.contains("in 1 list \"Inbox\":\n+ "), "{text}");
+        assert!(!text.contains("(in 1 list"), "{text}");
+        assert!(text.contains("- 10 removed: 2–11"), "{text}");
+        let wordy = render_diff_with(&d, &b, DIFF_INTRO, false);
+        assert!(wordy.contains("(in 1 list \"Inbox\")") && wordy.contains("- 2 list item"));
     }
 
     #[test]
@@ -853,6 +1458,7 @@ mod tests {
             tokens,
             level,
             keep: 5,
+            compact: false,
         };
         // No limit, plenty of room, or summarizing off: nothing changes.
         assert_eq!(

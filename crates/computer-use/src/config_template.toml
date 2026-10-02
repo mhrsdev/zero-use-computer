@@ -91,6 +91,22 @@ max_tokens = 10000
 summarize = "normal"
 fold_keep = 5               # items kept at the start of a folded list (+2 at its end)
 brief_repeats = true        # explain notes in full once, then briefly (false = always in full)
+# Say each thing once, losing nothing: look-alike siblings as records (the
+# roles once, one line a record), a table's cells a row a line, flags and
+# actions the role implies left out (text fields are editable unless marked
+# read-only), many removed elements as ranges of indices, added ones under
+# their parent, a short header when the window is as before, no echo of a
+# value just set.
+compact = true
+# What an action's result says of what changed:
+#   "full"     = every change, up to report_changes_max_lines (default)
+#   "relevant" = changes in and around what the action acted on, new windows
+#                and added elements, and how many others there are
+#   "brief"    = how many changes, and a new screen or window
+report = "full"
+# Elements that change on their own (clocks, progress, spinners): after a
+# few reports in a row, summed up in one line instead of listed each time.
+quiet_volatile = false
 
 [timing]
 settle_ms = 40              # pause after each action before looking again
