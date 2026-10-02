@@ -2081,20 +2081,182 @@ pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
 /// tools hidden because their feature is switched off (clipboard, screenshots).
 pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
     let screenshots = config.screenshot.enabled && !config.text_only;
+    let lean = config.tools.descriptions == crate::config::DescriptionStyle::Lean;
+    let decisions = !config.decision.provider.trim().is_empty();
     definitions_for(&config.tools)
         .into_iter()
         .filter(|d| match &*d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
+            // Lean: the decision model's tool once there is one.
+            "decide" => !lean || decisions,
             _ => true,
         })
         .collect()
 }
 
+/// The tools that come first with the tool manager on ([tools] manager);
+/// the others are found by category with `find_tools`.
+pub const BASE_TOOLS: &[&str] = &[
+    "list_apps",
+    "launch_app",
+    "get_app_state",
+    "click",
+    "perform_secondary_action",
+    "set_value",
+    "select_text",
+    "scroll",
+    "drag",
+    "press_key",
+    "type_text",
+    "find_element",
+    "wait_for",
+    "batch",
+    "screenshot",
+];
+
+/// The other tools, by category: (name, what they are for, tools). Saved
+/// scripts belong to "scripts".
+pub const CATEGORIES: &[(&str, &str, &[&str])] = &[
+    (
+        "design",
+        "drawing, the design board, 3D scenes, copying a picture, exact places to aim at",
+        &["draw", "design", "scene", "trace_image", "locate"],
+    ),
+    ("windows", "arranging windows and screens", &["window"]),
+    (
+        "scripts",
+        "small programs for loops, maths and data, and saved scripts",
+        &["script"],
+    ),
+    (
+        "clipboard",
+        "reading and writing the clipboard",
+        &["get_clipboard", "set_clipboard"],
+    ),
+    (
+        "notifications",
+        "recent desktop notifications",
+        &["get_notifications"],
+    ),
+    (
+        "decisions",
+        "a fast decision model's typed answers",
+        &["decide"],
+    ),
+];
+
+/// The tool manager's own tools.
+pub const MANAGER_TOOLS: [&str; 2] = ["find_tools", "use_tool"];
+
+/// The category of a tool that isn't a base tool (a saved script is a
+/// script).
+pub fn category_of(name: &str) -> &'static str {
+    CATEGORIES
+        .iter()
+        .find(|(_, _, tools)| tools.contains(&name))
+        .map_or("scripts", |(c, _, _)| c)
+}
+
+/// `find_tools` (and `use_tool` when tools are run through it).
+pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
+    let categories: Vec<String> = CATEGORIES
+        .iter()
+        .map(|(c, about, _)| format!("{c} ({about})"))
+        .collect();
+    let then = if dispatch {
+        "run one with use_tool(name, arguments)"
+    } else {
+        "it is added to your tools"
+    };
+    let mut defs = vec![ToolDefinition {
+        name: "find_tools".into(),
+        title: "Find tools".into(),
+        description: format!(
+            "More tools, by category or by what they do: {}. Returns each tool with its arguments; {then}.",
+            categories.join(", ")
+        )
+        .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": CATEGORIES.iter().map(|c| c.0).collect::<Vec<_>>()},
+                "query": {"type": "string", "description": "Words for what the tool should do."}
+            },
+            "additionalProperties": false
+        }),
+        annotations: read_only("Find tools"),
+    }];
+    if dispatch {
+        defs.push(ToolDefinition {
+            name: "use_tool".into(),
+            title: "Use a tool".into(),
+            description: "Run a tool find_tools showed: name and its arguments.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Use a tool"),
+        });
+    }
+    defs
+}
+
+/// Lean schemas: nested objects (a design's layers, a drawing's strokes)
+/// as the list of their keys (`*` marks required ones), no `window`, no
+/// defaults.
+fn lighten(schema: &mut Value) {
+    fn keys(v: &Value) -> Option<String> {
+        let props = v.get("properties")?.as_object()?;
+        let required: Vec<&str> = v
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        Some(
+            props
+                .keys()
+                .map(|k| {
+                    if required.contains(&k.as_str()) {
+                        format!("{k}*")
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    }
+    let Some(Value::Object(props)) = schema.get_mut("properties") else {
+        return;
+    };
+    props.remove("window");
+    for prop in props.values_mut() {
+        let Value::Object(p) = prop else { continue };
+        p.remove("default");
+        if let Some(k) = keys(&Value::Object(p.clone())) {
+            *prop = json!({"type": "object", "description": format!("keys: {k}")});
+            continue;
+        }
+        if let Some(items) = p.get_mut("items")
+            && let Some(k) = keys(items)
+        {
+            *items = json!({"type": "object", "description": format!("keys: {k}")});
+        }
+    }
+}
+
 /// Tool definitions filtered and styled by the user's `[tools]` settings.
 pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> {
-    let compact = cfg.descriptions == crate::config::DescriptionStyle::Compact;
+    use crate::config::DescriptionStyle;
+    let compact = cfg.descriptions != DescriptionStyle::Full;
+    let lean = cfg.descriptions == DescriptionStyle::Lean;
     definitions()
         .into_iter()
         .filter(|d| cfg.is_enabled(&d.name))
@@ -2106,9 +2268,30 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
                 strip_descriptions(&mut d.input_schema);
                 share_repeats(&mut d.input_schema);
             }
+            if lean {
+                lighten(&mut d.input_schema);
+            }
+            // The last app named stands in for a missing one.
+            if cfg.default_app
+                && let Some(Value::Array(req)) = d.input_schema.get_mut("required")
+            {
+                req.retain(|r| r != "app");
+            }
             d
         })
         .collect()
+}
+
+/// Tools whose schema requires `app`: the ones [tools] default_app fills
+/// in.
+pub fn needs_app(name: &str) -> bool {
+    definitions().iter().any(|d| {
+        d.name == name
+            && d.input_schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|r| r.iter().any(|v| v == "app"))
+    })
 }
 
 #[cfg(test)]
@@ -2221,6 +2404,59 @@ mod tests {
             ToolCall::parse(&d.name, Value::Object(args))
                 .unwrap_or_else(|e| panic!("{}: {e}", d.name));
         }
+    }
+
+    #[test]
+    fn lean_definitions_are_smaller_still_and_lose_no_tool() {
+        use crate::config::{Config, DescriptionStyle, ToolPreset};
+        let mut cfg = Config::default();
+        let compact = definitions_from(&cfg);
+        cfg.tools.descriptions = DescriptionStyle::Lean;
+        let lean = definitions_from(&cfg);
+        assert!(
+            model_visible_len(&lean) * 10 < model_visible_len(&compact) * 8,
+            "lean {} vs compact {}",
+            model_visible_len(&lean),
+            model_visible_len(&compact)
+        );
+        // decide waits for a decision model; every other tool is there.
+        assert_eq!(lean.len() + 1, compact.len());
+        assert!(!lean.iter().any(|d| d.name == "decide"));
+        cfg.decision.provider = "jev".into();
+        assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
+        // No window; a design's layers as the list of their keys.
+        let design = lean.iter().find(|d| d.name == "design").unwrap();
+        let text = design.input_schema.to_string();
+        assert!(
+            !lean
+                .iter()
+                .any(|d| d.input_schema["properties"].get("window").is_some())
+        );
+        assert!(text.contains("keys: ") && text.contains("rect"), "{text}");
+        assert!(!text.contains("\"default\""), "{text}");
+        // A small set for smaller models.
+        let mut small = Config::default();
+        small.tools.preset = ToolPreset::Small;
+        let names: Vec<String> = definitions_from(&small)
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect();
+        assert_eq!(names.len(), crate::config::SMALL_TOOLS.len(), "{names:?}");
+        // The app need not be named.
+        let mut d = Config::default();
+        d.tools.default_app = true;
+        let click = definitions_from(&d)
+            .into_iter()
+            .find(|t| t.name == "click")
+            .unwrap();
+        assert!(
+            !click.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "app")
+        );
+        assert!(needs_app("click") && !needs_app("screenshot") && !needs_app("list_apps"));
     }
 
     #[test]

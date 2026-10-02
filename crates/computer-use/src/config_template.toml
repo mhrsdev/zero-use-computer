@@ -36,7 +36,26 @@ launch_timeout_secs = 15.0
 [tools]
 disabled = []               # e.g. ["drag", "batch"]
 enabled = []                # if non-empty, ONLY these tools are exposed
-descriptions = "compact"    # "compact" (fewer tokens) or "full"
+descriptions = "compact"    # "compact" (fewer tokens), "lean" (fewer still) or "full"
+# "lean" also lists the keys of nested objects (a design's layers, a
+# drawing's strokes) by name instead of typing each, leaves `window` (still
+# accepted) and defaults out of the schemas, and shows `decide` only once a
+# decision model is set up.
+# Which tools the model sees at first:
+#   "off"          = every tool, always (default)
+#   "dispatch"     = the base tools and find_tools; the others are found by
+#                    name or category and run through use_tool. The list
+#                    never changes: any client, prompt cache intact.
+#   "list_changed" = the base tools and find_tools; a category it finds is
+#                    added to the list (clients that support it are told)
+manager = "off"
+# "full" = every tool the other settings allow; "small" = a fixed small
+# set for smaller models (look, find, wait, click, set, type, keys, scroll,
+# list and launch apps). A non-empty `enabled` wins.
+preset = "full"
+# A call without `app` acts on the app of the last call that named one, and
+# the schemas don't require `app` (fewer tokens for the model to write).
+default_app = false
 
 [screenshot]
 enabled = true
@@ -287,6 +306,9 @@ enabled = false             # append a JSONL line (metadata only) per call
 log = "warn"                # error, warn, info, debug, trace
 http_addr = ""              # e.g. "127.0.0.1:8787" to serve over HTTP
 http_token = ""             # bearer token, required when http_addr is set
+# The MCP instructions sent at connection: "full", "short" (the loop and
+# the safety rules in a few lines, for clients that load the skills) or "off".
+instructions = "full"
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

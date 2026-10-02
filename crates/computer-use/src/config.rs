@@ -260,7 +260,54 @@ pub enum DescriptionStyle {
     /// list is sent with every model request, so this saves the most tokens.
     #[default]
     Compact,
+    /// Compact, and lighter schemas still: the keys of nested objects (a
+    /// design's layers, a drawing's strokes) listed by name instead of
+    /// typed one by one, no `window` (still accepted) and no defaults;
+    /// `decide` only once a decision model is set up.
+    Lean,
 }
+
+/// Which tools the model sees at first ([tools] manager).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolManager {
+    /// Every tool, always. Default.
+    #[default]
+    Off,
+    /// The base tools and `find_tools`; the others are found by name or
+    /// category and run through `use_tool`. The tool list never changes,
+    /// so a client's prompt cache keeps working, with any client.
+    Dispatch,
+    /// The base tools and `find_tools`; a category it finds is added to the
+    /// tool list (the client is told the list changed) and stays.
+    ListChanged,
+}
+
+/// A ready-made set of tools ([tools] preset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPreset {
+    /// Every tool the other settings allow. Default.
+    #[default]
+    Full,
+    /// A small fixed set for smaller models: look, find, wait, click, set,
+    /// type, keys, scroll, list and launch apps.
+    Small,
+}
+
+/// The tools of [`ToolPreset::Small`].
+pub const SMALL_TOOLS: &[&str] = &[
+    "list_apps",
+    "launch_app",
+    "get_app_state",
+    "find_element",
+    "wait_for",
+    "click",
+    "set_value",
+    "type_text",
+    "press_key",
+    "scroll",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -270,6 +317,13 @@ pub struct ToolsConfig {
     /// If non-empty, ONLY these tools are exposed.
     pub enabled: Vec<String>,
     pub descriptions: DescriptionStyle,
+    /// Which tools the model sees at first (see [`ToolManager`]).
+    pub manager: ToolManager,
+    /// A ready-made set of tools (see [`ToolPreset`]); `enabled` wins.
+    pub preset: ToolPreset,
+    /// A call without `app` acts on the app of the last call that named
+    /// one, and `app` isn't required in the tools' schemas.
+    pub default_app: bool,
 }
 
 impl ToolsConfig {
@@ -277,7 +331,10 @@ impl ToolsConfig {
         if self.disabled.iter().any(|d| d == name) {
             return false;
         }
-        self.enabled.is_empty() || self.enabled.iter().any(|e| e == name)
+        if !self.enabled.is_empty() {
+            return self.enabled.iter().any(|e| e == name);
+        }
+        self.preset == ToolPreset::Full || SMALL_TOOLS.contains(&name)
     }
 }
 
@@ -845,6 +902,20 @@ pub struct ServerConfig {
     /// Bearer token required on the HTTP endpoint (the server refuses to
     /// start over HTTP without one).
     pub http_token: String,
+    /// The server's MCP instructions: "full", "short" (the loop and the
+    /// safety rules in a few lines, for clients that load the skills) or
+    /// "off".
+    pub instructions: Instructions,
+}
+
+/// How much the MCP `instructions` say ([server] instructions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Instructions {
+    #[default]
+    Full,
+    Short,
+    Off,
 }
 
 impl Default for ServerConfig {
@@ -853,6 +924,7 @@ impl Default for ServerConfig {
             log: "warn".into(),
             http_addr: String::new(),
             http_token: String::new(),
+            instructions: Instructions::Full,
         }
     }
 }

@@ -209,6 +209,11 @@ pub struct Engine<B: Backend> {
     /// The element the current action acts on (app pid, index), for a
     /// report of the changes around it ([tree] report = "relevant").
     target: Option<(u32, u32)>,
+    /// Tool categories `find_tools` has added to the tool list ([tools]
+    /// manager = "list_changed"); they stay.
+    active_tools: HashSet<&'static str>,
+    /// The app the last call named ([tools] default_app).
+    last_app: Option<String>,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -342,6 +347,8 @@ impl<B: Backend> Engine<B> {
             pending_screen_shot: None,
             shots: 0,
             target: None,
+            active_tools: HashSet::new(),
+            last_app: None,
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -2029,6 +2036,53 @@ impl<B: Backend> Engine<B> {
     /// Parse and run a raw tool call, returning a tool result even on error.
     pub fn call_tool(&mut self, name: &str, args: serde_json::Value) -> ToolOutput {
         self.reload_if_changed();
+        let manager = self.store.config.tools.manager != crate::config::ToolManager::Off;
+        // use_tool runs the tool it names, as if called directly.
+        let (name, mut args) = if manager && name == "use_tool" {
+            let inner = args
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if inner.is_empty() || crate::tools::MANAGER_TOOLS.contains(&inner.as_str()) {
+                return ToolOutput::error(&Error::InvalidArgs(
+                    "use_tool needs the name of a tool find_tools showed".into(),
+                ));
+            }
+            if !self.has_tool(&inner) {
+                return ToolOutput::error(&Error::InvalidArgs(format!(
+                    "unknown tool: {inner} (find_tools lists them)"
+                )));
+            }
+            let a = args
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            (inner, a)
+        } else {
+            (name.to_string(), args)
+        };
+        let name = name.as_str();
+        if manager && name == "find_tools" {
+            let out = self.find_tools(&args);
+            self.audit(name, None, &out);
+            return out;
+        }
+        // [tools] default_app: the last app named stands in for none.
+        if self.store.config.tools.default_app
+            && let serde_json::Value::Object(m) = &mut args
+        {
+            match m.get("app").and_then(serde_json::Value::as_str) {
+                Some(a) if !a.trim().is_empty() => self.last_app = Some(a.to_string()),
+                _ => {
+                    if crate::tools::needs_app(name)
+                        && let Some(last) = &self.last_app
+                    {
+                        m.insert("app".into(), serde_json::json!(last));
+                    }
+                }
+            }
+        }
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
         // A bug in one tool call must not take the whole server down.
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2083,6 +2137,56 @@ impl<B: Backend> Engine<B> {
         }
         self.audit(name, app.as_deref(), &out);
         out
+    }
+
+    /// The tools of a category, or whose name or description has the words
+    /// asked for, with their arguments. With [tools] manager =
+    /// "list_changed", their categories join the tool list for good.
+    fn find_tools(&mut self, args: &serde_json::Value) -> ToolOutput {
+        use crate::config::ToolManager;
+        let category = args.get("category").and_then(serde_json::Value::as_str);
+        let query = args
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(crate::text::fold);
+        let found: Vec<ToolDefinition> = self
+            .all_tool_definitions()
+            .into_iter()
+            .filter(|d| !crate::tools::BASE_TOOLS.contains(&&*d.name))
+            .filter(|d| {
+                let in_category = category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
+                let matches = query.as_deref().is_none_or(|q| {
+                    let hay = crate::text::fold(&format!("{} {}", d.name, d.description));
+                    q.split_whitespace().any(|w| hay.contains(w))
+                });
+                in_category && matches && (category.is_some() || query.is_some())
+            })
+            .collect();
+        if found.is_empty() {
+            let cats: Vec<&str> = crate::tools::CATEGORIES.iter().map(|c| c.0).collect();
+            return ToolOutput::text(format!("No tools match. Categories: {}.", cats.join(", ")));
+        }
+        let dispatch = self.store.config.tools.manager == ToolManager::Dispatch;
+        let mut out = String::new();
+        for d in &found {
+            out.push_str(&format!(
+                "{}: {}\n  arguments: {}\n",
+                d.name, d.description, d.input_schema
+            ));
+        }
+        if dispatch {
+            out.push_str("Run one with use_tool(name, arguments).");
+        } else {
+            for d in &found {
+                self.active_tools.insert(crate::tools::category_of(&d.name));
+            }
+            let names: Vec<&str> = found.iter().map(|d| &*d.name).collect();
+            out.push_str(&format!(
+                "Added to your tools: {} (call them directly).",
+                names.join(", ")
+            ));
+        }
+        ToolOutput::text(out)
     }
 
     /// Append a bounded JSONL record of the call, if auditing is enabled. Only
@@ -10137,6 +10241,88 @@ mod tests {
             serde_json::json!({"app": "TextEdit", "near": [400, 300], "feature": "center", "picture": false}),
         );
         assert!(out.image.is_none(), "{}", out.text);
+    }
+
+    #[test]
+    fn the_tool_manager_shows_the_base_and_finds_the_rest() {
+        use crate::config::ToolManager;
+        let mut e = engine();
+        let all = e.tool_definitions().len();
+        let mut cfg = e.store().config.clone();
+        cfg.tools.manager = ToolManager::Dispatch;
+        e.set_config(ConfigStore::in_memory(cfg.clone()));
+        let names = |e: &mut Engine<MockBackend>| -> Vec<String> {
+            e.tool_definitions()
+                .iter()
+                .map(|d| d.name.to_string())
+                .collect()
+        };
+        let shown = names(&mut e);
+        assert!(
+            shown.contains(&"find_tools".to_string()) && shown.contains(&"use_tool".to_string())
+        );
+        assert!(
+            !shown.contains(&"design".to_string()) && shown.len() < all,
+            "{shown:?}"
+        );
+        // Found by category, run through use_tool; the list never changes.
+        let out = e.call_tool("find_tools", serde_json::json!({"category": "windows"}));
+        assert!(
+            out.text.starts_with("window: ") && out.text.contains("use_tool"),
+            "{}",
+            out.text
+        );
+        assert_eq!(names(&mut e), shown);
+        let out = e.call_tool(
+            "use_tool",
+            serde_json::json!({"name": "window", "arguments": {"app": "TextEdit", "action": "list"}}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        // Found by what it does.
+        let out = e.call_tool("find_tools", serde_json::json!({"query": "clipboard"}));
+        assert!(out.text.contains("get_clipboard"), "{}", out.text);
+        // Hidden is not forbidden: a direct call still runs.
+        assert!(!e.call_tool("get_clipboard", serde_json::json!({})).is_error);
+        // use_tool can't run the manager itself, or an unknown tool.
+        assert!(
+            e.call_tool("use_tool", serde_json::json!({"name": "find_tools"}))
+                .is_error
+        );
+        assert!(
+            e.call_tool("use_tool", serde_json::json!({"name": "nope"}))
+                .is_error
+        );
+
+        // list_changed: what is found joins the list, and stays.
+        cfg.tools.manager = ToolManager::ListChanged;
+        e.set_config(ConfigStore::in_memory(cfg));
+        assert!(!names(&mut e).contains(&"use_tool".to_string()));
+        let out = e.call_tool("find_tools", serde_json::json!({"category": "design"}));
+        assert!(out.text.contains("Added to your tools"), "{}", out.text);
+        let now = names(&mut e);
+        assert!(now.contains(&"design".to_string()) && now.contains(&"locate".to_string()));
+    }
+
+    #[test]
+    fn the_last_app_named_stands_in_for_a_missing_one() {
+        let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.tools.default_app = true;
+        e.set_config(ConfigStore::in_memory(cfg));
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool("find_element", serde_json::json!({"name": "Bold"}));
+        assert!(
+            !out.is_error && out.text.contains("\"Bold\""),
+            "{}",
+            out.text
+        );
+        // Off: an error, as before.
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        assert!(
+            e.call_tool("find_element", serde_json::json!({"name": "Bold"}))
+                .is_error
+        );
     }
 
     #[test]
