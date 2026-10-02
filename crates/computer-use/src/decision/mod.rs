@@ -17,6 +17,7 @@
 //! running programs. The user sets the model up on a page in their browser
 //! ([`page`], `Ctrl+Alt+J`), so the key never goes through the chat.
 
+pub mod judge;
 pub mod page;
 
 use std::io::{Read as _, Write as _};
@@ -39,7 +40,7 @@ pub type Answers = Vec<(String, Answer)>;
 pub type Asked = Result<(Answers, Duration)>;
 
 /// What a question wants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// The probability that the answer is yes.
     YesNo,
@@ -77,7 +78,7 @@ impl Kind {
 }
 
 /// One question.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Question {
     /// Its name in the answers ("answer" for a single question).
     pub name: String,
@@ -421,6 +422,20 @@ impl Decider {
         !self.key.is_empty()
     }
 
+    /// The same model, waiting at most `limit` for an answer (the
+    /// server's own questions get less time than the agent's).
+    pub fn with_timeout(&self, limit: Duration) -> Self {
+        let mut d = self.clone();
+        d.timeout = d.timeout.min(limit).max(Duration::from_millis(100));
+        d
+    }
+
+    /// The model's address and name: what tells two models apart (the
+    /// decision layer's cache keeps their answers apart).
+    pub fn identity(&self) -> (&str, &str) {
+        (&self.url, &self.model)
+    }
+
     /// Ask `questions` about `state`. The answers in the questions' order,
     /// and how long it took. `halted` ends the wait early (the stop key).
     pub fn ask(
@@ -429,6 +444,62 @@ impl Decider {
         questions: &[Question],
         halted: &(dyn Fn() -> bool + Sync),
     ) -> Asked {
+        self.ask_batch(&[(state.to_string(), questions.to_vec())], halted)
+            .pop()
+            .unwrap_or_else(|| Err(Error::Internal("no answer".into())))
+    }
+
+    /// The same questions about each of `states`, several at once
+    /// (`parallel`). Each state's answers (or what went wrong) in order.
+    pub fn ask_each(
+        &self,
+        states: &[String],
+        questions: &[Question],
+        halted: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Asked> {
+        let jobs: Vec<(String, Vec<Question>)> = states
+            .iter()
+            .map(|s| (s.clone(), questions.to_vec()))
+            .collect();
+        self.ask_batch(&jobs, halted)
+    }
+
+    /// Questions about states, each its own request, all sent at once: one
+    /// curl for all of them (its connections reused), `parallel` at a
+    /// time. Each request's answers, or what went wrong, in order.
+    pub fn ask_batch(
+        &self,
+        jobs: &[(String, Vec<Question>)],
+        halted: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Asked> {
+        let start = Instant::now();
+        let bodies: Vec<Result<Value>> = jobs
+            .iter()
+            .map(|(state, qs)| self.body(state, qs, true))
+            .collect();
+        let ready: Vec<&Value> = bodies.iter().filter_map(|b| b.as_ref().ok()).collect();
+        let mut replies = self.post_many(&ready, halted).into_iter();
+        jobs.iter()
+            .zip(bodies)
+            .map(|((state, qs), body)| {
+                body?;
+                let (mut code, mut text) = replies
+                    .next()
+                    .unwrap_or_else(|| Err(Error::Internal("no reply".into())))?;
+                // Some models take no temperature (reasoning models): ask
+                // again without one.
+                if self.provider == Provider::OpenAi && code == 400 && text.contains("temperature")
+                {
+                    (code, text) = self.post(&self.body(state, qs, false)?, halted)?;
+                }
+                let answers = self.answers(code, &text, qs)?;
+                Ok((answers, start.elapsed()))
+            })
+            .collect()
+    }
+
+    /// The request for `questions` about `state` (checked).
+    fn body(&self, state: &str, questions: &[Question], temperature: bool) -> Result<Value> {
         if questions.is_empty() {
             return Err(Error::InvalidArgs("no question to ask".into()));
         }
@@ -448,67 +519,192 @@ impl Decider {
             }
         }
         let state = clip(state, self.max_state);
-        let start = Instant::now();
-        let answers = match self.provider {
-            Provider::Jev => {
-                let body = systemone_body(&self.model, &state, questions);
-                let (code, text) = self.post(&body, halted)?;
-                check_status(code, &text, self)?;
-                let v: Value = serde_json::from_str(&text).map_err(|_| {
-                    Error::ActionFailed(format!(
-                        "the decision model's answer isn't JSON: {}",
-                        excerpt(&text)
-                    ))
-                })?;
-                parse_systemone(&v, questions)?
-            }
-            Provider::OpenAi => {
-                let mut body = chat_body(&self.model, &state, questions, true);
-                let (mut code, mut text) = self.post(&body, halted)?;
-                // Some models take no temperature (reasoning models): ask
-                // again without one.
-                if code == 400 && text.contains("temperature") {
-                    body = chat_body(&self.model, &state, questions, false);
-                    (code, text) = self.post(&body, halted)?;
-                }
-                check_status(code, &text, self)?;
-                let v: Value = serde_json::from_str(&text).map_err(|_| {
-                    Error::ActionFailed(format!(
-                        "the decision model's answer isn't JSON: {}",
-                        excerpt(&text)
-                    ))
-                })?;
-                parse_chat(&v, questions)?
-            }
-        };
-        Ok((answers, start.elapsed()))
+        Ok(match self.provider {
+            Provider::Jev => systemone_body(&self.model, &state, questions),
+            Provider::OpenAi => chat_body(&self.model, &state, questions, temperature),
+        })
     }
 
-    /// The same questions about each of `states`, several at once
-    /// (`parallel`). Each state's answers (or what went wrong) in order.
-    pub fn ask_each(
+    /// The answers in a reply.
+    fn answers(&self, code: u16, text: &str, questions: &[Question]) -> Result<Answers> {
+        check_status(code, text, self)?;
+        let v: Value = serde_json::from_str(text).map_err(|_| {
+            Error::ActionFailed(format!(
+                "the decision model's answer isn't JSON: {}",
+                excerpt(text)
+            ))
+        })?;
+        match self.provider {
+            Provider::Jev => parse_systemone(&v, questions),
+            Provider::OpenAi => parse_chat(&v, questions),
+        }
+    }
+
+    /// The options every request carries: where it goes, the key, the
+    /// limits. (curl's `next` forgets them between requests.)
+    fn request_config(&self, body: &Value) -> String {
+        let mut config = String::new();
+        config.push_str("proto = \"=http,https\"\n");
+        config.push_str("max-redirs = 0\n");
+        config.push_str(&format!("max-time = {:.1}\n", self.timeout.as_secs_f64()));
+        config.push_str(&format!("url = {}\n", quote(&self.url)));
+        if !self.key.is_empty() {
+            config.push_str(&format!(
+                "header = {}\n",
+                quote(&format!("Authorization: Bearer {}", self.key))
+            ));
+        }
+        config.push_str("header = \"Content-Type: application/json\"\n");
+        config.push_str("header = \"Accept: application/json\"\n");
+        config.push_str(&format!(
+            "user-agent = {}\n",
+            quote(concat!(
+                "computer-use/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/mhrsdev/zero-use-computer)"
+            ))
+        ));
+        config.push_str(&format!("data-binary = {}\n", quote(&body.to_string())));
+        config
+    }
+
+    /// POST `body` (JSON); the HTTP status and the reply.
+    fn post(&self, body: &Value, halted: &(dyn Fn() -> bool + Sync)) -> Result<(u16, String)> {
+        let mut config = self.request_config(body);
+        config.push_str("write-out = \"\\n%{http_code}\"\n");
+        let (status, mut out, err) = run_curl(&config, self.timeout, halted)?;
+        let cut = out.iter().rposition(|b| *b == b'\n').unwrap_or(0);
+        let code: u16 = String::from_utf8_lossy(&out[cut..])
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        out.truncate(cut);
+        if code == 0 {
+            return Err(self.unreached(status.code(), &err));
+        }
+        let text = String::from_utf8(out)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        Ok((code, text))
+    }
+
+    /// Several POSTs at once. One curl runs them all (`--parallel`, its
+    /// connections reused: one TLS handshake instead of one per request);
+    /// a curl too old for that (before 7.66) gets them from a few threads.
+    fn post_many(
         &self,
-        states: &[String],
-        questions: &[Question],
+        bodies: &[&Value],
         halted: &(dyn Fn() -> bool + Sync),
-    ) -> Vec<Asked> {
+    ) -> Vec<Result<(u16, String)>> {
+        match bodies {
+            [] => Vec::new(),
+            [one] => vec![self.post(one, halted)],
+            _ => match self.post_parallel(bodies, halted) {
+                Some(replies) => replies,
+                None => self.post_threads(bodies, halted),
+            },
+        }
+    }
+
+    /// The replies of one `curl --parallel`, or `None` when this curl can't.
+    fn post_parallel(
+        &self,
+        bodies: &[&Value],
+        halted: &(dyn Fn() -> bool + Sync),
+    ) -> Option<Vec<Result<(u16, String)>>> {
+        let dir = ReplyDir::new().ok()?;
+        let mut config = format!("parallel\nparallel-max = {}\n", self.parallel.max(1));
+        // HTTPS APIs speak HTTP/2: the requests share one connection. A
+        // plain-HTTP server (a model on this computer) is HTTP/1.1, where
+        // waiting for that would send them one after the other.
+        if !self.url.to_ascii_lowercase().starts_with("https://") {
+            config.push_str("parallel-immediate\n");
+        }
+        for (i, body) in bodies.iter().enumerate() {
+            if i > 0 {
+                config.push_str("next\n");
+            }
+            config.push_str(&self.request_config(body));
+            config.push_str(&format!(
+                "output = {}\n",
+                quote(&dir.path(i).display().to_string())
+            ));
+            // Each request's own line: which one, and its status.
+            config.push_str(&format!("write-out = \"{i} %{{http_code}}\\n\"\n"));
+        }
+        // All of them, one after the other at worst.
+        let total = self.timeout * u32::try_from(bodies.len()).unwrap_or(u32::MAX).max(1);
+        let (status, out, err) = match run_curl(&config, total, halted) {
+            Ok(r) => r,
+            Err(e) => {
+                let why = e.to_string();
+                return Some(
+                    bodies
+                        .iter()
+                        .map(|_| Err(Error::ActionFailed(why.clone())))
+                        .collect(),
+                );
+            }
+        };
+        let mut codes: Vec<u16> = vec![0; bodies.len()];
+        let mut lines = 0;
+        for line in String::from_utf8_lossy(&out).lines() {
+            if let Some((i, code)) = line.trim().split_once(' ')
+                && let (Ok(i), Ok(code)) = (i.parse::<usize>(), code.parse::<u16>())
+                && i < codes.len()
+            {
+                codes[i] = code;
+                lines += 1;
+            }
+        }
+        // Nothing ran: an option this curl doesn't know (exit 2), or no
+        // parallel support built in (4).
+        if lines == 0 && matches!(status.code(), Some(2 | 4 | 48)) {
+            return None;
+        }
+        Some(
+            codes
+                .iter()
+                .enumerate()
+                .map(|(i, &code)| {
+                    if code == 0 {
+                        return Err(self.unreached(status.code(), &err));
+                    }
+                    let mut text = String::new();
+                    std::fs::File::open(dir.path(i))
+                        .and_then(|f| f.take(MAX_REPLY).read_to_string(&mut text))
+                        .map_err(|e| {
+                            Error::ActionFailed(format!("the decision model's reply was lost: {e}"))
+                        })?;
+                    Ok((code, text))
+                })
+                .collect(),
+        )
+    }
+
+    /// One curl per request, `parallel` at a time.
+    fn post_threads(
+        &self,
+        bodies: &[&Value],
+        halted: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<(u16, String)>> {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let next = AtomicUsize::new(0);
-        let results: Vec<Mutex<Option<Asked>>> = states.iter().map(|_| Mutex::new(None)).collect();
-        let workers = self.parallel.min(states.len()).max(1);
+        type Slot = Mutex<Option<Result<(u16, String)>>>;
+        let results: Vec<Slot> = bodies.iter().map(|_| Mutex::new(None)).collect();
+        let workers = self.parallel.min(bodies.len()).max(1);
         std::thread::scope(|s| {
             for _ in 0..workers {
                 s.spawn(|| {
                     loop {
                         let i = next.fetch_add(1, Ordering::SeqCst);
-                        if i >= states.len() {
+                        if i >= bodies.len() {
                             break;
                         }
                         let r = if halted() {
                             Err(Error::ActionFailed("stopped".into()))
                         } else {
-                            self.ask(&states[i], questions, halted)
+                            self.post(bodies[i], halted)
                         };
                         if let Ok(mut slot) = results[i].lock() {
                             *slot = Some(r);
@@ -528,28 +724,57 @@ impl Decider {
             .collect()
     }
 
-    /// POST `body` (JSON); the HTTP status and the reply.
-    fn post(&self, body: &Value, halted: &(dyn Fn() -> bool + Sync)) -> Result<(u16, String)> {
-        let mut config = String::new();
-        config.push_str(&format!("url = {}\n", quote(&self.url)));
-        if !self.key.is_empty() {
-            config.push_str(&format!(
-                "header = {}\n",
-                quote(&format!("Authorization: Bearer {}", self.key))
-            ));
-        }
-        config.push_str("header = \"Content-Type: application/json\"\n");
-        config.push_str("header = \"Accept: application/json\"\n");
-        config.push_str(&format!(
-            "user-agent = {}\n",
-            quote(concat!(
-                "computer-use/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/mhrsdev/zero-use-computer)"
-            ))
+    /// Why no answer came (curl's exit code and its message).
+    fn unreached(&self, exit: Option<i32>, err: &str) -> Error {
+        let err = err.trim().trim_start_matches("curl: ").to_string();
+        // The last line: with several requests curl says one per failure.
+        let err = err.lines().last().unwrap_or_default().to_string();
+        Error::ActionFailed(match exit {
+            Some(28) => format!(
+                "the decision model didn't answer within {:.1} s",
+                self.timeout.as_secs_f64()
+            ),
+            _ if err.is_empty() => format!(
+                "couldn't reach the decision model (curl exit {})",
+                exit.unwrap_or(-1)
+            ),
+            _ => format!("couldn't reach the decision model: {err}"),
+        })
+    }
+}
+
+/// A private folder for the replies of one `curl --parallel`, removed
+/// with it.
+struct ReplyDir(std::path::PathBuf);
+
+impl ReplyDir {
+    fn new() -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "computer-use-decide-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
         ));
-        config.push_str(&format!("data-binary = {}\n", quote(&body.to_string())));
-        curl(&config, self.timeout, halted)
+        #[allow(unused_mut)] // set only on Unix
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            b.mode(0o700);
+        }
+        b.create(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self, i: usize) -> std::path::PathBuf {
+        self.0.join(format!("{i}.json"))
+    }
+}
+
+impl Drop for ReplyDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -612,16 +837,16 @@ fn quote(s: &str) -> String {
 /// The most of a reply read.
 const MAX_REPLY: u64 = 4 * 1024 * 1024;
 
-/// Run curl with `config` on its input; the HTTP status and the reply.
-fn curl(
+/// Run curl with `config` on its input (so the key never shows in the
+/// list of running programs); its exit status, what it printed and its
+/// errors. `timeout` bounds the wait for all of it.
+fn run_curl(
     config: &str,
     timeout: Duration,
     halted: &(dyn Fn() -> bool + Sync),
-) -> Result<(u16, String)> {
+) -> Result<(std::process::ExitStatus, Vec<u8>, String)> {
     let mut cmd = Command::new("curl");
-    cmd.args(["-sS", "--proto", "=http,https", "--max-redirs", "0"])
-        .args(["--max-time", &format!("{:.1}", timeout.as_secs_f64())])
-        .args(["-w", "\n%{http_code}", "-K", "-"])
+    cmd.args(["-sS", "-K", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -660,13 +885,20 @@ fn curl(
             s
         })
     });
+    // curl keeps its own time per request; this is the backstop.
+    let deadline = Instant::now() + timeout + Duration::from_secs(2);
     let status = loop {
-        if halted() {
+        if halted() || Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(Error::ActionFailed(
-                "stopped while waiting for the decision model".into(),
-            ));
+            return Err(Error::ActionFailed(if halted() {
+                "stopped while waiting for the decision model".into()
+            } else {
+                format!(
+                    "the decision model didn't answer within {:.1} s",
+                    timeout.as_secs_f64()
+                )
+            }));
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -678,31 +910,9 @@ fn curl(
             }
         }
     };
-    let mut out = stdout.and_then(|t| t.join().ok()).unwrap_or_default();
+    let out = stdout.and_then(|t| t.join().ok()).unwrap_or_default();
     let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
-    let cut = out.iter().rposition(|b| *b == b'\n').unwrap_or(0);
-    let code: u16 = String::from_utf8_lossy(&out[cut..])
-        .trim()
-        .parse()
-        .unwrap_or(0);
-    out.truncate(cut);
-    if code == 0 {
-        let err = err.trim().trim_start_matches("curl: ").to_string();
-        return Err(Error::ActionFailed(match status.code() {
-            Some(28) => format!(
-                "the decision model didn't answer within {:.0} s (decision.timeout_ms)",
-                timeout.as_secs_f64()
-            ),
-            _ if err.is_empty() => format!(
-                "couldn't reach the decision model (curl exit {})",
-                status.code().unwrap_or(-1)
-            ),
-            _ => format!("couldn't reach the decision model: {err}"),
-        }));
-    }
-    let text = String::from_utf8(out)
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-    Ok((code, text))
+    Ok((status, out, err))
 }
 
 fn excerpt(text: &str) -> String {

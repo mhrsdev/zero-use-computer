@@ -52,6 +52,12 @@ state shows. For a yes/no whose boundary is subtle, add
   judge which parts of the window are about that (without one, the words
   are matched).
 
+The server also asks it on its own, briefly, where that saves you a look:
+an `expect`ed text shown in other words is "confirmed (in other words, as
+the decision model reads it: 0.9)"; a `find_tools` query that names no
+tool is matched by what it means. Answers to the same question about the
+same state are reused, so asking again costs nothing.
+
 Examples:
 
 ```
@@ -75,8 +81,8 @@ is near 0.5.
 
 ## Setting it up
 
-- `decide(setup="status")`: which model, and the key's last four
-  characters.
+- `decide(setup="status")`: which model, the key's last four
+  characters, and what it was asked this session.
 - `decide(setup="open")`: opens the settings page in the user's browser.
   This is how a model and key get added; ask the user to press Ctrl+Alt+J
   or use this.

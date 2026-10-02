@@ -719,6 +719,18 @@ pub struct DecisionConfig {
     pub max_state_chars: usize,
     /// Requests at once when several items are judged.
     pub parallel: usize,
+    /// Let the server ask the model on its own where that saves the agent
+    /// a turn or a read: whether an `expect`ed text shows in other words,
+    /// which parts of a window `about` means, which tool a `find_tools`
+    /// query means. Without a model (or with this off) the server judges
+    /// those itself, as before.
+    pub auto: bool,
+    /// Longest wait for a question the server asks on its own (ms); then
+    /// it judges by itself.
+    pub auto_timeout_ms: u64,
+    /// How long an answer is kept for the same question about the same
+    /// state (seconds; 0 = never kept).
+    pub cache_seconds: u64,
 }
 
 impl Default for DecisionConfig {
@@ -732,6 +744,9 @@ impl Default for DecisionConfig {
             timeout_ms: 15_000,
             max_state_chars: 20_000,
             parallel: 8,
+            auto: true,
+            auto_timeout_ms: 3_000,
+            cache_seconds: 300,
         }
     }
 }

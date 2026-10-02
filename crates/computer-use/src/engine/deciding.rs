@@ -5,7 +5,8 @@
 use serde_json::{Value, json};
 
 use super::*;
-use crate::decision::{self, Answer, Decider, Kind, Question};
+use crate::decision::judge::Use;
+use crate::decision::{self, Answer, Asked, Decider, Kind, Question};
 
 /// Elements offered as the options of one question when picking one.
 const PICK_CHUNK: usize = 64;
@@ -60,6 +61,55 @@ fn questions_of(args: &DecideArgs) -> Result<Vec<Question>> {
         }
     }
     Ok(vec![decision::question_from("answer", &Value::Object(q))?])
+}
+
+/// The parts of a window as few requests as they fit in: each request's
+/// state holds several parts, with one yes/no question each ("does part
+/// 3 have to do with …?"). Each request, and which part each of its
+/// questions is about.
+#[allow(clippy::type_complexity)]
+fn pack_parts(
+    texts: &[String],
+    about: &str,
+    title: &str,
+    app: &str,
+    max_state: usize,
+) -> (Vec<(String, Vec<Question>)>, Vec<Vec<(usize, String)>>) {
+    let head = format!(
+        "Parts of the window \"{title}\" of {app}, each with its elements (role, name, value):\n\n"
+    );
+    // Room left for the parts (a little kept back, as the state is cut
+    // at max_state characters); with very little, a part a request.
+    let room = max_state.saturating_sub(head.len() + 200).max(1);
+    let mut jobs = Vec::new();
+    let mut slots = Vec::new();
+    let mut state = head.clone();
+    let mut qs: Vec<Question> = Vec::new();
+    let mut names: Vec<(usize, String)> = Vec::new();
+    for (k, text) in texts.iter().enumerate() {
+        let part = format!("[part {}]\n{}\n", k + 1, text.trim_end());
+        let full = qs.len() >= decision::MAX_QUESTIONS
+            || (!qs.is_empty() && state.len() - head.len() + part.len() > room);
+        if full {
+            jobs.push((
+                std::mem::replace(&mut state, head.clone()),
+                std::mem::take(&mut qs),
+            ));
+            slots.push(std::mem::take(&mut names));
+        }
+        state.push_str(&part);
+        let name = format!("part{}", k + 1);
+        qs.push(Question::yes_no(
+            &name,
+            &format!("Does part {} have to do with: {about}?", k + 1),
+        ));
+        names.push((k, name));
+    }
+    if !qs.is_empty() {
+        jobs.push((state, qs));
+        slots.push(names);
+    }
+    (jobs, slots)
 }
 
 /// `a: yes (0.91) · b: billing (0.88)`, or just the answer for one
@@ -117,6 +167,92 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// The decision model for the server's own questions, when one may be
+    /// asked now: set up, `decision.auto` on, and not resting after
+    /// failing. `None`: the server judges by itself.
+    pub(super) fn auto_decider(&self) -> Option<Decider> {
+        if !self.store.config.decision.auto {
+            return None;
+        }
+        let d = self.decider().ok()?;
+        self.judge.ready((self.clock)()).then_some(d)
+    }
+
+    /// Questions through the decision layer (its cache, its time limits,
+    /// its counts).
+    pub(super) fn judged(
+        &mut self,
+        decider: &Decider,
+        use_: Use,
+        jobs: &[(String, Vec<Question>)],
+    ) -> Vec<Asked> {
+        let now = (self.clock)();
+        let halted = self.halt_watch();
+        let settings = self.store.config.decision.clone();
+        self.judge
+            .ask_batch(decider, &settings, use_, jobs, now, &halted)
+    }
+
+    /// One state's questions through the decision layer.
+    pub(super) fn judged_one(
+        &mut self,
+        decider: &Decider,
+        use_: Use,
+        state: &str,
+        questions: &[Question],
+    ) -> Asked {
+        self.judged(decider, use_, &[(state.to_string(), questions.to_vec())])
+            .pop()
+            .unwrap_or_else(|| Err(Error::Internal("no answer".into())))
+    }
+
+    /// The tools (of `cands`) that a `find_tools` query means, as the
+    /// decision model reads it: the likely ones, most likely first, at
+    /// most three. `None` without a model, or when it can't tell.
+    pub(super) fn tools_by_model(
+        &mut self,
+        query: &str,
+        cands: &[&crate::tools::ToolDefinition],
+    ) -> Option<Vec<usize>> {
+        if cands.len() < 2 || cands.len() > decision::MAX_OPTIONS {
+            return None;
+        }
+        let decider = self.auto_decider()?;
+        let q = Question {
+            name: "tool".into(),
+            kind: Kind::Choice,
+            text: format!("Which tool is for this: {query}"),
+            options: cands
+                .iter()
+                .map(|t| (t.name.to_string(), cut(&t.description, OPTION_CHARS)))
+                .collect(),
+        };
+        let state = "The tools of a desktop-control server that an agent can ask for, each with what it does.";
+        let (answers, _) = self.judged_one(&decider, Use::Auto, state, &[q]).ok()?;
+        let Some((
+            _,
+            Answer::Choice {
+                choice,
+                probabilities,
+                ..
+            },
+        )) = answers.first()
+        else {
+            return None;
+        };
+        let position = |name: &str| cands.iter().position(|t| t.name == name);
+        let mut picked: Vec<usize> = probabilities
+            .iter()
+            .filter(|(_, p)| *p >= 0.15)
+            .filter_map(|(o, _)| position(o))
+            .take(3)
+            .collect();
+        if picked.is_empty() {
+            picked.extend(position(choice));
+        }
+        (!picked.is_empty()).then_some(picked)
+    }
+
     /// The stop key and the client's cancel, as the model's wait can watch
     /// them from other threads.
     fn halt_watch(&self) -> impl Fn() -> bool + Send + Sync + 'static + use<B> {
@@ -126,7 +262,12 @@ impl<B: Backend> Engine<B> {
 
     /// The app's window as text, for the decision model: its elements with
     /// their indices (the same ones the model acts on).
-    fn window_text(&mut self, app: &str, window: Option<&str>, fresh: bool) -> Result<String> {
+    pub(super) fn window_text(
+        &mut self,
+        app: &str,
+        window: Option<&str>,
+        fresh: bool,
+    ) -> Result<String> {
         let app = self.resolve_app(app)?;
         let window = self.resolve_window(&app, window, fresh)?;
         self.observe(&app, &window, fresh)?;
@@ -144,7 +285,6 @@ impl<B: Backend> Engine<B> {
             return self.decision_setup(setup);
         }
         let decider = self.decider()?;
-        let halted = self.halt_watch();
         if let Some(what) = args.pick.as_deref() {
             let app = args.app.as_deref().ok_or_else(|| {
                 Error::InvalidArgs("pick needs app: the app whose element to find".into())
@@ -177,7 +317,9 @@ impl<B: Backend> Engine<B> {
                 })
                 .collect();
             let start = Instant::now();
-            let results = decider.ask_each(&texts, &questions, &halted);
+            let jobs: Vec<(String, Vec<Question>)> =
+                texts.into_iter().map(|t| (t, questions.clone())).collect();
+            let results = self.judged(&decider, Use::Asked, &jobs);
             if self.halted() {
                 return Err(self.stopped_error());
             }
@@ -202,13 +344,15 @@ impl<B: Backend> Engine<B> {
                     .into(),
             ));
         }
-        let (answers, took) = decider.ask(&state, &questions, &halted).map_err(|e| {
-            if self.halted() {
-                self.stopped_error()
-            } else {
-                e
-            }
-        })?;
+        let (answers, took) = self
+            .judged_one(&decider, Use::Asked, &state, &questions)
+            .map_err(|e| {
+                if self.halted() {
+                    self.stopped_error()
+                } else {
+                    e
+                }
+            })?;
         Ok(ToolOutput::text(format!(
             "Decision ({}, {} ms): {}",
             decider.label(),
@@ -252,48 +396,51 @@ impl<B: Backend> Engine<B> {
                 t
             })
             .collect();
+        // The words of `about` found in a part: always there, free.
+        let words: Vec<String> = crate::text::fold(about)
+            .split_whitespace()
+            .filter(|w| w.chars().count() >= 3)
+            .map(str::to_string)
+            .collect();
+        let mut keep: Vec<bool> = parts
+            .iter()
+            .map(|&p| {
+                // Names and values, not roles ("text" isn't every field).
+                nodes[p..p + size(p)].iter().any(|n| {
+                    let t = node_text(n);
+                    words.iter().any(|w| t.contains(w.as_str()))
+                })
+            })
+            .collect();
         let mut how = "words matched".to_string();
-        let mut keep: Vec<bool> = match self.decider() {
-            Ok(decider) if parts.len() > 1 => {
-                how = decider.label();
-                let q = Question::yes_no(
-                    "about",
-                    &format!("Does this part of an app's window have to do with: {about}?"),
-                );
-                let halted = self.halt_watch();
-                let results = decider.ask_each(&texts, &[q], &halted);
-                if self.halted() {
-                    return Err(self.stopped_error());
+        // Better with the decision model: it knows "shipping address"
+        // when the part says "Deliver to". All the parts go in one request
+        // (as many as fit its state), not one each.
+        if parts.len() > 1
+            && let Some(decider) = self.auto_decider()
+        {
+            let max = self.store.config.decision.max_state_chars;
+            let (jobs, slots) = pack_parts(&texts, about, &window.title, &app.name, max);
+            let replies = self.judged(&decider, Use::Auto, &jobs);
+            if self.halted() {
+                return Err(self.stopped_error());
+            }
+            let mut answered = 0;
+            for (reply, names) in replies.iter().zip(&slots) {
+                let Ok((answers, _)) = reply else { continue };
+                for (k, name) in names {
+                    if let Some((_, Answer::YesNo { yes })) =
+                        answers.iter().find(|(n, _)| n == name)
+                    {
+                        keep[*k] = *yes >= 0.3;
+                        answered += 1;
+                    }
                 }
-                results
-                    .iter()
-                    .map(|r| match r {
-                        Ok((a, _)) => match a.first() {
-                            Some((_, Answer::YesNo { yes })) => *yes >= 0.3,
-                            _ => true,
-                        },
-                        Err(_) => true,
-                    })
-                    .collect()
             }
-            _ => {
-                let words: Vec<String> = crate::text::fold(about)
-                    .split_whitespace()
-                    .filter(|w| w.chars().count() >= 3)
-                    .map(str::to_string)
-                    .collect();
-                parts
-                    .iter()
-                    .map(|&p| {
-                        // Names and values, not roles ("text" isn't every field).
-                        nodes[p..p + size(p)].iter().any(|n| {
-                            let t = node_text(n);
-                            words.iter().any(|w| t.contains(w.as_str()))
-                        })
-                    })
-                    .collect()
+            if answered > 0 {
+                how = decider.label();
             }
-        };
+        }
         // The focused element's part always stays.
         for (k, &p) in parts.iter().enumerate() {
             if nodes[p..p + size(p)].iter().any(|n| n.states.focused) {
@@ -386,7 +533,6 @@ impl<B: Backend> Engine<B> {
             win.title, app.name
         );
         let ask = format!("Which element is this: {what}");
-        let halted = self.halt_watch();
         let choice = |cands: &[(u32, String)], name: &str| Question {
             name: name.into(),
             kind: Kind::Choice,
@@ -402,7 +548,12 @@ impl<B: Backend> Engine<B> {
         let parts: Vec<&[(u32, String)]> = cands.chunks(PICK_CHUNK).collect();
         let mut finalists: Vec<(u32, String)> = Vec::new();
         let answer = if parts.len() == 1 {
-            let (mut a, _) = decider.ask(&context, &[choice(parts[0], "element")], &halted)?;
+            let (mut a, _) = self.judged_one(
+                decider,
+                Use::Asked,
+                &context,
+                &[choice(parts[0], "element")],
+            )?;
             a.pop().map(|(_, a)| a)
         } else {
             let qs: Vec<Question> = parts
@@ -410,7 +561,7 @@ impl<B: Backend> Engine<B> {
                 .enumerate()
                 .map(|(i, p)| choice(p, &format!("part{}", i + 1)))
                 .collect();
-            let (answers, _) = decider.ask(&context, &qs, &halted)?;
+            let (answers, _) = self.judged_one(decider, Use::Asked, &context, &qs)?;
             for (_, a) in &answers {
                 if let Answer::Choice { choice, .. } = a
                     && let Some(c) = cands.iter().find(|(i, _)| i.to_string() == *choice)
@@ -427,8 +578,12 @@ impl<B: Backend> Engine<B> {
                     probabilities: Vec::new(),
                 }),
                 _ => {
-                    let (mut a, _) =
-                        decider.ask(&context, &[choice(&finalists, "element")], &halted)?;
+                    let (mut a, _) = self.judged_one(
+                        decider,
+                        Use::Asked,
+                        &context,
+                        &[choice(&finalists, "element")],
+                    )?;
                     a.pop().map(|(_, a)| a)
                 }
             }
@@ -520,8 +675,12 @@ impl<B: Backend> Engine<B> {
         {
             return Ok(None);
         }
-        let halted = self.halt_watch();
-        let (answers, _) = decider.ask(&text, &[Question::yes_no("answer", question)], &halted)?;
+        let (answers, _) = self.judged_one(
+            decider,
+            Use::Asked,
+            &text,
+            &[Question::yes_no("answer", question)],
+        )?;
         *asked = Some((hash, now));
         Ok(match answers.first() {
             Some((_, Answer::YesNo { yes })) if *yes >= 0.5 => Some(*yes),
@@ -592,7 +751,16 @@ impl<B: Backend> Engine<B> {
                 } else {
                     "no key".into()
                 };
-                format!("Decision model: {} ({source}). {how}", dec.label())
+                let auto = if d.auto {
+                    "The server also asks it on its own where that saves a turn (decision.auto)."
+                } else {
+                    "The server doesn't ask it on its own (decision.auto = false)."
+                };
+                format!(
+                    "Decision model: {} ({source}). {how} {auto}\n{}",
+                    dec.label(),
+                    self.judge.report((self.clock)())
+                )
             }
             Ok(None) => format!("No decision model is set up. {}", self.not_set_up()),
             Err(e) => format!("The decision model's settings are incomplete: {e}. {how}"),
@@ -1015,10 +1183,26 @@ mod tests {
             json!({"app": "TextEdit", "about": "zebra"}),
         );
         assert!(out.text.contains("no part matched"), "{}", out.text);
-        // With one: its judgment.
-        let f = system_one(
-            |state, _| json!({"type": "noul", "noul": if state.contains("Bold") { 0.9 } else { 0.05 }}),
-        );
+        // With one: its judgment, all the parts in one request (one
+        // question each), and the same look again from the cache.
+        let f = system_one(|state, q| {
+            let n = q["instructions"]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .nth(2)
+                .unwrap()
+                .to_string();
+            let part = state
+                .split(&format!("[part {n}]"))
+                .nth(1)
+                .unwrap_or_default()
+                .split("[part ")
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            json!({"type": "noul", "noul": if part.contains("Bold") { 0.9 } else { 0.05 }})
+        });
         let mut e = engine(jev(&f.url));
         let out = e.call_tool(
             "get_app_state",
@@ -1028,6 +1212,161 @@ mod tests {
         assert!(out.text.contains(": 1 of 2 ("), "{}", out.text);
         assert!(!out.text.contains("words matched"), "{}", out.text);
         assert!(out.text.contains("button \"Bold\""), "{}", out.text);
+        assert_eq!(
+            f.seen.lock().unwrap().len(),
+            1,
+            "one request for both parts"
+        );
+        let again = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "formatting"}),
+        );
+        assert!(again.text.contains(": 1 of 2 ("), "{}", again.text);
+        assert_eq!(
+            f.seen.lock().unwrap().len(),
+            1,
+            "the second look from the cache"
+        );
+        // decision.auto off: the words, and no request.
+        let mut cfg = e.store().config.clone();
+        cfg.decision.auto = false;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "formatting"}),
+        );
+        assert!(out.text.contains("words matched"), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+    }
+
+    fn quick(mut e: Engine<MockBackend>) -> Engine<MockBackend> {
+        let mut cfg = e.store().config.clone();
+        cfg.timing.expect_wait_ms = 0;
+        e.set_config(ConfigStore::in_memory(cfg));
+        e
+    }
+
+    #[test]
+    fn an_expected_text_in_other_words_is_confirmed_by_the_model() {
+        // The document says "Hello"; the agent expected a greeting.
+        let f = system_one(
+            |state, _| json!({"type": "noul", "noul": if state.contains("Hello") { 0.93 } else { 0.02 }}),
+        );
+        let mut e = quick(engine(jev(&f.url)));
+        let out = e.call_tool(
+            "click",
+            json!({"app": "TextEdit", "name": "Bold", "expect": "a greeting"}),
+        );
+        assert!(
+            out.text
+                .contains("Expected a greeting: confirmed (in other words, as the decision model reads it: 0.93)"),
+            "{}",
+            out.text
+        );
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+        // Word for word: no question.
+        let out = e.call_tool(
+            "click",
+            json!({"app": "TextEdit", "name": "Bold", "expect": "Hello"}),
+        );
+        assert!(
+            out.text.contains("Expected Hello: confirmed ("),
+            "{}",
+            out.text
+        );
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+        // A kind (a dialog) is never asked about.
+        let out = e.call_tool(
+            "click",
+            json!({"app": "TextEdit", "name": "Bold", "expect": "dialog"}),
+        );
+        assert!(!out.text.contains("decision model"), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+        // Without a model: not seen, as before.
+        let mut plain = quick(engine(DecisionConfig::default()));
+        let out = plain.call_tool(
+            "click",
+            json!({"app": "TextEdit", "name": "Bold", "expect": "a greeting"}),
+        );
+        assert!(
+            out.text.contains("Expected a greeting: not seen"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn a_failing_model_is_left_alone_and_the_server_judges_by_itself() {
+        let f = fake(|_| (500, json!({"error": {"message": "down"}}).to_string()));
+        let mut e = engine(jev(&f.url));
+        for _ in 0..3 {
+            let out = e.call_tool(
+                "get_app_state",
+                json!({"app": "TextEdit", "about": "formatting"}),
+            );
+            assert!(!out.is_error, "{}", out.text);
+            assert!(out.text.contains("words matched"), "{}", out.text);
+        }
+        assert_eq!(f.seen.lock().unwrap().len(), 3);
+        // Three failures in a row: the server's own questions stop.
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "formatting"}),
+        );
+        assert!(out.text.contains("words matched"), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 3, "not asked while it rests");
+        let status = e.call_tool("decide", json!({"setup": "status"}));
+        assert!(status.text.contains("3 failed"), "{}", status.text);
+        assert!(status.text.contains("judges by itself"), "{}", status.text);
+        // The agent's own question still goes, and its error is shown.
+        let out = e.call_tool("decide", json!({"question": "Is it?", "state": "x"}));
+        assert!(out.is_error, "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn find_tools_asks_the_model_when_no_tool_name_matches() {
+        let f = system_one(|_, q| {
+            assert_eq!(q["type"], "choice");
+            json!({"type": "choice", "choice": "locate", "probabilities": {"locate": 0.81, "draw": 0.12}})
+        });
+        let mut e = engine(jev(&f.url));
+        let out = e.call_tool(
+            "find_tools",
+            json!({"query": "pinpoint the exact spot of a tiny icon"}),
+        );
+        assert!(out.text.starts_with("locate: "), "{}", out.text);
+        assert!(
+            out.text.contains("Chosen by the decision model"),
+            "{}",
+            out.text
+        );
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+        // A word in a tool's name is enough: no question.
+        let out = e.call_tool("find_tools", json!({"query": "draw a star"}));
+        assert!(out.text.starts_with("draw: "), "{}", out.text);
+        assert!(!out.text.contains("decision model"), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parts_are_packed_as_they_fit() {
+        let texts: Vec<String> = (0..100).map(|i| format!("button \"B{i}\"")).collect();
+        // Room for all: 64 questions at most a request.
+        let (jobs, slots) = pack_parts(&texts, "x", "W", "App", 1_000_000);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!((jobs[0].1.len(), jobs[1].1.len()), (64, 36));
+        assert_eq!(slots[1][0], (64, "part65".to_string()));
+        assert!(jobs[1].0.contains("[part 65]\nbutton \"B64\""));
+        // Little room: every state stays within it.
+        let (jobs, _) = pack_parts(&texts, "x", "W", "App", 400);
+        assert!(jobs.len() > 2);
+        assert!(
+            jobs.iter().all(|(s, _)| s.chars().count() <= 400),
+            "a state too long"
+        );
+        let all: usize = jobs.iter().map(|(_, q)| q.len()).sum();
+        assert_eq!(all, 100);
     }
 
     #[test]

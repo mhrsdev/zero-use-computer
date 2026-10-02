@@ -1,5 +1,74 @@
 # Changelog
 
+## v3.8.0
+
+The decision model, built in so that the server never depends on one and
+gains from one: a **decision layer** between the engine and the model
+asks it where that saves the agent a turn or a read, answers the same
+question once, sends many questions together, and never lets a slow or
+failing model hold the agent up
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.7.5...v3.8.0);
+[how it works](docs/GUIDE.md#optional-and-a-gain-when-its-there-v38)).
+Without a decision model nothing changes.
+
+### The server asks on its own, where it saves a turn
+
+On by default once a model is set up (`decision.auto`); without one, or
+with it off, the server judges these itself, as before.
+
+- **`expect` in other words.** An expected text that isn't on screen
+  word for word ("saved successfully", the app says "Saved") is
+  confirmed by the model reading the window once, instead of "not
+  seen", which costs the agent a look. Kinds (`dialog`, `change`,
+  `value`…) and texts found as written are never asked about.
+- **`get_app_state(about=…)`** sends all the parts of a window in one
+  request, a question each, instead of one request per part. The words
+  of `about` are matched first and stand wherever the model doesn't
+  answer.
+- **`find_tools(query=…)`**, when no word of the query is in a tool's
+  name, asks the model which tool is meant ("pinpoint a tiny icon" →
+  `locate`). A query that names a tool is answered as before, with no
+  request.
+
+### Never in the way
+
+- **Time limit:** the server's own questions wait at most
+  `decision.auto_timeout_ms` (3 s), then it judges by itself.
+- **Rest after failures:** three failures in a row and the server stops
+  asking on its own for a minute. The agent's own questions (`decide`,
+  `wait_for` until, `pick`) always go, and their errors are shown.
+- **Nothing at start:** no request, process or wait until a question is
+  asked.
+
+### Fewer requests, less cost
+
+- **Answers kept:** the same question about the same state, for the same
+  model, is answered from memory for `decision.cache_seconds` (5 min; 0
+  turns it off). A `wait_for` that asks again, the same look, a pick
+  repeated: no request.
+- **One curl for many requests:** `items`, `decide_each` and the parts of
+  a window go out through one `curl --parallel` instead of one process
+  each. An HTTPS API that speaks HTTP/2 gets one connection. A plain-HTTP
+  server (a model on this computer) still gets them at once. A curl
+  before 7.66 gets one request each, as before. Measured here over local
+  HTTP/1.1, as fast as before (32 requests: 364 ms against 332 ms). The
+  gain, fewer TLS handshakes and fewer processes to start, is with a
+  remote API and on Windows, which this test can't show.
+
+### Counted
+
+- `decide(setup="status")` says what the layer did this session:
+  - requests, and how many the server sent on its own;
+  - answers from the cache;
+  - the average wait and failures;
+  - roughly how much text the model read instead of the agent;
+  - whether it is resting after failures.
+
+### Settings
+
+`[decision]` gains `auto` (true), `auto_timeout_ms` (3000) and
+`cache_seconds` (300).
+
 ## v3.7.5
 
 A debugging release: 32 bugs found by reviewing every part of the code

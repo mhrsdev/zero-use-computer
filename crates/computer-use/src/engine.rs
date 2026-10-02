@@ -331,6 +331,9 @@ pub struct Engine<B: Backend> {
     exports: crate::design::TempFiles,
     /// Saved scripts.
     scripts: crate::script::Library,
+    /// The decision layer: the model's answers kept, its failures, what
+    /// it cost (see [`crate::decision::judge`]).
+    judge: crate::decision::judge::Judge,
     /// A script is running: its calls can't start another (by any route,
     /// `batch` included), or scripts could nest until the stack runs out.
     in_script: bool,
@@ -461,6 +464,7 @@ impl<B: Backend> Engine<B> {
             fonts: crate::design::FontCache::default(),
             exports: crate::design::TempFiles::default(),
             scripts,
+            judge: Default::default(),
             in_script: false,
             ocr_note: None,
             ocr_note_shown: false,
@@ -2258,9 +2262,21 @@ impl<B: Backend> Engine<B> {
         let mut fresh = self.settled != Some(self.epoch);
         let label = tree::truncate(what.trim().trim_matches('"'), 60);
         loop {
-            let (outcome, detail, settled) = self.expect_now(query, what, index, before, fresh);
+            let (mut outcome, mut detail, settled) =
+                self.expect_now(query, what, index, before, fresh);
             let waited = (self.clock)().saturating_duration_since(start);
             if outcome == Outcome::Confirmed || settled || waited >= wait || self.halted() {
+                // A text not there word for word may be there in other
+                // words ("Saved" for "saved successfully"): the decision
+                // model, when there is one, reads the window once. Without
+                // one, "not seen" stands, and the agent looks.
+                if outcome != Outcome::Confirmed
+                    && !self.halted()
+                    && let Some(yes) = self.expect_in_other_words(query, what)
+                {
+                    outcome = Outcome::Confirmed;
+                    detail = format!("in other words, as the decision model reads it: {yes:.2}");
+                }
                 let detail = if detail.is_empty() {
                     String::new()
                 } else {
@@ -2284,6 +2300,27 @@ impl<B: Backend> Engine<B> {
             }
             (self.sleep)(poll);
             fresh = true;
+        }
+    }
+
+    /// The probability (at least 0.7) that the window shows an expected
+    /// text in other words, as the decision model reads it; `None` when it
+    /// doesn't, when `what` isn't a text, or when no model may be asked.
+    fn expect_in_other_words(&mut self, query: &str, what: &str) -> Option<f64> {
+        use crate::decision::{Answer, Question, judge::Use};
+        let text = expected_text(what)?;
+        let decider = self.auto_decider()?;
+        let window = self.window_text(query, None, false).ok()?;
+        let q = Question::yes_no(
+            "shows",
+            &format!(
+                "Does the window show this, in these words or in others that mean the same: \"{text}\"?"
+            ),
+        );
+        let (answers, _) = self.judged_one(&decider, Use::Auto, &window, &[q]).ok()?;
+        match answers.first() {
+            Some((_, Answer::YesNo { yes })) if *yes >= 0.7 => Some(*yes),
+            _ => None,
         }
     }
 
@@ -2705,12 +2742,19 @@ impl<B: Backend> Engine<B> {
             .and_then(serde_json::Value::as_str)
             .map(crate::tools::query_words)
             .unwrap_or_default();
+        let query = args
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|q| !q.is_empty());
         let all = self.all_tool_definitions();
         let hidden = |d: &&ToolDefinition| !crate::tools::BASE_TOOLS.contains(&&*d.name);
         let in_category =
             |d: &&ToolDefinition| category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
         let mut more = Vec::new();
-        let found: Vec<&ToolDefinition> = if !names.is_empty() {
+        // How well the best tool matched the words (3: a word in its name).
+        let mut best = 0;
+        let mut found: Vec<&ToolDefinition> = if !names.is_empty() {
             all.iter()
                 .filter(|d| names.contains(&d.name.to_string()))
                 .collect()
@@ -2736,6 +2780,7 @@ impl<B: Backend> Engine<B> {
                 .filter(|(score, _)| *score > 0)
                 .collect();
             scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+            best = scored.first().map_or(0, |s| s.0);
             more = scored
                 .iter()
                 .skip(MOST)
@@ -2743,6 +2788,22 @@ impl<B: Backend> Engine<B> {
                 .collect();
             scored.into_iter().take(MOST).map(|(_, d)| d).collect()
         };
+        // Words that name no tool, or only show up in descriptions: the
+        // decision model, when there is one, knows "make a logo" means
+        // design. Without one the words decide, as before.
+        let mut by_model = false;
+        if names.is_empty()
+            && let Some(q) = query
+            && best < 3
+        {
+            let cands: Vec<&ToolDefinition> =
+                all.iter().filter(hidden).filter(in_category).collect();
+            if let Some(picked) = self.tools_by_model(q, &cands) {
+                found = picked.into_iter().map(|i| cands[i]).collect();
+                more.clear();
+                by_model = true;
+            }
+        }
         if found.is_empty() {
             let cats: Vec<&str> = crate::tools::CATEGORIES.iter().map(|c| c.0).collect();
             return ToolOutput::text(format!("No tools match. Categories: {}.", cats.join(", ")));
@@ -2766,6 +2827,9 @@ impl<B: Backend> Engine<B> {
         }
         if !more.is_empty() {
             out.push_str(&format!("Also matching: {}.\n", more.join(", ")));
+        }
+        if by_model {
+            out.push_str("(Chosen by the decision model.)\n");
         }
         if dispatch {
             out.push_str("Run one with use_tool(name, arguments).");
@@ -7906,6 +7970,49 @@ fn shape_similarity(nodes: &[Node], shapes: &HashSet<u64>) -> f64 {
     common as f64 / (mine.len() + shapes.len() - common).max(1) as f64
 }
 
+/// The text an `expect` waits for, when it waits for a text rather than
+/// for one of the kinds `expect_now` knows (a dialog, a menu, a change, a
+/// value, gone).
+fn expected_text(what: &str) -> Option<String> {
+    const KINDS: &[&str] = &[
+        "gone",
+        "goes",
+        "closed",
+        "close",
+        "closes",
+        "disappear",
+        "disappears",
+        "dialog",
+        "window",
+        "new window",
+        "popup",
+        "pop-up",
+        "sheet",
+        "alert",
+        "menu",
+        "a menu",
+        "change",
+        "changes",
+        "a change",
+        "anything",
+        "value",
+        "new value",
+        "value changes",
+        "checked",
+        "selected",
+    ];
+    let raw = what.trim().trim_matches('"').trim();
+    let folded = crate::text::fold(raw);
+    if KINDS.contains(&folded.trim()) {
+        return None;
+    }
+    let text = match raw.get(..5) {
+        Some(p) if p.eq_ignore_ascii_case("text ") => &raw[5..],
+        _ => raw,
+    };
+    let text = text.trim().trim_matches('"').trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
 /// Lowercased name + value of a node, for text matching.
 /// An element's name and value, [folded](crate::text::fold) for matching.
 fn node_text(n: &Node) -> String {
