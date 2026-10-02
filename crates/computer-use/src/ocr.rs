@@ -325,6 +325,12 @@ pub fn tesseract_at(
     if !langs.is_empty() {
         cmd.args(["-l", &langs.join("+")]);
     }
+    // One thread each: the two readings of an area run side by side, and
+    // Tesseract's OpenMP threads, more than there are cores, spin against
+    // each other (seconds, not milliseconds). A limit the user set stays.
+    if std::env::var_os("OMP_THREAD_LIMIT").is_none() {
+        cmd.env("OMP_THREAD_LIMIT", "1");
+    }
     cmd.arg("tsv")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

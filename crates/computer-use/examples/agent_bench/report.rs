@@ -35,6 +35,8 @@ pub struct RunResult {
     pub prompt_per_turn: Vec<u64>,
     /// Estimated tokens of the system prompt and tool definitions.
     pub fixed_tokens_est: usize,
+    /// That prefix by part: framing, instructions, skills, tools.
+    pub prefix: Value,
     pub calls: Vec<CallRecord>,
 }
 
@@ -156,6 +158,7 @@ impl RunResult {
             "cost_usd": self.cost(),
             "estimated": {
                 "fixed": self.fixed_tokens_est,
+                "prefix": self.prefix,
                 "results": self.results_est(),
                 "result_text": self.sum(|c| c.text_tokens),
                 "result_images": self.sum(|c| c.image_tokens),
@@ -274,8 +277,13 @@ pub fn summary(results: &[RunResult], scenarios: &[&Scenario]) -> String {
         out.push_str(&format!("- `{}`: {}\n", sc.id, sc.about));
     }
     out.push_str(&format!(
-        "\nFixed prefix (system prompt + tool definitions): ~{} tokens (est.).\n",
-        first.fixed_tokens_est
+        "\nFixed prefix (system prompt + tool definitions): ~{} tokens (est.): {}.\n",
+        first.fixed_tokens_est,
+        ["framing", "instructions", "skills", "tools"]
+            .iter()
+            .map(|k| format!("{k} {}", first.prefix[*k]))
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
     if results.iter().any(|r| r.fallback) {
         out.push_str(

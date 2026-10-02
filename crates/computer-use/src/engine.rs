@@ -1972,7 +1972,7 @@ impl<B: Backend> Engine<B> {
         // Text read off the screen isn't read again for every look.
         let reuse = std::mem::replace(&mut self.ocr_reuse, true);
         // While reads still show the state from before, they come further
-        // apart (up to 4 polls): a change is still seen within one of them,
+        // apart (up to 2 polls): a change is still seen within one of them,
         // and an action that changed nothing costs half the reads.
         let mut interval = poll;
         while let Ok(window) = self.pick_window(app, None, true) {
@@ -1993,7 +1993,7 @@ impl<B: Backend> Engine<B> {
             (self.sleep)(interval);
             waited += interval;
             interval = if unchanged {
-                (interval * 2).min(poll * 4)
+                (interval * 2).min(poll * 2)
             } else {
                 poll
             };

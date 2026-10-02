@@ -25,6 +25,7 @@
 //! See bench/README.md for every option.
 
 mod api;
+mod remote;
 mod report;
 mod scenarios;
 mod session;
@@ -54,13 +55,21 @@ struct Options {
     python: Option<String>,
     calibrate: bool,
     verbose: bool,
+    /// A server binary of any version, spoken to over MCP, instead of the
+    /// engine built in (`--server`), with its arguments (`--server-args`).
+    server: Option<String>,
+    server_args: Vec<String>,
+    server_config: Option<PathBuf>,
+    /// The skills folder the model gets (`--skills`): the version's own.
+    skills: Option<PathBuf>,
 }
 
 const USAGE: &str =
     "usage: agent_bench [--scripted] [--scenarios form,table,board,shapes,orders,long|all]
                    [--runs N] [--model ID] [--effort low|medium|high|xhigh|max]
                    [--max-turns N] [--config FILE] [--preset default|codex]
-                   [--plan step|batch] [--label NAME] [--out DIR] [--python PY] [--calibrate] [--verbose]";
+                   [--plan step|batch] [--label NAME] [--out DIR] [--python PY] [--calibrate] [--verbose]
+                   [--server BIN [--server-args \"ARGS\"] [--server-config FILE] [--skills DIR]]";
 
 fn parse_args() -> Result<Options, String> {
     let mut o = Options {
@@ -78,6 +87,10 @@ fn parse_args() -> Result<Options, String> {
         python: None,
         calibrate: false,
         verbose: false,
+        server: None,
+        server_args: Vec::new(),
+        server_config: None,
+        skills: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -122,6 +135,15 @@ fn parse_args() -> Result<Options, String> {
             "--label" => o.label = value("--label")?,
             "--out" => o.out = PathBuf::from(value("--out")?),
             "--python" => o.python = Some(value("--python")?),
+            "--server" => o.server = Some(value("--server")?),
+            "--server-args" => {
+                o.server_args = value("--server-args")?
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect()
+            }
+            "--skills" => o.skills = Some(PathBuf::from(value("--skills")?)),
+            "--server-config" => o.server_config = Some(PathBuf::from(value("--server-config")?)),
             "--help" | "-h" => return Err(USAGE.into()),
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
@@ -129,26 +151,55 @@ fn parse_args() -> Result<Options, String> {
     Ok(o)
 }
 
-/// The system prompt: what a client that loaded the skills gives the
-/// model, plus what the benchmark needs said.
-fn system_prompt() -> String {
-    let body = |text: &str| -> String {
-        // The skill without its front matter.
-        match text
-            .strip_prefix("---\n")
-            .and_then(|r| r.split_once("\n---\n"))
-        {
-            Some((_, body)) => body.trim().to_string(),
-            None => text.trim().to_string(),
-        }
+/// What the benchmark tells the model, before the instructions and skills.
+const FRAMING: &str = "You operate a Linux desktop with the computer-use tools. Do the user's task, then reply with one short line saying what you did, without calling more tools. Nobody can answer questions: the task is exactly what the user asked for.";
+
+/// A skill without its front matter.
+fn skill_body(text: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    match text
+        .strip_prefix("---\n")
+        .and_then(|r| r.split_once("\n---\n"))
+    {
+        Some((_, body)) => body.trim().to_string(),
+        None => text.trim().to_string(),
+    }
+}
+
+/// The skills a client that loaded them gives the model: `computer-use`
+/// and `computer-use-security` (an early release's single `SKILL.md` when
+/// the folder has that instead).
+fn skills_text(dir: Option<&std::path::Path>) -> String {
+    let Some(dir) = dir else {
+        return format!(
+            "{}\n\n{}",
+            skill_body(include_str!("../../../../skills/computer-use/SKILL.md")),
+            skill_body(include_str!(
+                "../../../../skills/computer-use-security/SKILL.md"
+            )),
+        );
     };
-    format!(
-        "You operate a Linux desktop with the computer-use tools. Do the user's task, then reply with one short line saying what you did, without calling more tools. Nobody can answer questions: the task is exactly what the user asked for.\n\n{}\n\n{}",
-        body(include_str!("../../../../skills/computer-use/SKILL.md")),
-        body(include_str!(
-            "../../../../skills/computer-use-security/SKILL.md"
-        )),
-    )
+    let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().map(|t| skill_body(&t));
+    let layered: Vec<String> = ["computer-use", "computer-use-security"]
+        .iter()
+        .filter_map(|s| read(dir.join(s).join("SKILL.md")))
+        .collect();
+    if layered.is_empty() {
+        read(dir.join("SKILL.md")).unwrap_or_default()
+    } else {
+        layered.join("\n\n")
+    }
+}
+
+/// The system prompt: the framing, the server's MCP instructions (as a
+/// client puts them in front of the model) and the skills.
+fn system_prompt(instructions: &str, skills: &str) -> String {
+    [FRAMING, instructions, skills]
+        .iter()
+        .filter(|t| !t.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn main() {
@@ -190,7 +241,13 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let system = system_prompt();
+    let skills = skills_text(o.skills.as_deref());
+    let server = o.server.as_ref().map(|program| remote::Launch {
+        program: program.clone(),
+        args: o.server_args.clone(),
+        home: work.join("server"),
+        config: o.server_config.clone(),
+    });
     let mode = if o.scripted { "scripted" } else { "real" };
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -220,25 +277,42 @@ fn main() {
     for sc in &o.scenarios {
         for run in 1..=o.runs {
             let state = work.join(format!("{}-{run}.json", sc.id));
-            let mut session =
-                match Session::start(&python, &fixture, sc.fixture, sc.app, cfg.clone(), state) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("{} #{run}: {e}", sc.id);
-                        continue;
-                    }
-                };
+            let mut session = match Session::start(
+                &python,
+                &fixture,
+                sc.fixture,
+                sc.app,
+                cfg.clone(),
+                server.as_ref(),
+                state,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{} #{run}: {e}", sc.id);
+                    continue;
+                }
+            };
             session.verbose = o.verbose;
             let defs = session.engine.tool_definitions();
             let tools: Vec<Value> = defs
                 .iter()
                 .map(|d| json!({"name": d.name, "description": d.description, "input_schema": d.input_schema}))
                 .collect();
-            let fixed_tokens = computer_use::text::estimate_tokens(&system)
-                + computer_use::text::estimate_tokens(&Value::Array(tools.clone()).to_string());
+            let instructions = session.engine.instructions();
+            let system = system_prompt(&instructions, &skills);
+            let est = computer_use::text::estimate_tokens;
+            let tools_tokens = est(&Value::Array(tools.clone()).to_string());
+            let fixed_tokens = est(&system) + tools_tokens;
             let t0 = Instant::now();
             let mut r = RunResult::new(&o.label, mode, sc.id, run, &o.preset);
             r.fixed_tokens_est = fixed_tokens;
+            r.prefix = json!({
+                "framing": est(FRAMING),
+                "instructions": est(&instructions),
+                "skills": est(&skills),
+                "tools": tools_tokens,
+                "tool_count": tools.len(),
+            });
             match &client {
                 None => {
                     let way = if o.plan == "batch" {

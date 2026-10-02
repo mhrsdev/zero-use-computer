@@ -7,10 +7,57 @@ use std::time::{Duration, Instant};
 
 use computer_use::config::{Config, ConfigStore};
 use computer_use::engine::Engine;
-use computer_use::tools::ToolOutput;
+use computer_use::tools::{ToolDefinition, ToolOutput};
 use serde_json::{Value, json};
 
 pub type Eng = Engine<Box<dyn computer_use::Backend>>;
+
+/// Where the tools run: an engine in this process, or a server of any
+/// version over MCP (`--server`).
+pub enum Tools {
+    Local(Box<Eng>),
+    Remote(crate::remote::Remote, crate::remote::Launch),
+}
+
+impl Tools {
+    pub fn call_tool(&mut self, name: &str, args: Value) -> ToolOutput {
+        match self {
+            Tools::Local(e) => e.call_tool(name, args),
+            Tools::Remote(r, _) => r.call_tool(name, args),
+        }
+    }
+
+    pub fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        match self {
+            Tools::Local(e) => e.tool_definitions(),
+            Tools::Remote(r, _) => r.tool_definitions(),
+        }
+    }
+
+    /// The MCP instructions a client would put in front of the model (the
+    /// in-process engine has none: the server writes them).
+    pub fn instructions(&self) -> String {
+        match self {
+            Tools::Local(_) => String::new(),
+            Tools::Remote(r, _) => r.instructions.clone(),
+        }
+    }
+
+    /// The same kind of tools, starting afresh.
+    fn restart(&mut self) -> Result<(), String> {
+        match self {
+            Tools::Local(e) => {
+                let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
+                let cfg = e.store().config.clone();
+                **e = Engine::new(backend, ConfigStore::in_memory(cfg));
+            }
+            Tools::Remote(r, launch) => {
+                *r = crate::remote::Remote::start(launch)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// One tool call as the model would receive it.
 #[derive(Debug, Clone)]
@@ -45,7 +92,7 @@ impl CallRecord {
 }
 
 pub struct Session {
-    pub engine: Eng,
+    pub engine: Tools,
     pub app: String,
     pub calls: Vec<CallRecord>,
     /// Text of every result so far, newest last (what the model has seen).
@@ -100,6 +147,7 @@ impl Session {
         scenario: &str,
         app: &str,
         cfg: Config,
+        server: Option<&crate::remote::Launch>,
         state_file: PathBuf,
     ) -> Result<Self, String> {
         let _ = std::fs::remove_file(&state_file);
@@ -111,8 +159,13 @@ impl Session {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("can't start the fixture with {python}: {e}"))?;
-        let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
-        let engine = Engine::new(backend, ConfigStore::in_memory(cfg));
+        let engine = match server {
+            Some(launch) => Tools::Remote(crate::remote::Remote::start(launch)?, launch.clone()),
+            None => {
+                let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
+                Tools::Local(Box::new(Engine::new(backend, ConfigStore::in_memory(cfg))))
+            }
+        };
         let mut s = Self {
             engine,
             app: app.to_string(),
@@ -141,10 +194,8 @@ impl Session {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        // A fresh engine for the run: nothing it learnt while waiting.
-        let backend = computer_use::platform_backend().map_err(|e| e.to_string())?;
-        let cfg = s.engine.store().config.clone();
-        s.engine = Engine::new(backend, ConfigStore::in_memory(cfg));
+        // Fresh tools for the run: nothing they learnt while waiting.
+        s.engine.restart()?;
         Ok(s)
     }
 
@@ -168,12 +219,12 @@ impl Session {
     /// doesn't see (the tool manager) is run the way a model would: its
     /// arguments asked of find_tools once, then use_tool.
     pub fn call_raw(&mut self, tool: &str, args: Value) -> ToolOutput {
-        let shown = self
-            .engine
-            .tool_definitions()
-            .iter()
-            .any(|d| d.name == tool);
-        if shown {
+        let defs = self.engine.tool_definitions();
+        let shown = defs.iter().any(|d| d.name == tool);
+        // Without a tool manager (an earlier release) a tool not listed is
+        // called as it is, and fails as it would.
+        let manager = defs.iter().any(|d| d.name == "find_tools");
+        if shown || !manager {
             return self.record(tool, args);
         }
         if !self.found.iter().any(|t| t == tool) {
