@@ -1058,7 +1058,16 @@ impl<B: Backend> Engine<B> {
     fn run_ocr(&mut self, cap: &Capture) -> Vec<OcrLine> {
         use crate::config::OcrEngineChoice;
         let cfg = self.store.config.ocr.clone();
-        let tesseract = || crate::ocr::tesseract(cap, &cfg.languages, &cfg.tesseract_path);
+        // As it is and enlarged, without grid lines: enlarging alone turns
+        // big framed labels into one glyph.
+        let tesseract = || {
+            crate::ocr::tesseract_both(
+                cap,
+                &cfg.languages,
+                &cfg.tesseract_path,
+                crate::ocr::Layout::Sparse,
+            )
+        };
         let result = match cfg.engine {
             OcrEngineChoice::Native => self.backend.ocr(cap, &cfg.languages),
             OcrEngineChoice::Tesseract => tesseract(),
@@ -1125,6 +1134,15 @@ impl<B: Backend> Engine<B> {
             let mut extra = crate::ocr::nodes(&lines, cfg.min_confidence, cfg.max_lines);
             // Leave out glyph noise and what the tree already says there.
             extra.retain(|o| {
+                let line = OcrLine {
+                    text: o.name.clone().unwrap_or_default(),
+                    bounds: o.bounds.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
+                    confidence: 1.0,
+                };
+                // Shapes read as glyphs, and rulers' numbers, aren't text.
+                if !crate::ocr::plausible(&line) || crate::ocr::ruler(&line) {
+                    return false;
+                }
                 let text = crate::ocr::words(o.name.as_deref().unwrap_or(""));
                 text.chars().filter(|c| c.is_alphanumeric()).count() >= 2
                     && !raw.iter().any(|n| {
@@ -1312,7 +1330,9 @@ impl<B: Backend> Engine<B> {
     fn run_area_ocr(&mut self, cap: &Capture) -> Vec<OcrLine> {
         use crate::config::OcrEngineChoice;
         let cfg = self.store.config.ocr.clone();
-        let tesseract = || crate::ocr::tesseract_both(cap, &cfg.languages, &cfg.tesseract_path);
+        let layout = crate::ocr::Layout::for_height(cap.bounds.height);
+        let tesseract =
+            || crate::ocr::tesseract_both(cap, &cfg.languages, &cfg.tesseract_path, layout);
         let result = match cfg.engine {
             OcrEngineChoice::Native => self.backend.ocr(cap, &cfg.languages),
             OcrEngineChoice::Tesseract => tesseract(),

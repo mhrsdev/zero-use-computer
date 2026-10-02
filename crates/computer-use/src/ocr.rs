@@ -48,6 +48,9 @@ pub fn to_screen(cap: &Capture, x: f64, y: f64, w: f64, h: f64) -> Rect {
     Rect::new(cap.bounds.x + x * sx, cap.bounds.y + y * sy, w * sx, h * sy)
 }
 
+/// Lines read with less confidence than this are marked as unsure.
+pub const UNSURE: f32 = 0.7;
+
 /// Tree elements for recognised lines, children of the window (node 0).
 pub fn nodes(lines: &[OcrLine], min_confidence: f64, max: usize) -> Vec<RawNode> {
     lines
@@ -68,6 +71,8 @@ pub fn nodes(lines: &[OcrLine], min_confidence: f64, max: usize) -> Vec<RawNode>
             role: OCR_ROLE.into(),
             native_role: "ocr".into(),
             name: Some(l.text.trim().to_string()),
+            // A reading Tesseract wasn't sure of: said so.
+            description: (l.confidence < UNSURE).then(|| "unsure reading".to_string()),
             bounds: Some(l.bounds),
             actions: Vec::<ActionDesc>::new(),
             states: NodeStates {
@@ -119,21 +124,128 @@ pub fn tesseract(cap: &Capture, languages: &[String], program: &str) -> Result<V
     } else {
         1
     };
-    tesseract_at(cap, languages, program, scale)
+    tesseract_at(cap, languages, program, scale, Layout::Sparse)
+}
+
+/// How Tesseract looks for text (its page segmentation mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// Text anywhere, in any order (a window, a canvas): mode 11.
+    Sparse,
+    /// One line of text (a short strip): mode 7.
+    Line,
+}
+
+impl Layout {
+    /// The mode for a picture this tall (screen pixels): a strip no taller
+    /// than two lines of UI text is one line.
+    pub fn for_height(height: f64) -> Self {
+        if height <= 40.0 {
+            Layout::Line
+        } else {
+            Layout::Sparse
+        }
+    }
+
+    fn psm(self) -> &'static str {
+        match self {
+            Layout::Sparse => "11",
+            Layout::Line => "7",
+        }
+    }
 }
 
 /// Run Tesseract on a part of a window at both sizes and keep the best
 /// reading of each place: enlarging helps small UI text but can make
 /// Tesseract take a framed label for one big glyph (a canvas's boxes read
 /// as "Ecce"), which it reads as it is.
-pub fn tesseract_both(cap: &Capture, languages: &[String], program: &str) -> Result<Vec<OcrLine>> {
-    let big = if cap.width.max(cap.height) <= 2400 {
-        tesseract_at(cap, languages, program, 2)?
+pub fn tesseract_both(
+    cap: &Capture,
+    languages: &[String],
+    program: &str,
+    layout: Layout,
+) -> Result<Vec<OcrLine>> {
+    // Grid and ruler lines read as glyphs or join text into blocks.
+    let clean = without_lines(cap);
+    let big = if clean.width.max(clean.height) <= 2400 {
+        tesseract_at(&clean, languages, program, 2, layout)?
     } else {
         Vec::new()
     };
-    let small = tesseract_at(cap, languages, program, 1)?;
+    let small = tesseract_at(&clean, languages, program, 1, layout)?;
     Ok(merge(small, big))
+}
+
+/// A copy of a picture without the thin straight lines that cross most of
+/// it (graph paper, rulers, table borders): each such row or column of
+/// pixels is painted like its neighbour. Text and shapes stay.
+pub fn without_lines(cap: &Capture) -> Capture {
+    let (w, h) = (cap.width as usize, cap.height as usize);
+    if w < 8 || h < 8 {
+        return cap.clone();
+    }
+    let mut out = cap.clone();
+    let lum = |c: &Capture, x: usize, y: usize| -> i32 {
+        let i = (y * w + x) * 4;
+        (i32::from(c.rgba[i]) * 299
+            + i32::from(c.rgba[i + 1]) * 587
+            + i32::from(c.rgba[i + 2]) * 114)
+            / 1000
+    };
+    // A row is a line where most of its pixels differ, the same way, from
+    // the rows on both sides, and the row two away looks like those.
+    let line_rows: Vec<usize> = (1..h - 1)
+        .filter(|&y| {
+            let hits = (0..w)
+                .filter(|&x| {
+                    let (a, m, b) = (lum(cap, x, y - 1), lum(cap, x, y), lum(cap, x, y + 1));
+                    (m - a).abs() > 12 && (m - b).abs() > 12 && (a - b).abs() <= 12
+                })
+                .count();
+            hits * 10 >= w * 6
+        })
+        .collect();
+    let line_cols: Vec<usize> = (1..w - 1)
+        .filter(|&x| {
+            let hits = (0..h)
+                .filter(|&y| {
+                    let (a, m, b) = (lum(cap, x - 1, y), lum(cap, x, y), lum(cap, x + 1, y));
+                    (m - a).abs() > 12 && (m - b).abs() > 12 && (a - b).abs() <= 12
+                })
+                .count();
+            hits * 10 >= h * 6
+        })
+        .collect();
+    for &y in &line_rows {
+        for x in 0..w {
+            let (src, dst) = (((y - 1) * w + x) * 4, (y * w + x) * 4);
+            let px: [u8; 4] = cap.rgba[src..src + 4].try_into().expect("4 bytes");
+            out.rgba[dst..dst + 4].copy_from_slice(&px);
+        }
+    }
+    for &x in &line_cols {
+        for y in 0..h {
+            let (src, dst) = ((y * w + x - 1) * 4, (y * w + x) * 4);
+            let px: [u8; 4] = out.rgba[src..src + 4].try_into().expect("4 bytes");
+            out.rgba[dst..dst + 4].copy_from_slice(&px);
+        }
+    }
+    out
+}
+
+/// Whether a line is a ruler's numbers (0 100 200 300…): three or more
+/// numbers an equal step apart, and nothing else.
+pub fn ruler(line: &OcrLine) -> bool {
+    let nums: Vec<f64> = line
+        .text
+        .split_whitespace()
+        .map(|t| t.parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .unwrap_or_default();
+    nums.len() >= 3 && {
+        let step = nums[1] - nums[0];
+        step != 0.0 && nums.windows(2).all(|p| (p[1] - p[0] - step).abs() < 1e-6)
+    }
 }
 
 /// Lines from two readings of the same picture: where they overlap, the
@@ -182,6 +294,7 @@ pub fn tesseract_at(
     languages: &[String],
     program: &str,
     scale: u32,
+    layout: Layout,
 ) -> Result<Vec<OcrLine>> {
     let scale = scale.max(1);
     let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
@@ -203,7 +316,7 @@ pub fn tesseract_at(
 
     let langs: Vec<String> = languages.iter().map(|l| tesseract_lang(l)).collect();
     let mut cmd = Command::new(program);
-    cmd.args(["stdin", "stdout", "--psm", "11"]);
+    cmd.args(["stdin", "stdout", "--psm", layout.psm()]);
     if !langs.is_empty() {
         cmd.args(["-l", &langs.join("+")]);
     }
@@ -356,6 +469,55 @@ mod tests {
             rgba: vec![255; 200 * 100 * 4],
             bounds: Rect::new(100.0, 50.0, 100.0, 50.0),
         }
+    }
+
+    #[test]
+    fn grid_lines_are_taken_out_and_text_kept() {
+        let (w, h) = (60u32, 40u32);
+        let mut cap = Capture {
+            width: w,
+            height: h,
+            rgba: vec![255; (w * h * 4) as usize],
+            bounds: Rect::new(0.0, 0.0, 60.0, 40.0),
+        };
+        let set = |c: &mut Capture, x: u32, y: u32, v: u8| {
+            let i = ((y * w + x) * 4) as usize;
+            c.rgba[i..i + 3].fill(v);
+        };
+        // Graph paper: a light line every 10 pixels both ways.
+        for y in (0..h).step_by(10) {
+            for x in 0..w {
+                set(&mut cap, x, y, 200);
+            }
+        }
+        for x in (0..w).step_by(10) {
+            for y in 0..h {
+                set(&mut cap, x, y, 200);
+            }
+        }
+        // A short dark stroke: text.
+        for x in 20..30 {
+            set(&mut cap, x, 25, 0);
+        }
+        let clean = without_lines(&cap);
+        let at = |c: &Capture, x: u32, y: u32| c.rgba[((y * w + x) * 4) as usize];
+        assert_eq!(at(&clean, 35, 20), 255, "a grid row is gone");
+        assert_eq!(at(&clean, 30, 33), 255, "a grid column is gone");
+        assert_eq!(at(&clean, 25, 25), 0, "the stroke stays");
+    }
+
+    #[test]
+    fn rulers_are_told_from_text() {
+        let line = |text: &str| OcrLine {
+            text: text.into(),
+            bounds: Rect::new(0.0, 0.0, 100.0, 12.0),
+            confidence: 0.9,
+        };
+        assert!(ruler(&line("0 100 200 300 400")));
+        assert!(ruler(&line("10 20 30")));
+        assert!(!ruler(&line("Order 58213")));
+        assert!(!ruler(&line("1 2 5")));
+        assert!(!ruler(&line("2026 2026 2026")));
     }
 
     #[test]
