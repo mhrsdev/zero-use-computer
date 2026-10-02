@@ -1,3 +1,20 @@
+# Upgrading to v3.7
+
+v3.7 changes two defaults and the wording of some results. Nothing is
+removed: every call that worked in v3.6 still works.
+
+| What changed | Before | Now | The old way |
+|---|---|---|---|
+| The tool list | every tool | the base tools, `find_tools` and `use_tool`; the others found and run through `use_tool` (a direct call still works where a client allows it) | `tools.manager = "off"` |
+| `decide` with compact descriptions | always listed | listed once a decision model is set up (it can always be called) | `tools.descriptions = "full"` |
+| A diff's intro, the third time on | `Changes (+ added, ~ changed, - removed):` | `Changes:` | `tree.brief_repeats = false` |
+| Report footers, after the first | `…; get_app_state shows them` | the count only | `tree.brief_repeats = false` |
+| draw preview, loupe, zoomed screenshot notes, after the first | in full | short | `tree.brief_repeats = false` |
+| Tesseract | its own thread count | `OMP_THREAD_LIMIT=1` unless the environment sets one | set `OMP_THREAD_LIMIT` |
+
+New: `--instructions full|short|off` on the command line (the Claude Code
+plugin uses `short`, as it brings the skills).
+
 # Upgrading to v3.6
 
 v3.6 changes what some tool results look like, and how a few tools
@@ -57,7 +74,7 @@ real-model benchmark has measured them ([roadmap](ROADMAP.md)).
 | `screenshot.locate_picture` | `true` | `false`: `locate` answers without its picture |
 | `screenshot.icon_sprite` | `false` | a strip of the unnamed buttons' icons (experimental) |
 | `tools.descriptions` | `"compact"` | `"lean"`: lighter schemas |
-| `tools.manager` | `"off"` | `"dispatch"` or `"list_changed"`: base tools plus `find_tools` |
+| `tools.manager` | `"off"` (v3.7: `"dispatch"`) | `"dispatch"` or `"list_changed"`: base tools plus `find_tools` |
 | `tools.preset` | `"full"` | `"small"`: ten tools for smaller models |
 | `tools.default_app` | `false` | a call without `app` acts on the last app |
 | `tools.launch_look` | `true` | `launch_app` returns the first state |

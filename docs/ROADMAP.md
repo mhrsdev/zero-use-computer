@@ -25,6 +25,7 @@ v3.5, v3.6, … are steps; v4.0 is the stable release of what they proved.
 |---|---|---|
 | v3.5 | measuring for real; the screenshot path; areas the tree says nothing about | done |
 | v3.6 | everything planned for v3.6 to v4.0, in one release | done, but for the real-model runs and hardware tests below |
+| v3.7 | the tool manager on by default; instructions, skills and results said once; work done twice removed; releases measured against each other | done (scripted); real-model runs left, as below |
 | v4.0 | stable: defaults set from real-model A/B runs | open |
 
 The steps first planned as v3.7 (the tool surface), v3.8 (checking
@@ -33,6 +34,13 @@ together in v3.6.0; their sections below say what was done and what is
 left.
 
 ## Left before v4.0
+
+- **v3.7's tool manager default** (`tools.manager = "dispatch"`) checked
+  with a real model: wrong calls and retries through `use_tool`, and
+  whether a model finds `design`, `draw` and `locate` when it needs them.
+  It was turned on from scripted runs, against the rule above, because
+  it takes nothing away (`find_tools` lists every hidden tool by name);
+  `"off"` brings the old list back.
 
 - **Real-model runs** (5 or more per scenario, `bench/run.sh --runs 5`)
   of v3.2, v3.6 with its defaults, `bench/configs/lean.toml` and

@@ -1,6 +1,6 @@
 # Zero Use Computer
 
-**[Download v3.6.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
+**[Download v3.7.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
 · [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
 · [License](LICENSE)
 
@@ -15,6 +15,25 @@ It is a standalone building block: run it as an **MCP server**
 agent), or embed the **library** (`computer-use`) in your own agent.
 
 ## What's new
+
+**v3.7.0** ([changelog](CHANGELOG.md), [upgrading](docs/MIGRATING.md))
+— fewer tokens on every request, less work done twice:
+
+- **The tool list, halved**: the model gets the tools most tasks use plus
+  `find_tools` and `use_tool`; drawing, design, 3D, `locate`, windows,
+  scripts and the clipboard are found when needed (by name, category or
+  what they do) and run through `use_tool`. The list never changes, so
+  the prompt cache holds, and nothing hidden is forbidden. Tool
+  definitions ≈ 2,300 tokens instead of ≈ 5,000.
+- **Measured against earlier releases** (scripted, over MCP, each with
+  its own skills): sent with every request 5,099 tokens (v3.6.0: 7,783,
+  v3.0.0: 6,718); over four tasks −29% input against v3.6.0
+  ([results](bench/results/v3.7-releases/step.md)).
+- **Look first, then read the reports**: no more "call get_app_state every
+  turn"; legends and footers said in full once.
+- **Faster**: tool lists built once, fewer tree walks after an action that
+  changed nothing, OCR kept per area, Tesseract's two readings side by
+  side (a look that reads painted text ~0.9 s → ~0.6 s).
 
 **v3.6.0** ([changelog](CHANGELOG.md), [upgrading](docs/MIGRATING.md))
 — everything the [roadmap](docs/ROADMAP.md) planned up to v4.0, in one
@@ -795,7 +814,7 @@ accuracy is marked opt-in and stays off until the real-model
 | **Reports in levels** (opt-in) | An action's report of what changed: all of it, the changes around what it acted on (and a count of the rest), or just how many; elements that keep changing on their own summed up. | `tree.report`, `tree.quiet_volatile` |
 | **Fewer round trips** | `batch` lines with one report at the end, `click` by name, `expect` (the server waits for what should follow and says whether it came), `launch_app` returning the first state. | `tools.launch_look`, `timing.expect_wait_ms` |
 | **Fewer automatic pictures** (opt-in) | While the model doesn't use an app's pixels, a well-described window's automatic picture is held back; `locate` can answer without one. | `screenshot.adaptive`, `screenshot.locate_picture` |
-| **Lighter definitions** (opt-in) | Lean schemas (≈ 3,700 tokens instead of ≈ 5,000), a tool manager that lists the base tools and finds the rest (`find_tools`, `use_tool`; the list never changes, so the prompt cache holds), a ten-tool preset, short server instructions. | `tools.descriptions`, `tools.manager`, `tools.preset`, `server.instructions` |
+| **Lighter definitions** | A tool manager, on by default since v3.7, that lists the base tools and finds the rest (`find_tools`, `use_tool`; the list never changes, so the prompt cache holds): ≈ 2,300 tokens instead of ≈ 5,000. Opt-in: lean schemas, a ten-tool preset, short server instructions. | `tools.manager`, `tools.descriptions`, `tools.preset`, `server.instructions` |
 | **Design answers** | After the first, only what changed, no picture twice, layers as lines; paint steps only when asked (opt-in). | `tree.compact`, `tools.design_steps` |
 | **Long conversations** (opt-in) | Past a number of tokens, the next look sends the whole tree and a picture again; hosts that trim their context can drop the results a later one repeats (`_meta`). | `cache.rebase_after_tokens`, `server.result_meta` |
 | **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |

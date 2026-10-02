@@ -21,6 +21,7 @@ decide whether a change is turned on by default.
 | `v3.6-batch/` | v3.6.0 | defaults, `--plan batch` |
 | `v3.6-lean-batch/` | v3.6.0 | `lean.toml`, `--plan batch` |
 | `v3.6-manager/` | v3.6.0 | `--config ../configs/manager.toml` (lean + the tool manager), `--plan batch` |
+| `v3.7-releases/` | v0.1.0, v3.0.0, v3.6.0, v3.7.0 as they ship, over MCP (`--server`), each with its own skills | defaults; `-batch`: `--plan batch`; `-plugin`: `--instructions short`. [step.md](v3.7-releases/step.md), [batch.md](v3.7-releases/batch.md) |
 
 The scripted ways through were refined after the v3.2 run (they look for
 painted text in the first look before asking for OCR); on v3.2 the first
@@ -114,3 +115,29 @@ Not measured yet: whether a real model finishes as often, and with how
 many turns, output tokens and retries, with each setting: wrong calls
 caused by lighter schemas, steps a model would put in a batch, how often
 it uses `expect`. That decides the defaults ([roadmap](../../docs/ROADMAP.md)).
+
+## v0.1.0 → v3.0.0 → v3.6.0 → v3.7.0 (scripted, over MCP, 3 runs each)
+
+Every release as it ships, with its own skills and instructions in the
+system prompt (so these prefixes are larger than the in-process runs
+above, which have no instructions). Medians; the full tables:
+[step.md](v3.7-releases/step.md), [batch.md](v3.7-releases/batch.md).
+
+| sent with every request | v0.1.0 | v3.0.0 | v3.6.0 | v3.7.0 | v3.7.0, plugin (short instructions) |
+|---|---|---|---|---|---|
+| instructions | 273 | 474 | 474 | 527 | 133 |
+| skills | 1,899 | 1,823 | 2,261 | 2,186 | 2,186 |
+| tool definitions | 1,834 (22) | 4,363 (24) | 4,990 (25) | 2,328 (17) | 2,328 (17) |
+| total (with the benchmark's 58) | 4,063 | 6,718 | 7,783 | 5,099 | 4,706 |
+
+Over the four tasks every release finishes (form, table, orders, long;
+one action a call), input without a cache: v0.1.0 248,228 · v3.0.0
+349,873 · v3.6.0 367,006 · v3.7.0 262,170 (−29% against v3.6.0, −25%
+against v3.0.0, +6% against v0.1.0, which has a third of the tools and
+can't do the canvas tasks). With `batch`, over all six: v3.6.0 325,339 →
+v3.7.0 238,484 (−27%).
+
+Costs: a tool the model doesn't see takes one `find_tools` call (about
+155 tokens) the first time; board's OCR reading varies between runs in
+v3.6.0 and v3.7.0 alike.
+

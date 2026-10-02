@@ -1,5 +1,105 @@
 # Changelog
 
+## v3.7.0
+
+Fewer tokens on every request, and less work done twice. The tool list a
+model gets with every request is about half what it was, without taking
+any tool away: the tools most tasks don't need are found when they are
+needed. Upgrading: [docs/MIGRATING.md](docs/MIGRATING.md#upgrading-to-v37).
+
+Measured (scripted, three runs each, every figure an estimate; the
+releases run as they ship, over MCP, with their own skills:
+[bench/results/v3.7-releases](bench/results/v3.7-releases/step.md)):
+
+| | v0.1.0 | v3.0.0 | v3.6.0 | v3.7.0 |
+|---|---|---|---|---|
+| sent with every request (instructions + skills + tools) | 4,063 | 6,718 | 7,783 | **5,099** |
+| of it, the tool definitions | 1,834 (22 tools) | 4,363 (24) | 4,990 (25) | **2,328** (17 listed) |
+| input over form, table, orders and long (no cache) | 248,228 | 349,873 | 367,006 | **262,170** |
+
+Against v3.6.0: −34% per request, −29% over those tasks (−27% with
+`batch`); against v3.0.0 −24% and −25%. v0.1.0 had fewer tools (no
+drawing, design, 3D, `locate` or scripts: it can't do the two canvas
+tasks) and sends 6% less over those four.
+
+### The tool manager, on by default (`tools.manager = "dispatch"`)
+
+- The model gets the tools most tasks use (looking, finding, waiting,
+  clicking, typing, keys, scrolling, dragging, `batch`, `screenshot`),
+  plus `find_tools` and `use_tool`. Drawing, the design board, 3D,
+  `locate`, windows, scripts, the clipboard, notifications and decisions
+  are found by name, category or what they do, and run through
+  `use_tool`. The list never changes, so a client's prompt cache holds;
+  nothing hidden is forbidden.
+- `find_tools` names every tool it can find, by category, so one can be
+  asked for by name (`find_tools(name="locate")`); a query ignores words
+  that name nothing and returns the best three; a tool's arguments are
+  shown once (`again=true` repeats them).
+- A hidden tool called with wrong arguments gets its arguments with the
+  error, once: no `find_tools` needed first.
+- `decide` is listed once a decision model is set up (with compact
+  descriptions too). `window` no longer repeats its list of actions.
+- A small preset, or an `enabled` list of base tools only, gets no
+  manager. `tools.manager = "off"` lists every tool, as before.
+
+### Instructions and skills
+
+- The instructions and `get_app_state` no longer say to look "on every
+  turn": look first, then read the state each action returns, as the
+  skill says. A look the report already gave costs a whole request.
+- `--instructions full|short|off`; the Claude Code plugin, which brings
+  the skills, starts the server with short ones (−394 tokens a request).
+- The `computer-use` skill: the tool manager in one place, the rules the
+  security skill makes referred to, the decision model in a few lines
+  (details in `reference/decisions.md`). The design skill says where its
+  tools are.
+
+### Results said once
+
+- A diff's intro: in full once, its legend once more, then "Changes:".
+- "get_app_state shows them", "call get_app_state for the rest", draw's
+  preview legend, the loupe's and a zoomed screenshot's notes: in full the
+  first time, then short (`tree.brief_repeats = false` keeps them whole).
+
+### Less work done twice
+
+- The tool lists are built once and kept until a setting, a saved script
+  or a found category changes them; the server no longer rebuilds them
+  after every request (a ping included).
+- Waiting after an action: reads that still show the state from before
+  come further apart, so an action that changed nothing walks the tree
+  fewer times.
+- Blind areas' OCR is kept per area, by its exact pixels: a caret or a
+  clock elsewhere no longer makes every area be read again. Tesseract's
+  two readings of an area run side by side, one thread each
+  (`OMP_THREAD_LIMIT=1`, unless set: two processes' OpenMP threads
+  spinning against each other took 20 s for a 0.15 s reading).
+- `wait_for(until)`: the window just looked at is the one asked about,
+  and the same text isn't asked about again for 5 s.
+- `batch` doesn't make the steps' own change reports (never shown).
+- `screenshot(app)` uses the picture this call's look already took.
+
+Time (tools only, scripted): orders 1.5 s → 1.2 s, board 1.5 s → 1.2 s
+(a look that reads painted text ~0.9 s → ~0.6 s), the others as before.
+
+### Benchmark
+
+- `agent_bench --server BIN [--server-args …] [--server-config FILE]
+  [--skills DIR]` runs the scenarios against any release over MCP, with
+  its own instructions and skills, and reports the fixed prefix by part.
+- `bench/compare.py` puts runs side by side, section by section.
+
+Costs, published with the gains:
+
+- A tool the model doesn't see takes one `find_tools` call the first time
+  (about 155 tokens of result): shapes and board need 4–5 calls instead
+  of 3–4 when they use `locate`. Wrong calls and retries a real model
+  makes with the manager are still to be counted (real-model runs).
+- The full instructions grew by 53 tokens (they say how hidden tools are
+  found).
+- Board's OCR reading varies from run to run in v3.6 and v3.7 alike (one
+  run in three, or two, falls back to `locate`).
+
 ## v3.6.0
 
 Everything the [roadmap](docs/ROADMAP.md) planned for v3.6 to v4.0, in
