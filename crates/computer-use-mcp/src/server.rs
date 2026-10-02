@@ -448,6 +448,8 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         let mut config = Config::default();
         config.script.dir = Some(dir.to_path_buf());
+        // Every tool listed (the tool manager has tests of its own).
+        config.tools.manager = computer_use::config::ToolManager::Off;
         Engine::new(backend, ConfigStore::in_memory(config))
             .with_time(std::time::Instant::now, |_| {})
     }
@@ -489,7 +491,9 @@ mod tests {
         // initialize
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "computer-use");
         // tools/list has every tool the default settings expose
-        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        let mut every = computer_use::Config::default();
+        every.tools.manager = computer_use::config::ToolManager::Off;
+        let all = computer_use::tools::definitions_from(&every).len();
         assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), all);
         // list_apps ran
         let text = out[2]["result"]["content"][0]["text"].as_str().unwrap();
@@ -533,6 +537,48 @@ mod tests {
         );
         let out = converse_with(&init, |c| c.server.instructions = Instructions::Off);
         assert!(out[0]["result"].get("instructions").is_none());
+    }
+
+    #[test]
+    fn by_default_the_list_is_the_base_and_the_rest_runs_through_use_tool() {
+        let input = format!(
+            "{}{}{}{}{}",
+            line("initialize", 1, json!({"capabilities":{}})),
+            line("tools/list", 2, json!({})),
+            line(
+                "tools/call",
+                3,
+                json!({"name":"find_tools","arguments":{"query":"arrange the windows"}})
+            ),
+            line(
+                "tools/call",
+                4,
+                json!({"name":"use_tool","arguments":{"name":"window","arguments":{"app":"TextEdit","action":"list"}}})
+            ),
+            line("tools/list", 5, json!({})),
+        );
+        let out = converse_with(&input, |c| {
+            c.tools.manager = computer_use::config::ToolManager::default()
+        });
+        let names = |v: &Value| -> Vec<String> {
+            v["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let first = names(&out[1]);
+        assert!(first.contains(&"use_tool".to_string()) && !first.contains(&"design".to_string()));
+        let found = out[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(found.starts_with("window: "), "{found}");
+        assert_eq!(out[3]["result"]["isError"], false, "{:?}", out[3]);
+        // The list never changed, so no notification and the same tools.
+        assert!(
+            !out.iter()
+                .any(|m| m["method"] == "notifications/tools/list_changed")
+        );
+        assert_eq!(names(&out[4]), first);
     }
 
     #[test]
@@ -594,7 +640,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-hot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[tree]\nmax_nodes = 300\n").unwrap();
+        std::fs::write(
+            &path,
+            "[tree]\nmax_nodes = 300\n[tools]\nmanager = \"off\"\n",
+        )
+        .unwrap();
 
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
@@ -643,7 +693,7 @@ mod tests {
                         // Disable a tool and bump the mtime so the change is seen.
                         std::fs::write(
                             &self.path,
-                            "[tree]\nmax_nodes = 300\n[tools]\ndisabled = [\"drag\"]\n",
+                            "[tree]\nmax_nodes = 300\n[tools]\nmanager = \"off\"\ndisabled = [\"drag\"]\n",
                         )?;
                         let f = std::fs::File::options().write(true).open(&self.path)?;
                         f.set_modified(SystemTime::now() + Duration::from_secs(5))?;
@@ -691,7 +741,9 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         let first = msgs.iter().find(|m| m["id"] == 2).unwrap();
-        let all = computer_use::tools::definitions_from(&computer_use::Config::default()).len();
+        let mut every = computer_use::Config::default();
+        every.tools.manager = computer_use::config::ToolManager::Off;
+        let all = computer_use::tools::definitions_from(&every).len();
         assert_eq!(first["result"]["tools"].as_array().unwrap().len(), all);
         assert!(
             msgs.iter()

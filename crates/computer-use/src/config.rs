@@ -271,12 +271,12 @@ pub enum DescriptionStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolManager {
-    /// Every tool, always. Default.
-    #[default]
+    /// Every tool, always.
     Off,
     /// The base tools and `find_tools`; the others are found by name or
     /// category and run through `use_tool`. The tool list never changes,
-    /// so a client's prompt cache keeps working, with any client.
+    /// so a client's prompt cache keeps working, with any client. Default.
+    #[default]
     Dispatch,
     /// The base tools and `find_tools`; a category it finds is added to the
     /// tool list (the client is told the list changed) and stays.

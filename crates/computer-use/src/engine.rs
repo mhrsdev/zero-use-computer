@@ -274,6 +274,9 @@ pub struct Engine<B: Backend> {
     active_tools: HashSet<&'static str>,
     /// The tool lists, until what they depend on changes.
     tools_cache: Option<scripting::ToolsCache>,
+    /// Tools whose arguments the tool manager has shown, with a hash of
+    /// what it showed: shown again only if they changed, or when asked.
+    schemas_shown: HashMap<String, u64>,
     /// The app the last call named ([tools] default_app).
     last_app: Option<String>,
     /// What the last action's `expect` found (a batch stops on anything
@@ -426,6 +429,7 @@ impl<B: Backend> Engine<B> {
             target: None,
             active_tools: HashSet::new(),
             tools_cache: None,
+            schemas_shown: HashMap::new(),
             last_app: None,
             last_expect: None,
             sent_tokens: 0,
@@ -2462,6 +2466,7 @@ impl<B: Backend> Engine<B> {
             }
         }
         let app = args.get("app").and_then(|v| v.as_str()).map(str::to_string);
+        let mut wrong_args = false;
         // A bug in one tool call must not take the whole server down.
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // A saved script is a tool of its own.
@@ -2473,11 +2478,18 @@ impl<B: Backend> Engine<B> {
                 })),
                 None => ToolCall::parse(name, args),
             };
+            wrong_args = matches!(call, Err(Error::InvalidArgs(_)));
             call.and_then(|c| self.call(c))
         }));
         let mut out = match run {
             Ok(Ok(out)) => out,
-            Ok(Err(e)) => ToolOutput::error(&e),
+            Ok(Err(e)) => {
+                let mut out = ToolOutput::error(&e);
+                if wrong_args && let Some(schema) = self.schema_for_wrong_call(name) {
+                    out.text.push_str(&schema);
+                }
+                out
+            }
             Err(panic) => {
                 let what = panic
                     .downcast_ref::<&str>()
@@ -2578,24 +2590,66 @@ impl<B: Backend> Engine<B> {
     /// "list_changed", their categories join the tool list for good.
     fn find_tools(&mut self, args: &serde_json::Value) -> ToolOutput {
         use crate::config::ToolManager;
+        /// Tools a query returns at most (a category or names return all).
+        const MOST: usize = 3;
         let category = args.get("category").and_then(serde_json::Value::as_str);
-        let query = args
+        let again = args
+            .get("again")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let names: Vec<String> = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|n| {
+                n.split(|c: char| c == ',' || c.is_whitespace())
+                    .filter(|w| !w.is_empty())
+                    .map(|w| w.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let words = args
             .get("query")
             .and_then(serde_json::Value::as_str)
-            .map(crate::text::fold);
-        let found: Vec<ToolDefinition> = self
-            .all_tool_definitions()
-            .into_iter()
-            .filter(|d| !crate::tools::BASE_TOOLS.contains(&&*d.name))
-            .filter(|d| {
-                let in_category = category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
-                let matches = query.as_deref().is_none_or(|q| {
-                    let hay = crate::text::fold(&format!("{} {}", d.name, d.description));
-                    q.split_whitespace().any(|w| hay.contains(w))
-                });
-                in_category && matches && (category.is_some() || query.is_some())
-            })
-            .collect();
+            .map(crate::tools::query_words)
+            .unwrap_or_default();
+        let all = self.all_tool_definitions();
+        let hidden = |d: &&ToolDefinition| !crate::tools::BASE_TOOLS.contains(&&*d.name);
+        let in_category =
+            |d: &&ToolDefinition| category.is_none_or(|c| crate::tools::category_of(&d.name) == c);
+        let mut more = Vec::new();
+        let found: Vec<&ToolDefinition> = if !names.is_empty() {
+            all.iter()
+                .filter(|d| names.contains(&d.name.to_string()))
+                .collect()
+        } else if words.is_empty() {
+            // A category on its own: all of it.
+            all.iter()
+                .filter(hidden)
+                .filter(in_category)
+                .filter(|_| category.is_some())
+                .collect()
+        } else {
+            // By what they do: the best few, words in the name counting most.
+            let mut scored: Vec<(usize, &ToolDefinition)> = all
+                .iter()
+                .filter(hidden)
+                .filter(in_category)
+                .map(|d| {
+                    (
+                        crate::tools::query_score(&words, &d.name, &d.description),
+                        d,
+                    )
+                })
+                .filter(|(score, _)| *score > 0)
+                .collect();
+            scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+            more = scored
+                .iter()
+                .skip(MOST)
+                .map(|(_, d)| d.name.to_string())
+                .collect();
+            scored.into_iter().take(MOST).map(|(_, d)| d).collect()
+        };
         if found.is_empty() {
             let cats: Vec<&str> = crate::tools::CATEGORIES.iter().map(|c| c.0).collect();
             return ToolOutput::text(format!("No tools match. Categories: {}.", cats.join(", ")));
@@ -2603,10 +2657,22 @@ impl<B: Backend> Engine<B> {
         let dispatch = self.store.config.tools.manager == ToolManager::Dispatch;
         let mut out = String::new();
         for d in &found {
-            out.push_str(&format!(
-                "{}: {}\n  arguments: {}\n",
-                d.name, d.description, d.input_schema
-            ));
+            out.push_str(&format!("{}: {}\n", d.name, d.description));
+            // With list_changed the arguments come with the tool list.
+            if !dispatch {
+                continue;
+            }
+            let schema = d.input_schema.to_string();
+            let hash = text_hash(&schema);
+            if !again && self.schemas_shown.get(&*d.name) == Some(&hash) {
+                out.push_str("  arguments: as shown before (again=true repeats them)\n");
+            } else {
+                out.push_str(&format!("  arguments: {schema}\n"));
+                self.schemas_shown.insert(d.name.to_string(), hash);
+            }
+        }
+        if !more.is_empty() {
+            out.push_str(&format!("Also matching: {}.\n", more.join(", ")));
         }
         if dispatch {
             out.push_str("Run one with use_tool(name, arguments).");
@@ -2621,6 +2687,28 @@ impl<B: Backend> Engine<B> {
             ));
         }
         ToolOutput::text(out)
+    }
+
+    /// A tool the model hasn't been shown was called with arguments it
+    /// doesn't take: its arguments, once, so the next call can be right
+    /// without a find_tools first.
+    fn schema_for_wrong_call(&mut self, name: &str) -> Option<String> {
+        if self.store.config.tools.manager == crate::config::ToolManager::Off
+            || self.tool_definitions().iter().any(|d| d.name == name)
+        {
+            return None;
+        }
+        let d = self
+            .all_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == name)?;
+        let schema = d.input_schema.to_string();
+        let hash = text_hash(&schema);
+        if self.schemas_shown.get(name) == Some(&hash) {
+            return None;
+        }
+        self.schemas_shown.insert(name.to_string(), hash);
+        Some(format!("\n{name} takes: {schema}"))
     }
 
     /// Append a bounded JSONL record of the call, if auditing is enabled. Only
@@ -11078,8 +11166,12 @@ mod tests {
     fn the_tool_manager_shows_the_base_and_finds_the_rest() {
         use crate::config::ToolManager;
         let mut e = engine();
-        let all = e.tool_definitions().len();
+        // The default.
+        assert_eq!(e.store().config.tools.manager, ToolManager::Dispatch);
         let mut cfg = e.store().config.clone();
+        cfg.tools.manager = ToolManager::Off;
+        e.set_config(ConfigStore::in_memory(cfg.clone()));
+        let all = e.tool_definitions().len();
         cfg.tools.manager = ToolManager::Dispatch;
         e.set_config(ConfigStore::in_memory(cfg.clone()));
         let names = |e: &mut Engine<MockBackend>| -> Vec<String> {
@@ -11123,6 +11215,40 @@ mod tests {
             e.call_tool("use_tool", serde_json::json!({"name": "nope"}))
                 .is_error
         );
+
+        // Words that name nothing find nothing; a query brings the best few.
+        let out = e.call_tool("find_tools", serde_json::json!({"query": "the a to"}));
+        assert!(out.text.starts_with("No tools match"), "{}", out.text);
+        let out = e.call_tool("find_tools", serde_json::json!({"query": "draw a star"}));
+        assert!(out.text.starts_with("draw: "), "{}", out.text);
+        assert!(
+            out.text.matches("arguments: {").count() <= 3,
+            "{}",
+            out.text
+        );
+        // Arguments once: asked again, a line; again=true repeats them.
+        let out = e.call_tool("find_tools", serde_json::json!({"name": "window"}));
+        assert!(
+            out.text.contains("arguments: as shown before"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "find_tools",
+            serde_json::json!({"name": "window", "again": true}),
+        );
+        assert!(out.text.contains("arguments: {"), "{}", out.text);
+        // A tool never shown, called wrong: its arguments come with the
+        // error, once.
+        let wrong = serde_json::json!({"name": "locate", "arguments": {"nope": 1}});
+        let out = e.call_tool("use_tool", wrong.clone());
+        assert!(
+            out.is_error && out.text.contains("locate takes: {"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool("use_tool", wrong);
+        assert!(!out.text.contains("locate takes"), "{}", out.text);
 
         // list_changed: what is found joins the list, and stays.
         cfg.tools.manager = ToolManager::ListChanged;

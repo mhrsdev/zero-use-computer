@@ -56,6 +56,8 @@ pub struct Session {
     pub state_file: PathBuf,
     /// Print every call and its result (`--verbose`).
     pub verbose: bool,
+    /// Tools find_tools was asked about (the tool manager).
+    found: Vec<String>,
 }
 
 /// Settings for a run: defaults (or a file) with the parts that must not
@@ -120,6 +122,7 @@ impl Session {
             fixture: child,
             state_file,
             verbose: false,
+            found: Vec::new(),
         };
         // Wait until the app is listed and its window answers.
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -161,8 +164,26 @@ impl Session {
         }
     }
 
-    /// Run a tool and record it, whatever it returns.
+    /// Run a tool and record it, whatever it returns. A tool the model
+    /// doesn't see (the tool manager) is run the way a model would: its
+    /// arguments asked of find_tools once, then use_tool.
     pub fn call_raw(&mut self, tool: &str, args: Value) -> ToolOutput {
+        let shown = self
+            .engine
+            .tool_definitions()
+            .iter()
+            .any(|d| d.name == tool);
+        if shown {
+            return self.record(tool, args);
+        }
+        if !self.found.iter().any(|t| t == tool) {
+            self.found.push(tool.to_string());
+            self.record("find_tools", json!({"name": tool}));
+        }
+        self.record("use_tool", json!({"name": tool, "arguments": args}))
+    }
+
+    fn record(&mut self, tool: &str, args: Value) -> ToolOutput {
         let args_tokens = computer_use::text::estimate_tokens(&args.to_string());
         if self.verbose {
             eprintln!("> {tool} {args}");

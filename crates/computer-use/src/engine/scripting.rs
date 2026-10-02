@@ -106,7 +106,11 @@ impl<B: Backend> Engine<B> {
     fn shown_tools(&self, all: &[ToolDefinition]) -> Vec<ToolDefinition> {
         use crate::config::ToolManager;
         let manager = self.store.config.tools.manager;
-        if manager == ToolManager::Off {
+        // Nothing to find (a small preset, a short `enabled`): no manager.
+        let hides = all
+            .iter()
+            .any(|d| !crate::tools::BASE_TOOLS.contains(&&*d.name));
+        if manager == ToolManager::Off || !hides {
             return all.to_vec();
         }
         let mut shown: Vec<ToolDefinition> = all

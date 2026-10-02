@@ -2507,7 +2507,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Run steps in order, one report at the end. A step is a line (click 12 · click \"Save\" · double 12 · right 12 · set 4 \"Ada\" · type [4] \"text\" · key cmd+s · scroll [7] down [2] · select 4 \"word\" · action 9 name · wait \"text\" · find \"text\" · look; actions may end with expect …) or {tool, arguments}. Stops on an error, or on a window a step didn't expect (through_windows=true goes on)."
         }
         "window" => {
-            "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
+            "Windows and screens: one action (list, focus, move, resize, tile_…, displays…); x/y/width/height in screen coordinates."
         }
         "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
         "script" => {
@@ -2607,7 +2607,7 @@ pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
 /// tools hidden because their feature is switched off (clipboard, screenshots).
 pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
     let screenshots = config.screenshot.enabled && !config.text_only;
-    let lean = config.tools.descriptions == crate::config::DescriptionStyle::Lean;
+    let full = config.tools.descriptions == crate::config::DescriptionStyle::Full;
     let decisions = !config.decision.provider.trim().is_empty();
     definitions_for(&config.tools)
         .into_iter()
@@ -2615,8 +2615,9 @@ pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
-            // Lean: the decision model's tool once there is one.
-            "decide" => !lean || decisions,
+            // The decision model's tool once there is one (it can still be
+            // called, to set one up; full descriptions always list it).
+            "decide" => full || decisions,
             _ => true,
         })
         .collect()
@@ -2685,14 +2686,54 @@ pub fn category_of(name: &str) -> &'static str {
         .map_or("scripts", |(c, _, _)| c)
 }
 
+/// Words that say nothing about which tool is meant.
+const STOP_WORDS: &[&str] = &[
+    "the", "and", "for", "with", "that", "this", "from", "into", "what", "which", "tool", "tools",
+    "use", "can", "how", "want", "need", "some", "any", "all", "its", "are", "was", "will", "you",
+    "your", "get", "make", "out", "about", "there", "then", "than",
+];
+
+/// The words of a `find_tools` query worth matching: folded, three
+/// letters or more, no stop words.
+pub fn query_words(query: &str) -> Vec<String> {
+    crate::text::fold(query)
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| w.chars().count() >= 3 && !STOP_WORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How well a tool matches query words: a word in its name counts 3, in
+/// its description 1.
+pub fn query_score(words: &[String], name: &str, description: &str) -> usize {
+    let name = crate::text::fold(name);
+    let hay = crate::text::fold(description);
+    words
+        .iter()
+        .map(|w| {
+            if name.contains(w.as_str()) {
+                3
+            } else {
+                usize::from(hay.contains(w.as_str()))
+            }
+        })
+        .sum()
+}
+
 /// `find_tools` (and `use_tool` when tools are run through it).
 pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
     let categories: Vec<String> = CATEGORIES
         .iter()
-        .map(|(c, about, _)| format!("{c} ({about})"))
+        .map(|(c, about, tools)| {
+            if *c == "scripts" {
+                format!("{c}: {} + saved scripts ({about})", tools.join(", "))
+            } else {
+                format!("{c}: {} ({about})", tools.join(", "))
+            }
+        })
         .collect();
     let then = if dispatch {
-        "run one with use_tool(name, arguments)"
+        "run one with use_tool(name, arguments) (a wrong call shows the arguments)"
     } else {
         "it is added to your tools"
     };
@@ -2700,15 +2741,17 @@ pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
         name: "find_tools".into(),
         title: "Find tools".into(),
         description: format!(
-            "More tools, by category or by what they do: {}. Returns each tool with its arguments; {then}.",
-            categories.join(", ")
+            "More tools, by category, name or what they do: {}. Returns each tool with its arguments; {then}.",
+            categories.join("; ")
         )
         .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "category": {"type": "string", "enum": CATEGORIES.iter().map(|c| c.0).collect::<Vec<_>>()},
-                "query": {"type": "string", "description": "Words for what the tool should do."}
+                "name": {"type": "string", "description": "Tool names, comma-separated."},
+                "query": {"type": "string", "description": "Words for what the tool should do."},
+                "again": {"type": "boolean", "description": "Repeat arguments shown before."}
             },
             "additionalProperties": false
         }),
@@ -2718,7 +2761,7 @@ pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
         defs.push(ToolDefinition {
             name: "use_tool".into(),
             title: "Use a tool".into(),
-            description: "Run a tool find_tools showed: name and its arguments.".into(),
+            description: "Run a tool by name with its arguments.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -3178,9 +3221,14 @@ mod tests {
             model_visible_len(&lean),
             model_visible_len(&compact)
         );
-        // decide waits for a decision model; every other tool is there.
-        assert_eq!(lean.len() + 1, compact.len());
+        // decide waits for a decision model (compact too); every other
+        // tool is there.
+        assert_eq!(lean.len(), compact.len());
         assert!(!lean.iter().any(|d| d.name == "decide"));
+        assert!(!compact.iter().any(|d| d.name == "decide"));
+        cfg.tools.descriptions = DescriptionStyle::Full;
+        assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
+        cfg.tools.descriptions = DescriptionStyle::Lean;
         cfg.decision.provider = "jev".into();
         assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
         // No window; a design's layers as the list of their keys.

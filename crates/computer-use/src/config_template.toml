@@ -39,16 +39,19 @@ enabled = []                # if non-empty, ONLY these tools are exposed
 descriptions = "compact"    # "compact" (fewer tokens), "lean" (fewer still) or "full"
 # "lean" also lists the keys of nested objects (a design's layers, a
 # drawing's strokes) by name instead of typing each, leaves `window` (still
-# accepted) and defaults out of the schemas, and shows `decide` only once a
-# decision model is set up.
+# accepted) and defaults out of the schemas. `decide` is listed once a
+# decision model is set up (with "full", always).
 # Which tools the model sees at first:
-#   "off"          = every tool, always (default)
-#   "dispatch"     = the base tools and find_tools; the others are found by
-#                    name or category and run through use_tool. The list
-#                    never changes: any client, prompt cache intact.
+#   "off"          = every tool, always
+#   "dispatch"     = the base tools and find_tools; the others (design,
+#                    drawing, 3D, windows, scripts, clipboard…) are found by
+#                    name, category or what they do and run through
+#                    use_tool. The list never changes: any client, prompt
+#                    cache intact. Nothing is forbidden by being hidden.
+#                    (default)
 #   "list_changed" = the base tools and find_tools; a category it finds is
 #                    added to the list (clients that support it are told)
-manager = "off"
+manager = "dispatch"
 # "full" = every tool the other settings allow; "small" = a fixed small
 # set for smaller models (look, find, wait, click, set, type, keys, scroll,
 # list and launch apps). A non-empty `enabled` wins.
