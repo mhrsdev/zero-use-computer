@@ -413,7 +413,23 @@ impl LinuxBackend {
                     });
                     return;
                 }
-                Err(e) => log::debug!("compositor: {e}"),
+                Err(e) => {
+                    // Can't tell what is in front: say "something else", so
+                    // the engine brings the target forward (or refuses to
+                    // type) instead of typing into whatever has the focus.
+                    log::debug!("compositor: {e}");
+                    if self.x11().is_err() {
+                        out.push(AppInfo {
+                            name: "Unknown window".into(),
+                            id: "unknown".into(),
+                            pid: 0,
+                            exe: None,
+                            frontmost: true,
+                            hidden: false,
+                        });
+                        return;
+                    }
+                }
             }
         }
         let Some(front) = self.x11().ok().and_then(|x| x.wm().front()) else {
@@ -1037,6 +1053,14 @@ impl Backend for LinuxBackend {
             }
             return self.wl()?.capture(rect);
         }
+        // X11 reads the screen where the window was: a window that isn't
+        // shown there would come back as whatever is in its place.
+        if window.minimized {
+            return Err(Error::ActionFailed(format!(
+                "\"{}\" isn't on screen (on another workspace, or minimized), so a screenshot would show something else; bring it forward first (window action=focus)",
+                window.title
+            )));
+        }
         self.x11_reaches(app.pid, "A screenshot")?;
         self.x11()?.capture(rect)
     }
@@ -1199,7 +1223,8 @@ impl Backend for LinuxBackend {
             return self.wl()?.click(at.x, at.y, b, count);
         }
         self.x11_reaches(target.pid, "A click")?;
-        self.x11()?.click(at.x as i32, at.y as i32, b, count)
+        self.x11()?
+            .click(at.x.round() as i32, at.y.round() as i32, b, count)
     }
 
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
@@ -1207,8 +1232,10 @@ impl Backend for LinuxBackend {
             return self.wl()?.drag((from.x, from.y), (to.x, to.y));
         }
         self.x11_reaches(target.pid, "A drag")?;
-        self.x11()?
-            .drag((from.x as i32, from.y as i32), (to.x as i32, to.y as i32))
+        self.x11()?.drag(
+            (from.x.round() as i32, from.y.round() as i32),
+            (to.x.round() as i32, to.y.round() as i32),
+        )
     }
 
     fn move_pointer(&mut self, target: &InputTarget, at: Point) -> Result<Option<Point>> {
@@ -1260,7 +1287,8 @@ impl Backend for LinuxBackend {
             return self.wl()?.scroll(at.x, at.y, dx, dy);
         }
         self.x11_reaches(target.pid, "Scrolling")?;
-        self.x11()?.scroll(at.x as i32, at.y as i32, dx, dy)
+        self.x11()?
+            .scroll(at.x.round() as i32, at.y.round() as i32, dx, dy)
     }
 
     fn press_key(&mut self, target: &InputTarget, combo: &KeyCombo) -> Result<()> {

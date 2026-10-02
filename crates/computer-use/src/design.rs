@@ -28,7 +28,8 @@ pub fn parse_colour(s: &str) -> Result<Option<Rgb>, String> {
     }
     let h = t.strip_prefix('#').unwrap_or(t);
     let hex = |s: &str| u8::from_str_radix(s, 16).ok();
-    let rgb = match h.len() {
+    // Sliced by bytes below: anything but ASCII is no colour.
+    let rgb = match if h.is_ascii() { h.len() } else { 0 } {
         6 => (|| Some([hex(&h[0..2])?, hex(&h[2..4])?, hex(&h[4..6])?]))(),
         3 => (|| {
             let d = |i: usize| hex(&h[i..=i]).map(|v| v * 17);
@@ -1647,6 +1648,13 @@ impl Drop for TempFiles {
 mod tests {
     use super::*;
     use crate::tools::{DesignAlign, DesignDistribute, DesignMirror, DesignOrder};
+
+    #[test]
+    fn colours_that_arent_ascii_are_an_error_not_a_panic() {
+        assert!(parse_colour("#€abc").is_err());
+        assert!(parse_colour("€").is_err());
+        assert_eq!(parse_colour("#f00"), Ok(Some([255, 0, 0])));
+    }
 
     fn layer(json: serde_json::Value) -> DesignLayer {
         serde_json::from_value(json).unwrap()

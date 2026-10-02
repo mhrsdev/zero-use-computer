@@ -222,7 +222,12 @@ pub struct AtspiConnection {
 impl AtspiConnection {
     /// The accessibility bus's address (asked on the session bus).
     fn address() -> Result<String> {
-        let session = Connection::session().map_err(bus_err)?;
+        // With a timeout: a hung bus launcher must not hang the server.
+        let session = zbus::blocking::connection::Builder::session()
+            .map_err(bus_err)?
+            .method_timeout(METHOD_TIMEOUT)
+            .build()
+            .map_err(bus_err)?;
         let reply = session
             .call_method(
                 Some("org.a11y.Bus"),

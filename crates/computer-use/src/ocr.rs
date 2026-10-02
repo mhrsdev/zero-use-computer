@@ -89,6 +89,15 @@ fn tesseract_lang(code: &str) -> String {
     let full = code.trim().to_lowercase();
     // "en-US" / "en_US" → "en"; Tesseract's own codes ("chi_tra") pass through.
     let base = full.split(['-', '_']).next().unwrap_or("");
+    // Traditional Chinese (Taiwan, Hong Kong, Macau, "Hant") isn't "zh".
+    if base == "zh"
+        && full
+            .split(['-', '_'])
+            .skip(1)
+            .any(|p| matches!(p, "tw" | "hk" | "mo" | "hant"))
+    {
+        return "chi_tra".into();
+    }
     if base.len() != 2 {
         return full;
     }
@@ -472,6 +481,14 @@ fn parse_tsv(tsv: &str, cap: &Capture, scale: f64) -> Vec<OcrLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traditional_chinese_gets_its_own_model() {
+        assert_eq!(tesseract_lang("zh-TW"), "chi_tra");
+        assert_eq!(tesseract_lang("zh-Hant"), "chi_tra");
+        assert_eq!(tesseract_lang("zh_HK"), "chi_tra");
+        assert_eq!(tesseract_lang("zh-CN"), "chi_sim");
+    }
 
     fn cap() -> Capture {
         Capture {

@@ -1,5 +1,112 @@
 # Changelog
 
+## v3.7.5
+
+A debugging release: 32 bugs found by reviewing every part of the code
+and running it against a real GTK app, each fixed with a test that
+failed before
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.7.0...v3.7.5)).
+Nothing is added or taken away; a few things that were unsafe now
+refuse ([upgrading](docs/MIGRATING.md#upgrading-to-v375)).
+
+### Security and privacy
+
+- **The decision model's key stays with its model.**
+  - `decide setup={"base_url": …}` from the chat sent the saved key to
+    the new address. Now a new address or provider without a key in the
+    same call forgets the old key.
+  - `setup` from the chat no longer takes `api_key_env`. It could send
+    any of the server's environment variables to any address. It is
+    still a setting in the file.
+  - On the settings page, switching provider without typing a key no
+    longer sends the old provider's key to the new one.
+- **Scripts:**
+  - `import` takes the names of saved scripts only. A path (absolute,
+    or with `..`) loaded any `.rhai` file on the disk, even with
+    `[script] files = "none"`.
+  - On Windows, `\Windows\x` and `C:x` count as "relative" but left
+    the scripts' folder when joined to it, so a script could write
+    anywhere on the drive. They now follow the rules for absolute paths.
+- **Card numbers next to other numbers are masked.** A card followed
+  or preceded by an expiry date, a CVV or a quantity ("4111 1111 1111
+  1111 12/29") made a run too long for the check, and nothing was
+  masked, in text or in screenshots.
+- **Code words count only as whole words.** "Shipping in 2024" or
+  "opinion … 1998" no longer mask a year as if it were a PIN.
+- **X11:**
+  - A screenshot of a minimized window, or of one on another
+    workspace, is refused, as it already was on Wayland. It showed
+    whatever was in its place, maybe another app.
+  - **Wayland without X11:** when the compositor can't say which window
+    is in front, keys are no longer typed into whatever has the focus.
+    The target is brought forward first, or nothing is sent.
+
+### Screen memory and reports
+
+- **`batch` and `script` no longer use up what the model sees.**
+  - Screens that steps inside them reached, but the model never saw,
+    were later called "seen before" or "identical".
+  - A screen the model had seen was replaced in memory by a newer view
+    it never saw.
+  - First-time explanations, such as a diff's intro, were spent on
+    steps whose text never reaches the model.
+- **The model's own typing is no longer "an element that keeps
+  changing on its own."** With `tree.quiet_volatile` on, the default, a
+  field typed into without an `element_index` was hidden from reports
+  after two actions.
+- **The "keep changing" note is no longer counted** as one more change
+  elsewhere in a relevant-changes report.
+
+### Server and command line
+
+- **Over HTTP, `tools.manager = "list_changed"` works as `"dispatch"`.**
+  HTTP can't tell a client that its tool list changed, so found tools
+  were added to a list the client never asked for again.
+- **`find_tools(name="click")`** (a base tool) no longer adds the
+  scripts category and changes the tool list. That cost the client's
+  prompt cache for nothing.
+- **A request with `"id": null`** gets an error. Before, it was taken
+  for a notification and silently dropped.
+- **`computer-use-mcp tools` and `doctor`** show the tools the model is
+  actually served: the tool manager's list, saved scripts included.
+  Before, they showed every tool.
+- **`--http-token`** wins over `$COMPUTER_USE_HTTP_TOKEN`, as an
+  explicit flag should.
+- **`config get script.dir`** (a setting with no value) prints nothing,
+  instead of "unknown setting".
+- **`config set server.http_token 123456789`** keeps it as text.
+- **`config set` and `unset`** work on sections written as inline
+  tables.
+- **Lean and compact schemas:**
+  - `design` and `scene` `change` items are typed like `add` items
+    (objects, or lines). Clients that check arguments refused the
+    documented line form.
+  - `design` layers no longer list `axes`, which they refuse.
+
+### Smaller fixes
+
+- **Script functions:**
+  - `regex_replace` refuses a result that would fill the memory before
+    building it. Before, one call could end the server.
+  - `random(lo, hi)` works on the widest range.
+  - Cell names longer than four letters are an error, not an overflow.
+- **Text and colours:**
+  - `design` colours that aren't ASCII are an error, not a panic.
+  - Matching folds Latin combining marks: "İptal" finds "iptal", and a
+    decomposed "é" finds "e".
+- **Screenshots:**
+  - A zoom into an element partly outside the window no longer wraps
+    around.
+  - OCR in Traditional Chinese (`zh-TW`, `zh-HK`, `zh-Hant`) uses
+    Tesseract's `chi_tra`.
+- **Linux internals:**
+  - X11 clicks, drags and scrolls round coordinates as moves and
+    drawing do, instead of cutting them.
+  - Finding the accessibility bus has a time limit, so a hung bus
+    launcher can't hang the server.
+  - The on-screen indicator hides for a capture even before its first
+    frame, so it can't fade into that capture.
+
 ## v3.7.0
 
 Fewer tokens on every request, less work done twice, and every

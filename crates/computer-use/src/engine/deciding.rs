@@ -601,10 +601,13 @@ impl<B: Backend> Engine<B> {
 
     /// Settings the user gave in the chat.
     fn decision_set(&mut self, m: &serde_json::Map<String, Value>) -> Result<ToolOutput> {
-        const KEYS: [&str; 5] = ["provider", "base_url", "model", "api_key", "api_key_env"];
+        // No `api_key_env` from the chat: it would let anything that can
+        // write to the chat send one of the server's environment variables
+        // to an address of its choosing. It stays a setting of the file.
+        const KEYS: [&str; 4] = ["provider", "base_url", "model", "api_key"];
         if let Some(k) = m.keys().find(|k| !KEYS.contains(&k.as_str())) {
             return Err(Error::InvalidArgs(format!(
-                "unknown setup field \"{k}\" (provider, base_url, model, api_key, api_key_env)"
+                "unknown setup field \"{k}\" (provider, base_url, model, api_key)"
             )));
         }
         let field = |k: &str| {
@@ -613,6 +616,7 @@ impl<B: Backend> Engine<B> {
                 .map(|s| s.trim().to_string())
         };
         let mut d = self.store.config.decision.clone();
+        let (was_provider, was_url) = (d.provider.clone(), d.base_url.clone());
         if let Some(p) = field("provider") {
             let p = decision::Provider::parse(&p).ok_or_else(|| {
                 Error::InvalidArgs(format!(
@@ -639,10 +643,11 @@ impl<B: Backend> Engine<B> {
         if let Some(k) = field("api_key") {
             d.api_key = k;
             d.api_key_env.clear();
-        }
-        if let Some(e) = field("api_key_env") {
-            d.api_key_env = e;
+        } else if d.provider != was_provider || d.base_url != was_url {
+            // The saved key belongs to the old model: never send it to
+            // another address.
             d.api_key.clear();
+            d.api_key_env.clear();
         }
         let mut whole = self.store.config.clone();
         whole.decision = d.clone();
@@ -1092,6 +1097,31 @@ mod tests {
         assert!(
             e.call_tool("decide", json!({"question": "?", "state": "x"}))
                 .is_error
+        );
+    }
+
+    #[test]
+    fn setup_from_the_chat_never_sends_the_saved_key_elsewhere() {
+        let good = system_one(|_, _| json!({"type": "noul", "noul": 1.0}));
+        let mut e = engine(jev(&good.url));
+        let other = system_one(|_, _| json!({"type": "noul", "noul": 1.0}));
+        let _ = e.call_tool("decide", json!({"setup": {"base_url": other.url}}));
+        let leaked = |f: &crate::decision::tests::Fake, secret: &str| {
+            f.seen.lock().unwrap().iter().any(|(_, h, _)| {
+                h.iter()
+                    .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v.contains(secret))
+            })
+        };
+        assert!(!leaked(&other, "sk-test-key-9876"));
+        // No environment variable named from the chat.
+        let out = e.call_tool(
+            "decide",
+            json!({"setup": {"provider": "jev", "base_url": other.url, "api_key_env": "HOME"}}),
+        );
+        assert!(
+            out.is_error && out.text.contains("unknown setup field"),
+            "{}",
+            out.text
         );
     }
 

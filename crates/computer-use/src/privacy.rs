@@ -36,6 +36,7 @@ fn luhn(digits: &[u8]) -> bool {
 /// Luhn check.
 pub fn card_numbers(s: &str) -> Vec<Range<usize>> {
     let chars: Vec<(usize, char)> = s.char_indices().collect();
+    let byte_at = |k: usize| chars.get(k).map_or(s.len(), |(b, _)| *b);
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -43,7 +44,9 @@ pub fn card_numbers(s: &str) -> Vec<Range<usize>> {
             i += 1;
             continue;
         }
-        let start = chars[i].0;
+        // The run's groups of digits: (first char, end char, digits).
+        let mut groups: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+        let mut first = i;
         let mut digits = Vec::new();
         let mut j = i;
         while j < chars.len() {
@@ -52,14 +55,33 @@ pub fn card_numbers(s: &str) -> Vec<Range<usize>> {
                 digits.push(d);
                 j += 1;
             } else if is_group_separator(c) && chars.get(j + 1).is_some_and(|(_, n)| is_digit(*n)) {
+                groups.push((first, j, std::mem::take(&mut digits)));
                 j += 1;
+                first = j;
             } else {
                 break;
             }
         }
-        let end = chars.get(j).map_or(s.len(), |(b, _)| *b);
-        if (13..=19).contains(&digits.len()) && luhn(&digits) {
-            out.push(start..end);
+        groups.push((first, j, digits));
+        // The longest stretch of whole groups that is a card number, so a
+        // number next to it (an expiry date, a CVV, a quantity) doesn't
+        // hide it.
+        let mut a = 0;
+        while a < groups.len() {
+            let found = (a..groups.len()).rev().find(|&b| {
+                let digits: Vec<u8> = groups[a..=b]
+                    .iter()
+                    .flat_map(|g| g.2.iter().copied())
+                    .collect();
+                (13..=19).contains(&digits.len()) && luhn(&digits)
+            });
+            match found {
+                Some(b) => {
+                    out.push(byte_at(groups[a].0)..byte_at(groups[b].1));
+                    a = b + 1;
+                }
+                None => a += 1,
+            }
         }
         i = j;
     }
@@ -114,12 +136,12 @@ pub fn mask_codes(s: &str) -> Option<String> {
         "verify",
         "2fa",
     ];
+    // Whole words only: "shipping" and "barcode" mention no PIN or code.
     let low = s.to_lowercase();
-    let min_digits = if WORDS.iter().any(|w| low.contains(w)) {
-        4
-    } else {
-        5
-    };
+    let mentioned = low
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| WORDS.contains(&word));
+    let min_digits = if mentioned { 4 } else { 5 };
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut changed = false;
@@ -225,6 +247,30 @@ pub fn active(cfg: &PrivacyConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_next_to_other_numbers_is_still_masked() {
+        for s in [
+            "4111 1111 1111 1111 12/29",
+            "4111 1111 1111 1111 123",
+            "Visa 4111111111111111 2029",
+            "Qty 1 4111 1111 1111 1111",
+        ] {
+            let m = mask_card_numbers(s);
+            assert!(
+                m.as_deref()
+                    .is_some_and(|m| !m.contains("4111 1111 1111") && !m.contains("4111111111")),
+                "card left visible in {s:?}: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_words_count_only_as_whole_words() {
+        assert_eq!(mask_codes("Shipping in 2024"), None);
+        assert_eq!(mask_codes("Your opinion matters since 1998"), None);
+        assert!(mask_codes("Your PIN: 4821").is_some());
+    }
     use crate::types::NodeStates;
 
     #[test]

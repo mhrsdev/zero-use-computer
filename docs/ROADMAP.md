@@ -26,6 +26,7 @@ v3.5, v3.6, … are steps; v4.0 is the stable release of what they proved.
 | v3.5 | measuring for real; the screenshot path; areas the tree says nothing about | done |
 | v3.6 | everything planned for v3.6 to v4.0, in one release | done, but for the real-model runs and hardware tests below |
 | v3.7 | the tool manager and every token-saving setting on by default; instructions, skills and results said once; work done twice removed; releases measured against each other | done (scripted); real-model runs left, as below |
+| v3.7.5 | debugging: every part reviewed and run against a real app; 32 bugs fixed, each with a test | done |
 | v4.0 | stable: defaults set from real-model A/B runs | open |
 
 The steps first planned as v3.7 (the tool surface), v3.8 (checking

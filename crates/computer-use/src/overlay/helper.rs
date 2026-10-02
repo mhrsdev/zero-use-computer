@@ -1059,7 +1059,9 @@ pub fn run(args: &[String]) -> i32 {
             match cmd {
                 Cmd::Hide { id } => {
                     let shown = painter.showing() && !hidden;
-                    if shown {
+                    // Hidden even when nothing shows yet: a fade-in painted
+                    // on the next frame would land in the engine's capture.
+                    if !hidden {
                         surface.set_hidden(true);
                     }
                     hidden = true;

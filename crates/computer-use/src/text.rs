@@ -81,6 +81,9 @@ pub fn fold(s: &str) -> String {
             '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{200B}'..='\u{200D}' => {
                 continue;
             }
+            // Latin combining marks (the dot "İ" leaves when lowercased,
+            // decomposed accents).
+            '\u{0300}'..='\u{036F}' => continue,
             c if is_bidi_control(c) => continue,
             c => c,
         };
@@ -92,7 +95,11 @@ pub fn fold(s: &str) -> String {
             continue;
         }
         space = false;
-        out.extend(c.to_lowercase());
+        // Lowercasing can make a combining mark ("İ" → "i" + U+0307).
+        out.extend(
+            c.to_lowercase()
+                .filter(|l| !matches!(l, '\u{0300}'..='\u{036F}')),
+        );
     }
     if out.ends_with(' ') {
         out.pop();
@@ -123,6 +130,12 @@ pub fn estimate_tokens(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latin_combining_marks_fold_away() {
+        assert!(contains("İptal", "iptal"));
+        assert_eq!(fold("cafe\u{0301}"), fold("cafe"));
+    }
 
     #[test]
     fn token_estimates() {

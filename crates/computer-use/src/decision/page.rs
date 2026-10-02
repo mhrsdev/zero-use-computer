@@ -302,6 +302,7 @@ impl Page {
     /// the saved one).
     fn merged(&self, body: &Value) -> std::result::Result<DecisionConfig, String> {
         let mut d = self.current();
+        let was_provider = d.provider.clone();
         let field = |k: &str| {
             body.get(k)
                 .and_then(Value::as_str)
@@ -330,6 +331,10 @@ impl Page {
         }
         if let Some(k) = field("api_key").filter(|k| !k.is_empty()) {
             d.api_key = k;
+            d.api_key_env.clear();
+        } else if d.provider != was_provider {
+            // One provider's key is never sent to another.
+            d.api_key.clear();
             d.api_key_env.clear();
         }
         for v in [&d.base_url, &d.model, &d.api_key] {
@@ -626,6 +631,18 @@ mod tests {
             (cfg.model.as_str(), cfg.api_key.as_str()),
             ("m2", "sk-new-key-5678")
         );
+
+        // Another provider with no key typed: the old one doesn't go along.
+        let body = r#"{"provider":"jev","api_key":""}"#;
+        request(
+            &host,
+            &format!(
+                "POST /{token}/save HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        let cfg = ConfigStore::load(Some(&path)).unwrap().config.decision;
+        assert_eq!((cfg.provider.as_str(), cfg.api_key.as_str()), ("jev", ""));
 
         // Remove, then close.
         let body = "{}";

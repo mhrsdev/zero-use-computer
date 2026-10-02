@@ -298,6 +298,22 @@ impl ScreenMemory {
         best.map(|(id, sim, _)| (id, sim))
     }
 
+    /// The view of every remembered screen, by id.
+    pub fn views(&self) -> HashMap<u32, View> {
+        self.screens
+            .iter()
+            .map(|s| (s.id, s.view.clone()))
+            .collect()
+    }
+
+    /// Put back the views as they were (`views`); screens remembered since
+    /// get an empty view (their tree was never shown).
+    pub fn restore_views(&mut self, mut views: HashMap<u32, View>) {
+        for s in &mut self.screens {
+            s.view = views.remove(&s.id).unwrap_or_default();
+        }
+    }
+
     /// Forget screens of apps that are no longer running.
     pub fn retain_pids(&mut self, live: &HashSet<u32>) {
         self.screens.retain(|s| live.contains(&s.pid));

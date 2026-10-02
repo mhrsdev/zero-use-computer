@@ -1885,6 +1885,8 @@ fn stroke_props() -> Value {
 /// A design layer: a shape or a text, with colours and placement.
 fn layer_props() -> Value {
     let mut m = shape_props();
+    // Axes go with draw's canvas range; a design layer has none.
+    m.remove("axes");
     m.extend(
         match json!({
             "id": {"type": "string", "description": "The layer's name (\"head\", \"title\"); used by change, align, mirror."},
@@ -2578,7 +2580,12 @@ fn share_repeats(schema: &mut Value) {
             let kind = prop.get("type").cloned().unwrap_or(json!("object"));
             let mut short = json!({"type": kind, "description": format!("Same keys as {first}.")});
             if kind == "array" {
-                short["items"] = json!({"type": "object"});
+                // Items as they are typed there (objects, or lines too).
+                let items = prop
+                    .pointer("/items/type")
+                    .cloned()
+                    .unwrap_or(json!("object"));
+                short["items"] = json!({ "type": items });
             }
             *prop = short;
         } else {
@@ -3244,6 +3251,15 @@ mod tests {
         );
         assert!(text.contains("keys: ") && text.contains("rect"), "{text}");
         assert!(!text.contains("\"default\""), "{text}");
+        // change takes what add takes (lines too), and no keys parse refuses.
+        for tool in ["design", "scene"] {
+            let p = &lean.iter().find(|d| d.name == tool).unwrap().input_schema["properties"];
+            assert_eq!(
+                p["change"]["items"]["type"], p["add"]["items"]["type"],
+                "{tool}"
+            );
+        }
+        assert!(!text.contains("axes"), "{text}");
         // A small set for smaller models.
         let mut small = Config::default();
         small.tools.preset = ToolPreset::Small;
@@ -3316,9 +3332,10 @@ mod tests {
             let d = compact.iter().find(|d| d.name == name).unwrap();
             let props = &d.input_schema["properties"];
             assert!(props["add"]["items"]["properties"].is_object(), "{name}");
+            // Items typed as add's are (objects, or lines).
             assert_eq!(
                 props["change"]["items"],
-                json!({"type": "object"}),
+                json!({"type": props["add"]["items"]["type"].clone()}),
                 "{name}"
             );
             assert_eq!(props["change"]["description"], "Same keys as add.");

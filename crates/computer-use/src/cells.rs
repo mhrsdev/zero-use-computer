@@ -111,7 +111,8 @@ impl Cells {
                 Self::name(self.cols.saturating_sub(1), self.rows.saturating_sub(1))
             )
         };
-        if letters.is_empty() || digits.is_empty() {
+        // More than four letters is far past any page (and would overflow).
+        if letters.is_empty() || letters.len() > 4 || digits.is_empty() {
             return Err(bad());
         }
         let col = letters
@@ -377,6 +378,9 @@ mod tests {
             "cells of 100: columns A to H from x 0, rows 1 to 6 from y 0 down"
         );
         assert_eq!(c.parse("c4"), Ok((2, 3)));
+        // A long column name is no cell, not an overflow.
+        assert!(c.parse("ZZZZZZZZZZZZZZZZ1").is_err());
+        assert!(c.parse("AAAAAAAAAAAAAAA1").is_err());
         assert_eq!(
             c.span(2, 3),
             Span {
