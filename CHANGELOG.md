@@ -143,7 +143,13 @@ its unit tests in CI, as before).
   name and `expect`, next to the one-action-a-call way (`--plan step`).
 - `bench/configs/lean.toml` (every opt-in that saves tokens) and
   `manager.toml` (the same with the tool manager), for A/B runs.
-- Scripted results against v3.2 and v3.5: [bench/results](bench/results/README.md).
+- Scripted results (estimates, all 90 runs successful): over the six
+  tasks, result tokens −25% with the defaults and −35% with lean settings
+  and batches against v3.2; calls 42 → 27 with batches; the 300-row
+  table −39%, the canvas with painted labels −41% (one picture instead of
+  two). Costs: the fixed prefix +5% with the defaults (~6,941 → ~7,309
+  tokens; lean ~6,040, with the manager ~4,397), half a second per look
+  at a canvas with blind areas on. [bench/results](bench/results/README.md).
 
 ## v3.5.0 (released as part of v3.6.0)
 
