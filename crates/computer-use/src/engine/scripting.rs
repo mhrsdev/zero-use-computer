@@ -13,7 +13,7 @@ use crate::script::{self, Msg, Outcome, Request, Saved};
 struct ScriptImage {
     image: EncodedImage,
     pending: Vec<PendingImage>,
-    shot: Option<(PixelSig, CoordMap)>,
+    shot: Option<ScreenShot>,
 }
 
 /// Pictures a script can still show (older ones are let go).

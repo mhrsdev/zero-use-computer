@@ -63,6 +63,37 @@ struct PendingImage {
     screen: u32,
     coord: CoordMap,
     pixels: Option<PixelSig>,
+    /// The number of the whole screenshot x/y refer to (a changed part
+    /// patches that one).
+    id: u32,
+}
+
+/// What goes back of a window's pixels ([`Engine::window_picture`]).
+enum Picture {
+    /// The model's picture of this screen is current (numbered `base`).
+    Unchanged { base: Option<u32> },
+    /// Only the part that changed, at `at` in the picture numbered `base`.
+    Part {
+        img: EncodedImage,
+        id: u32,
+        base: Option<u32>,
+        at: (u32, u32),
+    },
+    /// The whole window (an overview when `overview`).
+    Whole {
+        img: EncodedImage,
+        id: u32,
+        overview: bool,
+    },
+}
+
+/// The last full-screen screenshot the model got: its fingerprint, scale
+/// and number.
+#[derive(Clone)]
+struct ScreenShot {
+    pixels: PixelSig,
+    coord: CoordMap,
+    id: u32,
 }
 
 /// How deep calls may nest (batch steps and a script's tools run inside the
@@ -136,11 +167,14 @@ pub struct Engine<B: Backend> {
     last_input: Option<Instant>,
     /// The action epoch whose result has a fresh snapshot (after settling).
     settled: Option<u64>,
-    /// The last full-screen screenshot sent: its fingerprint and scale.
-    screen_shot: Option<(PixelSig, CoordMap)>,
+    /// The last full-screen screenshot sent.
+    screen_shot: Option<ScreenShot>,
     /// One taken during this call: it becomes `screen_shot` only if it is
     /// the image the call returns (a batch returns only its last image).
-    pending_screen_shot: Option<(PixelSig, CoordMap)>,
+    pending_screen_shot: Option<ScreenShot>,
+    /// Screenshots handed out so far: each gets the next number, so a
+    /// changed part can name the picture it patches.
+    shots: u32,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -193,7 +227,7 @@ pub struct Shown {
     /// Per app: the screen the model knows, and the screenshot coordinates
     /// it works from.
     apps: HashMap<u32, (Option<Screen>, Option<CoordMap>)>,
-    screen_shot: Option<(PixelSig, CoordMap)>,
+    screen_shot: Option<ScreenShot>,
     partial: Option<(u32, u32, u64, usize)>,
 }
 
@@ -266,6 +300,7 @@ impl<B: Backend> Engine<B> {
             settled: None,
             screen_shot: None,
             pending_screen_shot: None,
+            shots: 0,
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -1277,6 +1312,7 @@ impl<B: Backend> Engine<B> {
                         k.coord = None;
                         k.pixels = None;
                         k.shot = false;
+                        k.shot_id = None;
                         st.coord = None;
                         size_changed = true;
                     }
@@ -1326,6 +1362,7 @@ impl<B: Backend> Engine<B> {
                             next.coord = None;
                             next.pixels = None;
                             next.shot = false;
+                            next.shot_id = None;
                             size_changed = true;
                         }
                     }
@@ -1380,6 +1417,7 @@ impl<B: Backend> Engine<B> {
                 s.coord = Some(p.coord);
                 s.pixels = p.pixels;
                 s.shot = true;
+                s.shot_id = Some(p.id);
             }
         }
     }
@@ -2010,7 +2048,6 @@ impl<B: Backend> Engine<B> {
         // the model has no picture of, a big change, a returning screen whose
         // window changed size, or custom-drawn UI with little in the tree.
         let shot = &self.store.config.screenshot;
-        let cache = &self.store.config.cache;
         let allowed = shot.enabled && !self.store.config.text_only;
         let known = self
             .state(app.pid)?
@@ -2034,15 +2071,7 @@ impl<B: Backend> Engine<B> {
                         || r.seen == Seen::Revisit
                 }
             });
-        let (dedupe, grid, tolerance) = (
-            cache.dedupe_screenshots && args.screenshot != Some(true),
-            cache.pixel_grid,
-            cache.pixel_tolerance,
-        );
-        // Pixel fingerprints tell unchanged pictures and changed parts apart.
-        let fingerprint = cache.dedupe_screenshots || shot.scope == crate::config::ShotScope::Auto;
-        let (known_pixels, known_coord) = (known.pixels.clone(), known.coord);
-
+        let force = args.screenshot == Some(true);
         let mut image = None;
         if want {
             // The picture just read for OCR, if any, is the screenshot.
@@ -2071,92 +2100,59 @@ impl<B: Backend> Engine<B> {
                             "\n[{redacted} private area(s) blacked out of the screenshot]"
                         ));
                     }
-                    let sig = fingerprint.then(|| PixelSig::of(&cap, grid));
-                    let unchanged = dedupe
-                        && known_coord.is_some_and(|c| c.bounds == cap.bounds)
-                        && matches!((&sig, &known_pixels), (Some(a), Some(b)) if a.same_as(b, tolerance));
-                    if unchanged {
-                        // The model already has this picture.
-                        if let Some(st) = self.states.get_mut(&app.pid) {
-                            st.coord = known_coord;
+                    // Attached on its own to a window the tree already
+                    // describes well: an overview is enough, and costs a
+                    // fraction of the image tokens.
+                    let shot_cfg = &self.store.config.screenshot;
+                    let overview = args.screenshot.is_none()
+                        && shot_cfg.overview_max_dimension > 0
+                        && shot_cfg.overview_max_dimension < shot_cfg.max_dimension
+                        && r.interactive >= shot_cfg.auto_sparse_threshold.max(1)
+                        && self.state(app.pid).is_ok_and(|s| s.ocr_lines == 0);
+                    match self.window_picture(app.pid, r.screen, cap, force, overview) {
+                        Ok(Picture::Unchanged { base }) => {
+                            let at = base.map(|b| format!(" (#{b})")).unwrap_or_default();
+                            header.push_str(&if self.explain_first("shot-unchanged") {
+                                format!(
+                                    "\nScreenshot: unchanged since you last saw it{at}, not re-sent (screenshot=true forces one)."
+                                )
+                            } else {
+                                format!("\nScreenshot: unchanged{at}, not re-sent.")
+                            });
                         }
-                        header.push_str(self.explain(
-                            "shot-unchanged",
-                            "\nScreenshot: unchanged since you last saw it, not re-sent (screenshot=true forces one).",
-                            "\nScreenshot: unchanged, not re-sent.",
-                        ));
-                    } else if let Some(part) = (args.screenshot != Some(true))
-                        .then(|| {
-                            self.changed_part(
-                                &cap,
-                                sig.as_ref(),
-                                known_pixels.as_ref(),
-                                known_coord,
-                            )
-                        })
-                        .flatten()
-                        && let Some(full) = known_coord
-                        && let Ok((img, (ox, oy))) =
-                            imaging::encode_part(&cap, part, &full, &self.store.config.screenshot)
-                    {
-                        // Only the part that changed, placed in the picture
-                        // the model already has.
-                        let (w, h, x1, y1) =
-                            (img.width, img.height, ox + img.width, oy + img.height);
-                        header.push_str(&if self.explain_first("shot-part") {
-                            format!(
-                                "\nScreenshot: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
-                            )
-                        } else {
-                            format!(
-                                "\nScreenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your earlier one (x/y still refer to that whole screenshot)."
-                            )
-                        });
-                        self.pending_images.push(PendingImage {
-                            pid: app.pid,
-                            screen: r.screen,
-                            coord: full,
-                            pixels: sig,
-                        });
-                        image = Some(img);
-                    } else {
-                        // Attached on its own to a window the tree already
-                        // describes well: an overview is enough, and costs a
-                        // fraction of the image tokens.
-                        let mut shot_cfg = self.store.config.screenshot.clone();
-                        let overview = args.screenshot.is_none()
-                            && shot_cfg.overview_max_dimension > 0
-                            && shot_cfg.overview_max_dimension < shot_cfg.max_dimension
-                            && r.interactive >= shot_cfg.auto_sparse_threshold.max(1)
-                            && self.state(app.pid).is_ok_and(|s| s.ocr_lines == 0);
-                        if overview {
-                            shot_cfg.max_dimension = shot_cfg.overview_max_dimension;
+                        Ok(Picture::Part { img, id, base, at }) => {
+                            let (w, h, (ox, oy)) = (img.width, img.height, at);
+                            let (x1, y1) = (ox + w, oy + h);
+                            header.push_str(&match base {
+                                Some(b) if self.explain_first("shot-part") => format!(
+                                    "\nScreenshot #{id}: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of screenshot #{b}, your earlier one of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
+                                ),
+                                Some(b) => format!(
+                                    "\nScreenshot #{id}: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of #{b} (x/y still refer to #{b})."
+                                ),
+                                None => format!(
+                                    "\nScreenshot #{id}: only the part that changed, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of your earlier screenshot of this screen (same scale; the rest is unchanged, and x/y coordinates still refer to that whole screenshot)."
+                                ),
+                            });
+                            image = Some(img);
                         }
-                        match imaging::encode(cap, &shot_cfg) {
-                            Ok((img, map)) => {
-                                header.push_str(&format!(
-                                    "\nScreenshot: {}x{} px.",
-                                    img.width, img.height
+                        Ok(Picture::Whole { img, id, overview }) => {
+                            header.push_str(&format!(
+                                "\nScreenshot #{id}: {}x{} px.",
+                                img.width, img.height
+                            ));
+                            if overview {
+                                header.push_str(self.explain(
+                                    "overview",
+                                    " (An overview; pass screenshot=true for full detail, or screenshot(element_index) to zoom into one element.)",
+                                    " (overview)",
                                 ));
-                                if overview {
-                                    header.push_str(self.explain(
-                                        "overview",
-                                        " (An overview; pass screenshot=true for full detail, or screenshot(element_index) to zoom into one element.)",
-                                        " (overview)",
-                                    ));
-                                }
-                                self.pending_images.push(PendingImage {
-                                    pid: app.pid,
-                                    screen: r.screen,
-                                    coord: map,
-                                    pixels: sig,
-                                });
-                                image = Some(img);
                             }
-                            Err(e) => {
-                                self.mark_shot(app.pid);
-                                header.push_str(&format!("\n[screenshot encode failed: {e}]"));
-                            }
+                            image = Some(img);
+                        }
+                        Err(e) => {
+                            self.mark_shot(app.pid);
+                            header.push_str(&format!("\n[screenshot encode failed: {e}]"));
                         }
                     }
                 }
@@ -2178,6 +2174,76 @@ impl<B: Backend> Engine<B> {
             image,
             is_error: false,
         })
+    }
+
+    /// What the model gets of a window's pixels, given what it already has
+    /// of `screen`: nothing when that picture is current, only the part
+    /// that changed when it is small, else the whole window, which then is
+    /// the picture x/y refer to. get_app_state and screenshot(app) share it.
+    /// `force` (asked for explicitly): always the whole window.
+    fn window_picture(
+        &mut self,
+        pid: u32,
+        screen: u32,
+        cap: Capture,
+        force: bool,
+        overview: bool,
+    ) -> Result<Picture> {
+        let cache = self.store.config.cache.clone();
+        let mut shot_cfg = self.store.config.screenshot.clone();
+        let (known_pixels, known_coord, base) = self
+            .states
+            .get(&pid)
+            .and_then(|s| s.known.as_ref())
+            .filter(|k| k.id == screen)
+            .map(|k| (k.pixels.clone(), k.coord, k.shot_id))
+            .unwrap_or_default();
+        // Pixel fingerprints tell unchanged pictures and changed parts apart.
+        let fingerprint =
+            cache.dedupe_screenshots || shot_cfg.scope == crate::config::ShotScope::Auto;
+        let sig = fingerprint.then(|| PixelSig::of(&cap, cache.pixel_grid));
+        let unchanged = !force
+            && cache.dedupe_screenshots
+            && known_coord.is_some_and(|c| c.bounds == cap.bounds)
+            && matches!((&sig, &known_pixels), (Some(a), Some(b)) if a.same_as(b, cache.pixel_tolerance));
+        if unchanged {
+            // The model already has this picture.
+            if let Some(st) = self.states.get_mut(&pid) {
+                st.coord = known_coord;
+            }
+            return Ok(Picture::Unchanged { base });
+        }
+        if !force
+            && let Some(part) =
+                self.changed_part(&cap, sig.as_ref(), known_pixels.as_ref(), known_coord)
+            && let Some(full) = known_coord
+            && let Ok((img, at)) = imaging::encode_part(&cap, part, &full, &shot_cfg)
+        {
+            // Only the part that changed, placed in the picture the model
+            // already has.
+            let id = self.next_shot();
+            self.pending_images.push(PendingImage {
+                pid,
+                screen,
+                coord: full,
+                pixels: sig,
+                id: base.unwrap_or(id),
+            });
+            return Ok(Picture::Part { img, id, base, at });
+        }
+        if overview {
+            shot_cfg.max_dimension = shot_cfg.overview_max_dimension;
+        }
+        let (img, map) = imaging::encode(cap, &shot_cfg)?;
+        let id = self.next_shot();
+        self.pending_images.push(PendingImage {
+            pid,
+            screen,
+            coord: map,
+            pixels: sig,
+            id,
+        });
+        Ok(Picture::Whole { img, id, overview })
     }
 
     /// With `screenshot.scope = "auto"`: the pixel area of a new capture worth
@@ -2206,6 +2272,12 @@ impl<B: Backend> Engine<B> {
         let share = f64::from(part.2) * f64::from(part.3)
             / (f64::from(cap.width) * f64::from(cap.height)).max(1.0);
         (share <= cfg.region_max_ratio).then_some(part)
+    }
+
+    /// The next screenshot's number.
+    fn next_shot(&mut self) -> u32 {
+        self.shots += 1;
+        self.shots
     }
 
     /// A screenshot of the known screen was attempted and failed: don't
@@ -4423,13 +4495,33 @@ impl<B: Backend> Engine<B> {
                 "screenshots are disabled (text_only / screenshot.enabled=false)".into(),
             ));
         }
-        let mode = args.mode.unwrap_or(if args.app.is_some() {
-            ScreenshotMode::Window
-        } else {
-            ScreenshotMode::Auto
-        });
+        // x/y/width/height are a part of the screen: they make the mode
+        // region, and are never silently ignored.
+        let region = [args.x, args.y, args.width, args.height]
+            .iter()
+            .any(Option::is_some);
+        let mode = match args.mode {
+            Some(m) if region && m != ScreenshotMode::Region => {
+                return Err(Error::InvalidArgs(format!(
+                    "x, y, width and height give a part of the screen (mode=region); mode={} doesn't take them. For part of a window, use element_index (one element) or zoom=[x, y].",
+                    mode_name(m)
+                )));
+            }
+            Some(m) => m,
+            None if region && args.app.is_some() => {
+                return Err(Error::InvalidArgs(
+                    "x, y, width and height are a part of the screen in screen coordinates (mode=region, without app). For part of a window, use element_index (one element) or zoom=[x, y].".into(),
+                ));
+            }
+            None if region => ScreenshotMode::Region,
+            None if args.app.is_some() => ScreenshotMode::Window,
+            None => ScreenshotMode::Auto,
+        };
         // An element to zoom into (screen rect).
         let mut zoom: Option<Rect> = None;
+        // A plain picture of a window whose screen the model knows: (pid,
+        // screen), so an unchanged picture isn't sent again.
+        let mut known_window: Option<(u32, u32)> = None;
         // What grid labels and `pick` points are in: screen coordinates,
         // or the x/y actions use for the window.
         let mut space = LabelSpace::Screen;
@@ -4477,6 +4569,33 @@ impl<B: Backend> Engine<B> {
                 {
                     // A current tree: where private data is, the marks, the element.
                     self.observe(&app, &window, false)?;
+                }
+                let plain = !args.annotate
+                    && args.element_index.is_none()
+                    && args.grid.is_none()
+                    && !args.palette
+                    && args.pick.is_none()
+                    && args.canvas.is_none()
+                    && args.compare.is_none()
+                    && !args.cells
+                    && args.cell.is_none()
+                    && args.zoom.is_none();
+                let cache = &self.store.config.cache;
+                if plain
+                    && (cache.dedupe_screenshots
+                        || self.store.config.screenshot.scope == crate::config::ShotScope::Auto)
+                {
+                    // Which screen this is, to compare with the picture the
+                    // model has of it.
+                    if !crate::privacy::active(&self.store.config.privacy) {
+                        self.observe(&app, &window, false)?;
+                    }
+                    if let Some(st) = self.states.get(&app.pid)
+                        && st.window_id == Some(window.id)
+                        && st.known.as_ref().is_some_and(|k| k.id == st.screen)
+                    {
+                        known_window = Some((app.pid, st.screen));
+                    }
                 }
                 let mut label = format!("{} window \"{}\"", app.name, window.title);
                 if let Some(i) = args.element_index {
@@ -4692,36 +4811,85 @@ impl<B: Backend> Engine<B> {
             let smart = mode == ScreenshotMode::Auto
                 && cfg.scope == crate::config::ShotScope::Auto
                 && !extras;
-            if smart && let Some((old, map)) = &self.screen_shot {
-                let map = *map;
-                if map.bounds == capture.bounds && sig.same_as(old, tolerance) {
-                    return Ok(ToolOutput::text(
-                        "The screen looks the same as in your last full-screen screenshot; not re-sent (mode=full sends it anyway).",
-                    ));
+            if smart && let Some(last) = self.screen_shot.clone() {
+                let (map, base) = (last.coord, last.id);
+                if map.bounds == capture.bounds && sig.same_as(&last.pixels, tolerance) {
+                    return Ok(ToolOutput::text(format!(
+                        "The screen looks the same as in your last full-screen screenshot (#{base}); not re-sent (mode=full sends it anyway)."
+                    )));
                 }
-                if let Some(part) = self.changed_part(&capture, Some(&sig), Some(old), Some(map)) {
+                if let Some(part) =
+                    self.changed_part(&capture, Some(&sig), Some(&last.pixels), Some(map))
+                {
                     let (img, (ox, oy)) = imaging::encode_part(&capture, part, &map, &cfg)?;
                     let (w, h, x1, y1) = (img.width, img.height, ox + img.width, oy + img.height);
+                    let id = self.next_shot();
                     let text = if self.explain_first("screen-part") {
                         format!(
-                            "Screenshot: only the part of the screen that changed since your last full-screen screenshot, {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}"
+                            "Screenshot #{id}: only the part of the screen that changed since your last full-screen screenshot (#{base}), {w}x{h} px: the area x {ox}–{x1}, y {oy}–{y1} of that screenshot (same scale; the rest is unchanged).{note}"
                         )
                     } else {
                         format!(
-                            "Screenshot: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of your last full-screen one (x/y still refer to that whole screenshot).{note}"
+                            "Screenshot #{id}: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of #{base} (x/y still refer to that whole screenshot).{note}"
                         )
                     };
-                    self.pending_screen_shot = Some((sig, map));
+                    self.pending_screen_shot = Some(ScreenShot {
+                        pixels: sig,
+                        coord: map,
+                        id: base,
+                    });
                     return Ok(image(img, text));
                 }
             }
             let (img, map) = imaging::encode(capture, &cfg)?;
-            self.pending_screen_shot = Some((sig, map));
+            let id = self.next_shot();
+            self.pending_screen_shot = Some(ScreenShot {
+                pixels: sig,
+                coord: map,
+                id,
+            });
             let text = format!(
-                "Screenshot of {label}: {}x{} px.{note}",
+                "Screenshot #{id} of {label}: {}x{} px.{note}",
                 img.width, img.height
             );
             return Ok(image(img, text));
+        }
+
+        // A window whose screen the model knows: as get_app_state sends it
+        // (nothing if unchanged, else the part that changed or all of it),
+        // and it becomes the picture x/y refer to. mode=window asks for all
+        // of it.
+        if let Some((pid, screen)) = known_window {
+            let force = args.mode == Some(ScreenshotMode::Window);
+            return Ok(
+                match self.window_picture(pid, screen, capture, force, false)? {
+                    Picture::Unchanged { base } => {
+                        let at = base.map(|b| format!(" (#{b})")).unwrap_or_default();
+                        ToolOutput::text(format!(
+                            "Screenshot of {label}: unchanged since your last screenshot of it{at}; not re-sent (mode=\"window\" sends it anyway).{note}"
+                        ))
+                    }
+                    Picture::Part { img, id, base, at } => {
+                        let (ox, oy) = at;
+                        let (x1, y1) = (ox + img.width, oy + img.height);
+                        let of = base
+                            .map(|b| format!("#{b}"))
+                            .unwrap_or_else(|| "your earlier screenshot of it".into());
+                        let text = format!(
+                            "Screenshot #{id} of {label}: only the part that changed, {}x{} px: the area x {ox}–{x1}, y {oy}–{y1} of {of} (same scale; x/y still refer to that whole screenshot).{note}",
+                            img.width, img.height
+                        );
+                        image(img, text)
+                    }
+                    Picture::Whole { img, id, .. } => {
+                        let text = format!(
+                            "Screenshot #{id} of {label}: {}x{} px.{note}",
+                            img.width, img.height
+                        );
+                        image(img, text)
+                    }
+                },
+            );
         }
 
         let (img, _map) = imaging::encode(capture, &cfg)?;
@@ -5035,6 +5203,7 @@ impl<B: Backend> Engine<B> {
                 k.shot = false;
                 k.coord = None;
                 k.pixels = None;
+                k.shot_id = None;
             }
         }
         let now = self
@@ -5912,6 +6081,15 @@ fn describe_matcher(args: &WaitForArgs) -> String {
         "any element".into()
     } else {
         parts.join(", ")
+    }
+}
+
+fn mode_name(m: ScreenshotMode) -> &'static str {
+    match m {
+        ScreenshotMode::Auto => "auto",
+        ScreenshotMode::Full => "full",
+        ScreenshotMode::Region => "region",
+        ScreenshotMode::Window => "window",
     }
 }
 
@@ -9169,6 +9347,100 @@ mod tests {
             "{}x{}",
             img.width,
             img.height
+        );
+    }
+
+    #[test]
+    fn region_parameters_are_never_ignored() {
+        let mut e = always_shot_engine();
+        let shot =
+            |e: &mut Engine<MockBackend>, args: serde_json::Value| e.call_tool("screenshot", args);
+        // x/y/width/height alone: a region of the screen.
+        let out = shot(
+            &mut e,
+            serde_json::json!({"x": 10, "y": 20, "width": 300, "height": 200}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("region (10, 20) 300x200"), "{}", out.text);
+        assert_eq!(out.image.unwrap().width, 300);
+        // Some of them missing: said, not a full screen instead.
+        let out = shot(&mut e, serde_json::json!({"x": 10, "y": 20}));
+        assert!(
+            out.is_error && out.text.contains("width and height"),
+            "{}",
+            out.text
+        );
+        // With another mode, or with an app: an error that says why.
+        let out = shot(
+            &mut e,
+            serde_json::json!({"mode": "full", "x": 1, "y": 1, "width": 9, "height": 9}),
+        );
+        assert!(
+            out.is_error && out.text.contains("mode=full"),
+            "{}",
+            out.text
+        );
+        let out = shot(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "x": 1, "y": 1, "width": 9, "height": 9}),
+        );
+        assert!(
+            out.is_error && out.text.contains("element_index"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn a_window_screenshot_is_not_sent_again_and_pictures_are_numbered() {
+        let mut e = always_shot_engine();
+        let shot =
+            |e: &mut Engine<MockBackend>, args: serde_json::Value| e.call_tool("screenshot", args);
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(
+            out.text.contains("Screenshot #1: 800x600 px."),
+            "{}",
+            out.text
+        );
+        // The window looks as in screenshot #1: not sent again.
+        let out = shot(&mut e, serde_json::json!({"app": "TextEdit"}));
+        assert!(out.image.is_none(), "{}", out.text);
+        assert!(
+            out.text.contains("unchanged") && out.text.contains("#1"),
+            "{}",
+            out.text
+        );
+        // A small change: only that part, placed in #1.
+        e.backend_mut().patch = Some((Rect::new(500.0, 400.0, 60.0, 30.0), 20));
+        let out = shot(&mut e, serde_json::json!({"app": "TextEdit"}));
+        let part = out.image.as_ref().expect("the changed part");
+        assert!(part.width < 400, "{}", out.text);
+        assert!(
+            out.text.contains("Screenshot #2") && out.text.contains("of #1"),
+            "{}",
+            out.text
+        );
+        // get_app_state now knows the model has it.
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.image.is_none(), "{}", out.text);
+        assert!(
+            out.text.contains("unchanged") && out.text.contains("(#1)"),
+            "{}",
+            out.text
+        );
+        // mode=window: all of it, always, and x/y then refer to it.
+        let out = shot(
+            &mut e,
+            serde_json::json!({"app": "TextEdit", "mode": "window"}),
+        );
+        assert_eq!(out.image.as_ref().unwrap().width, 800, "{}", out.text);
+        assert!(out.text.contains("Screenshot #3 of"), "{}", out.text);
+        e.backend_mut().patch = Some((Rect::new(100.0, 100.0, 40.0, 40.0), 60));
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(
+            out.text.contains("Screenshot #4") && out.text.contains("#3"),
+            "{}",
+            out.text
         );
     }
 
