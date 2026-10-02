@@ -1315,22 +1315,36 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
 
     let parts: Vec<&str> = key.split('.').collect();
     let (last, tables) = parts.split_last().expect("non-empty key");
-    let mut table = doc.as_table_mut();
+    // Table-like: a section may be written as an inline table too
+    // (`screenshot = { attach = "always" }`).
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
     for t in tables {
         let entry = table
             .entry(t)
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
         table = entry
-            .as_table_mut()
+            .as_table_like_mut()
             .ok_or_else(|| Error::Config(format!("`{t}` is not a table")))?;
     }
 
     match edit {
         Edit::Set(raw) => {
-            table[last] = toml_edit::value(parse_value(&raw));
+            // A text setting keeps text that reads like a number or a
+            // boolean as text (`server.http_token 123456789`).
+            let text_key = matches!(
+                get_value(&Config::default(), key),
+                Some(toml::Value::String(_))
+            );
+            let v = parse_value(&raw);
+            let v = if text_key && !v.is_str() {
+                toml_edit::Value::from(raw.trim())
+            } else {
+                v
+            };
+            table.insert(last, toml_edit::value(v));
         }
         Edit::SetText(raw) => {
-            table[last] = toml_edit::value(raw);
+            table.insert(last, toml_edit::value(raw));
         }
         Edit::Unset => {
             table.remove(last);
@@ -1344,7 +1358,7 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
                     arr.push(v.as_str());
                 }
             }
-            table[last] = toml_edit::value(arr);
+            table.insert(last, toml_edit::value(arr));
         }
         Edit::Remove(item) => {
             let current = current_list(&doc_to_config(text)?, key)?;
@@ -1352,7 +1366,7 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
             for v in current.iter().filter(|v| !v.eq_ignore_ascii_case(&item)) {
                 arr.push(v.as_str());
             }
-            table[last] = toml_edit::value(arr);
+            table.insert(last, toml_edit::value(arr));
         }
     }
     Ok(doc.to_string())
@@ -1503,6 +1517,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-cfg-missing-{}", std::process::id()));
         let store = ConfigStore::load(Some(&dir.join("config.toml"))).unwrap();
         assert_eq!(store.config, Config::default());
+    }
+
+    #[test]
+    fn edits_reach_into_inline_tables() {
+        let text = "screenshot = { attach = \"always\", max_dimension = 1024 }\n";
+        let out = edit_text(text, "screenshot.attach", Edit::Unset).unwrap();
+        assert!(!out.contains("attach") && out.contains("1024"), "{out}");
+        let out = edit_text(text, "screenshot.max_dimension", Edit::Set("800".into())).unwrap();
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.screenshot.max_dimension, 800);
+        // Text that looks like a number stays text where text is meant.
+        let out = edit_text("", "server.http_token", Edit::Set("123456789".into())).unwrap();
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.server.http_token, "123456789");
     }
 
     #[test]

@@ -102,6 +102,11 @@ pub fn parse_message(text: &str) -> Result<Incoming, Box<Response>> {
         }
     };
     let invalid = |why: String| Box::new(Response::err(id.clone(), INVALID_REQUEST, why));
+    // A request with `"id": null` would pass for a notification and never
+    // be answered (MCP ids are strings or numbers).
+    if obj.get("id") == Some(&Value::Null) && obj.contains_key("method") {
+        return Err(invalid("`id` must not be null".into()));
+    }
     match obj.get("method") {
         Some(Value::String(_)) => {}
         Some(_) => return Err(invalid("`method` must be a string".into())),
@@ -200,6 +205,11 @@ mod tests {
         );
         assert_eq!(
             code(r#"{"jsonrpc":"2.0","id":{},"method":"ping"}"#),
+            (INVALID_REQUEST, Value::Null)
+        );
+        // A null id is no notification: it gets an answer.
+        assert_eq!(
+            code(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#),
             (INVALID_REQUEST, Value::Null)
         );
     }

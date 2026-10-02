@@ -706,18 +706,60 @@ fn full_engine(ctx: &Rc<Ctx>) -> Engine {
         }
         None
     });
-    engine.set_module_resolver(
+    engine.set_module_resolver(LibraryResolver(
         rhai::module_resolvers::FileModuleResolver::new_with_path_and_extension(
             ctx.env.library.clone(),
             "rhai",
         ),
-    );
+    ));
     tools_api(&mut engine, ctx);
     page_api(&mut engine, ctx);
     data_api(&mut engine, ctx);
     maths_api(&mut engine, ctx);
     decision_api(&mut engine, ctx);
     engine
+}
+
+/// `import` of saved scripts only, by name: no paths (absolute ones, `..`)
+/// that would read files the `[script] files` setting keeps out.
+struct LibraryResolver(rhai::module_resolvers::FileModuleResolver);
+
+impl LibraryResolver {
+    fn check(path: &str, pos: rhai::Position) -> Result<(), Box<EvalAltResult>> {
+        super::library::valid_name(path).map_err(|e| {
+            Box::new(EvalAltResult::ErrorInModule(
+                path.to_string(),
+                format!("import takes the name of a saved script: {e}").into(),
+                pos,
+            ))
+        })
+    }
+}
+
+impl rhai::ModuleResolver for LibraryResolver {
+    fn resolve(
+        &self,
+        engine: &Engine,
+        source: Option<&str>,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Result<rhai::Shared<rhai::Module>, Box<EvalAltResult>> {
+        Self::check(path, pos)?;
+        self.0.resolve(engine, source, path, pos)
+    }
+
+    fn resolve_ast(
+        &self,
+        engine: &Engine,
+        source: Option<&str>,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Option<Result<rhai::AST, Box<EvalAltResult>>> {
+        if let Err(e) = Self::check(path, pos) {
+            return Some(Err(e));
+        }
+        self.0.resolve_ast(engine, source, path, pos)
+    }
 }
 
 // -- decisions (the decision model) ---------------------------------------------
@@ -1560,7 +1602,31 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     engine.register_fn(
         "regex_replace",
         move |text: &str, pattern: &str, with: &str| -> Res<String> {
-            Ok(c.regex(pattern)?.replace_all(text, with).into_owned())
+            // Built match by match, so a result too big is refused before
+            // it fills the memory.
+            let re = c.regex(pattern)?;
+            let mut out = String::new();
+            let mut last = 0;
+            for caps in re.captures_iter(text) {
+                let m = caps.get(0).expect("group 0 is the match");
+                out.push_str(&text[last..m.start()]);
+                caps.expand(with, &mut out);
+                last = m.end();
+                if out.len() > MAX_TEXT {
+                    return Err(format!(
+                        "regex_replace would make a text of more than {MAX_TEXT} bytes"
+                    )
+                    .into());
+                }
+            }
+            out.push_str(&text[last..]);
+            if out.len() > MAX_TEXT {
+                return Err(format!(
+                    "regex_replace would make a text of more than {MAX_TEXT} bytes"
+                )
+                .into());
+            }
+            Ok(out)
         },
     );
     let c = ctx.clone();
@@ -1696,8 +1762,11 @@ fn maths_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     engine.register_fn("random", move |a: Dynamic, b: Dynamic| -> Res<Dynamic> {
         if let (Ok(a), Ok(b)) = (a.as_int(), b.as_int()) {
             let (lo, hi) = (a.min(b), a.max(b));
-            let span = (hi - lo) as u64 + 1;
-            return Ok(Dynamic::from_int(lo + (c.next() % span.max(1)) as INT));
+            // In i128: the span of the widest range doesn't fit an i64.
+            let span = (i128::from(hi) - i128::from(lo) + 1) as u128;
+            return Ok(Dynamic::from_int(
+                lo.wrapping_add((u128::from(c.next()) % span) as INT),
+            ));
         }
         let (a, b) = (n(&a)?, n(&b)?);
         Ok(Dynamic::from_float(a + (b - a) * c.unit()))

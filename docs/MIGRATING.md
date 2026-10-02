@@ -1,3 +1,18 @@
+# Upgrading to v3.7.5
+
+A debugging release: no setting or tool changes. A few things that were
+unsafe now refuse:
+
+| What | Before | Now |
+|---|---|---|
+| `decide setup={…}` from the chat | took `api_key_env`; a new `base_url` kept the saved key | no `api_key_env` (set it in the file); a new address or provider needs its key in the same call |
+| Script `import` | any path | the name of a saved script |
+| Script files on Windows | `\x` and `C:x` were joined to the scripts' folder | they follow the rules for absolute paths |
+| X11 screenshot of a minimized window | the pixels in its place | an error: bring it forward (`window action=focus`) |
+| `tools.manager = "list_changed"` over HTTP | as set | works as `"dispatch"` |
+| A request with `"id": null` | dropped | an `Invalid Request` error |
+| `computer-use-mcp tools` | every tool | the tools the model is served |
+
 # Upgrading to v3.7
 
 v3.7 turns on every token-saving setting and changes the wording of some

@@ -186,7 +186,22 @@ fn apply_overrides(common: &Common) -> impl Fn(&mut Config) + Send + 'static {
         if text_only {
             c.text_only = true;
         }
+        // Over HTTP the server can't tell the client its tool list changed:
+        // found tools are run through use_tool instead.
+        if !c.server.http_addr.is_empty()
+            && c.tools.manager == computer_use::config::ToolManager::ListChanged
+        {
+            c.tools.manager = computer_use::config::ToolManager::Dispatch;
+        }
     }
+}
+
+/// The tools a model is served with these settings: what `serve` lists
+/// before any `find_tools` (the tool manager's, saved scripts included).
+fn served_tools(common: &Common, store: &ConfigStore) -> Vec<tools::ToolDefinition> {
+    Engine::new(computer_use::mock::MockBackend::new(), store.clone())
+        .with_overrides(apply_overrides(common))
+        .tool_definitions()
 }
 
 fn load_store(common: &Common) -> Result<ConfigStore> {
@@ -266,7 +281,7 @@ fn run() -> Result<()> {
             let defs = if all {
                 tools::definitions()
             } else {
-                tools::definitions_from(&store.config)
+                served_tools(&cli.common, &store)
             };
             let json: Vec<Value> = defs
                 .iter()
@@ -342,6 +357,8 @@ fn config_cmd(common: &Common, action: &ConfigCmd) -> Result<()> {
             let cfg = shown(ConfigStore::load(Some(&path))?.config);
             match config::get_value(&cfg, key) {
                 Some(v) => println!("{v}"),
+                // A known setting with no value (`script.dir`, `audit.path`).
+                None if config::known_keys().iter().any(|k| k == key) => {}
                 None => anyhow::bail!("unknown setting `{key}` (see `config keys`)"),
             }
         }
@@ -407,9 +424,16 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     engine.arm();
 
     if !server_cfg.http_addr.is_empty() {
-        let token = std::env::var("COMPUTER_USE_HTTP_TOKEN")
-            .ok()
+        // --http-token first, then the environment, then the settings file.
+        let token = common
+            .http_token
+            .clone()
             .filter(|t| !t.is_empty())
+            .or_else(|| {
+                std::env::var("COMPUTER_USE_HTTP_TOKEN")
+                    .ok()
+                    .filter(|t| !t.is_empty())
+            })
             .or_else(|| Some(server_cfg.http_token.clone()).filter(|t| !t.is_empty()))
             .context(
                 "serving over HTTP needs a bearer token: set server.http_token, --http-token or $COMPUTER_USE_HTTP_TOKEN",
@@ -506,8 +530,8 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             println!("          ! unknown setting `{key}`");
         }
     }
+    let defs = served_tools(common, &store);
     let c = &store.config;
-    let defs = tools::definitions_from(c);
     println!(
         "tools:    {} exposed ({:?} descriptions, ~{} tokens/request)",
         defs.len(),

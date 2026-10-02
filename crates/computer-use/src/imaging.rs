@@ -327,8 +327,10 @@ pub fn widen(
     height: u32,
 ) -> (u32, u32, u32, u32) {
     let grow = |start: u32, len: u32, limit: u32| -> (u32, u32) {
+        // An element partly or wholly outside the picture is kept inside it.
+        let start = start.min(limit);
         let mut a = start.saturating_sub(pad);
-        let mut b = (start + len + pad).min(limit);
+        let mut b = start.saturating_add(len).saturating_add(pad).min(limit);
         let want = min.min(limit);
         if b - a < want {
             let extra = want - (b - a);
@@ -984,6 +986,14 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn widen_keeps_rectangles_outside_the_picture_inside_it() {
+        let r = widen((300, 10, 50, 50), 8, 0, 200, 200);
+        assert!(r.0 + r.2 <= 200, "{r:?}");
+        let r = widen((10, 10, u32::MAX, 20), 8, 0, 200, 200);
+        assert_eq!((r.0, r.2), (2, 198));
+    }
 
     #[test]
     fn a_huge_brush_paints_quickly_and_only_the_picture() {

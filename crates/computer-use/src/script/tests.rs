@@ -297,6 +297,85 @@ fn a_replace_that_would_fill_the_memory_is_refused() {
 }
 
 #[test]
+fn a_regex_replace_that_would_fill_the_memory_is_refused() {
+    let dir = library("regex-replace");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"
+        let big = "a";
+        for i in 0..20 { big += big; }
+        regex_replace(big, "", big)
+        "#,
+    );
+    assert!(
+        out.is_error && out.text.contains("regex_replace would make a text"),
+        "{}",
+        out.text
+    );
+    let out = run(&mut e, r#"regex_replace("a1b22", "(\\d+)", "<$1>")"#);
+    assert!(out.text.contains("a<1>b<22>"), "{}", out.text);
+}
+
+#[test]
+fn import_takes_saved_scripts_only() {
+    let dir = library("import");
+    let outside = std::env::temp_dir().join(format!("cu-script-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        outside.join("secret.rhai"),
+        "export const TOKEN = \"top-secret-42\";",
+    )
+    .unwrap();
+    let mut e = engine_with(&dir, |c| c.script.files = ScriptFiles::None);
+    let abs = outside
+        .join("secret")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let out = run(&mut e, &format!("import \"{abs}\" as m; m::TOKEN"));
+    assert!(
+        out.is_error && !out.text.contains("top-secret-42"),
+        "{}",
+        out.text
+    );
+    let out = run(
+        &mut e,
+        &format!(
+            "import \"../{}/secret\" as m; m::TOKEN",
+            outside.file_name().unwrap().to_string_lossy()
+        ),
+    );
+    assert!(
+        out.is_error && !out.text.contains("top-secret-42"),
+        "{}",
+        out.text
+    );
+    // A saved library still imports by name.
+    let saved = e.call_tool(
+        "script",
+        json!({"save": "shapes", "code": "fn twice(x) { x * 2 }", "description": "d"}),
+    );
+    assert!(!saved.is_error, "{}", saved.text);
+    let out = run(&mut e, "import \"shapes\" as s; s::twice(21)");
+    assert!(out.text.contains("Result: 42"), "{}", out.text);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn random_takes_the_widest_range() {
+    let dir = library("random");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        "let lo = -9223372036854775807 - 1; let hi = 9223372036854775807; let r = random(lo, hi); r >= lo && r <= hi",
+    );
+    assert!(out.text.contains("Result: true"), "{}", out.text);
+    let out = run(&mut e, "let r = random(3, 5); r >= 3 && r <= 5");
+    assert!(out.text.contains("Result: true"), "{}", out.text);
+}
+
+#[test]
 fn memory_and_text_helpers() {
     let dir = library("memory");
     let mut e = engine_with(&dir, |_| {});

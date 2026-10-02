@@ -338,6 +338,13 @@ pub struct Engine<B: Backend> {
     sleep: Box<dyn Fn(Duration) + Send>,
 }
 
+/// What the model had seen before a batch or a script ran.
+pub(super) struct SeenBefore {
+    known: HashMap<u32, Option<Screen>>,
+    memory: HashMap<u32, crate::screens::View>,
+    hints: HashSet<&'static str>,
+}
+
 /// Host-level settings forced on top of the config file.
 type ConfigOverride = Box<dyn Fn(&mut crate::config::Config) + Send>;
 
@@ -1667,8 +1674,14 @@ impl<B: Backend> Engine<B> {
                 // change isn't its own doing).
                 if quiet_volatile {
                     let d = k.view.diff(&st.nodes);
-                    let changed: HashSet<u64> =
-                        d.changed.iter().map(|(p, _)| st.nodes[*p].key).collect();
+                    // The focused element changes with the model's own keys.
+                    let changed: HashSet<u64> = d
+                        .changed
+                        .iter()
+                        .map(|(p, _)| &st.nodes[*p])
+                        .filter(|n| !n.states.focused)
+                        .map(|n| n.key)
+                        .collect();
                     st.volatile.retain(|key, _| changed.contains(key));
                     for key in changed {
                         if Some(key) != target_key {
@@ -2757,14 +2770,24 @@ impl<B: Backend> Engine<B> {
         if dispatch {
             out.push_str("Run one with use_tool(name, arguments).");
         } else {
-            for d in &found {
-                self.active_tools.insert(crate::tools::category_of(&d.name));
+            // Base tools are listed already: no category joins for them.
+            let added: Vec<&str> = found
+                .iter()
+                .copied()
+                .filter(hidden)
+                .map(|d| &*d.name)
+                .collect();
+            for name in &added {
+                self.active_tools.insert(crate::tools::category_of(name));
             }
-            let names: Vec<&str> = found.iter().map(|d| &*d.name).collect();
-            out.push_str(&format!(
-                "Added to your tools: {} (call them directly).",
-                names.join(", ")
-            ));
+            if added.is_empty() {
+                out.push_str("Already in your tools (call them directly).");
+            } else {
+                out.push_str(&format!(
+                    "Added to your tools: {} (call them directly).",
+                    added.join(", ")
+                ));
+            }
         }
         ToolOutput::text(out)
     }
@@ -6623,14 +6646,27 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn known_screens(&self) -> HashMap<u32, Option<Screen>> {
-        self.states
-            .iter()
-            .map(|(pid, st)| (*pid, st.known.clone()))
-            .collect()
+    fn known_screens(&self) -> SeenBefore {
+        SeenBefore {
+            known: self
+                .states
+                .iter()
+                .map(|(pid, st)| (*pid, st.known.clone()))
+                .collect(),
+            memory: self.memory.views(),
+            hints: self.hints.0.borrow().clone(),
+        }
     }
 
-    fn restore_known(&mut self, seen_before: HashMap<u32, Option<Screen>>) {
+    fn restore_known(&mut self, seen: SeenBefore) {
+        let SeenBefore {
+            known: seen_before,
+            memory,
+            hints,
+        } = seen;
+        *self.hints.0.borrow_mut() = hints;
+        self.memory.restore_views(memory);
+        let mut refile = Vec::new();
         for (pid, st) in self.states.iter_mut() {
             let before = seen_before.get(pid).cloned().flatten();
             st.known = match (before, st.known.take()) {
@@ -6642,12 +6678,23 @@ impl<B: Backend> Engine<B> {
                 }
                 // A screen reached meanwhile: its tree hasn't been shown, so
                 // the next look sends all of it.
-                (_, Some(mut now)) => {
+                (before, Some(mut now)) => {
+                    refile.extend(before);
                     now.view = crate::screens::View::default();
                     Some(now)
                 }
                 (before, None) => before,
             };
+        }
+        let cache = self.store.config.cache.clone();
+        if cache.enabled {
+            for s in refile {
+                self.memory.remember(
+                    s,
+                    cache.max_screens,
+                    cache.max_memory_kb.saturating_mul(1024),
+                );
+            }
         }
     }
 
@@ -7101,12 +7148,16 @@ impl<B: Backend> Engine<B> {
         let mut out = String::new();
         let mut others = 0;
         for (i, line) in text.lines().enumerate() {
+            // render()'s note on elements that keep changing: not an element.
+            let restless = line.contains(" element(s) that keep changing on their own");
             let changed = line
                 .strip_prefix("~ ")
+                .filter(|_| !restless)
                 .and_then(|l| l.split_whitespace().next())
                 .and_then(|t| t.parse::<u32>().ok());
             let removed = line.starts_with("- ");
             let shown = i == 0
+                || restless
                 || line.starts_with("+ ")
                 || line.starts_with("in ")
                 || changed.is_some_and(|x| keep.contains(&x))
@@ -11417,6 +11468,11 @@ mod tests {
         cfg.tools.manager = ToolManager::ListChanged;
         e.set_config(ConfigStore::in_memory(cfg));
         assert!(!names(&mut e).contains(&"use_tool".to_string()));
+        // A base tool asked for by name changes nothing.
+        let before = e.tools_signature();
+        let out = e.call_tool("find_tools", serde_json::json!({"name": "click"}));
+        assert!(out.text.contains("Already in your tools"), "{}", out.text);
+        assert_eq!(e.tools_signature(), before);
         let out = e.call_tool("find_tools", serde_json::json!({"category": "design"}));
         assert!(out.text.contains("Added to your tools"), "{}", out.text);
         let now = names(&mut e);
@@ -12561,5 +12617,150 @@ mod tests {
         let mut e = dialog_engine(off);
         state_of(&mut e, serde_json::json!({}));
         assert!(e.take_result_meta().is_none());
+    }
+
+    // -- what batches and scripts saw stays theirs ------------------------
+    #[test]
+    fn a_batch_leaves_no_unseen_view_in_screen_memory() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({})); // the model sees page A
+        let next = index_named(&e, 7, "Next");
+        // The document changes; the model hasn't looked.
+        e.backend_mut()
+            .app_mut(7)
+            .unwrap()
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .value = Some("Edited".into());
+        // A batch looks (the batch shows one line per step, never the tree),
+        // then moves on to page B and looks there.
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                {"tool": "wait_for", "arguments": {"name": "Bold"}},
+                {"tool": "get_app_state", "arguments": {}},
+                {"tool": "click", "arguments": {"element_index": next}},
+                {"tool": "get_app_state", "arguments": {}},
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            !out.text.contains("Edited"),
+            "the batch never shows the tree"
+        );
+        // Page A comes back, still edited.
+        let mut edited = page_a(7);
+        edited
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .value = Some("Edited".into());
+        e.backend_mut().on_press.insert(30, edited);
+        state_of(&mut e, serde_json::json!({}));
+        press_named(&mut e, 7, "Back");
+        let out = state_of(&mut e, serde_json::json!({}));
+        // The model never saw "Edited": it must be reported.
+        assert!(
+            out.text.contains("Edited"),
+            "model told page A is as it saw it:\n{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn batch_steps_dont_use_up_first_time_explanations() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({}));
+        e.backend_mut()
+            .app_mut(7)
+            .unwrap()
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .value = Some("Edited".into());
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                {"tool": "wait_for", "arguments": {"name": "Bold"}},
+                {"tool": "get_app_state", "arguments": {}},
+            ]}),
+        );
+        assert!(!out.text.contains("Changes since"), "{}", out.text);
+        // The model's first diff: the intro in full.
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("Edited"), "{}", out.text);
+        assert!(out.text.contains(tree::DIFF_INTRO), "{}", out.text);
+    }
+
+    #[test]
+    fn the_restless_note_is_no_change_elsewhere() {
+        let mut e = engine();
+        state_of(&mut e, serde_json::json!({}));
+        // What render() appends for 2 elements that keep changing (indices 7, 8)
+        // after the one relevant change.
+        let text = "Changes:\n~ 4 text area \"Document\" value=\"x\"  (was: …)\n~ 12 element(s) that keep changing on their own left out: 7–8\n";
+        let doc = index_named(&e, 4242, "Document");
+        e.target = Some((4242, doc));
+        let (shown, others) = e.relevant_changes(4242, text);
+        assert_eq!(others, 0, "the note is not a change elsewhere:\n{shown}");
+    }
+
+    #[test]
+    fn a_batch_doesnt_make_a_never_seen_screen_count_as_seen() {
+        let mut e = nav_engine(false);
+        state_of(&mut e, serde_json::json!({})); // page A
+        let next = index_named(&e, 7, "Next");
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                {"tool": "click", "arguments": {"element_index": next}},
+                {"tool": "get_app_state", "arguments": {}},
+                {"tool": "click", "arguments": {"name": "Back"}},
+                {"tool": "get_app_state", "arguments": {}},
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(!out.text.contains("Result 0"), "{}", out.text);
+        press_named(&mut e, 7, "Next");
+        let out = state_of(&mut e, serde_json::json!({}));
+        // The model has never been shown page B's tree.
+        assert!(
+            out.text.contains("Result 0"),
+            "page B said to be known:\n{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn own_typing_is_never_taken_for_a_restless_element() {
+        let mut e = engine();
+        assert!(e.store().config.tree.quiet_volatile, "on by default");
+        e.backend_mut()
+            .app_mut(4242)
+            .unwrap()
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .states
+            .focused = true;
+        state_of(&mut e, serde_json::json!({}));
+        let mut last = String::new();
+        for t in ["1", "2", "3", "4"] {
+            let out = e.call_tool(
+                "type_text",
+                serde_json::json!({"app": "TextEdit", "text": t}),
+            );
+            assert!(!out.is_error, "{}", out.text);
+            last = out.text;
+        }
+        assert!(
+            last.contains("Hello1234"),
+            "the model's own typing hidden:\n{last}"
+        );
     }
 }

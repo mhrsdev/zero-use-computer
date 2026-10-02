@@ -36,7 +36,16 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
         None => PathBuf::from(path),
     };
     let up = expanded.components().any(|c| c == Component::ParentDir);
-    if expanded.is_relative() {
+    // Relative only in name on Windows: `\Windows\x` (rooted) and `C:x`
+    // (a drive's current folder) would leave the scripts' folder when
+    // joined to it, so they follow the rules for absolute paths.
+    let plain = expanded.components().all(|c| {
+        matches!(
+            c,
+            Component::Normal(_) | Component::CurDir | Component::ParentDir
+        )
+    });
+    if expanded.is_relative() && plain {
         if up {
             return Err(format!(
                 "\"{path}\" leaves the scripts' folder: relative paths stay in {}",
@@ -496,4 +505,44 @@ pub fn to_csv(rows: &[Value]) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(library: &str) -> Env {
+        Env {
+            files: ScriptFiles::Read,
+            web: false,
+            library: library.into(),
+            max_seconds: 5,
+            stop: Default::default(),
+            app_tools: Vec::new(),
+            decision: Default::default(),
+        }
+    }
+
+    #[test]
+    fn relative_paths_stay_in_the_scripts_folder() {
+        let e = env("lib");
+        let ws = e.workspace();
+        assert_eq!(resolve(&e, "a/b.txt", true), Ok(ws.join("a/b.txt")));
+        assert!(resolve(&e, "../b.txt", true).is_err());
+    }
+
+    /// `\Windows\x` and `C:x` are "relative" on Windows, but joined to the
+    /// scripts' folder they would leave it.
+    #[cfg(windows)]
+    #[test]
+    fn rooted_relative_paths_are_not_written_to() {
+        let e = env(r"C:\lib");
+        for p in [r"\Windows\evil.txt", r"C:evil.txt"] {
+            let r = resolve(&e, p, true);
+            assert!(
+                r.as_ref().is_err() || r.as_ref().unwrap().starts_with(r"C:\lib\files"),
+                "{p} -> {r:?}"
+            );
+        }
+    }
 }
