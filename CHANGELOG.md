@@ -2,10 +2,11 @@
 
 ## v3.7.0
 
-Fewer tokens on every request, and less work done twice. The tool list a
-model gets with every request is about half what it was, without taking
-any tool away: the tools most tasks don't need are found when they are
-needed. Upgrading: [docs/MIGRATING.md](docs/MIGRATING.md#upgrading-to-v37).
+Fewer tokens on every request, less work done twice, and every
+token-saving setting on by default. The tool list a model gets with
+every request is less than half what it was, without taking any tool
+away: the tools most tasks don't need are found when they are needed.
+Upgrading: [docs/MIGRATING.md](docs/MIGRATING.md#upgrading-to-v37).
 
 Measured (scripted, three runs each, every figure an estimate; the
 releases run as they ship, over MCP, with their own skills:
@@ -13,14 +14,31 @@ releases run as they ship, over MCP, with their own skills:
 
 | | v0.1.0 | v3.0.0 | v3.6.0 | v3.7.0 |
 |---|---|---|---|---|
-| sent with every request (instructions + skills + tools) | 4,063 | 6,718 | 7,783 | **5,099** |
-| of it, the tool definitions | 1,834 (22 tools) | 4,363 (24) | 4,990 (25) | **2,328** (17 listed) |
-| input over form, table, orders and long (no cache) | 248,228 | 349,873 | 367,006 | **262,170** |
+| sent with every request (instructions + skills + tools) | 4,063 | 6,718 | 7,783 | **4,938** |
+| of it, the tool definitions | 1,834 (22 tools) | 4,363 (24) | 4,990 (25) | **2,167** (17 listed) |
+| input over form, table, orders and long (no cache) | 248,228 | 349,873 | 367,006 | **250,701** |
 
-Against v3.6.0: −34% per request, −29% over those tasks (−27% with
-`batch`); against v3.0.0 −24% and −25%. v0.1.0 had fewer tools (no
-drawing, design, 3D, `locate` or scripts: it can't do the two canvas
-tasks) and sends 6% less over those four.
+Against v3.6.0: −37% per request, −32% over those tasks (−31% over all
+six with `batch`); against v3.0.0 −26% and −28%. v0.1.0 had a third of
+the tools (no drawing, design, 3D, `locate` or scripts: it can't do the
+two canvas tasks) and sends about as much (+1% for v3.7).
+
+Against Codex's behaviour, simulated on this server (a screenshot with
+every look, no screen memory, no change report, every tool listed; not a
+run of Codex): over five tasks −33% input, 5 screenshots instead of 11,
+and −50% with `batch` ([bench/results/v3.7-codex](bench/results/v3.7-codex/compare.md)).
+
+### On by default
+
+What v3.6 added behind settings is on now; each can be turned off:
+lean tool schemas (`tools.descriptions = "lean"`), action reports of the
+changes around what was acted on (`tree.report = "relevant"`), elements
+that keep changing summed up (`tree.quiet_volatile`), fewer automatic
+pictures while the model doesn't use pixels (`screenshot.adaptive`),
+`locate` without its picture (`screenshot.locate_picture = false`), blind
+areas read and watched (`ocr.blind_regions`), paint steps when asked
+(`tools.design_steps = "asked"`) and `_meta` for hosts that trim their
+context (`server.result_meta`).
 
 ### The tool manager, on by default (`tools.manager = "dispatch"`)
 
@@ -89,7 +107,20 @@ Time (tools only, scripted): orders 1.5 s → 1.2 s, board 1.5 s → 1.2 s
   its own instructions and skills, and reports the fixed prefix by part.
 - `bench/compare.py` puts runs side by side, section by section.
 
+### Fixes
+
+- Text read off the screen that is the on-screen indicator's own label
+  ("Zero is thinking…", even misread) is never taken for the app's text:
+  where a capture catches the indicator, blind areas read it.
+- A just-started indicator helper gets up to a second to hide before the
+  first picture (then 150 ms, as before).
+
 Costs, published with the gains:
+
+- Blind areas on by default read canvases and painted text on every look:
+  with `batch`, the six tasks take 15.7 s of tool time instead of 13.7 s
+  (`ocr.blind_regions = false` for the old speed). Step by step, 11.1 s
+  against 11.0 s.
 
 - A tool the model doesn't see takes one `find_tools` call the first time
   (about 155 tokens of result): shapes and board need 4–5 calls instead

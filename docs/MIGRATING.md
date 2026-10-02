@@ -1,12 +1,21 @@
 # Upgrading to v3.7
 
-v3.7 changes two defaults and the wording of some results. Nothing is
-removed: every call that worked in v3.6 still works.
+v3.7 turns on every token-saving setting and changes the wording of some
+results. Nothing is removed: every call that worked in v3.6 still works,
+and every row below has a setting that brings the old way back.
 
 | What changed | Before | Now | The old way |
 |---|---|---|---|
 | The tool list | every tool | the base tools, `find_tools` and `use_tool`; the others found and run through `use_tool` (a direct call still works where a client allows it) | `tools.manager = "off"` |
-| `decide` with compact descriptions | always listed | listed once a decision model is set up (it can always be called) | `tools.descriptions = "full"` |
+| Tool schemas | compact | lean: nested objects as their keys, no `window` (still accepted), no defaults | `tools.descriptions = "compact"` |
+| `decide` | always listed | listed once a decision model is set up (it can always be called) | `tools.descriptions = "full"` |
+| An action's report | every change | the changes around what it acted on, new windows, added elements, and how many others | `tree.report = "full"` |
+| Elements that keep changing (clocks, spinners) | listed each time | summed up in a line after a few reports | `tree.quiet_volatile = false` |
+| Automatic pictures | as before | held back for a well-described window while the model hasn't used pixels there | `screenshot.adaptive = false` |
+| `locate` | with a picture of the places | the places only (`picture: true` asks) | `screenshot.locate_picture = true` |
+| Canvases and painted text next to a full toolbar | only through `ocr=true` | read and watched on every look (`ocr text` elements) | `ocr.blind_regions = false` |
+| `design` | the paint steps with every answer | how many; `show.steps` lists them | `tools.design_steps = "always"` |
+| Tool results' `_meta` | none | which earlier results each one repeats | `server.result_meta = false` |
 | A diff's intro, the third time on | `Changes (+ added, ~ changed, - removed):` | `Changes:` | `tree.brief_repeats = false` |
 | Report footers, after the first | `…; get_app_state shows them` | the count only | `tree.brief_repeats = false` |
 | draw preview, loupe, zoomed screenshot notes, after the first | in full | short | `tree.brief_repeats = false` |
