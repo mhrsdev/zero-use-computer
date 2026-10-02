@@ -13,7 +13,7 @@ use crate::script::{self, Msg, Outcome, Request, Saved};
 struct ScriptImage {
     image: EncodedImage,
     pending: Vec<PendingImage>,
-    shot: Option<(PixelSig, CoordMap)>,
+    shot: Option<ScreenShot>,
 }
 
 /// Pictures a script can still show (older ones are let go).
@@ -24,8 +24,33 @@ const GRACE: Duration = Duration::from_secs(10);
 
 impl<B: Backend> Engine<B> {
     /// The tools to offer: the built-in ones the settings allow, and saved
-    /// scripts as tools of their own.
+    /// scripts as tools of their own; with the tool manager on, the base
+    /// tools, the categories found so far ("list_changed") and the
+    /// manager's own tools.
     pub fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        use crate::config::ToolManager;
+        let all = self.all_tool_definitions();
+        let manager = self.store.config.tools.manager;
+        if manager == ToolManager::Off {
+            return all;
+        }
+        let mut shown: Vec<ToolDefinition> = all
+            .into_iter()
+            .filter(|d| {
+                crate::tools::BASE_TOOLS.contains(&&*d.name)
+                    || self
+                        .active_tools
+                        .contains(crate::tools::category_of(&d.name))
+            })
+            .collect();
+        shown.extend(crate::tools::manager_definitions(
+            manager == ToolManager::Dispatch,
+        ));
+        shown
+    }
+
+    /// Every tool the settings allow, the manager aside.
+    pub(super) fn all_tool_definitions(&mut self) -> Vec<ToolDefinition> {
         let mut defs = crate::tools::definitions_from(&self.store.config);
         let cfg = &self.store.config;
         if !(cfg.script.saved_as_tools && cfg.tools.is_enabled("script")) {
@@ -53,13 +78,17 @@ impl<B: Backend> Engine<B> {
     /// Whether `name` is a tool: a built-in one (even if switched off in
     /// the settings) or a saved script offered as a tool.
     pub fn has_tool(&mut self, name: &str) -> bool {
-        BUILTIN.contains(&name) || self.saved_tool(name).is_some()
+        BUILTIN.contains(&name)
+            || self.saved_tool(name).is_some()
+            || (crate::tools::MANAGER_TOOLS.contains(&name)
+                && self.store.config.tools.manager != crate::config::ToolManager::Off)
     }
 
     /// The saved script a tool call names, when saved scripts are tools.
     pub(super) fn saved_tool(&mut self, name: &str) -> Option<Saved> {
         let cfg = &self.store.config;
         if BUILTIN.contains(&name)
+            || crate::tools::MANAGER_TOOLS.contains(&name)
             || !cfg.script.saved_as_tools
             || !cfg.tools.is_enabled("script")
             || !cfg.tools.is_enabled(name)

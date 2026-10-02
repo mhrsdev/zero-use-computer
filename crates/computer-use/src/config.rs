@@ -101,6 +101,16 @@ pub struct ScreenshotConfig {
     pub region_padding: u32,
     /// The part sent is at least this many pixels on each side, for context.
     pub region_min_size: u32,
+    /// Attach automatic screenshots by how the model works in an app: once
+    /// it has looked a few times without ever using pixels there (no x/y,
+    /// no screenshot asked for), well-described windows come without one
+    /// (`screenshot=true` still gets one).
+    pub adaptive: bool,
+    /// `locate` sends the window with the places it found numbered.
+    pub locate_picture: bool,
+    /// When no screenshot is attached, a small strip of the buttons that
+    /// have no name, each numbered with its element_index (experimental).
+    pub icon_sprite: bool,
 }
 
 /// How much of the window a follow-up screenshot covers.
@@ -130,6 +140,9 @@ impl Default for ScreenshotConfig {
             region_max_ratio: 0.5,
             region_padding: 24,
             region_min_size: 200,
+            adaptive: false,
+            locate_picture: true,
+            icon_sprite: false,
         }
     }
 }
@@ -169,6 +182,32 @@ pub struct TreeConfig {
     /// Explanations (what a diff or a partial screenshot means) in full the
     /// first time and in a few words after that. false = in full every time.
     pub brief_repeats: bool,
+    /// Say each thing once, losing nothing: look-alike siblings as records
+    /// (roles once, one line a record), a table's cells a row a line,
+    /// flags and actions the role implies left out, many removed elements
+    /// as ranges of indices, added ones under their parent, a short header
+    /// when the window is as before, no echo of a value just set.
+    pub compact: bool,
+    /// What an action's result says of what changed (see [`Report`]).
+    pub report: Report,
+    /// Elements that change on their own (clocks, progress, spinners):
+    /// after a few reports in a row, summed up in one line instead of
+    /// listed every time.
+    pub quiet_volatile: bool,
+}
+
+/// How much of what changed an action's result reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Report {
+    /// Every change, up to `report_changes_max_lines`. Default.
+    #[default]
+    Full,
+    /// Changes in and around what the action acted on, new windows and
+    /// added elements; how many others there are.
+    Relevant,
+    /// How many changes there are, and a new screen or window.
+    Brief,
 }
 
 /// How much a tree over the token budget is shortened.
@@ -204,6 +243,9 @@ impl Default for TreeConfig {
             summarize: Summarize::Normal,
             fold_keep: 5,
             brief_repeats: true,
+            compact: true,
+            report: Report::Full,
+            quiet_volatile: false,
         }
     }
 }
@@ -218,9 +260,56 @@ pub enum DescriptionStyle {
     /// list is sent with every model request, so this saves the most tokens.
     #[default]
     Compact,
+    /// Compact, and lighter schemas still: the keys of nested objects (a
+    /// design's layers, a drawing's strokes) listed by name instead of
+    /// typed one by one, no `window` (still accepted) and no defaults;
+    /// `decide` only once a decision model is set up.
+    Lean,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// Which tools the model sees at first ([tools] manager).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolManager {
+    /// Every tool, always. Default.
+    #[default]
+    Off,
+    /// The base tools and `find_tools`; the others are found by name or
+    /// category and run through `use_tool`. The tool list never changes,
+    /// so a client's prompt cache keeps working, with any client.
+    Dispatch,
+    /// The base tools and `find_tools`; a category it finds is added to the
+    /// tool list (the client is told the list changed) and stays.
+    ListChanged,
+}
+
+/// A ready-made set of tools ([tools] preset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPreset {
+    /// Every tool the other settings allow. Default.
+    #[default]
+    Full,
+    /// A small fixed set for smaller models: look, find, wait, click, set,
+    /// type, keys, scroll, list and launch apps.
+    Small,
+}
+
+/// The tools of [`ToolPreset::Small`].
+pub const SMALL_TOOLS: &[&str] = &[
+    "list_apps",
+    "launch_app",
+    "get_app_state",
+    "find_element",
+    "wait_for",
+    "click",
+    "set_value",
+    "type_text",
+    "press_key",
+    "scroll",
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
     /// Tools to hide from the model entirely (e.g. ["drag", "batch"]).
@@ -228,6 +317,45 @@ pub struct ToolsConfig {
     /// If non-empty, ONLY these tools are exposed.
     pub enabled: Vec<String>,
     pub descriptions: DescriptionStyle,
+    /// Which tools the model sees at first (see [`ToolManager`]).
+    pub manager: ToolManager,
+    /// A ready-made set of tools (see [`ToolPreset`]); `enabled` wins.
+    pub preset: ToolPreset,
+    /// A call without `app` acts on the app of the last call that named
+    /// one, and `app` isn't required in the tools' schemas.
+    pub default_app: bool,
+    /// launch_app answers with the app's first state (its tree, as
+    /// get_app_state would), saving the call that always follows.
+    pub launch_look: bool,
+    /// When `design` lists the steps to paint a design (see
+    /// [`DesignSteps`]).
+    pub design_steps: DesignSteps,
+}
+
+/// When `design` lists the steps to paint a design ([tools] design_steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DesignSteps {
+    /// With every answer (default).
+    #[default]
+    Always,
+    /// When asked (show steps=true); otherwise only how many there are.
+    Asked,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            disabled: Vec::new(),
+            enabled: Vec::new(),
+            descriptions: DescriptionStyle::default(),
+            manager: ToolManager::default(),
+            preset: ToolPreset::default(),
+            default_app: false,
+            launch_look: true,
+            design_steps: DesignSteps::Always,
+        }
+    }
 }
 
 impl ToolsConfig {
@@ -235,7 +363,10 @@ impl ToolsConfig {
         if self.disabled.iter().any(|d| d == name) {
             return false;
         }
-        self.enabled.is_empty() || self.enabled.iter().any(|e| e == name)
+        if !self.enabled.is_empty() {
+            return self.enabled.iter().any(|e| e == name);
+        }
+        self.preset == ToolPreset::Full || SMALL_TOOLS.contains(&name)
     }
 }
 
@@ -477,6 +608,10 @@ pub struct OcrConfig {
     pub max_lines: usize,
     /// The Tesseract program.
     pub tesseract_path: String,
+    /// Find the areas of a window the tree says nothing about (a canvas
+    /// next to a full toolbar), read their text, and check their pixels
+    /// on every look, however many elements the rest of the window has.
+    pub blind_regions: bool,
 }
 
 impl Default for OcrConfig {
@@ -489,6 +624,7 @@ impl Default for OcrConfig {
             min_confidence: 0.4,
             max_lines: 150,
             tesseract_path: "tesseract".into(),
+            blind_regions: false,
         }
     }
 }
@@ -671,6 +807,11 @@ pub struct CacheConfig {
     /// Reuse a window list / tree snapshot this recent (ms) when no action
     /// ran in between. 0 turns it off.
     pub snapshot_ttl_ms: u64,
+    /// After this many (estimated) tokens of results since an app's tree
+    /// was last sent whole, the next get_app_state sends it whole again,
+    /// with a picture: in a long conversation the model (or a host that
+    /// trims its context) may have lost what diffs refer to. 0 = never.
+    pub rebase_after_tokens: usize,
 }
 
 impl Default for CacheConfig {
@@ -684,6 +825,7 @@ impl Default for CacheConfig {
             pixel_grid: 64,
             pixel_tolerance: 2,
             snapshot_ttl_ms: 200,
+            rebase_after_tokens: 0,
         }
     }
 }
@@ -718,6 +860,8 @@ pub struct TimingConfig {
     /// Default wait_for timeout and poll interval.
     pub wait_timeout_ms: u64,
     pub wait_poll_ms: u64,
+    /// How long an action with `expect` waits for what it expects to show.
+    pub expect_wait_ms: u64,
 }
 
 impl Default for TimingConfig {
@@ -731,6 +875,7 @@ impl Default for TimingConfig {
             app_cache_ms: 1500,
             wait_timeout_ms: 10_000,
             wait_poll_ms: 400,
+            expect_wait_ms: 2000,
         }
     }
 }
@@ -798,6 +943,25 @@ pub struct ServerConfig {
     /// Bearer token required on the HTTP endpoint (the server refuses to
     /// start over HTTP without one).
     pub http_token: String,
+    /// The server's MCP instructions: "full", "short" (the loop and the
+    /// safety rules in a few lines, for clients that load the skills) or
+    /// "off".
+    pub instructions: Instructions,
+    /// Add `_meta` to tool results for hosts that trim their context: a
+    /// number for each result and the earlier ones it repeats whole
+    /// (`zero-use-computer/supersedes`) or whose pictures it replaces
+    /// (`zero-use-computer/supersedes-images`).
+    pub result_meta: bool,
+}
+
+/// How much the MCP `instructions` say ([server] instructions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Instructions {
+    #[default]
+    Full,
+    Short,
+    Off,
 }
 
 impl Default for ServerConfig {
@@ -806,6 +970,8 @@ impl Default for ServerConfig {
             log: "warn".into(),
             http_addr: String::new(),
             http_token: String::new(),
+            instructions: Instructions::Full,
+            result_meta: false,
         }
     }
 }

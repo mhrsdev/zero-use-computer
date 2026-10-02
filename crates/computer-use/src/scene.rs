@@ -701,8 +701,13 @@ impl Scene {
     /// "seat box 0.5 x 0.5 x 0.05 at (0, 0, 0.45), z 0.425 to 0.475,
     /// #8B5A2B; …"
     pub fn listing(&self) -> String {
-        let parts: Vec<String> = self
-            .objects
+        let parts: Vec<String> = self.items().into_iter().map(|(_, line)| line).collect();
+        parts.join("; ")
+    }
+
+    /// Each object's id and its line in the listing, in order.
+    pub fn items(&self) -> Vec<(String, String)> {
+        self.objects
             .iter()
             .map(|o| {
                 let (lo, hi) = o.bounds();
@@ -720,7 +725,7 @@ impl Scene {
                 } else {
                     String::new()
                 };
-                format!(
+                let line = format!(
                     "{} {} {size} at ({}){turned}, z {} to {}, {}",
                     o.id,
                     shape_name(o.shape),
@@ -728,10 +733,10 @@ impl Scene {
                     num(lo[2]),
                     num(hi[2]),
                     hex(o.color)
-                )
+                );
+                (o.id.clone(), line)
             })
-            .collect();
-        parts.join("; ")
+            .collect()
     }
 
     /// What looks wrong: parts that float, sink or run into each other.

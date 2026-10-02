@@ -107,6 +107,17 @@ Expressions:
   centred, not quite symmetric, hard-to-read text) and steps to paint.
   Paint step n with `{"design": "name", "step": n, "fill": w}`, or
   `export: "svg"`/`"png"` to import a temporary file.
+- A layer (and a stroke, and a scene's object) can be a line, the way the
+  listing shows it: `"sun ellipse 80 20 12 12 fill #ffcc00"`, `"title
+  text \"Hi\" at 50 10 size 8 align center"`, `"box rect 10 10 50 30 4
+  fill none line #000000 2"`; `change: ["sun fill #ff0000"]`; strokes
+  `"rect 10 10 50 30"`, `"design logo step 2 fill 8"`; objects `"seat box
+  0.5 0.5 0.05 at 0 0 0.45 color #884422"`.
+- After the first answer, only what changed comes back (layers changed,
+  added, removed, the new order; "as before"), and no picture when it
+  looks the same. A call that changes nothing shows everything again.
+  With `tools.design_steps = "asked"`, the paint steps come with `show:
+  {"steps": true}`.
 - `scene(name, add=[...])` does the same for 3D: solids with size, centre
   and rotation, seen from the front, right, top and in perspective, with
   checks for parts that float, sink or run into each other.

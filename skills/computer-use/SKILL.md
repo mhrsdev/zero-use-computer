@@ -16,16 +16,25 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
 
 1. `get_app_state(app)`: the app's numbered tree (`<index> <role> "<name>"
    [flags] [actions]`), plus a screenshot when it adds something.
+   Look-alike siblings come as records: `7 × button:` then `2 "Select" ·
+   3 "Pen"`, or `3 × list item › text:` then `10 (selected) › 11
+   "General"`; a table's cells a row a line under its column names. Each
+   number is an element_index; the header gives the roles. A text field
+   is editable unless it says read-only.
 2. Act by `element_index`: `click`, `set_value` (fields, sliders,
    checkboxes; prefer it over typing), `type_text` (`\n` presses Return),
    `press_key` (`"Return"`, `"cmd+s"`: Cmd on a Mac, Ctrl elsewhere),
    `perform_secondary_action` (an entry of `actions=[…]`), `select_text`,
-   `scroll`, `drag`, `draw` (shapes and curves with the mouse held down).
+   `scroll`, `drag`, `draw`. `click(name="Save")` works when one element
+   has that name.
 3. Read the "state after the action" each action returns; call
-   `get_app_state` only when you need more. Later calls return a diff.
+   `get_app_state` only when you need more. Later calls return a diff, or
+   one line when nothing changed.
 
-`list_apps` finds an app; `launch_app` opens one by name, or a web address
-(`https://…`) in the default browser.
+`list_apps` finds an app; `launch_app` opens one by name (and returns its
+first state), or a web address (`https://…`) in the default browser. If
+`find_tools` is in your tools, the others (design, windows, scripts,
+clipboard…) are found with it.
 
 ## Rules
 
@@ -34,6 +43,8 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
   `get_app_state` and use the new numbers.
 - "Nothing on screen changed" or "the field doesn't show the new text yet":
   look before acting again. Never type the same text twice without looking.
+- "The picture changed … where the tree reports no change": trust the
+  screenshot there.
 - Input refused, app not brought to the front, user busy: don't work around
   it; wait or ask the user.
 - The user stopped the agent (stop key): stop and ask how to go on. The stop
@@ -44,66 +55,52 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
 
 Every result stays in the conversation, so ask only for what you need:
 
-- Search with `find_element(role/name/text)` instead of re-reading a tree.
-  Very long lists come folded (`[… N more "list item" folded]`):
-  find_element finds the folded items too. Only if you really need every
-  element at once, `get_app_state(max_tokens=0)` returns the whole tree.
+- Search with `find_element(role/name/text)` (`offset` for more) instead of
+  re-reading a tree; `get_app_state(within=index)` shows one part. Folded
+  lists (`[… N more "list item" folded]`) are found by `find_element`;
+  `get_app_state(max_tokens=0)` returns a whole tree only when you must.
 - Leave `screenshot` unset: one comes when it adds something, and a picture
-  you already have isn't sent again. Ask `screenshot: true` when you need a
-  fresh look; `screenshot(app, element_index)` zooms into one element.
-- Don't pass `disable_diff: true` unless a diff confused you.
-- Use `wait_for` instead of polling, and `batch` for a known sequence of
-  steps (then call `get_app_state`: a batch shows one line per step).
-- Work that repeats or branches (every row of a table, retry until
-  something appears, positions to compute) is one `script` call instead
-  of many turns.
+  you already have isn't sent again. `screenshot: true` for a fresh look;
+  `screenshot(app, element_index)` zooms into one element.
+- Steps you already know go in one `batch` of lines: `["set 4 \"Ada\"",
+  "click \"Japan\"", "click \"Save\""]` (`click 12`, `double 12`, `type
+  "text"`, `key cmd+s`, `scroll 7 down`, `look`…); it stops when a window
+  comes up that a step didn't `expect`, and ends with one report.
+- `expect` on an action (`"dialog"`, `"change"`, `"value"`, `"gone"`, or a
+  text to see) waits for it and says confirmed, not seen or uncertain:
+  look before repeating anything not confirmed.
+- `get_app_state(about="shipping address")` shows just the parts about
+  that. `wait_for` instead of polling; one `script` for work that repeats
+  or branches.
 - Trust `screen #N (seen before)`: what you learnt about it still holds.
 
-## Decide fast: the decision model
+## The decision model (optional)
 
-`decide` hands judgments to a fast decision model (TypeSafe's Jev, or a
-small OpenAI-compatible model): yes/no (a probability), one of some
-options, or a score on a scale. It is quicker and cheaper than reading and
-judging yourself:
-
-- many things to judge (reviews, search results, rows, messages):
-  `decide(question, items=[...])` judges each at once and sums them up;
-- a condition on screen: `decide(app, question)`, or wait for it with
-  `wait_for(app, until="Have the results loaded?")`;
-- the element a description means: `decide(app, pick="the add-to-cart
-  button of the cheapest one")` returns its `element_index`;
-- in scripts: `ask`, `choose`, `score`, `decide_each`.
-
-When none is set up and the task has many such judgments, tell the user
-once, briefly: "Press Ctrl+Alt+J (Ctrl+Option+J on a Mac) to add a
-decision model (like Jev); it makes this faster, and your key stays out of
-the chat". Then carry on
-without it; don't ask again. `decide(setup="open")` opens that page for
-them. Set it from the chat (`setup={provider, base_url, model, api_key}`)
-only when the user themself asks you to and gives the details; say that a
-key typed in the chat stays in its history. Details:
-[reference/decisions.md](reference/decisions.md).
+If the user set one up, `decide` answers judgments fast and cheaply: many
+items at once (`decide(question, items=[...])`), a condition on screen
+(`decide(app, question)`, `wait_for(app, until=…)`), the element a
+description means (`decide(app, pick=…)`). When there is none and a task
+has many such judgments, tell the user once: "Press Ctrl+Alt+J
+(Ctrl+Option+J on a Mac) to add a decision model (like Jev); your key stays
+out of the chat". Then carry on without it. Details, and setting it up from
+the chat (only when the user asks): [reference/decisions.md](reference/decisions.md).
 
 ## More, only when you need it
 
 - [reference/screens.md](reference/screens.md): screen numbers, diffs,
-  dialogs, partial and overview screenshots.
+  records, dialogs, partial and overview screenshots.
 - [reference/tools.md](reference/tools.md): `find_element`, `wait_for`,
   `batch`, `screenshot` modes (grid, cells, zoom), `locate` and `snap` for
-  exact aiming, `window`, clipboard, notifications.
+  exact aiming, `window`, clipboard, notifications, `find_tools`.
 - [reference/special-content.md](reference/special-content.md): apps with
   little in their tree (OCR text), text in any script or direction, masked
   data, the on-screen indicator.
 - [reference/decisions.md](reference/decisions.md): `decide` (questions,
-  items, pick, setup), `wait_for(until)`, and decisions in scripts.
-- [reference/scripts.md](reference/scripts.md): `script`: a small
-  program for what the tools can't do in one call (loops over tool calls,
-  maths, data from files or the web, pictures on a graph-paper page), and
-  saved scripts as new tools.
-- [reference/drawing.md](reference/drawing.md): `draw`: lines, shapes,
-  stars, curves, function plots with axes, repeats, solid fills,
-  previews on named cells, planning with `design` and `scene`, and
-  copying a picture with `trace_image`.
+  items, pick, setup), `wait_for(until)`, decisions in scripts.
+- [reference/scripts.md](reference/scripts.md): `script`, and saved
+  scripts as new tools.
+- [reference/drawing.md](reference/drawing.md): `draw`, `design`, `scene`
+  and `trace_image`.
 - Shortcuts and quirks of common apps:
   [browsers](reference/apps/browsers.md), [office](reference/apps/office.md),
   [mail and chat](reference/apps/mail-and-chat.md),

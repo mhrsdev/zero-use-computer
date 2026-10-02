@@ -11,15 +11,48 @@
 - `decide(question, …)`: typed answers from the decision model about text,
   many items at once, or an app's window; `pick` finds an element by
   description. See [decisions.md](decisions.md).
-- `batch(app, steps=[{tool, arguments}, …])`: several steps in one call,
-  stopping at the first error. The report has one line per step, so call
-  `get_app_state` afterwards to see the result.
+- `batch(app, steps=[…])`: several steps in one call. A step is a line or
+  `{tool, arguments}`:
+
+  | line | does |
+  |---|---|
+  | `click 12` · `click "Save"` · `double 12` · `right 12` | click by index, or by a name one element has |
+  | `set 4 "Ada"` · `type "text\n"` · `type 4 "text"` | set a value; type (4 focuses first) |
+  | `key cmd+s` · `scroll 7 down 2` · `select 4 "word"` | keys, pages, a selection |
+  | `action 9 show_menu` · `wait "Saved"` · `find "Total"` · `look` | other tools |
+
+  An action line can end with `expect dialog` (or any `expect` below). The
+  batch stops at the first error, at a step whose `expect` isn't
+  confirmed, and when a step brings up a window it didn't expect (later
+  steps were meant for the window before; `through_windows: true` goes
+  on). It answers one line per step, then one report of what the steps
+  changed.
+- `expect` on `click`, `set_value`, `type_text`, `press_key` and
+  `perform_secondary_action`: `"dialog"` (another window), `"menu"`,
+  `"change"`, `"value"` (the element's value or check changes), `"gone"`
+  (the element or its window goes), or a text that should then be on
+  screen. The server waits up to two seconds and adds `Expected …:
+  confirmed`, `not seen` or `uncertain`. Look before doing again anything
+  not confirmed; never repeat an uncertain one blindly.
+- `click(name="Save", role="button")`: when one element has that name (an
+  exact name wins over a part of one). Several: nothing is clicked, and
+  they are listed with their indices.
+- `get_app_state(about="shipping address")`: only the parts of the window
+  about that, the others folded to a line each (`within=` opens one).
+  `rebase: true`: the whole tree and a picture again, when you have lost
+  track of what the diffs refer to.
 - `screenshot`:
   - `mode: "full"` the whole screen, `"auto"` only what changed since the
-    last full one, `"region"` with `x`, `y`, `width`, `height` (screen
-    coordinates);
-  - `app` (+ `window`) one window; `annotate: true` draws each element's
-    index on it; `element_index` zooms into one element at full resolution.
+    last full one; `x`, `y`, `width`, `height` (screen coordinates) a
+    region of the screen;
+  - `app` (+ `window`) one window: nothing if it looks as in your last
+    picture of it ("unchanged … not re-sent": that picture is current),
+    else only the part that changed when that is small, else all of it;
+    `mode: "window"` always all of it. `annotate: true` draws each
+    element's index on it; `element_index` zooms into one element at full
+    resolution.
+  - Screenshots are numbered (`Screenshot #7`); a changed part says which
+    one it patches, and `x`/`y` still refer to that whole one.
   - `grid: 100` draws a labelled grid every 100 px, in the x/y that
     `click`, `drag` and `draw` use for that window (screen coordinates for
     full/region shots): read positions off it instead of guessing.
@@ -74,3 +107,10 @@
   characters of a longer clipboard.
 - `get_notifications(app?, limit?)`: recent desktop notifications, when the
   user turned it on. Codes in them are masked on purpose.
+- `find_tools(category | query)` (when the tool manager is on): the tools
+  not in your list yet, with their arguments: design (draw, design, scene,
+  trace_image, locate), windows, scripts, clipboard, notifications,
+  decisions. Run them as it says: directly, or `use_tool(name,
+  arguments)`.
+- `find_element(…, offset=20)`: the next page of matches.
+- `get_app_state(within=index)`: one element and what is in it.

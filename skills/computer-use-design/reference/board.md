@@ -36,11 +36,22 @@ Start with a name, a size in the result's pixels, and a background:
     each other, or a layer).
   - `distribute`: equal gaps between 3 or more layers.
   - `order`: to front, back, up or down.
+- **Lines:** a layer can be written as the listing shows it, which is
+  shorter: `"disc ellipse 500 500 330 330 fill #1E3A5F"`, `"title text
+  \"EST. 2024\" at 500 960 size 64 bold align center fill #1E3A5F"`,
+  `"ring ellipse 500 500 400 400 fill none line #1E3A5F 24"`; a change:
+  `"star fill #E0B040"`.
 - **What comes back:**
   - the picture, with named cells (A1 top-left);
   - every layer with its box and colours;
   - checks;
   - the paint steps.
+
+  After that, only what changed: the layers changed, added or removed and
+  the new order, "as before" for the rest, and no picture when it looks
+  the same. A call with only `name` (and `show`) shows everything again.
+  When the paint steps are left out ("N step(s) to paint it"), `show:
+  {"steps": true}` lists them.
 
   `show` adds a `grid` (in the design's units), the layers' `ids` and
   `guides` (margins, centre, thirds); `"cell": "C4"` shows that cell

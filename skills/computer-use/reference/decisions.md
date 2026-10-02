@@ -37,7 +37,12 @@ state shows. For a yes/no whose boundary is subtle, add
   Nothing of it enters the conversation.
 - `pick: "description"` with `app`: which element of the window that is:
   `Element 42: button "Add to cart" — 0.93`, ready to click. An unsure
-  answer says so; check before acting.
+  answer says so; check before acting. `read: true` also returns its whole
+  text or value (`It reads: "$41.90"`), read by the server: the way to get
+  one value out of a big window without reading it.
+- `get_app_state(app, about="…")` uses the model, when there is one, to
+  judge which parts of the window are about that (without one, the words
+  are matched).
 
 Examples:
 

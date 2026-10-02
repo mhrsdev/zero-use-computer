@@ -62,17 +62,9 @@ fn state_text(e: &mut Engine<LinuxBackend>, app: &str) -> String {
 }
 
 fn index_of(tree: &str, needle: &str) -> u32 {
-    for line in tree.lines() {
-        if line.contains(needle) {
-            let trimmed = line.trim_start();
-            if let Some(tok) = trimmed.split_whitespace().next()
-                && let Ok(n) = tok.parse::<u32>()
-            {
-                return n;
-            }
-        }
-    }
-    panic!("no element matching `{needle}` in tree:\n{tree}");
+    // Records (look-alike siblings on one line) read back one a line.
+    computer_use::tree::index_of(tree, needle)
+        .unwrap_or_else(|| panic!("no element matching `{needle}` in tree:\n{tree}"))
 }
 
 #[test]

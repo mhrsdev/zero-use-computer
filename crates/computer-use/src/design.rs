@@ -661,6 +661,12 @@ impl Design {
 
     /// The layers, back to front, one line each.
     pub fn listing(&self, fonts: &mut FontCache) -> String {
+        let lines: Vec<String> = self.items(fonts).into_iter().map(|(_, l)| l).collect();
+        lines.join("; ")
+    }
+
+    /// Each layer's id and its line in the listing, back to front.
+    pub fn items(&self, fonts: &mut FontCache) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for l in &self.layers {
             let b = self.bbox(l, fonts);
@@ -684,9 +690,9 @@ impl Design {
             if l.opacity < 1.0 {
                 s.push_str(&format!(" opacity {:.2}", l.opacity));
             }
-            out.push(s);
+            out.push((l.id.clone(), s));
         }
-        out.join("; ")
+        out
     }
 
     /// Paint the design `scale` pixels per unit.

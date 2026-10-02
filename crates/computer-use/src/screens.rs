@@ -172,6 +172,9 @@ pub struct Screen {
     pub pixels: Option<PixelSig>,
     /// A screenshot was attempted for this screen.
     pub shot: bool,
+    /// The number of that screenshot ("screenshot #7"): what x/y and a
+    /// later changed part refer to.
+    pub shot_id: Option<u32>,
     /// LRU clock.
     used: u64,
 }
@@ -188,6 +191,7 @@ impl Screen {
             coord: None,
             pixels: None,
             shot: false,
+            shot_id: None,
             used: 0,
         }
     }

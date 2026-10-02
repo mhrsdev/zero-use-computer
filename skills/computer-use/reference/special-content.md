@@ -8,6 +8,11 @@ lines read off the screen. Click them by `element_index`; they can't be set
 or selected. `get_app_state(ocr: true)` asks for them in any app. If the
 text can't be read, use the screenshot and `x`/`y`.
 
+"Part of this window has no accessibility information (a canvas or a
+picture)": the tree describes the rest, but not that part. Its `ocr text`
+lines (if any) are read from it, and the screenshot shows it; changes there
+show in the pixels, not in the tree.
+
 ## Text in any script or direction
 
 - Text is given in its stored (logical) order. Invisible direction marks

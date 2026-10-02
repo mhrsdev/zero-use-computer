@@ -239,6 +239,48 @@ fn snake(s: &str) -> String {
     out
 }
 
+/// Roles whose elements take typed text: editable unless said otherwise
+/// (compact trees mark the read-only ones instead).
+pub fn is_text_entry(role: &str) -> bool {
+    matches!(
+        role,
+        "text field" | "secure text field" | "search field" | "text area"
+    )
+}
+
+/// Cells of a table or grid.
+pub fn is_cell(role: &str) -> bool {
+    matches!(role, "cell" | "table cell" | "grid cell")
+}
+
+/// Column headers of a table.
+pub fn is_column_header(role: &str) -> bool {
+    matches!(
+        role,
+        "table column header" | "column header" | "header" | "column"
+    )
+}
+
+/// An action every element of this role has, so naming it says nothing:
+/// a checkbox toggles, a tab is selected, an element that shows whether it
+/// is expanded expands and collapses.
+pub fn implied_action(role: &str, action: &str, shows_expanded: bool) -> bool {
+    let toggles = matches!(
+        role,
+        "checkbox" | "switch" | "toggle button" | "radio button"
+    );
+    let selectable = matches!(
+        role,
+        "tab" | "list item" | "menu item" | "tree item" | "row" | "cell" | "table cell"
+    );
+    match action {
+        "toggle" => toggles,
+        "select" => toggles || selectable,
+        "expand_or_collapse" | "expand" | "collapse" => shows_expanded,
+        _ => false,
+    }
+}
+
 /// Roles that carry structure worth keeping even without a label.
 pub fn is_structural(role: &str) -> bool {
     matches!(

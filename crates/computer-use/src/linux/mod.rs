@@ -489,8 +489,13 @@ impl LinuxBackend {
 
         let editable = acc.states.has(state::EDITABLE);
         let text_value = data.text;
-        // A label with no Name but text content: promote the text to a name.
-        let (name, value) = if acc.name.is_empty() {
+        // A label with no Name but text content: promote the text to a name;
+        // a control with no name: the label it is labelled by.
+        let (name, value) = if acc.name.is_empty()
+            && let Some(label) = data.label
+        {
+            (Some(label), text_value)
+        } else if acc.name.is_empty() {
             match text_value {
                 Some(t) if role == "text" => (Some(t), None),
                 other => (None, other),

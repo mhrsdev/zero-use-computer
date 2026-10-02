@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::jsonrpc::{INVALID_PARAMS, Incoming, METHOD_NOT_FOUND, parse_message};
-use crate::server::{instructions, negotiate_protocol, unknown_tool};
+use crate::server::{instructions_for, negotiate_protocol, unknown_tool};
 
 /// Largest request body accepted (a JSON-RPC message is far smaller).
 const MAX_BODY: u64 = 4 * 1024 * 1024;
@@ -208,15 +208,17 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
     let id = msg.id.clone()?;
 
     Some(match method.as_str() {
-        "initialize" => reply(
-            id,
-            json!({
+        "initialize" => {
+            let mut init = json!({
                 "protocolVersion": negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str)),
                 "capabilities": crate::catalog::capabilities(false),
                 "serverInfo": {"name": "computer-use", "title": "computer-use (mhrsdev)", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": instructions(),
-            }),
-        ),
+            });
+            if let Some(text) = instructions_for(engine.store().config.server.instructions) {
+                init["instructions"] = json!(text);
+            }
+            reply(id, init)
+        }
         "ping" => reply(id, json!({})),
         "tools/list" => {
             engine.reload_if_changed();
@@ -242,7 +244,11 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let out = engine.call_tool(name, args);
-                reply(id, out.to_mcp_result())
+                let mut result = out.to_mcp_result();
+                if let Some(meta) = engine.take_result_meta() {
+                    result["_meta"] = meta;
+                }
+                reply(id, result)
             }
             None => error(id, INVALID_PARAMS, "tools/call requires `name`"),
         },

@@ -1,0 +1,17 @@
+# v3.6: every token-saving setting that changes what the tools return or
+# how they behave, on, to measure against the defaults (bench/README.md,
+# "A/B"). Lossless compaction ([tree] compact) is on by default already.
+[tools]
+descriptions = "lean"
+design_steps = "asked"
+
+[tree]
+report = "relevant"
+quiet_volatile = true
+
+[screenshot]
+adaptive = true
+locate_picture = false
+
+[ocr]
+blind_regions = true

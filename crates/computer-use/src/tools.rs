@@ -121,7 +121,8 @@ pub struct GetAppStateArgs {
     pub app: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub window: Option<String>,
-    #[serde(default, alias = "disableDiff")]
+    /// The whole tree, not a diff (`rebase`: everything sent again).
+    #[serde(default, alias = "disableDiff", alias = "rebase")]
     pub disable_diff: bool,
     /// Force (true) or suppress (false) the screenshot; default follows
     /// `screenshot.attach`.
@@ -134,6 +135,15 @@ pub struct GetAppStateArgs {
     /// whole tree, nothing folded or cut.
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    /// Only this element and what is in it (a look that doesn't change
+    /// what later diffs are against).
+    #[serde(default, deserialize_with = "de_opt_index")]
+    pub within: Option<u32>,
+    /// Only the parts of the window that have to do with this (the other
+    /// parts folded, each to one line): words matched, or the decision
+    /// model's judgment when one is set up.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub about: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -156,6 +166,15 @@ pub struct ClickArgs {
     /// How far to look for it, in screenshot pixels (default 10).
     #[serde(default)]
     pub snap_radius: Option<f64>,
+    /// The element to click by its name (and role), when no index or
+    /// point is given: it must match one element.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub role: Option<String>,
+    /// What should follow, checked after the action ([`Expect`]).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 fn one() -> u8 {
@@ -170,6 +189,8 @@ pub struct SecondaryActionArgs {
     #[serde(deserialize_with = "de_index")]
     pub element_index: u32,
     pub action: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -181,6 +202,8 @@ pub struct SetValueArgs {
     pub element_index: u32,
     #[serde(deserialize_with = "de_value")]
     pub value: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 fn de_value<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
@@ -280,6 +303,9 @@ pub struct LocateArgs {
     pub feature: Option<String>,
     #[serde(default)]
     pub radius: Option<f64>,
+    /// Send the window with the places found numbered (default: settings).
+    #[serde(default)]
+    pub picture: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -287,6 +313,8 @@ pub struct DrawArgs {
     pub app: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub window: Option<String>,
+    /// Objects, or lines ("rect 10 10 50 30", [`stroke_line`]).
+    #[serde(deserialize_with = "de_strokes")]
     pub strokes: Vec<DrawStroke>,
     /// Coordinates are fractions of this element's box instead of
     /// screenshot pixels.
@@ -454,6 +482,8 @@ pub struct PressKeyArgs {
     /// Point the mouse here (screenshot pixels) while pressing.
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -467,6 +497,8 @@ pub struct TypeTextArgs {
     /// Point the mouse here (screenshot pixels) while typing.
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 /// A state an element can be matched on, for find_element / wait_for.
@@ -501,6 +533,9 @@ pub struct FindElementArgs {
     pub editable: bool,
     #[serde(default = "twenty")]
     pub max_results: usize,
+    /// Skip this many matches (the next page of results).
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 fn twenty() -> usize {
@@ -561,6 +596,10 @@ pub struct DecideArgs {
     /// Which element of the app's window this describes: its index.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub pick: Option<String>,
+    /// With pick: also read the element's text or value (whole), so the
+    /// window needn't be read to get it.
+    #[serde(default)]
+    pub read: bool,
     /// "status", "open" (the settings page), "test", "remove", or the
     /// settings: {provider, base_url, model, api_key}.
     #[serde(default)]
@@ -652,9 +691,11 @@ pub struct DesignArgs {
     /// The cells' size in the design's units (0: about eight across).
     #[serde(default)]
     pub cell_size: Option<f64>,
-    #[serde(default)]
+    /// Layers as objects, or as lines ("sun ellipse 80 20 12 12 fill
+    /// #ffcc00"; [`layer_line`]).
+    #[serde(default, deserialize_with = "de_layers")]
     pub add: Option<Vec<DesignLayer>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_layers")]
     pub change: Option<Vec<DesignLayer>>,
     #[serde(default)]
     pub remove: Option<Vec<String>>,
@@ -826,6 +867,9 @@ pub struct DesignShow {
     /// Show just this cell, magnified ("C4").
     #[serde(default, deserialize_with = "de_opt_string")]
     pub cell: Option<String>,
+    /// List the steps to paint it ([tools] design_steps = "asked").
+    #[serde(default)]
+    pub steps: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -877,9 +921,11 @@ pub enum TraceDetail {
 #[serde(deny_unknown_fields)]
 pub struct SceneArgs {
     pub name: String,
-    #[serde(default)]
+    /// Objects as objects, or as lines ("seat box 0.5 0.5 0.05 at 0 0
+    /// 0.45 color #884422"; [`object_line`]).
+    #[serde(default, deserialize_with = "de_objects")]
     pub add: Option<Vec<SceneObject>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_objects")]
     pub change: Option<Vec<SceneObject>>,
     #[serde(default)]
     pub remove: Option<Vec<String>>,
@@ -1015,11 +1061,472 @@ fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, 
     })
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+/// What a word after a field's name is.
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+    /// Words, joined.
+    Text,
+    /// One number.
+    Num,
+    /// Numbers, as a list.
+    Nums,
+    /// Present (true), or followed by true/false.
+    Flag,
+    /// `line #RRGGBB [width]`: the outline's colour and width.
+    Outline,
+}
+
+const LAYER_FIELDS: &[(&str, Field)] = &[
+    ("id", Field::Text),
+    ("rect", Field::Nums),
+    ("ellipse", Field::Nums),
+    ("polygon", Field::Nums),
+    ("star", Field::Nums),
+    ("arc", Field::Nums),
+    ("rotate", Field::Num),
+    ("about", Field::Nums),
+    ("text", Field::Text),
+    ("at", Field::Nums),
+    ("size", Field::Num),
+    ("font", Field::Text),
+    ("bold", Field::Flag),
+    ("align", Field::Text),
+    ("fill", Field::Text),
+    ("stroke", Field::Text),
+    ("line", Field::Outline),
+    ("width", Field::Num),
+    ("opacity", Field::Num),
+    ("move", Field::Nums),
+    ("to", Field::Nums),
+    ("below", Field::Text),
+    ("above", Field::Text),
+    ("closed", Field::Flag),
+    ("smooth", Field::Flag),
+];
+
+const OBJECT_FIELDS: &[(&str, Field)] = &[
+    ("id", Field::Text),
+    ("shape", Field::Text),
+    ("size", Field::Nums),
+    ("at", Field::Nums),
+    ("rotate", Field::Nums),
+    ("color", Field::Text),
+    ("on", Field::Text),
+    ("move", Field::Nums),
+];
+
+const STROKE_FIELDS: &[(&str, Field)] = &[
+    ("rect", Field::Nums),
+    ("ellipse", Field::Nums),
+    ("polygon", Field::Nums),
+    ("star", Field::Nums),
+    ("arc", Field::Nums),
+    ("axes", Field::Nums),
+    ("rotate", Field::Num),
+    ("about", Field::Nums),
+    ("fill", Field::Num),
+    ("closed", Field::Flag),
+    ("smooth", Field::Flag),
+    ("steps", Field::Num),
+    ("trace", Field::Text),
+    ("design", Field::Text),
+    ("step", Field::Num),
+];
+
+const SOLIDS: &[&str] = &[
+    "box", "cube", "cylinder", "sphere", "cone", "torus", "plane",
+];
+
+/// A design layer written as a line: its id first, then fields by name,
+/// as the layer listing shows them: `sun ellipse 80 20 12 12 fill #ffcc00`,
+/// `title text "Hello" at 50 10 size 8 align center`, `box rect 10 10 50
+/// 30 4 fill none line #000000 2`.
+pub fn layer_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, LAYER_FIELDS, &[], true)
+}
+
+/// A draw stroke written as a line of fields by name: `rect 10 10 50 30`,
+/// `ellipse 100 100 40 40 fill 6`, `design logo step 2 fill 8`.
+pub fn stroke_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, STROKE_FIELDS, &[], false)
+}
+
+/// A scene object written as a line: its id, its shape and size, then
+/// fields by name: `seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422`,
+/// `leg cylinder 0.04 0.45 at 0.2 0.2 0.225`, `seat at 0 0 0.5`.
+pub fn object_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, OBJECT_FIELDS, SOLIDS, true)
+}
+
+/// A line of fields by name (after an id, when `id`) as a JSON object.
+fn fields_line(
+    line: &str,
+    fields: &[(&str, Field)],
+    shapes: &[&str],
+    id: bool,
+) -> std::result::Result<Value, String> {
+    let bad = |why: String| {
+        let names: Vec<&str> = fields.iter().map(|f| f.0).collect();
+        format!(
+            "`{line}`: {why} ({}{})",
+            if id { "an id first, then " } else { "fields: " },
+            names.join(", ")
+        )
+    };
+    let words = words_of(line).map_err(|e| bad(e.to_string()))?;
+    let field = |w: &(String, bool)| {
+        (!w.1)
+            .then(|| fields.iter().find(|f| f.0 == w.0.to_lowercase()))
+            .flatten()
+            .copied()
+    };
+    let shape = |w: &(String, bool)| !w.1 && shapes.contains(&w.0.to_lowercase().as_str());
+    let starts = |w: &(String, bool)| field(w).is_some() || shape(w);
+    // Whole numbers as integers: they also fill integer fields (step).
+    let number = |w: &(String, bool)| {
+        w.0.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(|n| {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    json!(n as i64)
+                } else {
+                    json!(n)
+                }
+            })
+            .ok_or_else(|| bad(format!("`{}` is not a number", w.0)))
+    };
+    let mut m = serde_json::Map::new();
+    let mut i = 0;
+    if let Some(first) = words.first()
+        && id
+        && !starts(first)
+    {
+        m.insert("id".into(), json!(first.0));
+        i = 1;
+    }
+    while i < words.len() {
+        let at = &words[i];
+        i += 1;
+        let from = i;
+        while i < words.len() && !starts(&words[i]) {
+            i += 1;
+        }
+        let values = &words[from..i];
+        if shape(at) {
+            m.insert("shape".into(), json!(at.0.to_lowercase()));
+            if !values.is_empty() {
+                let nums: Vec<Value> = values.iter().map(number).collect::<Result<_, _>>()?;
+                m.insert("size".into(), Value::Array(nums));
+            }
+            continue;
+        }
+        let Some((name, kind)) = field(at) else {
+            return Err(bad(format!("`{}` is not a field", at.0)));
+        };
+        let value = match kind {
+            Field::Text if values.is_empty() => return Err(bad(format!("{name} needs a value"))),
+            Field::Text => json!(
+                values
+                    .iter()
+                    .map(|w| w.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Field::Num => match values {
+                [one] => number(one)?,
+                _ => return Err(bad(format!("{name} takes one number"))),
+            },
+            Field::Nums if values.is_empty() => return Err(bad(format!("{name} needs numbers"))),
+            Field::Nums => Value::Array(values.iter().map(number).collect::<Result<_, _>>()?),
+            Field::Flag => match values {
+                [] => json!(true),
+                [w] if w.0 == "true" || w.0 == "false" => json!(w.0 == "true"),
+                _ => return Err(bad(format!("{name} takes true or false"))),
+            },
+            Field::Outline => match values {
+                [colour] => json!(colour.0),
+                [colour, width] => {
+                    m.insert("width".into(), number(width)?);
+                    json!(colour.0)
+                }
+                _ => return Err(bad("line takes a colour and a width".into())),
+            },
+        };
+        let key = if kind == Field::Outline {
+            "stroke"
+        } else {
+            name
+        };
+        m.insert(key.into(), value);
+    }
+    Ok(Value::Object(m))
+}
+
+fn de_layers<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<DesignLayer>>, D::Error> {
+    de_lines(d, layer_line)
+}
+
+fn de_strokes<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<DrawStroke>, D::Error> {
+    de_lines(d, stroke_line)?.ok_or_else(|| serde::de::Error::custom("strokes are needed"))
+}
+
+fn de_objects<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<SceneObject>>, D::Error> {
+    de_lines(d, object_line)
+}
+
+/// A list whose items are objects, or lines `parse` turns into them.
+fn de_lines<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    d: D,
+    parse: fn(&str) -> std::result::Result<Value, String>,
+) -> std::result::Result<Option<Vec<T>>, D::Error> {
+    let Some(items) = Option::<Vec<Value>>::deserialize(d)? else {
+        return Ok(None);
+    };
+    items
+        .into_iter()
+        .map(|v| {
+            let v = match v {
+                Value::String(line) => parse(&line).map_err(serde::de::Error::custom)?,
+                other => other,
+            };
+            serde_json::from_value(v).map_err(serde::de::Error::custom)
+        })
+        .collect::<std::result::Result<Vec<T>, _>>()
+        .map(Some)
+}
+
+/// One step of a batch: `{tool, arguments}`, or a short line such as
+/// `click 12`, `set 4 "Ada"`, `key cmd+s` ([`parse_step`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct BatchStep {
     pub tool: String,
-    #[serde(default)]
     pub arguments: Value,
+}
+
+impl<'de> Deserialize<'de> for BatchStep {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Line(String),
+            Full {
+                tool: String,
+                #[serde(default)]
+                arguments: Value,
+            },
+        }
+        match Repr::deserialize(d)? {
+            Repr::Full { tool, arguments } => Ok(BatchStep { tool, arguments }),
+            Repr::Line(line) => parse_step(&line).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// A batch step written as a short line:
+///
+/// `click 12` · `click "Save"` (by name) · `double 12` · `right 12` ·
+/// `set 4 "Ada"` · `type "hello\n"` · `type 4 "hello"` · `key cmd+s` ·
+/// `scroll 7 down 2` · `select 4 "word"` · `action 9 show_menu` ·
+/// `wait "Saved"` · `find "Total"` · `look`; any action line can end with
+/// `expect dialog` (or `expect "text"`).
+pub fn parse_step(line: &str) -> std::result::Result<BatchStep, String> {
+    let bad = |why: &str| {
+        format!(
+            "step `{line}`: {why}; write click N, click \"name\", double N, right N, set N \"value\", type [N] \"text\", key K, scroll [N] up|down|left|right [pages], select N [\"text\"], action N name, wait \"text\", find \"text\" or look (each may end with expect …), or {{tool, arguments}}"
+        )
+    };
+    let mut words = words_of(line).map_err(|e| bad(&e))?;
+    // `… expect dialog`: the rest is what should follow.
+    let mut expect = None;
+    if let Some(at) = words
+        .iter()
+        .skip(1)
+        .position(|(w, quoted)| !quoted && w == "expect")
+    {
+        let rest: Vec<String> = words.drain(at + 1..).skip(1).map(|(w, _)| w).collect();
+        if rest.is_empty() {
+            return Err(bad("expect needs what to expect"));
+        }
+        expect = Some(rest.join(" "));
+    }
+    let Some((verb, _)) = words.first().cloned() else {
+        return Err(bad("empty"));
+    };
+    let args: Vec<(String, bool)> = words[1..].to_vec();
+    let index = |i: usize| -> Option<u32> {
+        args.get(i)
+            .filter(|(_, quoted)| !quoted)
+            .and_then(|(w, _)| w.parse().ok())
+    };
+    let joined = |from: usize| -> String {
+        args[from.min(args.len())..]
+            .iter()
+            .map(|(w, _)| w.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut m = serde_json::Map::new();
+    let tool = match verb.to_lowercase().as_str() {
+        "click" | "double" | "right" => {
+            match (index(0), args.first()) {
+                (Some(i), _) => m.insert("element_index".into(), json!(i)),
+                (None, Some(_)) => m.insert("name".into(), json!(joined(0))),
+                (None, None) => return Err(bad("click what")),
+            };
+            match verb.to_lowercase().as_str() {
+                "double" => m.insert("click_count".into(), json!(2)),
+                "right" => m.insert("button".into(), json!("right")),
+                _ => None,
+            };
+            "click"
+        }
+        "set" => {
+            let i = index(0).ok_or_else(|| bad("set needs an element number"))?;
+            if args.len() < 2 {
+                return Err(bad("set needs a value"));
+            }
+            m.insert("element_index".into(), json!(i));
+            m.insert("value".into(), json!(joined(1)));
+            "set_value"
+        }
+        "type" => {
+            let from = match index(0) {
+                Some(i) if args.len() > 1 => {
+                    m.insert("element_index".into(), json!(i));
+                    1
+                }
+                _ => 0,
+            };
+            if args.len() <= from {
+                return Err(bad("type needs the text"));
+            }
+            m.insert("text".into(), json!(joined(from)));
+            "type_text"
+        }
+        "key" | "press" => {
+            if args.is_empty() {
+                return Err(bad("key needs a key"));
+            }
+            m.insert("key".into(), json!(joined(0)));
+            "press_key"
+        }
+        "scroll" => {
+            let from = match index(0) {
+                Some(i) => {
+                    m.insert("element_index".into(), json!(i));
+                    1
+                }
+                None => 0,
+            };
+            let dir = args
+                .get(from)
+                .map(|(w, _)| w.to_lowercase())
+                .filter(|d| ["up", "down", "left", "right"].contains(&d.as_str()))
+                .ok_or_else(|| bad("scroll needs up, down, left or right"))?;
+            m.insert("direction".into(), json!(dir));
+            if let Some((n, _)) = args.get(from + 1) {
+                let pages: f64 = n.parse().map_err(|_| bad("pages must be a number"))?;
+                m.insert("amount".into(), json!(pages));
+            }
+            "scroll"
+        }
+        "select" => {
+            let i = index(0).ok_or_else(|| bad("select needs an element number"))?;
+            m.insert("element_index".into(), json!(i));
+            if args.len() > 1 {
+                m.insert("text".into(), json!(joined(1)));
+            }
+            "select_text"
+        }
+        "action" => {
+            let i = index(0).ok_or_else(|| bad("action needs an element number"))?;
+            if args.len() < 2 {
+                return Err(bad("action needs the action's name"));
+            }
+            m.insert("element_index".into(), json!(i));
+            m.insert("action".into(), json!(joined(1)));
+            "perform_secondary_action"
+        }
+        "wait" | "find" => {
+            if args.is_empty() {
+                return Err(bad("wait and find need the text"));
+            }
+            m.insert("text".into(), json!(joined(0)));
+            if verb.eq_ignore_ascii_case("wait") {
+                "wait_for"
+            } else {
+                "find_element"
+            }
+        }
+        "look" => {
+            if !args.is_empty() {
+                return Err(bad("look takes nothing"));
+            }
+            "get_app_state"
+        }
+        _ => return Err(bad("unknown step")),
+    };
+    if let Some(e) = expect {
+        if !matches!(
+            tool,
+            "click" | "set_value" | "type_text" | "press_key" | "perform_secondary_action"
+        ) {
+            return Err(bad("only an action can expect something"));
+        }
+        m.insert("expect".into(), json!(e));
+    }
+    Ok(BatchStep {
+        tool: tool.into(),
+        arguments: Value::Object(m),
+    })
+}
+
+/// The words of a step line, and whether each was quoted. A quoted word
+/// keeps its spaces; `\n`, `\t`, `\"` and `\\` inside quotes are
+/// what they say.
+fn words_of(line: &str) -> std::result::Result<Vec<(String, bool)>, String> {
+    let mut out = Vec::new();
+    let mut chars = line.trim().chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '"' {
+            chars.next();
+            let mut w = String::new();
+            loop {
+                match chars.next() {
+                    None => return Err("a quote isn't closed".into()),
+                    Some('"') => break,
+                    Some('\\') => match chars.next() {
+                        Some('n') => w.push('\n'),
+                        Some('t') => w.push('\t'),
+                        Some(other) => w.push(other),
+                        None => return Err("a quote isn't closed".into()),
+                    },
+                    Some(other) => w.push(other),
+                }
+            }
+            out.push((w, true));
+        } else {
+            let mut w = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                w.push(c);
+                chars.next();
+            }
+            out.push((w, false));
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -1031,6 +1538,11 @@ pub struct BatchArgs {
     /// Continue running after a step fails (default: stop).
     #[serde(default)]
     pub continue_on_error: bool,
+    /// Go on when a step brings up another window it didn't `expect`
+    /// (default: stop there, since later steps were meant for the window
+    /// before).
+    #[serde(default)]
+    pub through_windows: bool,
 }
 
 /// Run a script, or keep, show, list and delete saved ones.
@@ -1395,13 +1907,14 @@ fn layer_props() -> Value {
             _ => unreachable!("an object"),
         },
     );
-    json!({"type": "object", "properties": Value::Object(m), "additionalProperties": false})
+    json!({"type": ["object", "string"], "properties": Value::Object(m), "additionalProperties": false, "description": "Or a line: id, then fields by name (\"sun ellipse 80 20 12 12 fill #ffcc00\", \"t text \\\"Hi\\\" at 50 10 size 8\", \"sun fill #ff0000\" to change)."})
 }
 
 /// A solid in a 3D scene.
 fn scene_object_props() -> Value {
     json!({
-        "type": "object",
+        "type": ["object", "string"],
+        "description": "Or a line: id, shape and size, then fields by name (\"seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422\", \"seat at 0 0 0.5\" to change).",
         "properties": {
             "id": {"type": "string", "description": "Its name (\"seat\", \"leg-fl\"); used by change, mirror, repeat, on."},
             "shape": {"type": "string", "enum": ["box", "cylinder", "sphere", "cone", "torus", "plane"]},
@@ -1414,6 +1927,10 @@ fn scene_object_props() -> Value {
         },
         "additionalProperties": false
     })
+}
+
+fn expect_prop() -> Value {
+    json!({"type": "string", "description": "What should follow, checked after the action: \"dialog\" (another window comes up), \"change\", \"value\" (the element's value changes), \"gone\" (the element or its window goes), or a text that should then be on screen. The answer says confirmed, not seen, or uncertain."})
 }
 
 fn snap_prop() -> Value {
@@ -1445,7 +1962,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app".into(),
             title: "Launch app".into(),
-            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window; or open a web address (https://…) in the default browser. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
+            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window, then return its first state (as get_app_state would); or open a web address (https://…) in the default browser. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments), or an https:// address to open in the browser."}},
@@ -1464,7 +1981,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
                     "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."},
                     "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."},
-                    "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."}
+                    "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."},
+                    "within": index_prop("Only this element and what is in it (a table, a panel, a dialog's part)."),
+                    "about": {"type": "string", "description": "Only the parts of the window that have to do with this (\"shipping address\"); the others are folded to a line each."},
                 }),
                 &[],
             ),
@@ -1473,7 +1992,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "click".into(),
             title: "Click".into(),
-            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background) or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.".into(),
+            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background), by its name (and role) when that names one element, or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1483,7 +2002,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
                     "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
                     "snap": snap_prop(),
-                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."}
+                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."},
+                    "name": {"type": "string", "description": "Instead of element_index: the name of the element to click (one element must have it)."},
+                    "role": {"type": "string", "description": "With name: its role (\"button\", \"menu item\")."},
+                    "expect": expect_prop()
                 }),
                 &[],
             ),
@@ -1497,7 +2019,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "element_index": index_prop("Target element, from the latest get_app_state."),
-                    "action": {"type": "string", "description": "Action name as listed in actions=[...] for the element."}
+                    "action": {"type": "string", "description": "Action name as listed in actions=[...] for the element."},
+                    "expect": expect_prop()
                 }),
                 &["element_index", "action"],
             ),
@@ -1511,7 +2034,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "element_index": index_prop("Target element, from the latest get_app_state."),
-                    "value": {"type": "string", "description": "New value."}
+                    "value": {"type": "string", "description": "New value."},
+                    "expect": expect_prop()
                 }),
                 &["element_index", "value"],
             ),
@@ -1581,9 +2105,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "minItems": 1,
                         "description": "One press-move-release each.",
                         "items": {
-                            "type": "object",
+                            "type": ["object", "string"],
                             "properties": stroke_props(),
-                            "additionalProperties": false
+                            "additionalProperties": false,
+                            "description": "Or a line of fields by name: \"rect 10 10 50 30\", \"ellipse 100 100 40 40 fill 6\", \"design logo step 2 fill 8\"."
                         }
                     },
                     "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
@@ -1630,7 +2155,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "like": {"type": "array", "items": {"type": "number"}, "description": "[left, top, right, bottom] of something to find again."},
                     "near": {"type": "array", "items": {"type": "number"}, "description": "[x, y]: a rough point."},
                     "feature": {"type": "string", "enum": ["corner", "edge", "center"], "description": "What to find near the point."},
-                    "radius": {"type": "number", "description": "How far from near to look, in screenshot pixels (default 12)."}
+                    "radius": {"type": "number", "description": "How far from near to look, in screenshot pixels (default 12)."},
+                    "picture": {"type": "boolean", "description": "Send the window with the places found numbered (default: settings, usually yes)."}
                 }),
                 &[],
             ),
@@ -1655,7 +2181,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "align": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "x": {"type": "string", "enum": ["left", "center", "right"]}, "y": {"type": "string", "enum": ["top", "middle", "bottom"]}, "to": {"type": "string", "description": "page (default), margins, each other, or a layer id."}}, "required": ["ids"], "additionalProperties": false}},
                     "distribute": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "axis": {"type": "string", "enum": ["x", "y"]}}, "required": ["ids"], "additionalProperties": false}, "description": "Equal gaps between 3 or more layers."},
                     "order": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "to": {"type": "string", "enum": ["front", "back", "up", "down"]}}, "required": ["id", "to"], "additionalProperties": false}},
-                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}, "cells": {"type": "boolean"}, "cell": {"type": "string"}}, "additionalProperties": false, "description": "On the picture: the named cells (A1 top-left, on unless cells=false), a grid in the design's units, the layers' ids, guides (margins, centre, thirds); cell=\"C4\" shows just that cell, magnified, with the layers in it."},
+                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}, "cells": {"type": "boolean"}, "cell": {"type": "string"}, "steps": {"type": "boolean"}}, "additionalProperties": false, "description": "On the picture: the named cells (A1 top-left, on unless cells=false), a grid in the design's units, the layers' ids, guides (margins, centre, thirds); cell=\"C4\" shows just that cell, magnified, with the layers in it. steps=true lists the steps to paint it."},
                     "export": {"type": "string", "enum": ["png", "svg"], "description": "Write a temporary file to import into an app."}
                 },
                 "required": ["name"],
@@ -1697,7 +2223,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "key": {"type": "string", "description": "Key combo(s): modifiers (cmd/ctrl/alt/option/shift/meta) joined with + and a key name."},
                     "element_index": index_prop("Element to focus before pressing."),
                     "x": hover_prop("X"),
-                    "y": hover_prop("Y")
+                    "y": hover_prop("Y"),
+                    "expect": expect_prop()
                 }),
                 &["key"],
             ),
@@ -1713,7 +2240,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "text": {"type": "string", "description": "Text to type. Newlines press Return."},
                     "element_index": index_prop("Element to focus before typing."),
                     "x": hover_prop("X"),
-                    "y": hover_prop("Y")
+                    "y": hover_prop("Y"),
+                    "expect": expect_prop()
                 }),
                 &["text"],
             ),
@@ -1730,7 +2258,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "name": {"type": "string", "description": "Case-insensitive substring of the element's name/label."},
                     "text": {"type": "string", "description": "Case-insensitive substring of the element's name or value."},
                     "editable": {"type": "boolean", "default": false, "description": "Only editable elements."},
-                    "max_results": {"type": "integer", "minimum": 1, "default": 20}
+                    "max_results": {"type": "integer", "minimum": 1, "default": 20},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Skip this many matches: the next page."}
                 }),
                 &[],
             ),
@@ -1758,7 +2287,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "screenshot".into(),
             title: "Screenshot".into(),
-            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (mode=region with x/y/width/height), or an app window (mode=window with app). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most. zoom=[x,y] magnifies around a point to aim a click exactly.".into(),
+            description: "Capture an image: the screen (mode=auto, the default without app: the whole screen, or only the part that changed since your last full-screen screenshot; mode=full: always all of it), a screen rectangle (x/y/width/height in screen coordinates; mode=region), or an app window (with app: nothing if it looks as in your last picture of it, else only the part that changed when that is small, else all of it; mode=window: always all of it). With element_index, zoom into that element of the window (to read small text). With annotate=true on a window, each element's index is drawn over it (set-of-marks). For exact positions and colours: grid=N draws a labelled grid every N units (true: a round step) in the x/y that click and draw use for that window (screen coordinates for full/region); with canvas (as draw takes it) the grid covers just the document, labelled in its units or math range. palette=true lists the main colours, pick=[[x,y],...] gives the exact colour at each point (same coordinates as the grid). compare=name (with canvas) compares the document with a picture traced by trace_image and lists where it differs most. zoom=[x,y] magnifies around a point to aim a click exactly.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1789,23 +2318,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "batch".into(),
             title: "Batch actions".into(),
-            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit). Each step is {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true. Steps missing `app` inherit the top-level app.".into(),
+            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit), and get one report of what changed. Each step is a line: click 12, click \"Save\" (by name), double 12, right 12, set 4 \"Ada\", type \"text\" (type 4 \"text\" focuses 4 first), key cmd+s, scroll 7 down 2, select 4 \"word\", action 9 show_menu, wait \"Saved\", find \"Total\", look; an action line may end with expect dialog (or another expect). Or {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true, and when a step brings up another window it didn't expect (through_windows=true goes on). Steps missing `app` inherit the top-level app.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "app": {"type": "string", "description": "Default app for steps that omit it."},
                     "continue_on_error": {"type": "boolean", "default": false},
+                    "through_windows": {"type": "boolean", "default": false, "description": "Go on when a step brings up another window it didn't expect."},
                     "steps": {
                         "type": "array",
                         "minItems": 1,
                         "items": {
-                            "type": "object",
-                            "properties": {
-                                "tool": {"type": "string"},
-                                "arguments": {"type": "object"}
-                            },
-                            "required": ["tool"],
-                            "additionalProperties": false
+                            "type": ["string", "object"],
+                            "description": "A step line (\"click 12\", \"set 4 \\\"Ada\\\"\", \"key Return\") or {tool, arguments}."
                         }
                     }
                 },
@@ -1890,6 +2415,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "app": {"type": "string", "description": "Judge this app's window (or pick in it)."},
                     "window": {"type": "string", "description": "Window id or title substring."},
                     "pick": {"type": "string", "description": "With app: describe an element (\"the button that adds it to the cart\"); returns its element_index."},
+                    "read": {"type": "boolean", "description": "With pick: also return the element's whole text or value (\"the order total\")."},
                     "setup": {"type": ["string", "object"], "description": "\"status\", \"open\", \"test\", \"remove\", or {provider, base_url, model, api_key} (only when the user asks for it)."}
                 },
                 "additionalProperties": false
@@ -1923,33 +2449,37 @@ fn short_description(name: &str) -> Option<&'static str> {
     Some(match name {
         "list_apps" => "List running apps (name, id, pid).",
         "launch_app" => {
-            "Start an app by name/id and wait for its window, or open an https:// address in the browser."
+            "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
         }
         "click" => {
-            "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it."
+            "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
         }
         "perform_secondary_action" => {
-            "Run one of an element's listed actions=[...] (not a plain click)."
+            "Run one of an element's listed actions=[...] (not a plain click). expect as in click."
         }
-        "set_value" => "Set a field's text, a slider, or a checkbox (\"true\"/\"false\") directly.",
+        "set_value" => {
+            "Set a field's text, a slider, or a checkbox (\"true\"/\"false\") directly. expect as in click."
+        }
         "select_text" => "Select the given text (or all text) in a text element.",
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => {
             "Drag from an element/point to another element/point; snap moves the ends onto a corner/edge/center/#hex."
         }
         "draw" => {
-            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace or design + step draws one colour step of a trace_image picture or a design. preview=true only shows them (over named cells, A1 top-left). Returns the cells it covers and where a bucket click fills each closed outline."
+            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}; a stroke may be a line (\"ellipse 100 100 40 40 fill 6\"). Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace or design + step draws one colour step of a trace_image picture or a design. preview=true only shows them (over named cells, A1 top-left). Returns the cells it covers and where a bucket click fills each closed outline."
         }
         "press_key" => {
-            "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it)."
+            "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it). expect as in click."
         }
         "type_text" => {
-            "Type text into the focused element (element_index focuses first; x,y points the mouse there first)."
+            "Type text into the focused element (element_index focuses first; x,y points the mouse there first). expect as in click."
         }
-        "find_element" => "Find elements by role/name/text; returns their indices.",
+        "find_element" => {
+            "Find elements by role/name/text; returns their indices (offset: the next page)."
+        }
         "wait_for" => {
             "Wait until an element matching role/name/text (and state) appears, or until the decision model answers yes to until=\"question about the window\"."
         }
@@ -1957,18 +2487,20 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Exact places in a window (x/y click takes): color=#hex areas, like=[l,t,r,b] look-alikes, or near=[x,y] + feature corner/edge/center."
         }
         "design" => {
-            "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; returns the picture, layers, checks and paint steps; export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
+            "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; a layer may be a line (\"sun ellipse 80 20 12 12 fill #ffcc00\"; change: \"sun fill #ff0000\"). Returns the picture, layers, checks and paint steps, then only what changed (a call that changes nothing shows all); export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
         }
         "scene" => {
-            "3D scene: plan a model as solids (box, cylinder, sphere, cone, torus, plane; size, at = centre, rotate; metres, Z up) with add/change/remove/mirror/repeat; returns front/right/top views to scale + perspective, extents, checks (floating, sinking, overlaps) and build numbers; export obj (temporary). Plan every 3D model here first."
+            "3D scene: plan a model as solids (box, cylinder, sphere, cone, torus, plane; size, at = centre, rotate; metres, Z up) with add/change/remove/mirror/repeat; an object may be a line (\"seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422\"). Returns front/right/top views to scale + perspective, extents, checks (floating, sinking, overlaps) and build numbers, then only what changed (a call that changes nothing shows all); export obj (temporary). Plan every 3D model here first."
         }
         "trace_image" => {
             "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
         }
         "screenshot" => {
-            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window, or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs; cells=true (with canvas): named cells over the document, cell=\"C4\": that cell magnified; zoom=[x,y]: magnified view to aim."
+            "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window (only what changed since your last picture of it; mode=window: all), or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs; cells=true (with canvas): named cells over the document, cell=\"C4\": that cell magnified; zoom=[x,y]: magnified view to aim."
         }
-        "batch" => "Run several tools in order: steps=[{tool, arguments}].",
+        "batch" => {
+            "Run steps in order, one report at the end. A step is a line (click 12 · click \"Save\" · double 12 · right 12 · set 4 \"Ada\" · type [4] \"text\" · key cmd+s · scroll [7] down [2] · select 4 \"word\" · action 9 name · wait \"text\" · find \"text\" · look; actions may end with expect …) or {tool, arguments}. Stops on an error, or on a window a step didn't expect (through_windows=true goes on)."
+        }
         "window" => {
             "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
         }
@@ -1977,7 +2509,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Run a script (Rhai, like JavaScript: let, if, for x in range(a, b), fn, |x| closures, [arrays], #{maps}) for loops over tools, maths, file or web data and graph-paper pictures. tool(name, #{args}) → text (try_tool() → #{ok, text, image}); set_app; elements(app, #{role, name, text}) → maps; colors(app, [[x,y]]); page(name, w, h, #{cell}) → p.rect/circle/line/path/polygon/text/fill_cell(\"C4\", colour)/text_in/cell(\"C4\")/at(x,y)/show/steps/export; cells(w, h, size); read_text/read_json/read_csv/write_text, fetch/fetch_json/download, remember/recall, regex_find, numbers, random, sleep, print; data/args = what you pass. help=true: every function. save=name (+description, params) keeps it as a tool of its own; run=name, list, show, delete."
         }
         "decide" => {
-            "Fast typed answers from the decision model (Jev, or a model the user added with the settings key): question (yes/no → probability), + options (choice) or scale (score, low→high); questions={name: {type, question, options|scale}} for several. About state (text/JSON), each of items (in parallel), or app's window; pick=\"description\" + app → element_index. setup=status|open (settings page)|test|remove|{provider, base_url, model, api_key}."
+            "Fast typed answers from the decision model (Jev, or a model the user added with the settings key): question (yes/no → probability), + options (choice) or scale (score, low→high); questions={name: {type, question, options|scale}} for several. About state (text/JSON), each of items (in parallel), or app's window; pick=\"description\" + app → element_index (read=true: and its whole text). setup=status|open (settings page)|test|remove|{provider, base_url, model, api_key}."
         }
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
@@ -2011,6 +2543,10 @@ fn strip_descriptions(v: &mut Value) {
                 }
             }
             if let Some(items) = map.get_mut("items") {
+                // A list's items are described by the tool's short text.
+                if let Value::Object(i) = items {
+                    i.remove("description");
+                }
                 strip_descriptions(items);
             }
         }
@@ -2066,20 +2602,185 @@ pub fn model_visible_len(defs: &[ToolDefinition]) -> usize {
 /// tools hidden because their feature is switched off (clipboard, screenshots).
 pub fn definitions_from(config: &crate::config::Config) -> Vec<ToolDefinition> {
     let screenshots = config.screenshot.enabled && !config.text_only;
+    let lean = config.tools.descriptions == crate::config::DescriptionStyle::Lean;
+    let decisions = !config.decision.provider.trim().is_empty();
     definitions_for(&config.tools)
         .into_iter()
         .filter(|d| match &*d.name {
             "get_clipboard" | "set_clipboard" => config.clipboard,
             "get_notifications" => config.notifications.enabled,
             "screenshot" => screenshots,
+            // Lean: the decision model's tool once there is one.
+            "decide" => !lean || decisions,
             _ => true,
         })
         .collect()
 }
 
+/// The tools that come first with the tool manager on ([tools] manager);
+/// the others are found by category with `find_tools`.
+pub const BASE_TOOLS: &[&str] = &[
+    "list_apps",
+    "launch_app",
+    "get_app_state",
+    "click",
+    "perform_secondary_action",
+    "set_value",
+    "select_text",
+    "scroll",
+    "drag",
+    "press_key",
+    "type_text",
+    "find_element",
+    "wait_for",
+    "batch",
+    "screenshot",
+];
+
+/// The other tools, by category: (name, what they are for, tools). Saved
+/// scripts belong to "scripts".
+pub const CATEGORIES: &[(&str, &str, &[&str])] = &[
+    (
+        "design",
+        "drawing, the design board, 3D scenes, copying a picture, exact places to aim at",
+        &["draw", "design", "scene", "trace_image", "locate"],
+    ),
+    ("windows", "arranging windows and screens", &["window"]),
+    (
+        "scripts",
+        "small programs for loops, maths and data, and saved scripts",
+        &["script"],
+    ),
+    (
+        "clipboard",
+        "reading and writing the clipboard",
+        &["get_clipboard", "set_clipboard"],
+    ),
+    (
+        "notifications",
+        "recent desktop notifications",
+        &["get_notifications"],
+    ),
+    (
+        "decisions",
+        "a fast decision model's typed answers",
+        &["decide"],
+    ),
+];
+
+/// The tool manager's own tools.
+pub const MANAGER_TOOLS: [&str; 2] = ["find_tools", "use_tool"];
+
+/// The category of a tool that isn't a base tool (a saved script is a
+/// script).
+pub fn category_of(name: &str) -> &'static str {
+    CATEGORIES
+        .iter()
+        .find(|(_, _, tools)| tools.contains(&name))
+        .map_or("scripts", |(c, _, _)| c)
+}
+
+/// `find_tools` (and `use_tool` when tools are run through it).
+pub fn manager_definitions(dispatch: bool) -> Vec<ToolDefinition> {
+    let categories: Vec<String> = CATEGORIES
+        .iter()
+        .map(|(c, about, _)| format!("{c} ({about})"))
+        .collect();
+    let then = if dispatch {
+        "run one with use_tool(name, arguments)"
+    } else {
+        "it is added to your tools"
+    };
+    let mut defs = vec![ToolDefinition {
+        name: "find_tools".into(),
+        title: "Find tools".into(),
+        description: format!(
+            "More tools, by category or by what they do: {}. Returns each tool with its arguments; {then}.",
+            categories.join(", ")
+        )
+        .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": CATEGORIES.iter().map(|c| c.0).collect::<Vec<_>>()},
+                "query": {"type": "string", "description": "Words for what the tool should do."}
+            },
+            "additionalProperties": false
+        }),
+        annotations: read_only("Find tools"),
+    }];
+    if dispatch {
+        defs.push(ToolDefinition {
+            name: "use_tool".into(),
+            title: "Use a tool".into(),
+            description: "Run a tool find_tools showed: name and its arguments.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+            annotations: acting("Use a tool"),
+        });
+    }
+    defs
+}
+
+/// Lean schemas: nested objects (a design's layers, a drawing's strokes)
+/// as the list of their keys (`*` marks required ones), no `window`, no
+/// defaults.
+fn lighten(schema: &mut Value) {
+    fn keys(v: &Value) -> Option<String> {
+        let props = v.get("properties")?.as_object()?;
+        let required: Vec<&str> = v
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        Some(
+            props
+                .keys()
+                .map(|k| {
+                    if required.contains(&k.as_str()) {
+                        format!("{k}*")
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    }
+    let Some(Value::Object(props)) = schema.get_mut("properties") else {
+        return;
+    };
+    props.remove("window");
+    for prop in props.values_mut() {
+        let Value::Object(p) = prop else { continue };
+        p.remove("default");
+        if let Some(k) = keys(&Value::Object(p.clone())) {
+            let kind = p.get("type").cloned().unwrap_or(json!("object"));
+            *prop = json!({"type": kind, "description": format!("keys: {k}")});
+            continue;
+        }
+        if let Some(items) = p.get_mut("items")
+            && let Some(k) = keys(items)
+        {
+            let kind = items.get("type").cloned().unwrap_or(json!("object"));
+            let line = if kind.is_array() { " (or a line)" } else { "" };
+            *items = json!({"type": kind, "description": format!("keys: {k}{line}")});
+        }
+    }
+}
+
 /// Tool definitions filtered and styled by the user's `[tools]` settings.
 pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> {
-    let compact = cfg.descriptions == crate::config::DescriptionStyle::Compact;
+    use crate::config::DescriptionStyle;
+    let compact = cfg.descriptions != DescriptionStyle::Full;
+    let lean = cfg.descriptions == DescriptionStyle::Lean;
     definitions()
         .into_iter()
         .filter(|d| cfg.is_enabled(&d.name))
@@ -2091,9 +2792,30 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
                 strip_descriptions(&mut d.input_schema);
                 share_repeats(&mut d.input_schema);
             }
+            if lean {
+                lighten(&mut d.input_schema);
+            }
+            // The last app named stands in for a missing one.
+            if cfg.default_app
+                && let Some(Value::Array(req)) = d.input_schema.get_mut("required")
+            {
+                req.retain(|r| r != "app");
+            }
             d
         })
         .collect()
+}
+
+/// Tools whose schema requires `app`: the ones [tools] default_app fills
+/// in.
+pub fn needs_app(name: &str) -> bool {
+    definitions().iter().any(|d| {
+        d.name == name
+            && d.input_schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|r| r.iter().any(|v| v == "app"))
+    })
 }
 
 #[cfg(test)]
@@ -2131,6 +2853,214 @@ mod tests {
     }
 
     #[test]
+    fn layers_and_objects_can_be_lines() {
+        assert_eq!(
+            layer_line("sun ellipse 80 20 12 12 fill #ffcc00").unwrap(),
+            json!({"id": "sun", "ellipse": [80, 20, 12, 12], "fill": "#ffcc00"})
+        );
+        assert_eq!(
+            layer_line("title text \"Hello there\" at 50 10 size 8 align center bold").unwrap(),
+            json!({"id": "title", "text": "Hello there", "at": [50, 10], "size": 8,
+                   "align": "center", "bold": true})
+        );
+        assert_eq!(
+            layer_line("box rect 10 10 50 30 4 fill none line #000000 2").unwrap(),
+            json!({"id": "box", "rect": [10, 10, 50, 30, 4], "fill": "none",
+                   "stroke": "#000000", "width": 2})
+        );
+        // An id that is a field's name is quoted.
+        assert_eq!(
+            layer_line("\"text\" fill #000000").unwrap(),
+            json!({"id": "text", "fill": "#000000"})
+        );
+        assert_eq!(
+            object_line("seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422").unwrap(),
+            json!({"id": "seat", "shape": "box", "size": [0.5, 0.5, 0.05],
+                   "at": [0, 0, 0.45], "color": "#884422"})
+        );
+        assert_eq!(
+            object_line("leg-2 at 1 2 3 rotate 0 90 0").unwrap(),
+            json!({"id": "leg-2", "at": [1, 2, 3], "rotate": [0, 90, 0]})
+        );
+        for bad in [
+            "a size",
+            "a size 1 2",
+            "a rect x",
+            "a bold maybe",
+            "a line",
+            "a wobble 1",
+        ] {
+            assert!(layer_line(bad).is_err(), "{bad}");
+        }
+        let args: DesignArgs = serde_json::from_value(json!({
+            "name": "d", "add": ["a rect 0 0 1 1", {"id": "b", "ellipse": [1, 1, 1, 1]}]
+        }))
+        .unwrap();
+        let add = args.add.unwrap();
+        assert_eq!(add[0].rect, Some(vec![0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(add[1].id.as_deref(), Some("b"));
+        let args: SceneArgs =
+            serde_json::from_value(json!({"name": "s", "change": ["seat at 0 0 1"]})).unwrap();
+        assert_eq!(args.change.unwrap()[0].at, Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            stroke_line("design logo step 2 fill 8").unwrap(),
+            json!({"design": "logo", "step": 2, "fill": 8})
+        );
+        assert!(stroke_line("logo rect 1 2 3 4").is_err());
+        let args: DrawArgs = serde_json::from_value(json!({
+            "app": "X", "strokes": ["ellipse 100 100 40 40 fill 6", {"rect": [1, 2, 3, 4]}]
+        }))
+        .unwrap();
+        assert_eq!(args.strokes[0].ellipse, Some([100.0, 100.0, 40.0, 40.0]));
+        assert_eq!(args.strokes[0].fill, Some(6.0));
+        assert_eq!(args.strokes[1].rect, Some(vec![1.0, 2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn batch_steps_can_be_short_lines() {
+        let step = |line: &str| {
+            let s = parse_step(line).unwrap_or_else(|e| panic!("{e}"));
+            (s.tool, s.arguments)
+        };
+        assert_eq!(
+            step("click 12"),
+            ("click".into(), json!({"element_index": 12}))
+        );
+        assert_eq!(
+            step("click \"Save As\""),
+            ("click".into(), json!({"name": "Save As"}))
+        );
+        assert_eq!(
+            step("click Save As"),
+            ("click".into(), json!({"name": "Save As"}))
+        );
+        assert_eq!(
+            step("double 3"),
+            (
+                "click".into(),
+                json!({"element_index": 3, "click_count": 2})
+            )
+        );
+        assert_eq!(
+            step("right 4"),
+            (
+                "click".into(),
+                json!({"element_index": 4, "button": "right"})
+            )
+        );
+        assert_eq!(
+            step("set 4 \"Ada Lovelace\""),
+            (
+                "set_value".into(),
+                json!({"element_index": 4, "value": "Ada Lovelace"})
+            )
+        );
+        assert_eq!(
+            step("set 4 12"),
+            (
+                "set_value".into(),
+                json!({"element_index": 4, "value": "12"})
+            )
+        );
+        assert_eq!(
+            step("type \"hi\\n\""),
+            ("type_text".into(), json!({"text": "hi\n"}))
+        );
+        assert_eq!(
+            step("type 4 \"x y\""),
+            (
+                "type_text".into(),
+                json!({"element_index": 4, "text": "x y"})
+            )
+        );
+        // A number alone is the text.
+        assert_eq!(step("type 42"), ("type_text".into(), json!({"text": "42"})));
+        assert_eq!(
+            step("key cmd+s"),
+            ("press_key".into(), json!({"key": "cmd+s"}))
+        );
+        assert_eq!(
+            step("key Down Down Return"),
+            ("press_key".into(), json!({"key": "Down Down Return"}))
+        );
+        assert_eq!(
+            step("scroll 7 down 2"),
+            (
+                "scroll".into(),
+                json!({"element_index": 7, "direction": "down", "amount": 2.0})
+            )
+        );
+        assert_eq!(
+            step("scroll up"),
+            ("scroll".into(), json!({"direction": "up"}))
+        );
+        assert_eq!(
+            step("select 4 \"word\""),
+            (
+                "select_text".into(),
+                json!({"element_index": 4, "text": "word"})
+            )
+        );
+        assert_eq!(
+            step("select 4"),
+            ("select_text".into(), json!({"element_index": 4}))
+        );
+        assert_eq!(
+            step("action 9 show_menu"),
+            (
+                "perform_secondary_action".into(),
+                json!({"element_index": 9, "action": "show_menu"})
+            )
+        );
+        assert_eq!(
+            step("wait \"Saved\""),
+            ("wait_for".into(), json!({"text": "Saved"}))
+        );
+        assert_eq!(
+            step("find Total"),
+            ("find_element".into(), json!({"text": "Total"}))
+        );
+        assert_eq!(step("look"), ("get_app_state".into(), json!({})));
+        assert_eq!(
+            step("click 5 expect dialog"),
+            (
+                "click".into(),
+                json!({"element_index": 5, "expect": "dialog"})
+            )
+        );
+        assert_eq!(
+            step("set 3 \"expect\" expect \"Saved\""),
+            (
+                "set_value".into(),
+                json!({"element_index": 3, "value": "expect", "expect": "Saved"})
+            )
+        );
+        for bad in [
+            "",
+            "jump 3",
+            "set x \"v\"",
+            "set 3",
+            "type",
+            "look 3",
+            "wait \"x\" expect y",
+            "type \"open",
+            "click 3 expect",
+            "scroll 3 sideways",
+        ] {
+            assert!(parse_step(bad).is_err(), "{bad}");
+        }
+        // Lines and objects mix.
+        let args: BatchArgs = serde_json::from_value(json!({
+            "app": "X",
+            "steps": ["click 1", {"tool": "get_app_state"}]
+        }))
+        .unwrap();
+        assert_eq!(args.steps[0].tool, "click");
+        assert_eq!(args.steps[1].tool, "get_app_state");
+        assert!(serde_json::from_value::<BatchArgs>(json!({"steps": ["nope"]})).is_err());
+    }
+
+    #[test]
     fn declared_properties_are_accepted() {
         // Each declared property name must round-trip through the parser.
         let full: Value = serde_json::from_str(
@@ -2144,7 +3074,8 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}], "speed": 300, "grid": 50, "palette": true,
+            "steps": [{"tool": "list_apps"}, "click 3"], "speed": 300,
+            "through_windows": true, "expect": "dialog", "grid": 50, "palette": true,
             "preview": false,
             "pick": [[1, 2]], "canvas": {"box": [0, 0, 10, 10], "size": [100, 100]},
             "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},
@@ -2189,7 +3120,7 @@ mod tests {
         let decide = json!({
             "question": "q", "options": ["a", "b"], "scale": ["lo", "hi"],
             "questions": {"n": {"question": "q"}}, "state": {"any": "json"},
-            "items": ["x", {"y": 1}], "app": "X", "window": "1", "pick": "the button",
+            "items": ["x", {"y": 1}], "app": "X", "window": "1", "pick": "the button", "read": true,
             "setup": "status"
         });
         for d in definitions() {
@@ -2206,6 +3137,59 @@ mod tests {
             ToolCall::parse(&d.name, Value::Object(args))
                 .unwrap_or_else(|e| panic!("{}: {e}", d.name));
         }
+    }
+
+    #[test]
+    fn lean_definitions_are_smaller_still_and_lose_no_tool() {
+        use crate::config::{Config, DescriptionStyle, ToolPreset};
+        let mut cfg = Config::default();
+        let compact = definitions_from(&cfg);
+        cfg.tools.descriptions = DescriptionStyle::Lean;
+        let lean = definitions_from(&cfg);
+        assert!(
+            model_visible_len(&lean) * 10 < model_visible_len(&compact) * 8,
+            "lean {} vs compact {}",
+            model_visible_len(&lean),
+            model_visible_len(&compact)
+        );
+        // decide waits for a decision model; every other tool is there.
+        assert_eq!(lean.len() + 1, compact.len());
+        assert!(!lean.iter().any(|d| d.name == "decide"));
+        cfg.decision.provider = "jev".into();
+        assert!(definitions_from(&cfg).iter().any(|d| d.name == "decide"));
+        // No window; a design's layers as the list of their keys.
+        let design = lean.iter().find(|d| d.name == "design").unwrap();
+        let text = design.input_schema.to_string();
+        assert!(
+            !lean
+                .iter()
+                .any(|d| d.input_schema["properties"].get("window").is_some())
+        );
+        assert!(text.contains("keys: ") && text.contains("rect"), "{text}");
+        assert!(!text.contains("\"default\""), "{text}");
+        // A small set for smaller models.
+        let mut small = Config::default();
+        small.tools.preset = ToolPreset::Small;
+        let names: Vec<String> = definitions_from(&small)
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect();
+        assert_eq!(names.len(), crate::config::SMALL_TOOLS.len(), "{names:?}");
+        // The app need not be named.
+        let mut d = Config::default();
+        d.tools.default_app = true;
+        let click = definitions_from(&d)
+            .into_iter()
+            .find(|t| t.name == "click")
+            .unwrap();
+        assert!(
+            !click.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "app")
+        );
+        assert!(needs_app("click") && !needs_app("screenshot") && !needs_app("list_apps"));
     }
 
     #[test]
@@ -2279,6 +3263,8 @@ mod tests {
                 screenshot: None,
                 ocr: false,
                 max_tokens: None,
+                within: None,
+                about: None,
             })
         );
         let c = ToolCall::parse(
