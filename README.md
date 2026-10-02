@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v3.7.5](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v3.8.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
 · [Benchmarks](bench/README.md)
@@ -57,6 +57,12 @@ State after the steps:
   changes, so the prompt cache holds.
 - **It reads what the tree can't.** Canvases and painted text are read off
   the screen and become clickable `ocr text` elements.
+- **A decision model, if you want one.** Add a fast model (TypeSafe's
+  Jev, or any OpenAI-compatible one) and the agent hands it the small
+  judgments: which of 50 reviews are positive, has the page loaded,
+  which element is "the add-to-cart button". The server also asks it
+  on its own where that saves a turn, answers the same question once,
+  and never waits on it. Without one, everything works as before.
 - **You stay in control.** An on-screen indicator, an emergency stop key
   (Ctrl+Alt+Esc), a pause while you use the mouse, masked passwords and
   card numbers, and keystrokes that only ever go to the app they're meant

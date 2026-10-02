@@ -1,3 +1,15 @@
+# Upgrading to v3.8
+
+Nothing changes without a decision model. With one:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| An `expect`ed text shown in other words | not seen | confirmed by the model ("in other words, as the decision model reads it: 0.93") | `decision.auto = false` |
+| `get_app_state(about=…)` | one request per part, always the model's judgment | one request for all the parts; the words matched where the model doesn't answer | `decision.auto = false` (words only) |
+| `find_tools(query=…)` naming no tool | the words in descriptions | the model's choice, marked "(Chosen by the decision model.)" | `decision.auto = false` |
+| The same question about the same state | asked again | answered from memory for 5 minutes | `decision.cache_seconds = 0` |
+| A failing model | each question waits for it | the server's own questions stop for a minute after three failures | none: the agent's own questions are always asked |
+
 # Upgrading to v3.7.5
 
 A debugging release: no setting or tool changes. A few things that were

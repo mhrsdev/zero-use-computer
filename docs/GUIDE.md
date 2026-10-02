@@ -185,6 +185,60 @@ first time a task would gain from it. You can also give the settings to
 the agent in the chat (`decide setup={…}`), but a key typed there stays in
 the chat's history.
 
+### Optional, and a gain when it's there (v3.8)
+
+The server never depends on a decision model: everything works without
+one, and nothing starts, waits or costs anything until one is set up. With
+one, a **decision layer** (`decision/judge.rs`) sits between the engine and
+the model:
+
+```
+ the agent's questions                 the server's own questions
+ decide · wait_for(until) · pick       expect · about · find_tools
+        │ always asked                        │ only when it can help
+        └────────────────┬────────────────────┘
+                 the decision layer
+     cache · time limit · rest after failures · counts
+                         │ what isn't answered yet, in one go
+               Decider (Jev / OpenAI-compatible)
+                         │ one curl for all of them
+```
+
+- **The server asks on its own where that saves the agent a turn or a
+  read**, and only there; without a model it judges those itself, as
+  before:
+  - `expect` with a text that isn't on screen word for word: "Saved" for
+    `expect: "saved successfully"` is confirmed instead of "not seen",
+    which would cost a look;
+  - `get_app_state(about=…)`: which parts of the window are about that
+    (the words of `about` are matched first; the model's judgment, when it
+    answers, replaces it part by part);
+  - `find_tools(query=…)` when no word of the query names a tool ("make a
+    logo" → `design`).
+- **Its own questions never hold the agent up**: they wait at most
+  `decision.auto_timeout_ms` (3 s), and after three failures in a row they
+  stop for a minute, while the server judges by itself. The agent's own
+  questions (`decide`, `wait_for` until, `pick`) always go, and their
+  errors are shown.
+- **Fewer requests**:
+  - `about` sends all the parts of a window in one request (one question
+    each), not one request a part;
+  - the same question about the same state is answered from memory for
+    `decision.cache_seconds` (5 min): a wait that asks again, the same
+    look, a pick repeated;
+  - many requests (`items`, `decide_each`) go out through one `curl
+    --parallel`: one process instead of one each, and with an HTTPS API
+    that speaks HTTP/2, one connection. Measured here over local HTTP/1.1
+    it is as fast as before (32 requests: 364 ms against 332 ms); the gain
+    is in fewer TLS handshakes to a remote API and fewer processes to
+    start, which this test can't show. A curl older than 7.66 sends them
+    one each, as before.
+- **What it cost is counted**: `decide(setup="status")` says how many
+  requests went (and how many the server sent on its own), how many came
+  from the cache, the average wait, and how much text the model read
+  instead of the agent.
+- `decision.auto = false` keeps the model for the agent's own questions.
+
 The key is saved in `config.toml` under `[decision]`, which is then
 readable by you only; it reaches `curl` on its input (never on a command
 line), and is never shown again — the page, `doctor`, `config show` and

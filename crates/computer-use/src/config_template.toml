@@ -294,6 +294,11 @@ api_key_env = ""            # or the name of an environment variable holding the
 timeout_ms = 15000          # longest wait for one answer
 max_state_chars = 20000     # a longer state keeps its start and end
 parallel = 8                # requests at once when judging several items
+auto = true                 # the server asks it on its own where that saves the agent a turn
+                            # (expect in other words, get_app_state about, find_tools);
+                            # without a model it judges those itself, as before
+auto_timeout_ms = 3000      # longest wait for those; then the server judges by itself
+cache_seconds = 300         # the same question about the same state is answered once
 
 # Private data is masked in element text and blacked out of screenshots
 # before anything is sent to the model.
