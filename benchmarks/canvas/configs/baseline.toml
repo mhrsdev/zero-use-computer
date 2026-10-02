@@ -1,0 +1,26 @@
+# Screenshot-every-call baseline: a SIMULATION of Codex-style computer use
+# with this same server (not Codex itself). Same settings as
+# crates/computer-use/examples/compare.rs's "Codex-style" session, plus no
+# text recognition, since that approach has none:
+#   - a full screenshot with every get_app_state
+#   - no screen memory, no picture dedupe, whole-window pictures only
+#   - no change report after an action
+#   - OCR off, and unavailable even if get_app_state(ocr=true) is asked
+[screenshot]
+attach = "always"
+scope = "full"
+
+[cache]
+enabled = false
+dedupe_screenshots = false
+
+[tree]
+report_changes = false
+
+[ocr]
+mode = "off"
+engine = "tesseract"
+tesseract_path = "/nonexistent/tesseract"
+
+[audit]
+enabled = true

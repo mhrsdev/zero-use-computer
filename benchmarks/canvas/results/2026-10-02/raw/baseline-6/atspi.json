@@ -1,0 +1,39 @@
+{
+ "raw_nodes": 433,
+ "drawing_areas": [
+  {
+   "children": 0,
+   "name": "",
+   "interfaces": [
+    "Accessible",
+    "Collection",
+    "Component"
+   ]
+  },
+  {
+   "children": 0,
+   "name": "",
+   "interfaces": [
+    "Accessible",
+    "Collection",
+    "Component"
+   ]
+  },
+  {
+   "children": 0,
+   "name": "",
+   "interfaces": [
+    "Accessible",
+    "Collection",
+    "Component"
+   ]
+  }
+ ],
+ "label_hits": [
+  {
+   "label": "Database",
+   "role": "menu item",
+   "text": "Database"
+  }
+ ]
+}
