@@ -4,7 +4,8 @@
 
 The design board (`design`, the Canva-like tool) is cheaper, faster and
 more accurate: two thirds fewer tokens over a typical session, and what
-it shows, exports, checks and paints now agrees with what was asked
+it shows, exports, checks and paints now agrees with what was asked. And
+the on-screen cursor no longer lags behind the action or skips it
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.0...v3.8.1);
 [measured](bench/results/v3.8.1-design/compare.md)).
 
@@ -74,6 +75,31 @@ was asked. Each of these has a test that failed before:
   to them is reported instead of "as before".
 - The skill no longer says a layer can be written as the listing shows
   it (a line takes the shape's own numbers).
+
+### The cursor keeps up with the work
+
+The on-screen indicator's cursor showed the action late, or not at all:
+
+- **The action waited for nothing.** The engine told the indicator to
+  glide the cursor there and acted at once, so the click landed before
+  the cursor arrived (a 220 ms glide, plus the indicator's own delay).
+  Now the indicator says when the cursor is shown at the point, and the
+  action waits for that (at most `overlay.move_ms` and a little more; a
+  cursor already there, or hidden, answers at once).
+- **No cursor for an element without its own box** (accessibility trees
+  have many): it now goes to the nearest box around the element, else to
+  the window.
+- **`type_text` and `press_key` without an element** now show the cursor
+  at the focused element, where the keys go.
+- **A drawing** is followed by the cursor as the pen moves, instead of the
+  cursor waiting at the start and jumping to the end. A drag glides along
+  with the drag.
+- **A click glided twice** (the second glide restarted the first); now
+  once.
+
+When the cursor is shown, each action takes up to `overlay.move_ms` (220
+ms) longer: a lower value is quicker, and `overlay.show_cursor = false`
+waits for nothing.
 
 ### Measured
 

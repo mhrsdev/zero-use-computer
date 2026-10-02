@@ -2507,12 +2507,30 @@ mod accuracy {
     // bold without a font: the board measures and paints it regular.
     #[test]
     fn bold_without_a_font_is_bold() {
+        // The bold face the system has for "no font": none, nothing to check.
+        let Some(family) = DEFAULT_BOLD.iter().find(|f| font_file(f, true).is_some()) else {
+            return;
+        };
         let (d, mut fonts) = design(vec![
             json!({"id": "a", "text": "EST. 2024 WIDE TITLE", "at": [10, 10], "size": 64}),
             json!({"id": "b", "text": "EST. 2024 WIDE TITLE", "at": [10, 200], "size": 64, "bold": true}),
+            json!({"id": "c", "text": "EST. 2024 WIDE TITLE", "at": [10, 400], "size": 64, "bold": true, "font": family}),
         ]);
-        let (a, b) = (bbox(&d, &mut fonts, "a"), bbox(&d, &mut fonts, "b"));
+        let (a, b, c) = (
+            bbox(&d, &mut fonts, "a"),
+            bbox(&d, &mut fonts, "b"),
+            bbox(&d, &mut fonts, "c"),
+        );
+        // Measured with that bold face, not with the regular one.
+        assert!(
+            (b.width - c.width).abs() < 0.01,
+            "bold {b:?}, {family} bold {c:?}"
+        );
+        // Where the usual sans has its own bold (Linux), that is wider. (On
+        // a Mac the usual face, Arial Unicode, has none: Arial Bold is used.)
+        #[cfg(target_os = "linux")]
         assert!(b.width > a.width + 5.0, "regular {a:?} bold {b:?}");
+        let _ = a;
     }
 
     // mirror along y of multiline centred text.

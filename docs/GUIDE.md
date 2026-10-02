@@ -415,7 +415,10 @@ their mouse:
 - **The agent's own cursor.** A separate pointer — a rounded arrowhead in its
   own colour with a soft shadow, a white edge, an outline and glow in the
   state colour, and a small name tag ("Zero", `cursor_tag`) — glides to where
-  the agent acts and ripples where it clicks. The real mouse is never moved, locked or restyled:
+  the agent acts and ripples where it clicks. Each action waits until the
+  cursor is shown there (at most `move_ms`), so what the user sees happens
+  where the cursor is, not before it gets there; it follows a drawing as the
+  pen moves, and goes to the focused element for typing. The real mouse is never moved, locked or restyled:
   element actions go through accessibility APIs, and the coordinate fallbacks
   on Windows and Linux put the pointer straight back (`restore_pointer`;
   macOS posts events to the app without moving it).
