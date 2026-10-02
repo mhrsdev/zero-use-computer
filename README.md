@@ -1,6 +1,6 @@
 # Zero Use Computer
 
-**[Download v3.2.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
+**[Download v3.6.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)**
 · [What's new](CHANGELOG.md) · [Connect a client](docs/CONNECT.md)
 · [License](LICENSE)
 
