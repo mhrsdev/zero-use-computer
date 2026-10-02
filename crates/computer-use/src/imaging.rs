@@ -287,6 +287,42 @@ pub fn uniform(cap: &Capture) -> bool {
     same * 100 > total * 99
 }
 
+/// The pixels of `new` that differ from `old` (same size) by more than
+/// `tolerance` in any channel, as one rectangle (x, y, width, height).
+/// `None` when nothing differs, or the sizes differ.
+pub fn diff_box(old: &Capture, new: &Capture, tolerance: u8) -> Option<(u32, u32, u32, u32)> {
+    if (old.width, old.height) != (new.width, new.height) || old.rgba.len() != new.rgba.len() {
+        return None;
+    }
+    let w = new.width as usize;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    let rows = old
+        .rgba
+        .chunks_exact(w * 4)
+        .zip(new.rgba.chunks_exact(w * 4));
+    for (y, (a, b)) in rows.enumerate() {
+        if a == b {
+            continue;
+        }
+        let differs = |x: &usize| {
+            let (p, q) = (&a[x * 4..x * 4 + 3], &b[x * 4..x * 4 + 3]);
+            p.iter().zip(q).any(|(u, v)| u.abs_diff(*v) > tolerance)
+        };
+        let (Some(first), Some(last)) = ((0..w).find(differs), (0..w).rev().find(differs)) else {
+            continue;
+        };
+        (x0, y0, x1, y1) = (x0.min(first), y0.min(y), x1.max(last), y1.max(y));
+    }
+    (x0 != usize::MAX).then(|| {
+        (
+            x0 as u32,
+            y0 as u32,
+            (x1 - x0 + 1) as u32,
+            (y1 - y0 + 1) as u32,
+        )
+    })
+}
+
 /// Cut a pixel rectangle (x, y, width, height) out of a capture.
 pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
     if cap.width == 0 || cap.height == 0 {
@@ -986,6 +1022,28 @@ pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_box_finds_the_changed_pixels() {
+        let blank = |w: u32, h: u32| Capture {
+            width: w,
+            height: h,
+            rgba: vec![255; (w * h * 4) as usize],
+            bounds: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+        };
+        let a = blank(100, 80);
+        let mut b = a.clone();
+        assert_eq!(diff_box(&a, &b, 0), None);
+        for (x, y) in [(10usize, 20usize), (40, 21), (25, 60)] {
+            b.rgba[(y * 100 + x) * 4] = 0;
+        }
+        assert_eq!(diff_box(&a, &b, 0), Some((10, 20, 31, 41)));
+        // Within the tolerance: the same.
+        let mut c = a.clone();
+        c.rgba[0] = 250;
+        assert_eq!(diff_box(&a, &c, 8), None);
+        assert_eq!(diff_box(&a, &blank(100, 81), 0), None);
+    }
 
     #[test]
     fn widen_keeps_rectangles_outside_the_picture_inside_it() {

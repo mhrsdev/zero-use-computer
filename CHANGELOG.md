@@ -1,5 +1,85 @@
 # Changelog
 
+## v3.8.1
+
+The design board (`design`, the Canva-like tool) is cheaper, faster and
+more accurate: two thirds fewer tokens over a typical session, and what
+it shows, exports, checks and paints now agrees with what was asked
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.0...v3.8.1);
+[measured](bench/results/v3.8.1-design/compare.md)).
+
+| | v3.8.0 | v3.8.1 |
+|---|---:|---:|
+| a badge built and fixed (10 calls): tokens | 10,994 | **3,750** (−66%) |
+| its time on the server | 141 ms | **90 ms** |
+| a page of 150 layers (3 calls): tokens | 7,371 | **4,619** (−37%) |
+| its time on the server | 93 ms | **38 ms** |
+
+### Fewer tokens
+
+- **Only the part of the picture that changed.** After the first
+  picture, a change sends just the part whose pixels changed, with where
+  it is ("x 640–760, y 440–560 (G5 to H6)"). Recolouring a star:
+  130×125 px, 22 tokens, instead of the whole page's 1,049. A change over
+  more than half the page, a look (only `name`), or other marks (`show`)
+  still get all of it. `screenshot.scope = "full"` turns it off, as for
+  screenshots.
+- **Export shows nothing new:** `export` alone no longer sends the
+  picture and the listing again.
+- **The picture is remembered through a look:** zooming into a cell no
+  longer makes the next change send the whole page.
+- **Look-alike layers in a row are one record** in the listing (`3 ×
+  ellipse w 16 h 16 fill #1D3557: d1 x 292 y 532 · d2 x 382 y 532 · d3
+  x 492 y 532`), as `get_app_state` lists look-alike elements: 150 layers
+  of a pattern in 1,216 tokens instead of 2,089.
+
+### Faster
+
+- **Each shape is worked out once.** Its lines were worked out again for
+  every box, check, step and picture (about five times a call); now
+  once, until it changes. A change on a page of 150 layers: 28 → 10 ms.
+
+### More accurate
+
+What the board shows, exports, checks and paints now agrees with what
+was asked. Each of these has a test that failed before:
+
+- **Turning a moved or mirrored shape:** `rotate` with `about` after a
+  `move`, `align` or `distribute` turned about the wrong point (by the
+  move), and a mirrored copy turned the wrong way.
+- **Bold with no font** was measured and painted regular, while the SVG
+  and the app make it bold: boxes, centring and checks were too narrow.
+- **SVG export matches the board:**
+  - open lines (an arc) are never filled;
+  - text sits on the board's baseline, keeps its opacity, its outline
+    and its spaces, and names a sans font when none is given;
+  - lines are as wide as the board draws them.
+- **A line added by `change`** is 2 wide, as on a new layer (it was 0:
+  invisible in the SVG).
+- **Text with `fill: "none"` and a line** is outlined, not painted black.
+- **Checks:**
+  - a layer wider than most of the page is still reported when it runs
+    off it (only a layer covering the page edge to edge is meant to
+    reach the edges, and only on that axis);
+  - contrast is measured against what really shows behind the text,
+    see-through layers and the text's own opacity included.
+- **Curves given only `y` (or only `x`)** run across the page, not five
+  pages: their boxes, `to`, `align`, `distribute` and the SVG were wrong.
+- **Paint steps** give a see-through layer the colour it shows (a 20%
+  black shadow is a light grey step, not black).
+- **`distribute`** spaces layers up to the furthest end, so a wide one
+  isn't pushed off the page.
+- **A cell past the page** (`show: {"cell": …}`) ends at the page.
+- **The listing tells rounded corners, turns and repeats**, so a change
+  to them is reported instead of "as before".
+- The skill no longer says a layer can be written as the listing shows
+  it (a line takes the shape's own numbers).
+
+### Measured
+
+`examples/design_bench.rs` builds and fixes a badge and a page of 150
+layers, and reports each call's tokens and time; run it on any release.
+
 ## v3.8.0
 
 The decision model, built in so that the server never depends on one and

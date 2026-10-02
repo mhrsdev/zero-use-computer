@@ -10,7 +10,7 @@ use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke,
 
 use crate::draw::{self, Affine, Frame};
 use crate::overlay::text::{Fonts, layout};
-use crate::tools::{DesignArgs, DesignLayer, DrawStroke, TextAlign};
+use crate::tools::{DesignArgs, DesignLayer, DrawNumber, DrawStroke, TextAlign};
 use crate::types::{Capture, Point, Rect};
 
 pub type Rgb = [u8; 3];
@@ -108,11 +108,27 @@ impl FontCache {
     pub fn get(&mut self, family: Option<&str>, bold: bool) -> &Fonts {
         let key = (family.unwrap_or("").trim().to_lowercase(), bold);
         self.loaded.entry(key).or_insert_with(|| {
-            let file = family.and_then(|f| font_file(f, bold)).unwrap_or_default();
-            Fonts::load(&file)
+            let file = match family {
+                Some(f) => font_file(f, bold),
+                // Bold with no family: the system's usual sans, bold (else
+                // it would be measured and painted regular).
+                None if bold => DEFAULT_BOLD.iter().find_map(|f| font_file(f, true)),
+                None => None,
+            };
+            Fonts::load(&file.unwrap_or_default())
         })
     }
 }
+
+/// Families tried for bold text with no font given, in order.
+const DEFAULT_BOLD: &[&str] = &[
+    "sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "Arial",
+    "Segoe UI",
+    "Helvetica",
+];
 
 /// The font file for a family name (and bold), if one is installed.
 fn font_file(family: &str, bold: bool) -> Option<String> {
@@ -222,6 +238,29 @@ fn font_file(family: &str, bold: bool) -> Option<String> {
     found.into_iter().next().map(|f| f.1)
 }
 
+/// A layer as the listing tells it: `id kind x y w h rest`.
+struct Item {
+    id: String,
+    kind: String,
+    place: String,
+    size: String,
+    rest: String,
+}
+
+impl Item {
+    fn line(&self) -> String {
+        format!(
+            "{} {}{}{}{}",
+            self.id, self.kind, self.place, self.size, self.rest
+        )
+    }
+
+    /// What look-alike layers share: all but the id and the place.
+    fn look(&self) -> String {
+        format!("{}{}{}", self.kind, self.size, self.rest)
+    }
+}
+
 /// What a step paints.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepKind {
@@ -251,10 +290,36 @@ pub struct Design {
     /// The graph paper's cell size (None: about eight across the page).
     pub cell: Option<f64>,
     pub layers: Vec<Layer>,
+    /// Each shape's lines, worked out once: by what the shape is (its
+    /// stroke, its transform and the page), so a copy of the design shares
+    /// them and a change makes new ones.
+    shapes: ShapeCache,
+}
+
+/// Lines of shapes already worked out, by [`shape_key`].
+#[derive(Debug, Clone, Default)]
+struct ShapeCache(std::sync::Arc<std::sync::Mutex<HashMap<u64, Lines>>>);
+
+impl ShapeCache {
+    /// The most kept (then all are dropped, and worked out again as asked).
+    const MOST: usize = MAX_LAYERS * 4;
+
+    fn get(&self, key: u64) -> Option<Lines> {
+        self.0.lock().ok()?.get(&key).cloned()
+    }
+
+    fn put(&self, key: u64, lines: &Lines) {
+        if let Ok(mut m) = self.0.lock() {
+            if m.len() >= Self::MOST {
+                m.clear();
+            }
+            m.insert(key, lines.clone());
+        }
+    }
 }
 
 /// What to draw over the picture besides the design.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Extras {
     pub grid: Option<f64>,
     pub ids: bool,
@@ -272,6 +337,7 @@ impl Design {
             margin: (width.min(height) * 0.05).round(),
             cell: None,
             layers: Vec::new(),
+            shapes: ShapeCache::default(),
         }
     }
 
@@ -299,10 +365,50 @@ impl Design {
         )
     }
 
-    /// A layer's shape as lines in the design's units.
+    /// A layer's shape as lines in the design's units (worked out once).
     pub fn lines(&self, layer: &Layer) -> Result<Lines, String> {
         let Some(stroke) = &layer.shape else {
             return Ok(Vec::new());
+        };
+        let key = self.shape_key(layer);
+        if let Some(lines) = self.shapes.get(key) {
+            return Ok(lines);
+        }
+        let lines = self.work_out(layer, stroke)?;
+        self.shapes.put(key, &lines);
+        Ok(lines)
+    }
+
+    /// What tells a shape's lines apart: the stroke, its transform, the
+    /// page they are worked out on (and the id, which errors name).
+    fn shape_key(&self, layer: &Layer) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", layer.shape).hash(&mut h);
+        let t = layer.transform;
+        for v in [t.a, t.b, t.c, t.d, t.e, t.f, self.width, self.height] {
+            v.to_bits().hash(&mut h);
+        }
+        layer.id.hash(&mut h);
+        h.finish()
+    }
+
+    fn work_out(&self, layer: &Layer, stroke: &DrawStroke) -> Result<Lines, String> {
+        // A curve given only y (a plot in x) or only x runs across the
+        // page, not across the room the frame keeps around it.
+        let mut over_page;
+        let stroke = match (&stroke.x, &stroke.y, &stroke.t) {
+            (None, Some(_), None) => {
+                over_page = stroke.clone();
+                over_page.t = Some([DrawNumber::Num(0.0), DrawNumber::Num(self.width)]);
+                &over_page
+            }
+            (Some(_), None, None) => {
+                over_page = stroke.clone();
+                over_page.t = Some([DrawNumber::Num(0.0), DrawNumber::Num(self.height)]);
+                &over_page
+            }
+            _ => stroke,
         };
         let frame = self.frame();
         let shapes = crate::engine::draw_shapes(stroke, &frame)?;
@@ -326,8 +432,10 @@ impl Design {
             .collect())
     }
 
-    /// A text layer's lines: (text, left, top, width, height).
-    fn text_lines(t: &Text, fonts: &mut FontCache) -> Vec<(String, f64, f64, f64, f64)> {
+    /// A text layer's lines: (text, left, top, width, height, ascent: the
+    /// baseline is that far below the top).
+    #[allow(clippy::type_complexity)]
+    fn text_lines(t: &Text, fonts: &mut FontCache) -> Vec<(String, f64, f64, f64, f64, f64)> {
         let f = fonts.get(t.font.as_deref(), t.bold);
         let mut out = Vec::new();
         let mut top = t.at.1;
@@ -339,7 +447,12 @@ impl Design {
                 TextAlign::Center => t.at.0 - w / 2.0,
                 TextAlign::Right => t.at.0 - w,
             };
-            out.push((line.to_string(), left, top, w, h));
+            let ascent = if p.ascent > 0.0 {
+                f64::from(p.ascent)
+            } else {
+                h * 0.8
+            };
+            out.push((line.to_string(), left, top, w, h, ascent));
             top += h * 1.15;
         }
         out
@@ -349,7 +462,7 @@ impl Design {
     pub fn bbox(&self, layer: &Layer, fonts: &mut FontCache) -> Option<Rect> {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         if let Some(t) = &layer.text {
-            for (_, l, top, w, h) in Self::text_lines(t, fonts) {
+            for (_, l, top, w, h, _) in Self::text_lines(t, fonts) {
                 (x0, y0, x1, y1) = (x0.min(l), y0.min(top), x1.max(l + w), y1.max(top + h));
             }
         }
@@ -641,10 +754,12 @@ impl Design {
         let size = |b: &Rect| if across { b.width } else { b.height };
         items.sort_by(|p, q| start(&p.1).total_cmp(&start(&q.1)));
         let first = start(&items[0].1);
+        // The furthest end, not the last one to start (a wide one can
+        // reach further).
         let last = items
-            .last()
+            .iter()
             .map(|(_, b)| start(b) + size(b))
-            .unwrap_or(first);
+            .fold(first, f64::max);
         let total: f64 = items.iter().map(|(_, b)| size(b)).sum();
         let gap = (last - first - total) / (items.len() - 1) as f64;
         let mut pos = first;
@@ -660,40 +775,94 @@ impl Design {
         Ok(())
     }
 
-    /// The layers, back to front, one line each.
+    /// The layers, back to front. Three or more in a row that look alike
+    /// (the same kind, size and colours: a row of dots, a ring of stars)
+    /// are one record, `4 × ellipse w 16 h 16 fill #1D3557: d1 x 292 y 532
+    /// · d2 x 382 y 532 · …`, as get_app_state lists look-alike elements.
     pub fn listing(&self, fonts: &mut FontCache) -> String {
-        let lines: Vec<String> = self.items(fonts).into_iter().map(|(_, l)| l).collect();
-        lines.join("; ")
+        let parts: Vec<Item> = self.layers.iter().map(|l| self.item(l, fonts)).collect();
+        let mut out: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < parts.len() {
+            let look = parts[i].look();
+            let run = parts[i..].iter().take_while(|p| p.look() == look).count();
+            if run >= 3 {
+                let places: Vec<String> = parts[i..i + run]
+                    .iter()
+                    .map(|p| format!("{}{}", p.id, p.place))
+                    .collect();
+                out.push(format!("{run} × {look}: {}", places.join(" · ")));
+            } else {
+                out.extend(parts[i..i + run].iter().map(Item::line));
+            }
+            i += run;
+        }
+        out.join("; ")
     }
 
     /// Each layer's id and its line in the listing, back to front.
     pub fn items(&self, fonts: &mut FontCache) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        for l in &self.layers {
-            let b = self.bbox(l, fonts);
-            let mut s = format!("{} {}", l.id, l.kind());
-            if let Some(b) = b {
-                s.push_str(&format!(
-                    " x {:.0} y {:.0} w {:.0} h {:.0}",
-                    b.x, b.y, b.width, b.height
-                ));
+        self.layers
+            .iter()
+            .map(|l| {
+                let item = self.item(l, fonts);
+                (l.id.clone(), item.line())
+            })
+            .collect()
+    }
+
+    /// A layer as the listing tells it.
+    fn item(&self, l: &Layer, fonts: &mut FontCache) -> Item {
+        let mut kind = l.kind().to_string();
+        if let Some(shape) = &l.shape {
+            if let Some(r) = shape
+                .rect
+                .as_ref()
+                .and_then(|r| r.get(4))
+                .filter(|r| **r > 0.0)
+            {
+                kind.push_str(&format!(" corners {r:.0}"));
             }
-            if let Some(t) = &l.text {
-                let short: String = t.text.chars().take(24).collect();
-                s.push_str(&format!(" \"{short}\" size {:.0}", t.size));
+            if let Some(r) = shape.rotate.filter(|r| *r != 0.0) {
+                // As it looks: a mirrored shape is kept turned the other way.
+                let r = if l.transform.mirrors() { -r } else { r };
+                kind.push_str(&format!(" turned {r:.0}°"));
             }
-            if let Some(c) = l.fill {
-                s.push_str(&format!(" fill {}", hex(c)));
+            if let Some(rep) = &shape.repeat {
+                kind.push_str(&format!(" ×{}", rep.count));
             }
-            if let Some(c) = l.stroke {
-                s.push_str(&format!(" line {} {:.0}", hex(c), l.width));
-            }
-            if l.opacity < 1.0 {
-                s.push_str(&format!(" opacity {:.2}", l.opacity));
-            }
-            out.push((l.id.clone(), s));
         }
-        out
+        let (mut place, mut size) = (String::new(), String::new());
+        if let Some(b) = self.bbox(l, fonts) {
+            place = format!(" x {:.0} y {:.0}", b.x, b.y);
+            size = format!(" w {:.0} h {:.0}", b.width, b.height);
+        }
+        let mut rest = String::new();
+        if let Some(t) = &l.text {
+            let short: String = t.text.chars().take(24).collect();
+            let more = if t.text.chars().count() > 24 {
+                "…"
+            } else {
+                ""
+            };
+            rest.push_str(&format!(" \"{short}{more}\" size {:.0}", t.size));
+        }
+        if let Some(c) = l.fill {
+            rest.push_str(&format!(" fill {}", hex(c)));
+        }
+        if let Some(c) = l.stroke {
+            rest.push_str(&format!(" line {} {:.0}", hex(c), l.width));
+        }
+        if l.opacity < 1.0 {
+            rest.push_str(&format!(" opacity {:.2}", l.opacity));
+        }
+        Item {
+            id: l.id.clone(),
+            kind,
+            place,
+            size,
+            rest,
+        }
     }
 
     /// Paint the design `scale` pixels per unit.
@@ -753,22 +922,27 @@ impl Design {
                 }
             }
             if let Some(t) = &l.text {
-                let c = l.fill.unwrap_or([0, 0, 0]);
                 let lines = Self::text_lines(t, fonts);
                 let f = fonts.get(t.font.as_deref(), t.bold);
-                for (line, left, top, _, _) in lines {
+                for (line, left, top, _, _, _) in lines {
                     let p = layout(f, &line, (t.size * scale) as f32);
-                    if let Some(path) = p.path {
-                        pix.fill_path(
-                            &path,
-                            &paint(c),
-                            FillRule::Winding,
-                            Transform::from_translate(
-                                ((left - view.x) * scale) as f32,
-                                ((top - view.y) * scale) as f32,
-                            ),
-                            None,
-                        );
+                    let Some(path) = p.path else { continue };
+                    let at = Transform::from_translate(
+                        ((left - view.x) * scale) as f32,
+                        ((top - view.y) * scale) as f32,
+                    );
+                    // Filled with its fill ("none": not filled), outlined
+                    // with its line.
+                    if let Some(c) = l.fill {
+                        pix.fill_path(&path, &paint(c), FillRule::Winding, at, None);
+                    }
+                    if let Some(c) = l.stroke {
+                        let stroke = Stroke {
+                            width: (l.width.max(0.5) * scale) as f32,
+                            line_join: LineJoin::Round,
+                            ..Stroke::default()
+                        };
+                        pix.stroke_path(&path, &paint(c), &stroke, at, None);
                     }
                 }
             }
@@ -888,7 +1062,10 @@ impl Design {
     ) -> Result<(Capture, String), String> {
         let cells = self.cells();
         let (col, row) = cells.parse(name)?;
-        let sp = cells.span(col, row);
+        let mut sp = cells.span(col, row);
+        // The last row or column may run past the page: only the page.
+        sp.x1 = sp.x1.min(self.width);
+        sp.y1 = sp.y1.min(self.height);
         let pad = cells.step * 0.15;
         let view = Rect::new(
             (sp.x0 - pad).max(0.0),
@@ -993,24 +1170,26 @@ impl Design {
             h = n(self.height)
         );
         for l in &self.layers {
-            let mut style = String::new();
-            match l.fill {
-                Some(c) => style.push_str(&format!(" fill=\"{}\"", hex(c))),
-                None => style.push_str(" fill=\"none\""),
-            }
+            // The line and the opacity; then the fill with them.
+            let mut line_style = String::new();
             if let Some(c) = l.stroke {
-                style.push_str(&format!(
+                line_style.push_str(&format!(
                     " stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"",
                     hex(c),
-                    n(l.width)
+                    // As wide as the board draws it.
+                    n(l.width.max(0.5))
                 ));
             }
             if l.opacity < 1.0 {
-                style.push_str(&format!(" opacity=\"{}\"", n(l.opacity)));
+                line_style.push_str(&format!(" opacity=\"{}\"", n(l.opacity)));
             }
+            let style = match l.fill {
+                Some(c) => format!(" fill=\"{}\"{line_style}", hex(c)),
+                None => format!(" fill=\"none\"{line_style}"),
+            };
             let id = esc(&l.id);
             if let Some(t) = &l.text {
-                for (k, (line, left, top, w, h)) in
+                for (k, (line, left, top, w, _, ascent)) in
                     Self::text_lines(t, fonts).into_iter().enumerate()
                 {
                     let rtl = unicode_bidi::BidiInfo::new(&line, None)
@@ -1033,16 +1212,15 @@ impl Design {
                         format!("-{}", k + 1)
                     };
                     out.push_str(&format!(
-                        "<text id=\"{id}{suffix}\" x=\"{}\" y=\"{}\" font-size=\"{}\"{}{} text-anchor=\"{anchor}\" fill=\"{}\"{}>{}</text>\n",
+                        "<text id=\"{id}{suffix}\" x=\"{}\" y=\"{}\" font-size=\"{}\" font-family=\"{}\"{} text-anchor=\"{anchor}\" xml:space=\"preserve\"{style}{}>{}</text>\n",
                         n(x),
-                        n(top + h * 0.8),
+                        // The baseline where the board draws it.
+                        n(top + ascent),
                         n(t.size),
-                        t.font
-                            .as_deref()
-                            .map(|f| format!(" font-family=\"{}\"", esc(f)))
-                            .unwrap_or_default(),
+                        // The board measures in the system's sans: so
+                        // should a viewer with no font named.
+                        esc(t.font.as_deref().unwrap_or("sans-serif")),
                         if t.bold { " font-weight=\"bold\"" } else { "" },
-                        hex(l.fill.unwrap_or([0, 0, 0])),
                         if rtl { " direction=\"rtl\"" } else { "" },
                         esc(&line)
                     ));
@@ -1082,9 +1260,12 @@ impl Design {
                     continue;
                 }
             }
-            let mut d = String::new();
+            // Closed lines take the fill; open ones never do (on the board
+            // they aren't filled, and SVG would fill them).
+            let (mut shut, mut open) = (String::new(), String::new());
             for (pts, closed) in self.lines(l)? {
                 let pts = thin(&pts, 0.15);
+                let d = if closed { &mut shut } else { &mut open };
                 for (k, (x, y)) in pts.iter().enumerate() {
                     d.push_str(&format!(
                         "{}{} {} ",
@@ -1097,10 +1278,27 @@ impl Design {
                     d.push_str("Z ");
                 }
             }
-            out.push_str(&format!(
-                "<path id=\"{id}\" d=\"{}\"{style}/>\n",
-                d.trim_end()
-            ));
+            let unfilled = format!(" fill=\"none\"{line_style}");
+            match (shut.is_empty(), open.is_empty()) {
+                (false, true) => out.push_str(&format!(
+                    "<path id=\"{id}\" d=\"{}\"{style}/>\n",
+                    shut.trim_end()
+                )),
+                (true, _) => out.push_str(&format!(
+                    "<path id=\"{id}\" d=\"{}\"{unfilled}/>\n",
+                    open.trim_end()
+                )),
+                (false, false) => {
+                    out.push_str(&format!(
+                        "<path id=\"{id}\" d=\"{}\"{style}/>\n",
+                        shut.trim_end()
+                    ));
+                    out.push_str(&format!(
+                        "<path id=\"{id}-lines\" d=\"{}\"{unfilled}/>\n",
+                        open.trim_end()
+                    ));
+                }
+            }
         }
         out.push_str("</svg>\n");
         Ok(out)
@@ -1115,15 +1313,20 @@ impl Design {
                 .lines(l)
                 .map(|ls| ls.iter().any(|(_, c)| *c))
                 .unwrap_or(false);
+            // A paint app paints opaque: a see-through layer's colour is
+            // the one it makes over the page.
+            let shows = |c: Rgb| blend(self.background, c, l.opacity);
             let mut items: Vec<(Rgb, StepKind)> = Vec::new();
             if l.text.is_some() {
-                items.push((l.fill.unwrap_or([0, 0, 0]), StepKind::Text));
+                if let Some(c) = l.fill.or(l.stroke) {
+                    items.push((shows(c), StepKind::Text));
+                }
             } else {
                 if let (Some(c), true) = (l.fill, closed) {
-                    items.push((c, StepKind::Solid));
+                    items.push((shows(c), StepKind::Solid));
                 }
                 if let Some(c) = l.stroke {
-                    items.push((c, StepKind::Outline(l.width.max(0.5))));
+                    items.push((shows(c), StepKind::Outline(l.width.max(0.5))));
                 }
             }
             for (color, kind) in items {
@@ -1168,39 +1371,36 @@ impl Design {
         let tol = (w.max(h) / 400.0).max(0.5);
         for (l, b) in self.layers.iter().zip(&boxes) {
             let Some(b) = b else { continue };
-            // A background or a full-width band is meant to reach the edges.
-            let spans = b.width >= w * 0.9 || b.height >= h * 0.9;
-            let over = [
-                ("left", -b.x),
-                ("top", -b.y),
-                ("right", b.x + b.width - w),
-                ("bottom", b.y + b.height - h),
+            // A background or a band that covers the page from edge to
+            // edge on an axis is meant to reach (or pass) those edges; on
+            // the other axis it is checked like anything else.
+            let across = b.x <= tol && b.x + b.width >= w - tol;
+            let down = b.y <= tol && b.y + b.height >= h - tol;
+            let sides = [
+                ("left", -b.x, m - b.x, across),
+                ("top", -b.y, m - b.y, down),
+                ("right", b.x + b.width - w, b.x + b.width - (w - m), across),
+                ("bottom", b.y + b.height - h, b.y + b.height - (h - m), down),
             ];
-            let past: Vec<String> = over
+            let past: Vec<String> = sides
                 .iter()
-                .filter(|(_, d)| *d > tol)
-                .map(|(side, d)| format!("{d:.0} past the {side} edge"))
+                .filter(|(_, d, _, covers)| !covers && *d > tol)
+                .map(|(side, d, _, _)| format!("{d:.0} past the {side} edge"))
                 .collect();
-            if !past.is_empty() && !spans {
+            if !past.is_empty() {
                 out.push(format!("{} goes {}", l.id, past.join(" and ")));
-            } else if m > 0.0 && !spans && past.is_empty() {
-                let inside = [
-                    ("left", m - b.x),
-                    ("top", m - b.y),
-                    ("right", b.x + b.width - (w - m)),
-                    ("bottom", b.y + b.height - (h - m)),
-                ];
-                let into: Vec<String> = inside
+            } else if m > 0.0 {
+                let into: Vec<String> = sides
                     .iter()
-                    .filter(|(_, d)| *d > tol)
-                    .map(|(side, d)| format!("{d:.0} into the {side} margin"))
+                    .filter(|(_, _, d, covers)| !covers && *d > tol)
+                    .map(|(side, _, d, _)| format!("{d:.0} into the {side} margin"))
                     .collect();
                 if !into.is_empty() {
                     out.push(format!("{} reaches {}", l.id, into.join(" and ")));
                 }
             }
             let off = b.x + b.width / 2.0 - w / 2.0;
-            if off.abs() > tol && off.abs() <= w * 0.02 && !spans {
+            if off.abs() > tol && off.abs() <= w * 0.02 && !across {
                 out.push(format!(
                     "{} is {:.0} {} of the page's centre: centre it (align x center) if it should be",
                     l.id,
@@ -1256,20 +1456,24 @@ impl Design {
             let (Some(_), Some(b)) = (&l.text, boxes[i]) else {
                 continue;
             };
-            let fg = l.fill.unwrap_or([0, 0, 0]);
+            let Some(fg) = l.fill.or(l.stroke) else {
+                continue;
+            };
             let centre = (b.x + b.width / 2.0, b.y + b.height / 2.0);
-            let behind = self.layers[..i]
-                .iter()
-                .rev()
-                .find_map(|o| {
-                    let c = o.fill?;
-                    self.lines(o)
-                        .ok()?
-                        .iter()
-                        .any(|(pts, closed)| *closed && contains(pts, centre))
-                        .then_some(c)
-                })
-                .unwrap_or(self.background);
+            // What shows behind the text's centre: the background, then
+            // each filled shape over it there, as see-through as it is.
+            let behind = self.layers[..i].iter().fold(self.background, |under, o| {
+                let covers = o.fill.is_some()
+                    && self.lines(o).is_ok_and(|ls| {
+                        ls.iter()
+                            .any(|(pts, closed)| *closed && contains(pts, centre))
+                    });
+                match o.fill {
+                    Some(c) if covers => blend(under, c, o.opacity),
+                    _ => under,
+                }
+            });
+            let fg = blend(behind, fg, l.opacity);
             let ratio = contrast(fg, behind);
             if ratio < 3.0 {
                 out.push(format!(
@@ -1331,15 +1535,31 @@ fn set(layer: &mut Layer, spec: &DesignLayer, new: bool) -> Result<(), String> {
         layer.shape = Some(s);
         layer.transform = Affine::IDENTITY;
     } else if let Some(s) = &mut layer.shape {
-        // Turning or repeating the shape that is there.
-        if spec.rotate.is_some() {
-            s.rotate = spec.rotate;
+        // Turning or repeating the shape that is there. The shape is kept
+        // as first given, then moved (or mirrored) by its transform: a
+        // point given now is on the page as it is, so it goes back
+        // through the transform, and a mirrored shape turns the other way.
+        let t = layer.transform;
+        let back = t.inverse();
+        let turn = |r: f64| if t.mirrors() { -r } else { r };
+        let point = |p: crate::tools::DrawPoint| {
+            let (x, y) = back.apply(p.xy().0, p.xy().1);
+            crate::tools::DrawPoint::Pair([x, y])
+        };
+        if let Some(r) = spec.rotate {
+            s.rotate = Some(turn(r));
         }
-        if spec.about.is_some() {
-            s.about = spec.about;
+        if let Some(a) = spec.about {
+            s.about = Some(point(a));
         }
-        if spec.repeat.is_some() {
-            s.repeat = spec.repeat.clone();
+        if let Some(rep) = &spec.repeat {
+            let mut rep = rep.clone();
+            rep.rotate = rep.rotate.map(turn);
+            rep.about = rep.about.map(point);
+            rep.offset = rep
+                .offset
+                .map(|[dx, dy]| [back.a * dx + back.b * dy, back.c * dx + back.d * dy]);
+            s.repeat = Some(rep);
         }
     }
     if let Some(text) = &spec.text {
@@ -1385,7 +1605,11 @@ fn set(layer: &mut Layer, spec: &DesignLayer, new: bool) -> Result<(), String> {
         layer.fill = parse_colour(c)?;
     }
     if let Some(c) = &spec.stroke {
+        let had = layer.stroke.is_some();
         layer.stroke = parse_colour(c)?;
+        if !had && layer.stroke.is_some() && spec.width.is_none() && layer.width <= 0.0 {
+            layer.width = 2.0;
+        }
     }
     if let Some(w) = spec.width {
         if !(w.is_finite() && w >= 0.0) {
@@ -1475,6 +1699,17 @@ fn contains(pts: &[(f64, f64)], p: (f64, f64)) -> bool {
         }
     }
     inside
+}
+
+/// `over` painted on `under`, `alpha` of it showing.
+pub fn blend(under: Rgb, over: Rgb, alpha: f64) -> Rgb {
+    let a = alpha.clamp(0.0, 1.0);
+    let mix = |u: u8, o: u8| (f64::from(u) * (1.0 - a) + f64::from(o) * a).round() as u8;
+    [
+        mix(under[0], over[0]),
+        mix(under[1], over[1]),
+        mix(under[2], over[2]),
+    ]
 }
 
 /// WCAG contrast ratio of two colours (1 to 21).
@@ -1988,5 +2223,455 @@ mod tests {
         assert!(c.exists());
         drop(files);
         assert!(!dir.exists(), "the folder is gone with its files");
+    }
+}
+
+#[cfg(test)]
+/// What the design board promises, checked: what it shows, exports,
+/// checks and paints agree with what was asked.
+mod accuracy {
+    use super::*;
+    use crate::tools::DesignMirror;
+    use serde_json::json;
+
+    fn layer(v: serde_json::Value) -> DesignLayer {
+        serde_json::from_value(v).unwrap()
+    }
+    fn design(add: Vec<serde_json::Value>) -> (Design, FontCache) {
+        let mut fonts = FontCache::default();
+        let mut d = Design::new(800.0, 600.0);
+        let args = DesignArgs {
+            name: "t".into(),
+            add: Some(add.into_iter().map(layer).collect()),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        (d, fonts)
+    }
+    fn bbox(d: &Design, fonts: &mut FontCache, id: &str) -> Rect {
+        let i = d.index(id).unwrap();
+        d.bbox(&d.layers[i], fonts).unwrap()
+    }
+    fn px(c: &Capture, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * c.width + x) * 4) as usize;
+        [c.rgba[i], c.rgba[i + 1], c.rgba[i + 2]]
+    }
+
+    // Text opacity is painted but not exported.
+    #[test]
+    fn svg_text_keeps_its_opacity() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "t", "text": "Ghost", "at": [100, 100], "size": 40, "opacity": 0.3}),
+        ]);
+        let svg = d.svg(&mut fonts).unwrap();
+        let line = svg.lines().find(|l| l.starts_with("<text")).unwrap();
+        assert!(line.contains("opacity=\"0.3\""), "{line}");
+    }
+
+    // An open shape with a fill: the board shows no fill, the SVG fills it.
+    #[test]
+    fn svg_never_fills_an_open_line() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "smile", "arc": [400, 300, 100, 20, 160], "fill": "#FF0000", "stroke": "#000000", "width": 4}),
+        ]);
+        // Board: inside the chord, no red.
+        let pic = d.render(800, Extras::default(), &mut fonts).unwrap();
+        assert_eq!(px(&pic, 400, 360), [255, 255, 255]);
+        let svg = d.svg(&mut fonts).unwrap();
+        let line = svg.lines().find(|l| l.contains("id=\"smile\"")).unwrap();
+        assert!(
+            !line.contains("fill=\"#FF0000\""),
+            "SVG fills an open path: {line}"
+        );
+    }
+
+    #[test]
+    fn look_alike_layers_in_a_row_are_one_record() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "bg", "rect": [0, 0, 800, 600], "fill": "#FFFFFF"}),
+            json!({"id": "d1", "ellipse": [300, 540, 8, 8], "fill": "#1D3557"}),
+            json!({"id": "d2", "ellipse": [390, 540, 8, 8], "fill": "#1D3557"}),
+            json!({"id": "d3", "ellipse": [500, 540, 8, 8], "fill": "#1D3557"}),
+            json!({"id": "d4", "ellipse": [500, 500, 8, 8], "fill": "#FF0000"}),
+        ]);
+        let listing = d.listing(&mut fonts);
+        assert!(
+            listing.contains("3 × ellipse w 16 h 16 fill #1D3557: d1 x 292 y 532 · d2 x 382 y 532 · d3 x 492 y 532; d4 ellipse x 492 y 492"),
+            "{listing}"
+        );
+        // The items (what changes are told by) stay one a layer.
+        assert_eq!(d.items(&mut fonts).len(), 5);
+    }
+
+    // A stroke added by `change` keeps width 0: board 0.5, SVG 0.
+    #[test]
+    fn a_line_added_by_change_is_drawn_2_wide() {
+        let (mut d, mut fonts) = design(vec![
+            json!({"id": "box", "rect": [100, 100, 200, 100], "fill": "#FFCC00"}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            change: Some(vec![layer(json!({"id": "box", "stroke": "#000000"}))]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        let svg = d.svg(&mut fonts).unwrap();
+        let line = svg.lines().find(|l| l.contains("id=\"box\"")).unwrap();
+        let steps = d.steps();
+        assert!(
+            !line.contains("stroke-width=\"0\""),
+            "svg {line}; width {} steps {:?}",
+            d.layers[0].width,
+            steps
+        );
+    }
+
+    // A layer at least 90% as wide as the page is never reported off it.
+    #[test]
+    fn a_wide_layer_off_the_page_is_reported() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "band", "rect": [300, 100, 760, 50], "fill": "#3355AA"}),
+        ]);
+        let checks = d.checks(&mut fonts).join("; ");
+        assert!(checks.contains("band goes"), "checks: {checks:?}");
+    }
+
+    // Contrast ignores the opacity of what is behind.
+    #[test]
+    fn contrast_sees_what_shows_through() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "panel", "rect": [100, 100, 600, 200], "fill": "#000000", "opacity": 0.05}),
+            json!({"id": "t", "text": "Hello", "at": [200, 150], "size": 40, "fill": "#FFFFFF"}),
+        ]);
+        let pic = d.render(800, Extras::default(), &mut fonts).unwrap();
+        let under = px(&pic, 150, 120);
+        let checks = d.checks(&mut fonts).join("; ");
+        assert!(
+            checks.contains("hard to read"),
+            "behind is really {under:?}; checks: {checks:?}"
+        );
+    }
+
+    // A curve given only y spans five page widths.
+    #[test]
+    fn a_plot_in_x_spans_the_page_only() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "wave", "y": "300 + 40*sin(x/40)", "stroke": "#000000"}),
+        ]);
+        let b = bbox(&d, &mut fonts, "wave");
+        assert!(b.x >= -1.0 && b.x + b.width <= 801.0, "{b:?}");
+    }
+
+    // Text with fill none and a stroke: drawn solid black.
+    #[test]
+    fn outlined_text_with_no_fill_isnt_black() {
+        let mut fonts = FontCache::default();
+        if fonts.get(None, false).is_empty() {
+            return;
+        }
+        let (d, mut fonts) = design(vec![
+            json!({"id": "t", "text": "HOLLOW", "at": [100, 100], "size": 120, "fill": "none", "stroke": "#FF0000", "width": 3}),
+        ]);
+        let pic = d.render(800, Extras::default(), &mut fonts).unwrap();
+        let black = pic
+            .rgba
+            .chunks(4)
+            .filter(|p| p[0] < 50 && p[1] < 50 && p[2] < 50)
+            .count();
+        let red = pic
+            .rgba
+            .chunks(4)
+            .filter(|p| p[0] > 200 && p[1] < 80)
+            .count();
+        assert!(
+            black == 0 && red > 0,
+            "black {black} red {red}; steps {:?}",
+            d.steps()
+        );
+    }
+
+    // Rotating a mirrored copy turns it the other way.
+    #[test]
+    fn a_mirrored_copy_turns_as_asked() {
+        let (mut d, mut fonts) = design(vec![
+            // A thin bar pointing right from (100, 300).
+            json!({"id": "bar", "rect": [100, 295, 200, 10]}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            mirror: Some(vec![DesignMirror {
+                id: "bar".into(),
+                copy: "bar-2".into(),
+                axis: None,
+                line: None,
+            }]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        // Turn both by 30 (clockwise on screen, y down): a bar's right end goes down.
+        let args = DesignArgs {
+            name: "t".into(),
+            change: Some(vec![
+                layer(json!({"id": "bar", "rotate": 30})),
+                layer(json!({"id": "bar-2", "rotate": 30})),
+            ]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        // The point furthest right: below the centre when turned clockwise.
+        for id in ["bar", "bar-2"] {
+            let i = d.index(id).unwrap();
+            let lines = d.lines(&d.layers[i]).unwrap();
+            let pts: Vec<(f64, f64)> = lines.into_iter().flat_map(|(p, _)| p).collect();
+            let right = pts
+                .iter()
+                .cloned()
+                .fold((f64::MIN, 0.0), |m, p| if p.0 > m.0 { p } else { m });
+            assert!(right.1 > 300.0, "{id}: rightmost point {right:?}");
+        }
+    }
+
+    // SVG baseline vs render baseline.
+    #[test]
+    fn svg_text_sits_on_the_boards_baseline() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "t", "text": "Hg", "at": [100, 100], "size": 100, "font": "FreeSerif"}),
+        ]);
+        let svg = d.svg(&mut fonts).unwrap();
+        let line = svg.lines().find(|l| l.starts_with("<text")).unwrap();
+        let f = fonts.get(Some("FreeSerif"), false);
+        let asc = f64::from(layout(f, "Hg", 100.0).ascent);
+        let y: f64 = line
+            .split("y=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (y - (100.0 + asc)).abs() < 0.5,
+            "svg y {y}, render baseline {}",
+            100.0 + asc
+        );
+    }
+
+    // Leading / double spaces collapse in SVG.
+    #[test]
+    fn svg_keeps_spaces_in_text() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "t", "text": "A    B", "at": [100, 100], "size": 40}),
+        ]);
+        let svg = d.svg(&mut fonts).unwrap();
+        assert!(
+            svg.contains("xml:space=\"preserve\"") || svg.contains("white-space"),
+            "{svg}"
+        );
+    }
+
+    // A small dot: closed (so filled)?
+    #[test]
+    fn tiny_shapes_are_closed() {
+        let (d, _) = design(vec![
+            json!({"id": "dot", "ellipse": [400, 300, 1.5, 1.5], "fill": "#FF0000"}),
+            json!({"id": "tri", "polygon": [100, 100, 3, 3], "fill": "#FF0000"}),
+        ]);
+        for l in &d.layers {
+            let lines = d.lines(l).unwrap();
+            assert!(lines.iter().all(|(_, c)| *c), "{}: {:?}", l.id, lines);
+        }
+    }
+
+    // Distribute where the last-starting box isn't the last-ending one.
+    #[test]
+    fn distribute_reaches_the_furthest_end() {
+        let (mut d, mut fonts) = design(vec![
+            json!({"id": "a", "rect": [0, 0, 50, 20]}),
+            json!({"id": "b", "rect": [100, 0, 600, 20]}),
+            json!({"id": "c", "rect": [300, 0, 50, 20]}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            distribute: Some(vec![crate::tools::DesignDistribute {
+                ids: vec!["a".into(), "b".into(), "c".into()],
+                axis: None,
+            }]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        let b = bbox(&d, &mut fonts, "b");
+        assert!(b.x >= 0.0, "{b:?}");
+    }
+
+    // bold without a font: the board measures and paints it regular.
+    #[test]
+    fn bold_without_a_font_is_bold() {
+        let (d, mut fonts) = design(vec![
+            json!({"id": "a", "text": "EST. 2024 WIDE TITLE", "at": [10, 10], "size": 64}),
+            json!({"id": "b", "text": "EST. 2024 WIDE TITLE", "at": [10, 200], "size": 64, "bold": true}),
+        ]);
+        let (a, b) = (bbox(&d, &mut fonts, "a"), bbox(&d, &mut fonts, "b"));
+        assert!(b.width > a.width + 5.0, "regular {a:?} bold {b:?}");
+    }
+
+    // mirror along y of multiline centred text.
+    #[test]
+    fn mirroring_text_along_y() {
+        let (mut d, mut fonts) = design(vec![
+            json!({"id": "t", "text": "One\nTwo lines", "at": [400, 50], "size": 30, "align": "center"}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            mirror: Some(vec![DesignMirror {
+                id: "t".into(),
+                copy: "t2".into(),
+                axis: Some("y".into()),
+                line: None,
+            }]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        let (a, b) = (bbox(&d, &mut fonts, "t"), bbox(&d, &mut fonts, "t2"));
+        assert!(
+            (b.y + b.height - (600.0 - a.y)).abs() < 0.01 && (a.x - b.x).abs() < 0.01,
+            "{a:?} {b:?}"
+        );
+    }
+
+    // order up / down move one step.
+    #[test]
+    fn order_up_and_down_move_one_step() {
+        let (mut d, mut fonts) = design(vec![
+            json!({"id": "a", "rect": [0, 0, 10, 10]}),
+            json!({"id": "b", "rect": [0, 0, 10, 10]}),
+            json!({"id": "c", "rect": [0, 0, 10, 10]}),
+            json!({"id": "d", "rect": [0, 0, 10, 10]}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            order: Some(vec![
+                crate::tools::DesignOrder {
+                    id: "b".into(),
+                    to: "up".into(),
+                },
+                crate::tools::DesignOrder {
+                    id: "a".into(),
+                    to: "down".into(),
+                },
+                crate::tools::DesignOrder {
+                    id: "d".into(),
+                    to: "down".into(),
+                },
+            ]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        let ids: Vec<&str> = d.layers.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c", "d", "b"]);
+    }
+
+    // `to` on a rotated, moved shape keeps the box at the target.
+    #[test]
+    fn turning_a_moved_shape_keeps_its_place() {
+        let (mut d, mut fonts) = design(vec![json!({"id": "r", "rect": [100, 100, 200, 50]})]);
+        let ch = |v| DesignArgs {
+            name: "t".into(),
+            change: Some(vec![layer(v)]),
+            ..DesignArgs::default()
+        };
+        d.apply(&ch(json!({"id": "r", "move": [200, 100]})), &mut fonts)
+            .unwrap();
+        let before = bbox(&d, &mut fonts, "r");
+        d.apply(&ch(json!({"id": "r", "rotate": 90})), &mut fonts)
+            .unwrap();
+        let after = bbox(&d, &mut fonts, "r");
+        let c = |b: Rect| (b.x + b.width / 2.0, b.y + b.height / 2.0);
+        assert!(
+            (c(before).0 - c(after).0).abs() < 0.5 && (c(before).1 - c(after).1).abs() < 0.5,
+            "{before:?} {after:?}"
+        );
+        d.apply(
+            &ch(json!({"id": "r", "rotate": 45, "to": [10, 10]})),
+            &mut fonts,
+        )
+        .unwrap();
+        let b = bbox(&d, &mut fonts, "r");
+        assert!(
+            (b.x - 10.0).abs() < 0.5 && (b.y - 10.0).abs() < 0.5,
+            "{b:?}"
+        );
+    }
+
+    // Contrast where the text spans two backgrounds (centre on light).
+    #[test]
+    fn svg_of_a_mirrored_repeat() {
+        let (mut d, mut fonts) = design(vec![
+            json!({"id": "r", "rect": [100, 100, 50, 20, 5], "fill": "#FF0000", "repeat": {"count": 3, "offset": [60, 0]}}),
+        ]);
+        let args = DesignArgs {
+            name: "t".into(),
+            mirror: Some(vec![DesignMirror {
+                id: "r".into(),
+                copy: "r2".into(),
+                axis: Some("y".into()),
+                line: None,
+            }]),
+            ..DesignArgs::default()
+        };
+        d.apply(&args, &mut fonts).unwrap();
+        let svg = d.svg(&mut fonts).unwrap();
+        let b = bbox(&d, &mut fonts, "r2");
+        let line = svg.lines().find(|l| l.contains("id=\"r2\"")).unwrap();
+        assert!(line.matches('M').count() == 3, "{b:?} {line}");
+    }
+
+    // rotate about a page point after a move: about is read pre-move.
+    #[test]
+    fn about_is_a_point_on_the_page_after_a_move() {
+        let (mut d, mut fonts) = design(vec![json!({"id": "r", "rect": [100, 100, 200, 50]})]);
+        let ch = |v| DesignArgs {
+            name: "t".into(),
+            change: Some(vec![layer(v)]),
+            ..DesignArgs::default()
+        };
+        d.apply(&ch(json!({"id": "r", "move": [200, 100]})), &mut fonts)
+            .unwrap();
+        // Now x 300..500, y 200..250. Turn 90 about its top-left corner (300, 200).
+        d.apply(
+            &ch(json!({"id": "r", "rotate": 90, "about": [300, 200]})),
+            &mut fonts,
+        )
+        .unwrap();
+        let b = bbox(&d, &mut fonts, "r");
+        // Clockwise 90 about (300,200): x 250..300, y 200..400.
+        assert!(
+            (b.x - 250.0).abs() < 0.5 && (b.y - 200.0).abs() < 0.5,
+            "{b:?}"
+        );
+    }
+
+    // steps lose opacity.
+    #[test]
+    fn steps_paint_a_see_through_layers_colour() {
+        let (d, _) = design(vec![
+            json!({"id": "shadow", "rect": [100, 100, 200, 100], "fill": "#000000", "opacity": 0.2}),
+        ]);
+        let s = d.steps();
+        assert_ne!(s[0].color, [0, 0, 0], "{s:?}");
+    }
+
+    // render_cell of a partial last column.
+    #[test]
+    fn a_cell_past_the_page_ends_at_it() {
+        let mut fonts = FontCache::default();
+        let mut d = Design::new(800.0, 600.0);
+        d.cell = Some(300.0);
+        let (cap, text) = d.render_cell("C2", &mut fonts).unwrap();
+        assert!(
+            !text.contains("to 900") && text.contains("600 to 800"),
+            "{text}"
+        );
+        assert!(cap.width > 0);
     }
 }

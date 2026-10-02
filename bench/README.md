@@ -144,3 +144,11 @@ bench/run.sh --runs 5 --label v3.6-manager --config bench/configs/manager.toml
 lean schemas, relevant-change reports, quiet volatile elements, adaptive
 pictures, `locate` without its picture, blind areas, paint steps when
 asked) and `manager.toml` (the same with the tool manager).
+
+## The design board
+
+`cargo run --release -p computer-use --example design_bench` measures the
+design board without a desktop: a badge built and fixed in ten calls and a
+page of 150 layers, each call's tokens (text and picture) and time. Run it
+on two releases to compare them
+([v3.8.0 against v3.8.1](results/v3.8.1-design/compare.md)).

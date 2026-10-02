@@ -36,8 +36,9 @@ Start with a name, a size in the result's pixels, and a background:
     each other, or a layer).
   - `distribute`: equal gaps between 3 or more layers.
   - `order`: to front, back, up or down.
-- **Lines:** a layer can be written as the listing shows it, which is
-  shorter: `"disc ellipse 500 500 330 330 fill #1E3A5F"`, `"title text
+- **Lines:** a layer can be written as a line, which is shorter (the
+  shape's own numbers, not the box the listing shows):
+  `"disc ellipse 500 500 330 330 fill #1E3A5F"`, `"title text
   \"EST. 2024\" at 500 960 size 64 bold align center fill #1E3A5F"`,
   `"ring ellipse 500 500 400 400 fill none line #1E3A5F 24"`; a change:
   `"star fill #E0B040"`.
@@ -48,8 +49,9 @@ Start with a name, a size in the result's pixels, and a background:
   - the paint steps.
 
   After that, only what changed: the layers changed, added or removed and
-  the new order, "as before" for the rest, and no picture when it looks
-  the same. A call with only `name` (and `show`) shows everything again.
+  the new order, "as before" for the rest; of the picture, only the part
+  that changed (with where it is), or none when it looks the same. A call
+  with only `name` (and `show`) shows everything again.
   When the paint steps are left out ("N step(s) to paint it"), `show:
   {"steps": true}` lists them.
 

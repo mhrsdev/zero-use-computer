@@ -92,6 +92,11 @@ struct DraftSeen {
     picture: u64,
     /// The cells named on a design's picture, as said.
     cells: String,
+    /// The last picture of a design sent whole or in part, as the model
+    /// now has it, and the marks drawn over it: a change then sends only
+    /// the part that changed.
+    shot: Option<std::sync::Arc<Capture>>,
+    marks: Option<crate::design::Extras>,
 }
 
 /// What the result of the current top-level call holds, for hosts that
@@ -4623,6 +4628,8 @@ impl<B: Backend> Engine<B> {
             steps: String::new(),
             picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
             cells: String::new(),
+            shot: None,
+            marks: None,
         };
         if self.depth == 1 {
             if prev.is_none() {
@@ -4704,12 +4711,13 @@ impl<B: Backend> Engine<B> {
             && args.mirror.is_none()
             && args.align.is_none()
             && args.distribute.is_none()
-            && args.order.is_none();
-        let prev = self
-            .drafts_seen
-            .get(&seen_key)
-            .filter(|_| self.store.config.tree.compact && !looking)
-            .cloned();
+            && args.order.is_none()
+            // Writing a file shows nothing new.
+            && args.export.is_none();
+        let stored = self.drafts_seen.get(&seen_key).cloned();
+        let prev = stored
+            .clone()
+            .filter(|_| self.store.config.tree.compact && !looking);
         let head = format!(
             "Design \"{key}\": {} x {}, background {}, margin {}.",
             d.width,
@@ -4805,8 +4813,12 @@ impl<B: Backend> Engine<B> {
             items,
             checks: checks_said,
             steps: steps_said,
-            picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
-            cells: prev.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
+            // What the model has of the picture holds through a look or a
+            // zoom into a cell (only `prev` is set aside for those).
+            picture: stored.as_ref().map(|p| p.picture).unwrap_or(0),
+            cells: stored.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
+            shot: stored.as_ref().and_then(|p| p.shot.clone()),
+            marks: stored.as_ref().and_then(|p| p.marks),
         };
         if self.depth == 1 {
             if prev.is_none() {
@@ -4871,6 +4883,100 @@ impl<B: Backend> Engine<B> {
             self.drafts_seen.insert(seen_key, seen);
             return Ok(ToolOutput::text(text));
         }
+        // Only the part that changed, when the model has this design's
+        // picture at this size and with the same marks, and the change is
+        // a small part of it: a colour, a move, a few layers.
+        let part = prev
+            .as_ref()
+            .filter(|_| cfg.scope == crate::config::ShotScope::Auto)
+            .filter(|p| p.marks == Some(extras))
+            .and_then(|p| p.shot.as_deref())
+            .and_then(|old| imaging::diff_box(old, &picture, 2))
+            .map(|area| imaging::widen(area, 16, 96, picture.width, picture.height))
+            .filter(|&(_, _, w, h)| {
+                f64::from(w) * f64::from(h)
+                    <= 0.5 * f64::from(picture.width) * f64::from(picture.height)
+            });
+        if let Some((px, py, pw, ph)) = part {
+            let scale = f64::from(picture.width) / d.width.max(1e-9);
+            let u = |v: u32| f64::from(v) / scale;
+            let span = crate::cells::Span {
+                x0: u(px),
+                x1: u(px + pw),
+                y0: u(py),
+                y1: u(py + ph),
+            };
+            let at = format!(
+                "x {:.0}–{:.0}, y {:.0}–{:.0} ({})",
+                span.x0,
+                span.x1,
+                span.y0,
+                span.y1,
+                d.cells().covering(span)
+            );
+            let long = format!(
+                "\nThe picture changed only at {at}: that part is shown, {pw}×{ph} px at the same scale as your last picture of it; the rest is as before."
+            );
+            let short = format!("\nOnly the part that changed: {at}.");
+            let note = self.explain("design-part", &long, &short).to_string();
+            text.push_str(&note);
+            seen.picture = hash;
+            seen.shot = Some(std::sync::Arc::new(picture.clone()));
+            self.drafts_seen.insert(seen_key, seen);
+            let (img, _) = imaging::encode(imaging::crop(&picture, (px, py, pw, ph)), &cfg)?;
+            return Ok(ToolOutput {
+                text,
+                image: Some(img),
+                is_error: false,
+            });
+        }
+        // Only the part that changed, when the model has this design's
+        // picture at this size and with the same marks, and the change is
+        // a small part of it: a colour, a move, a few layers.
+        let part = prev
+            .as_ref()
+            .filter(|_| cfg.scope == crate::config::ShotScope::Auto)
+            .filter(|p| p.marks == Some(extras))
+            .and_then(|p| p.shot.as_deref())
+            .and_then(|old| imaging::diff_box(old, &picture, 2))
+            .map(|area| imaging::widen(area, 16, 96, picture.width, picture.height))
+            .filter(|&(_, _, w, h)| {
+                f64::from(w) * f64::from(h)
+                    <= 0.5 * f64::from(picture.width) * f64::from(picture.height)
+            });
+        if let Some((px, py, pw, ph)) = part {
+            let scale = f64::from(picture.width) / d.width.max(1e-9);
+            let u = |v: u32| f64::from(v) / scale;
+            let span = crate::cells::Span {
+                x0: u(px),
+                x1: u(px + pw),
+                y0: u(py),
+                y1: u(py + ph),
+            };
+            let at = format!(
+                "x {:.0}–{:.0}, y {:.0}–{:.0} ({})",
+                span.x0,
+                span.x1,
+                span.y0,
+                span.y1,
+                d.cells().covering(span)
+            );
+            let long = format!(
+                "\nThe picture changed only at {at}: that part is shown, {pw}×{ph} px at the same scale as your last picture of it; the rest is as before."
+            );
+            let short = format!("\nOnly the part that changed: {at}.");
+            let note = self.explain("design-part", &long, &short).to_string();
+            text.push_str(&note);
+            seen.picture = hash;
+            seen.shot = Some(std::sync::Arc::new(picture.clone()));
+            self.drafts_seen.insert(seen_key, seen);
+            let (img, _) = imaging::encode(imaging::crop(&picture, (px, py, pw, ph)), &cfg)?;
+            return Ok(ToolOutput {
+                text,
+                image: Some(img),
+                is_error: false,
+            });
+        }
         // The cells are as they were: said with the first picture only.
         let described = d.cells().describe();
         if cells && prev.as_ref().is_none_or(|p| p.cells != described) {
@@ -4880,11 +4986,13 @@ impl<B: Backend> Engine<B> {
             seen.cells = described;
         }
         seen.picture = hash;
+        seen.marks = Some(extras);
         if self.depth == 1 {
             self.note.drafts_picture.push(seen_key.clone());
         }
+        let (img, _) = imaging::encode(picture.clone(), &cfg)?;
+        seen.shot = Some(std::sync::Arc::new(picture));
         self.drafts_seen.insert(seen_key, seen);
-        let (img, _) = imaging::encode(picture, &cfg)?;
         Ok(ToolOutput {
             text,
             image: Some(img),
@@ -11584,6 +11692,68 @@ mod tests {
         assert!(out.text.contains("Added to your tools"), "{}", out.text);
         let now = names(&mut e);
         assert!(now.contains(&"design".to_string()) && now.contains(&"locate".to_string()));
+    }
+
+    #[test]
+    fn a_design_change_sends_only_the_part_that_changed() {
+        let mut e = engine();
+        let first = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "size": [800, 600], "add": [
+                {"id": "disc", "ellipse": [400, 300, 200, 200], "fill": "#1D3557"},
+                {"id": "star", "star": [700, 500, 40, 18, 5], "fill": "#FFB703"}
+            ]}),
+        );
+        let full = first.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        // A small change: only that part, and where it is.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#E63946"}]}),
+        );
+        let part = out.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        assert!(
+            part.0 < full.0 / 3 && part.1 < full.1 / 3,
+            "{part:?} of {full:?}"
+        );
+        assert!(
+            out.text.contains("The picture changed only at x 6")
+                && out.text.contains("that part is shown"),
+            "{}",
+            out.text
+        );
+        // Said in full once, then short.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#2A9D8F"}]}),
+        );
+        assert!(
+            out.text.contains("Only the part that changed: x 6"),
+            "{}",
+            out.text
+        );
+        // A zoom into a cell, then an export: no picture again.
+        e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "show": {"cell": "B2"}}),
+        );
+        let out = e.call_tool("design", serde_json::json!({"name": "b", "export": "svg"}));
+        assert!(out.image.is_none(), "{}", out.text);
+        // A big change: all of it.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "background": "#000000"}),
+        );
+        let all = out.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        assert_eq!(all, full);
+        // screenshot.scope = "full": always all of it.
+        let mut cfg = e.store().config.clone();
+        cfg.screenshot.scope = crate::config::ShotScope::Full;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#FFFFFF"}]}),
+        );
+        assert_eq!(out.image.as_ref().map(|i| (i.width, i.height)), Some(full));
     }
 
     #[test]
