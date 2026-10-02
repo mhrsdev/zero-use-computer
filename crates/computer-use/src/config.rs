@@ -539,6 +539,9 @@ pub struct ControlConfig {
     /// Give up (the action fails with a message to the agent) after waiting
     /// this long for the user (seconds).
     pub max_pause_secs: u64,
+    /// Global key combination that opens the settings page for the decision
+    /// model in the browser. "" = none.
+    pub settings_hotkey: String,
 }
 
 impl Default for ControlConfig {
@@ -548,6 +551,50 @@ impl Default for ControlConfig {
             pause_on_user_input: true,
             resume_after_idle_ms: 1500,
             max_pause_secs: 120,
+            settings_hotkey: "ctrl+alt+j".into(),
+        }
+    }
+}
+
+/// A decision model: a fast model that answers typed questions (yes/no,
+/// one of some options, a score on a scale) about a state, for the `decide`
+/// tool, `wait_for`'s `until` and scripts. TypeSafe's Jev (its System One
+/// API, or a server speaking it), or any OpenAI-compatible chat model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DecisionConfig {
+    /// "jev" (the System One API: TypeSafe, or a compatible server),
+    /// "openai" (any OpenAI-compatible chat completions API), or "" = none.
+    pub provider: String,
+    /// The API's address; "" = the provider's own (https://api.typesafe.ai,
+    /// https://api.openai.com/v1).
+    pub base_url: String,
+    /// "" = jev-latest (jev); an OpenAI-compatible API needs one.
+    pub model: String,
+    /// The API key ("" = none, or `api_key_env`). Kept in this file, which
+    /// is then readable by its owner only.
+    pub api_key: String,
+    /// Or the name of an environment variable holding the key.
+    pub api_key_env: String,
+    /// Longest wait for one answer (ms).
+    pub timeout_ms: u64,
+    /// Longest state sent (characters); a longer one keeps its start and end.
+    pub max_state_chars: usize,
+    /// Requests at once when several items are judged.
+    pub parallel: usize,
+}
+
+impl Default for DecisionConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            api_key_env: String::new(),
+            timeout_ms: 15_000,
+            max_state_chars: 20_000,
+            parallel: 8,
         }
     }
 }
@@ -778,6 +825,7 @@ pub struct Config {
     pub ocr: OcrConfig,
     pub notifications: NotificationsConfig,
     pub script: ScriptConfig,
+    pub decision: DecisionConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub linux: LinuxConfig,
@@ -814,6 +862,7 @@ impl Default for Config {
             ocr: OcrConfig::default(),
             notifications: NotificationsConfig::default(),
             script: ScriptConfig::default(),
+            decision: DecisionConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             linux: LinuxConfig::default(),
@@ -872,6 +921,56 @@ impl Config {
             && let Err(e) = crate::keys::parse_combo(hotkey)
         {
             return Err(format!("control.stop_hotkey: {e}"));
+        }
+        let settings = self.control.settings_hotkey.trim();
+        if !settings.is_empty() {
+            let combo = crate::keys::parse_combo(settings)
+                .map_err(|e| format!("control.settings_hotkey: {e}"))?;
+            if crate::keys::parse_combo(hotkey).is_ok_and(|stop| stop == combo) {
+                return Err("control.settings_hotkey must differ from control.stop_hotkey".into());
+            }
+        }
+        let d = &self.decision;
+        if !matches!(d.provider.trim(), "" | "jev" | "openai") {
+            return Err(format!(
+                "decision.provider must be \"jev\", \"openai\" or \"\" (got \"{}\")",
+                d.provider
+            ));
+        }
+        let url = d.base_url.trim().to_ascii_lowercase();
+        if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!(
+                "decision.base_url must start with http:// or https:// (got \"{}\")",
+                d.base_url
+            ));
+        }
+        for (key, value) in [
+            ("decision.base_url", &d.base_url),
+            ("decision.model", &d.model),
+            ("decision.api_key", &d.api_key),
+            ("decision.api_key_env", &d.api_key_env),
+        ] {
+            if value.chars().any(char::is_control) {
+                return Err(format!("{key} must be one line of text"));
+            }
+        }
+        if !(100..=600_000).contains(&d.timeout_ms) {
+            return Err(format!(
+                "decision.timeout_ms must be between 100 and 600000 (got {})",
+                d.timeout_ms
+            ));
+        }
+        if !(100..=1_000_000).contains(&d.max_state_chars) {
+            return Err(format!(
+                "decision.max_state_chars must be between 100 and 1000000 (got {})",
+                d.max_state_chars
+            ));
+        }
+        if !(1..=64).contains(&d.parallel) {
+            return Err(format!(
+                "decision.parallel must be between 1 and 64 (got {})",
+                d.parallel
+            ));
         }
         if !(4..=256).contains(&c.pixel_grid) {
             return Err(format!(
@@ -979,6 +1078,8 @@ pub fn get_value(config: &Config, key: &str) -> Option<toml::Value> {
 pub enum Edit {
     /// Set a value (parsed as TOML; bare words become strings).
     Set(String),
+    /// Set a text value exactly as given (never parsed: an API key).
+    SetText(String),
     /// Remove the key so it falls back to its default.
     Unset,
     /// Append an item to a list setting (no duplicates).
@@ -1002,19 +1103,48 @@ fn parse_value(raw: &str) -> toml_edit::Value {
 /// Apply an edit to a config file (created if missing), preserving comments.
 /// The result is validated as a whole before anything is written.
 pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
+    edit_file_many(path, &[(key, edit)])
+}
+
+/// Several settings changed at once (all or none), as `edit_file` does
+/// one: validated as a whole before anything is written. A file that
+/// holds an API key is kept readable by its owner only.
+pub fn edit_file_many(path: &Path, edits: &[(&str, Edit)]) -> Result<()> {
+    let mut text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
+    };
+    for (key, edit) in edits {
+        text = edit_text(&text, key, edit.clone()).map_err(|e| match e {
+            Error::Config(m) if m.starts_with("unknown setting") => Error::Config(m),
+            Error::Config(m) => Error::Config(format!("{}: {m}", path.display())),
+            e => e,
+        })?;
+    }
+    // Validate the whole file before writing.
+    let key = edits.first().map(|(k, _)| *k).unwrap_or_default();
+    let config = toml::from_str::<Config>(&text)
+        .map_err(|e| Error::Config(format!("`{key}`: {}", e.message())))?;
+    config.validate().map_err(Error::Config)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
+    }
+    let private = !config.decision.api_key.trim().is_empty();
+    write_atomic(path, &text, private)
+}
+
+/// One edit to a config file's text, comments kept (not validated).
+fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
     if !known_keys().iter().any(|k| k == key) {
         return Err(Error::Config(format!(
             "unknown setting `{key}` (see `computer-use-mcp config keys`)"
         )));
     }
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
-    };
     let mut doc: toml_edit::DocumentMut = text
         .parse()
-        .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+        .map_err(|e: toml_edit::TomlError| Error::Config(e.to_string()))?;
 
     let parts: Vec<&str> = key.split('.').collect();
     let (last, tables) = parts.split_last().expect("non-empty key");
@@ -1032,12 +1162,15 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
         Edit::Set(raw) => {
             table[last] = toml_edit::value(parse_value(&raw));
         }
+        Edit::SetText(raw) => {
+            table[last] = toml_edit::value(raw);
+        }
         Edit::Unset => {
             table.remove(last);
         }
         Edit::Add(item) => {
             // Start from the current effective list so defaults are kept.
-            let current = current_list(&doc_to_config(&text)?, key)?;
+            let current = current_list(&doc_to_config(text)?, key)?;
             let mut arr = toml_edit::Array::new();
             for v in current.iter().chain(std::iter::once(&item)) {
                 if !arr.iter().any(|e| e.as_str() == Some(v.as_str())) {
@@ -1047,7 +1180,7 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
             table[last] = toml_edit::value(arr);
         }
         Edit::Remove(item) => {
-            let current = current_list(&doc_to_config(&text)?, key)?;
+            let current = current_list(&doc_to_config(text)?, key)?;
             let mut arr = toml_edit::Array::new();
             for v in current.iter().filter(|v| !v.eq_ignore_ascii_case(&item)) {
                 arr.push(v.as_str());
@@ -1055,33 +1188,68 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
             table[last] = toml_edit::value(arr);
         }
     }
+    Ok(doc.to_string())
+}
 
-    let new_text = doc.to_string();
-    // Validate the whole file before writing.
-    toml::from_str::<Config>(&new_text)
-        .map_err(|e| Error::Config(format!("`{key}`: {}", e.message())))?
-        .validate()
-        .map_err(Error::Config)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
+/// Make a settings file readable and writable by its owner only (it holds
+/// an API key). Windows keeps a user's profile private already.
+pub fn owner_only(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            log::warn!("{}: couldn't make it private: {e}", path.display());
+        }
     }
-    write_atomic(path, &new_text)
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// An API key as it may be shown: its last four characters.
+pub fn masked_key(key: &str) -> String {
+    let key = key.trim();
+    if key.is_empty() {
+        return String::new();
+    }
+    let n = key.chars().count();
+    if n <= 8 {
+        return "••••".into();
+    }
+    let tail: String = key.chars().skip(n - 4).collect();
+    format!("••••{tail}")
 }
 
 /// Write `text` to `path` all at once: a reader (the server reloading its
 /// settings) sees the old file or the new one, never half of it.
 /// A settings file that is a link is written where it points (the link
-/// stays), and keeps its permissions (it may hold `server.http_token`).
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
+/// stays), and keeps its permissions (it may hold `server.http_token`);
+/// `private` (it holds an API key) makes it readable by its owner only,
+/// from the moment it is created.
+fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
     let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, text).map_err(fail)?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    {
+        use std::io::Write as _;
+        let mut f = opts.open(&tmp).map_err(fail)?;
+        f.write_all(text.as_bytes()).map_err(fail)?;
+    }
     if let Ok(meta) = std::fs::metadata(&path) {
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    if private {
+        owner_only(&tmp);
     }
     std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -1116,7 +1284,7 @@ pub fn write_template(path: &Path, force: bool) -> Result<()> {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
     }
-    write_atomic(path, TEMPLATE)
+    write_atomic(path, TEMPLATE, false)
 }
 
 /// Configuration plus where it lives (for hot reload).

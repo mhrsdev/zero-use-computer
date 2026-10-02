@@ -526,6 +526,45 @@ pub struct WaitForArgs {
     /// Defaults to `timing.wait_poll_ms`.
     #[serde(default)]
     pub poll_ms: Option<u64>,
+    /// A yes/no question about the window, asked of the decision model each
+    /// time: wait until the answer is yes.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub until: Option<String>,
+}
+
+/// `decide`: typed questions for the decision model.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DecideArgs {
+    /// One question (yes/no, or with options or a scale).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub question: Option<String>,
+    /// The options of a choice: ["a", "b"] or {"a": "what it means"}.
+    #[serde(default)]
+    pub options: Option<Value>,
+    /// The levels of a score, low to high.
+    #[serde(default)]
+    pub scale: Option<Value>,
+    /// Several questions at once: {"name": {"type", "question", ...}}.
+    #[serde(default)]
+    pub questions: Option<Value>,
+    /// What to judge: text, or any JSON.
+    #[serde(default)]
+    pub state: Option<Value>,
+    /// Judge each of these separately (in parallel).
+    #[serde(default)]
+    pub items: Option<Vec<Value>>,
+    /// Judge this app's window (its elements, as text).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub app: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub window: Option<String>,
+    /// Which element of the app's window this describes: its index.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub pick: Option<String>,
+    /// "status", "open" (the settings page), "test", "remove", or the
+    /// settings: {provider, base_url, model, api_key}.
+    #[serde(default)]
+    pub setup: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -1126,10 +1165,11 @@ pub enum ToolCall {
     Window(WindowArgs),
     GetNotifications(NotificationsArgs),
     Script(ScriptArgs),
+    Decide(DecideArgs),
 }
 
 /// The names of the built-in tools (saved scripts may not take them).
-pub const BUILTIN: [&str; 25] = [
+pub const BUILTIN: [&str; 26] = [
     "list_apps",
     "launch_app",
     "get_app_state",
@@ -1155,6 +1195,7 @@ pub const BUILTIN: [&str; 25] = [
     "window",
     "get_notifications",
     "script",
+    "decide",
 ];
 
 fn parse_args<T: for<'de> Deserialize<'de>>(tool: &str, args: Value) -> Result<T> {
@@ -1190,6 +1231,7 @@ impl ToolCall {
             "window" => ToolCall::Window(parse_args(name, args)?),
             "get_notifications" => ToolCall::GetNotifications(parse_args(name, args)?),
             "script" => ToolCall::Script(parse_args(name, args)?),
+            "decide" => ToolCall::Decide(parse_args(name, args)?),
             other => return Err(Error::UnknownTool(other.to_string())),
         })
     }
@@ -1221,6 +1263,7 @@ impl ToolCall {
             ToolCall::Window(_) => "window",
             ToolCall::GetNotifications(_) => "get_notifications",
             ToolCall::Script(_) => "script",
+            ToolCall::Decide(_) => "decide",
         }
     }
 }
@@ -1696,7 +1739,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "wait_for".into(),
             title: "Wait for element".into(),
-            description: "Poll the app until an element matching the given role/name/text (and optional state) appears, then return it. Use after actions that take time (loading, dialogs). Fails when the timeout elapses.".into(),
+            description: "Poll the app until an element matching the given role/name/text (and optional state) appears, then return it; or, with until, until the decision model answers yes to a question about the window (\"Have the search results loaded?\"). Use after actions that take time (loading, dialogs). Fails when the timeout elapses.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1705,7 +1748,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "text": {"type": "string", "description": "Case-insensitive substring of name or value."},
                     "state": {"type": "string", "enum": ["present", "visible", "enabled", "focused", "checked"], "default": "present"},
                     "timeout_ms": {"type": "integer", "minimum": 1, "description": "Give up after this long (default from settings)."},
-                    "poll_ms": {"type": "integer", "minimum": 1, "description": "Re-check interval (default from settings)."}
+                    "poll_ms": {"type": "integer", "minimum": 1, "description": "Re-check interval (default from settings)."},
+                    "until": {"type": "string", "description": "A yes/no question about the window, asked of the decision model each time (see decide): wait until the answer is yes."}
                 }),
                 &[],
             ),
@@ -1830,6 +1874,28 @@ pub fn definitions() -> Vec<ToolDefinition> {
             annotations: acting("Run a script"),
         },
         ToolDefinition {
+            name: "decide".into(),
+            title: "Decide fast".into(),
+            description: "Typed answers from a decision model (TypeSafe's Jev, or a fast OpenAI-compatible model the user added with Ctrl+Alt+J), in well under a second and without reading the thing yourself: a yes/no question (the probability of yes), a choice among options, or a score on a scale, about a state: text or JSON you pass, each of many items (judged in parallel: reviews, results, rows), or an app's window (app: its elements as text). pick=\"what you look for\" (with app) returns the element_index that fits. Use it to classify, score, filter or check many things, and to find the element meant by a description. Several questions at once: questions={\"name\": {\"type\": \"yes_no\"|\"choice\"|\"score\", \"question\", \"options\" or \"scale\"}}. setup: \"status\", \"open\" (opens the settings page in the user's browser), \"test\", \"remove\", or {provider: \"jev\"|\"openai\", base_url, model, api_key} when the user gives these in the chat.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "A yes/no question, or the question for options or scale."},
+                    "options": {"type": ["array", "object"], "description": "A choice: [\"a\", \"b\"], or {\"a\": \"what a means\"}."},
+                    "scale": {"type": "array", "items": {"type": "string"}, "description": "A score: the levels, low to high."},
+                    "questions": {"type": "object", "description": "Several questions: {\"name\": {\"type\": \"yes_no\"|\"choice\"|\"score\", \"question\": \"...\", \"options\": ..., \"scale\": [...]}}."},
+                    "state": {"description": "What to judge: text or any JSON."},
+                    "items": {"type": "array", "description": "Judge each of these on its own (text or JSON each)."},
+                    "app": {"type": "string", "description": "Judge this app's window (or pick in it)."},
+                    "window": {"type": "string", "description": "Window id or title substring."},
+                    "pick": {"type": "string", "description": "With app: describe an element (\"the button that adds it to the cart\"); returns its element_index."},
+                    "setup": {"type": ["string", "object"], "description": "\"status\", \"open\", \"test\", \"remove\", or {provider, base_url, model, api_key} (only when the user asks for it)."}
+                },
+                "additionalProperties": false
+            }),
+            annotations: read_only("Decide fast"),
+        },
+        ToolDefinition {
             name: "get_clipboard".into(),
             title: "Get clipboard".into(),
             description: "Read the system clipboard as text.".into(),
@@ -1881,7 +1947,9 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Type text into the focused element (element_index focuses first; x,y points the mouse there first)."
         }
         "find_element" => "Find elements by role/name/text; returns their indices.",
-        "wait_for" => "Wait until an element matching role/name/text (and state) appears.",
+        "wait_for" => {
+            "Wait until an element matching role/name/text (and state) appears, or until the decision model answers yes to until=\"question about the window\"."
+        }
         "locate" => {
             "Exact places in a window (x/y click takes): color=#hex areas, like=[l,t,r,b] look-alikes, or near=[x,y] + feature corner/edge/center."
         }
@@ -1904,6 +1972,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "get_notifications" => "Recent desktop notifications (app, title, text); filter by app.",
         "script" => {
             "Run a script (Rhai, like JavaScript: let, if, for x in range(a, b), fn, |x| closures, [arrays], #{maps}) for loops over tools, maths, file or web data and graph-paper pictures. tool(name, #{args}) → text (try_tool() → #{ok, text, image}); set_app; elements(app, #{role, name, text}) → maps; colors(app, [[x,y]]); page(name, w, h, #{cell}) → p.rect/circle/line/path/polygon/text/fill_cell(\"C4\", colour)/text_in/cell(\"C4\")/at(x,y)/show/steps/export; cells(w, h, size); read_text/read_json/read_csv/write_text, fetch/fetch_json/download, remember/recall, regex_find, numbers, random, sleep, print; data/args = what you pass. help=true: every function. save=name (+description, params) keeps it as a tool of its own; run=name, list, show, delete."
+        }
+        "decide" => {
+            "Fast typed answers from the decision model (Jev, or a model the user added with Ctrl+Alt+J): question (yes/no → probability), + options (choice) or scale (score, low→high); questions={name: {type, question, options|scale}} for several. About state (text/JSON), each of items (in parallel), or app's window; pick=\"description\" + app → element_index. setup=status|open (settings page)|test|remove|{provider, base_url, model, api_key}."
         }
         "get_clipboard" => "Read the clipboard text.",
         "set_clipboard" => "Write text to the clipboard.",
@@ -2029,7 +2100,7 @@ mod tests {
     #[test]
     fn all_tools_have_object_schemas() {
         let defs = definitions();
-        assert_eq!(defs.len(), 25);
+        assert_eq!(defs.len(), 26);
         let mut names: Vec<&str> = defs.iter().map(|d| &*d.name).collect();
         let mut builtin = BUILTIN.to_vec();
         names.sort_unstable();
@@ -2112,10 +2183,17 @@ mod tests {
             "description": "d", "params": {"a": {"type": "number"}}, "list": true,
             "show": "x", "delete": "x", "help": true
         });
+        let decide = json!({
+            "question": "q", "options": ["a", "b"], "scale": ["lo", "hi"],
+            "questions": {"n": {"question": "q"}}, "state": {"any": "json"},
+            "items": ["x", {"y": 1}], "app": "X", "window": "1", "pick": "the button",
+            "setup": "status"
+        });
         for d in definitions() {
             let sample = match &*d.name {
                 "scene" => &scene,
                 "script" => &script,
+                "decide" => &decide,
                 _ => &full,
             };
             let mut args = serde_json::Map::new();
@@ -2134,7 +2212,7 @@ mod tests {
         let compact_cfg = ToolsConfig::default();
         assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
         let compact = definitions_for(&compact_cfg);
-        assert_eq!(compact.len(), 25);
+        assert_eq!(compact.len(), 26);
         let compact_len = model_visible_len(&compact);
         assert!(
             compact_len * 2 < full,

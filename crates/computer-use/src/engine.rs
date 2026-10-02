@@ -20,6 +20,7 @@ use crate::tools::*;
 use crate::tree::{self, IndexAllocator, Node};
 use crate::types::*;
 
+mod deciding;
 mod scripting;
 
 /// Cached state for one app between tool calls.
@@ -1682,6 +1683,7 @@ impl<B: Backend> Engine<B> {
             ToolCall::Window(a) => self.window_tool(a),
             ToolCall::GetNotifications(a) => self.get_notifications(a),
             ToolCall::Script(a) => self.script(a),
+            ToolCall::Decide(a) => self.decide(a),
         };
         if mutating {
             self.last_input = Some((self.clock)());
@@ -4278,39 +4280,74 @@ impl<B: Backend> Engine<B> {
                 .clamp(20, 60_000),
         );
         let timeout = Duration::from_millis(timeout_ms);
-        let deadline = (self.clock)() + timeout;
+        let start = (self.clock)();
+        let deadline = start + timeout;
+        // `until`: the decision model judges the window each time.
+        let until = match args.until.as_deref().map(str::trim) {
+            Some(q) if !q.is_empty() => Some((q.to_string(), self.decider()?)),
+            _ => None,
+        };
+        let matchers = role.is_some() || name.is_some() || text.is_some();
 
         loop {
             if let Ok(window) = self.resolve_window(&app, args.window.as_deref(), true)
                 && self.observe(&app, &window, true).is_ok()
             {
                 let state = self.state(app.pid)?;
-                let found = state.nodes.iter().find(|n| {
-                    role.as_deref().is_none_or(|r| n.role == r)
-                        && name.as_deref().is_none_or(|q| {
-                            n.name
-                                .as_deref()
-                                .is_some_and(|nm| crate::text::fold(nm).contains(q))
-                        })
-                        && text.as_deref().is_none_or(|q| node_text(n).contains(q))
-                        && state_matches(n, args.state)
-                });
-                if let Some(n) = found {
-                    return Ok(ToolOutput::text(format!(
-                        "Found after waiting: {} {}",
-                        n.index, n.line
-                    )));
+                let found = state
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        role.as_deref().is_none_or(|r| n.role == r)
+                            && name.as_deref().is_none_or(|q| {
+                                n.name
+                                    .as_deref()
+                                    .is_some_and(|nm| crate::text::fold(nm).contains(q))
+                            })
+                            && text.as_deref().is_none_or(|q| node_text(n).contains(q))
+                            && state_matches(n, args.state)
+                    })
+                    .map(|n| (n.index, n.line.clone()));
+                match (&until, found) {
+                    (None, Some((index, line))) => {
+                        return Ok(ToolOutput::text(format!(
+                            "Found after waiting: {index} {line}"
+                        )));
+                    }
+                    (Some((question, decider)), found) if found.is_some() || !matchers => {
+                        let decider = decider.clone();
+                        let window = args.window.clone();
+                        if let Some(yes) =
+                            self.until_yes(&decider, question, &args.app, window.as_deref())?
+                        {
+                            let waited = (self.clock)().saturating_duration_since(start);
+                            let mut out = format!(
+                                "Yes after {:.1} s ({yes:.2}): {question}",
+                                waited.as_secs_f64()
+                            );
+                            if let Some((index, line)) = found.filter(|_| matchers) {
+                                out.push_str(&format!("\nFound: {index} {line}"));
+                            }
+                            return Ok(ToolOutput::text(out));
+                        }
+                    }
+                    _ => {}
                 }
             }
             if self.halted() {
                 return Err(self.stopped_error());
             }
             if (self.clock)() >= deadline {
-                return Err(Error::ActionFailed(format!(
-                    "timed out after {}ms waiting for an element matching {}",
-                    timeout_ms,
-                    describe_matcher(&args)
-                )));
+                return Err(Error::ActionFailed(match &until {
+                    Some((q, _)) => format!(
+                        "timed out after {timeout_ms}ms: the decision model never answered yes to \"{q}\""
+                    ),
+                    None => format!(
+                        "timed out after {}ms waiting for an element matching {}",
+                        timeout_ms,
+                        describe_matcher(&args)
+                    ),
+                }));
             }
             (self.sleep)(poll);
         }

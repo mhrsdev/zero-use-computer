@@ -222,6 +222,7 @@ impl<B: Backend> Engine<B> {
             // Raised by the engine on the stop key or a cancel.
             stop: Arc::new(AtomicBool::new(self.halted())),
             app_tools,
+            decision: self.store.config.decision.clone(),
         };
         let started = Instant::now();
         let running = script::start(script::Job {

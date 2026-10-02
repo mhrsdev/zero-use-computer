@@ -98,6 +98,8 @@ pub struct Env {
     pub stop: Arc<AtomicBool>,
     /// Tools that take an `app` (set_app fills it in).
     pub app_tools: Vec<String>,
+    /// The decision model, for decide(), ask(), choose() and score().
+    pub decision: crate::config::DecisionConfig,
 }
 
 impl Env {

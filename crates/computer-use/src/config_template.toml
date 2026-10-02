@@ -9,7 +9,8 @@
 #   computer-use-mcp config show          # effective settings
 #   computer-use-mcp config check         # validate + report unknown keys
 #
-# The agent itself has no tool to change these settings.
+# The agent itself has no tool to change these settings, except the decision
+# model's ([decision]), which you can ask it to set up for you.
 #
 # There is no access control in these settings: which apps and actions the
 # agent may use is decided by its security skill
@@ -211,6 +212,26 @@ stop_hotkey = "ctrl+alt+escape"
 pause_on_user_input = true
 resume_after_idle_ms = 1500  # how long you must be idle before it continues
 max_pause_secs = 120         # then the action fails and the agent is told why
+# Opens the decision model's settings page in your browser, from any app
+# ("" = none; `computer-use-mcp settings` opens it too).
+settings_hotkey = "ctrl+alt+j"
+
+# A decision model: a fast model that answers typed questions about what is
+# on screen (yes/no, one of some options, a score), so the agent doesn't
+# have to read and judge everything itself — the `decide` tool, wait_for's
+# `until` and scripts' decide(). Easiest set up on the page Ctrl+Alt+J
+# opens: the key never goes through the chat. What it judges (text you or
+# the agent pass, or an app's window as text) is sent to this API.
+[decision]
+provider = ""               # "jev" (TypeSafe's System One API, or a compatible server),
+                            # "openai" (any OpenAI-compatible chat API), "" = none
+base_url = ""               # "" = https://api.typesafe.ai or https://api.openai.com/v1
+model = ""                  # "" = jev-latest (jev); needed for openai
+api_key = ""                # kept here; this file is then readable by you only
+api_key_env = ""            # or the name of an environment variable holding the key
+timeout_ms = 15000          # longest wait for one answer
+max_state_chars = 20000     # a longer state keeps its start and end
+parallel = 8                # requests at once when judging several items
 
 # Private data is masked in element text and blacked out of screenshots
 # before anything is sent to the model.

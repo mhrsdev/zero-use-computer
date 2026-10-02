@@ -716,7 +716,122 @@ fn full_engine(ctx: &Rc<Ctx>) -> Engine {
     page_api(&mut engine, ctx);
     data_api(&mut engine, ctx);
     maths_api(&mut engine, ctx);
+    decision_api(&mut engine, ctx);
     engine
+}
+
+// -- decisions (the decision model) ---------------------------------------------
+
+/// What a decision is about, as text: a string as it is, anything else as
+/// JSON.
+fn state_text(d: &Dynamic) -> Res<String> {
+    if let Some(s) = d.read_lock::<rhai::ImmutableString>() {
+        return Ok(s.to_string());
+    }
+    Ok(to_json(d)?.to_string())
+}
+
+fn decision_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
+    use crate::decision::{Answer, Decider, NOT_SET_UP, Question};
+
+    let decider = |c: &Ctx| -> Res<Decider> {
+        c.check()?;
+        match Decider::from_config(&c.env.decision) {
+            Ok(Some(d)) => Ok(d),
+            Ok(None) => Err(err(NOT_SET_UP)),
+            Err(e) => Err(err(e)),
+        }
+    };
+    // Waiting for the model ends with the script (stop key, time).
+    let halted = |c: &Ctx| {
+        let (stop, abort, deadline) = (c.env.stop.clone(), c.abort.clone(), c.deadline);
+        move || {
+            stop.load(Ordering::Relaxed)
+                || abort.load(Ordering::Relaxed)
+                || Instant::now() > deadline
+        }
+    };
+    let questions = |m: Map| -> Res<Vec<Question>> {
+        crate::decision::questions_from(&Value::Object(map_json(m)?)).map_err(err)
+    };
+    let answers_map = |answers: Vec<(String, Answer)>| -> Res<Dynamic> {
+        let m: serde_json::Map<String, Value> =
+            answers.into_iter().map(|(k, a)| (k, a.to_json())).collect();
+        from_json(&Value::Object(m))
+    };
+    let one = move |c: &Ctx, state: &Dynamic, q: Question| -> Res<Answer> {
+        let d = decider(c)?;
+        let (mut answers, _) = d.ask(&state_text(state)?, &[q], &halted(c)).map_err(err)?;
+        c.check()?;
+        answers
+            .pop()
+            .map(|(_, a)| a)
+            .ok_or_else(|| err("the decision model gave no answer"))
+    };
+
+    let c = ctx.clone();
+    engine.register_fn("decide", move |state: Dynamic, qs: Map| -> Res<Dynamic> {
+        let d = decider(&c)?;
+        let (answers, _) = d
+            .ask(&state_text(&state)?, &questions(qs)?, &halted(&c))
+            .map_err(err)?;
+        c.check()?;
+        answers_map(answers)
+    });
+    let c = ctx.clone();
+    engine.register_fn("decide_each", move |states: Array, qs: Map| -> Res<Array> {
+        let d = decider(&c)?;
+        let qs = questions(qs)?;
+        let texts = states.iter().map(state_text).collect::<Res<Vec<_>>>()?;
+        let results = d.ask_each(&texts, &qs, &halted(&c));
+        c.check()?;
+        results
+            .into_iter()
+            .map(|r| answers_map(r.map_err(err)?.0))
+            .collect()
+    });
+    let c = ctx.clone();
+    engine.register_fn("ask", move |state: Dynamic, question: &str| -> Res<FLOAT> {
+        match one(&c, &state, Question::yes_no("answer", question))? {
+            Answer::YesNo { yes } => Ok(yes),
+            _ => Err(err("not a yes/no answer")),
+        }
+    });
+    let c = ctx.clone();
+    engine.register_fn(
+        "choose",
+        move |state: Dynamic, question: &str, options: Dynamic| -> Res<String> {
+            let opts = crate::decision::options_from(&to_json(&options)?).map_err(err)?;
+            let q = Question {
+                name: "answer".into(),
+                kind: crate::decision::Kind::Choice,
+                text: question.into(),
+                options: opts,
+            };
+            match one(&c, &state, q)? {
+                Answer::Choice { choice, .. } => Ok(choice),
+                _ => Err(err("not a choice")),
+            }
+        },
+    );
+    let c = ctx.clone();
+    engine.register_fn(
+        "score",
+        move |state: Dynamic, question: &str, levels: Array| -> Res<FLOAT> {
+            let levels = crate::decision::options_from(&to_json(&Dynamic::from_array(levels))?)
+                .map_err(err)?;
+            let q = Question {
+                name: "answer".into(),
+                kind: crate::decision::Kind::Score,
+                text: question.into(),
+                options: levels,
+            };
+            match one(&c, &state, q)? {
+                Answer::Score { score, .. } => Ok(score),
+                _ => Err(err("not a score")),
+            }
+        },
+    );
 }
 
 // -- tools and the screen -----------------------------------------------------
