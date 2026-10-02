@@ -21,14 +21,43 @@ v3.5, v3.6, … are steps; v4.0 is the stable release of what they proved.
   masking and the stop key stay as they are.
 - A simulation of Codex's behaviour is called a simulation.
 
-| step | focus |
-|---|---|
-| v3.5 | measuring for real; the screenshot path; areas the tree says nothing about |
-| v3.6 | OCR, observation that suits the content, reports that say what matters |
-| v3.7 | the tool surface: compact definitions and a tool manager |
-| v3.8 | checking results, fewer round trips |
-| v3.9 | optional layers, release candidate |
-| v4.0 | stable |
+| step | focus | status |
+|---|---|---|
+| v3.5 | measuring for real; the screenshot path; areas the tree says nothing about | done |
+| v3.6 | everything planned for v3.6 to v4.0, in one release | done, but for the real-model runs and hardware tests below |
+| v4.0 | stable: defaults set from real-model A/B runs | open |
+
+The steps first planned as v3.7 (the tool surface), v3.8 (checking
+results, fewer round trips) and v3.9 (optional layers) were built
+together in v3.6.0; their sections below say what was done and what is
+left.
+
+## Left before v4.0
+
+- **Real-model runs** (5 or more per scenario, `bench/run.sh --runs 5`)
+  of v3.2, v3.6 with its defaults, `bench/configs/lean.toml` and
+  `manager.toml`, with `--plan` left to the model; `--calibrate` to check
+  the token estimate (Persian and other non-Latin text especially).
+  Every number so far is a scripted estimate.
+- **Defaults from those runs**: `ocr.blind_regions`, `tree.report`,
+  `tree.quiet_volatile`, `screenshot.adaptive`, `screenshot.locate_picture`,
+  `tools.descriptions`, `tools.design_steps`, `tools.manager` (and a
+  compatibility table of clients for it: Claude Code, which has its own
+  tool search, Codex, Cursor, VS Code, Claude Desktop).
+- **Real Windows and macOS hardware**: the label relation (done on Linux
+  only), the cell fallback and `expect` there; CI builds and unit-tests
+  both, which is not the same.
+- **Icon labels cached per app** (experimental): the icon strip is done;
+  naming its icons needs a labeller that sees pictures, which the
+  decision model (text only) is not.
+- **The full benchmark on every model**, and v3.2 against v4.0 published,
+  real numbers apart from estimates, gains and regressions alike.
+- **Where v3.6 differs from the plan**: action reports at a lower
+  `tree.report` level say "get_app_state shows them" instead of taking a
+  `detail` argument; subtrees are judged with a yes/no question (`about`),
+  not a score; an unreadable line gets no picture of its own (the blind
+  area's picture comes with the look); wrong calls and retries caused by
+  the lighter schemas are still to be counted, in the real-model runs.
 
 ## v3.5 — measuring, screenshots, blind areas
 
@@ -42,29 +71,26 @@ Done:
 - Blind areas (`ocr.blind_regions`, off): found from the tree and checked
   in the pixels; read alone, at two sizes; watched on every look.
 
-Left before v3.5.0:
-
-- Real-model runs (5 or more per scenario) of v3.2 and v3.5 with and
-  without `ocr.blind_regions`; `--calibrate` to check the token estimate
-  (Persian and other non-Latin text especially), then fix the estimate if
-  it is off.
-- Decide `ocr.blind_regions`'s default from those runs.
+Left (now under "Left before v4.0"): the real-model runs, and
+`ocr.blind_regions`'s default from them.
 
 Found while building it (for the steps below):
 
 - GTK 3 table cells: the accessibility action doesn't select the row; a
-  mouse click does (v3.8).
+  mouse click does. *Done: a cell press that changed nothing is clicked.*
 - GTK 3 keeps a filtered table's old cell text over AT-SPI while the
-  picture shows the new rows, so the tree and the picture disagree (v3.6).
-- Every table cell carries `actions=[expand_or_collapse, edit]` (v3.6,
-  tables).
-- Fields named only by a label (GTK's mnemonic label, a labelled-by
-  relation) come without a name (v3.6).
-- `locate` sends a picture of the whole window with every answer (v3.6).
-- Whole-window OCR enlarges everything, which breaks big framed text
-  (v3.6, OCR).
+  picture shows the new rows. *Done: get_app_state says where the
+  picture changed and the tree didn't.*
+- Every table cell carries `actions=[expand_or_collapse, edit]`. *Done:
+  a table's shared actions are said once.*
+- Fields named only by a label come without a name. *Done on Linux (the
+  labelled-by relation).*
+- `locate` sends a picture of the whole window with every answer. *Done:
+  `picture: false`, `screenshot.locate_picture`.*
+- Whole-window OCR enlarges everything, which breaks big framed text.
+  *Done: every reading at both sizes.*
 
-## v3.6 — OCR and observation that suit the content
+## v3.6 — OCR and observation that suit the content (done in v3.6.0)
 
 - **OCR on Linux**: line and grid removal, binarizing, cropping to the
   areas that need it, the page-segmentation mode per area; icons and rulers
@@ -90,7 +116,7 @@ Found while building it (for the steps below):
   x/y or screenshots asked for → fewer automatic pictures); measure the
   overview size A/B.
 
-## v3.7 — the tool surface
+## v3.7 — the tool surface (done in v3.6.0)
 
 - **Compact definitions**: lighter schemas for shapes, no `window` or
   `default` in schemas (still accepted), no repeats; watched by wrong calls
@@ -109,10 +135,13 @@ Found while building it (for the steps below):
 - **Smaller models**: a fixed small profile with simpler descriptions and
   no dynamic discovery; measured per model.
 
-Today the definitions are about 4,650 tokens per request, 46% of them the
-five design tools.
+Before v3.6 the definitions were about 4,650 tokens per request, 46% of
+them the five design tools. In v3.6.0: compact 4,986 (it gained `expect`,
+names, lines and `about`), lean 3,715, the small preset 1,049, and the
+dispatch manager with lean definitions far less (see the benchmark
+results).
 
-## v3.8 — checking results, fewer round trips
+## v3.8 — checking results, fewer round trips (done in v3.6.0)
 
 - **Targeted checks**: an optional `expect` (a dialog opens, the value
   changes, an element appears); three outcomes (confirmed, not confirmed,
@@ -129,7 +158,7 @@ five design tools.
 - **`design` and `scene`**: diffs of layers and checks, a picture only when
   it changed, steps only when asked, short strings for shapes.
 
-## v3.9 — optional layers, release candidate
+## v3.9 — optional layers, release candidate (done in v3.6.0, but for the defaults and hardware)
 
 - Decision model (optional): extraction by `pick` (the small model picks
   the element, the server reads its value), relevance of subtrees by

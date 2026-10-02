@@ -1,6 +1,151 @@
 # Changelog
 
-## v3.5.0 (in progress)
+## v3.6.0
+
+Everything the [roadmap](docs/ROADMAP.md) planned for v3.6 to v4.0, in
+one release, on top of v3.5's measuring: trees and reports that say each
+thing once, OCR that suits the content, a lighter tool surface, actions
+that check their result and need fewer round trips, design answers that
+say what changed, and optional layers no feature depends on. Upgrading:
+[docs/MIGRATING.md](docs/MIGRATING.md).
+
+What it doesn't settle yet, and the roadmap keeps open: the real-model
+A/B runs that decide which of the opt-in settings become defaults (the
+benchmark is ready for them, a key is all it needs), and tests on real
+Windows and macOS hardware (the Windows and macOS code builds and passes
+its unit tests in CI, as before).
+
+### Trees and reports: each thing said once (`tree.compact`, on)
+
+- Look-alike siblings are **records**: the roles once (`7 × button:`,
+  `12 × list item › text:`), then each one's index and what is its own;
+  a **table** is its column names once and a row a line. Folding keeps
+  whole rows.
+- Flags and actions the role implies are left out: a text field is
+  editable unless it says `read-only`; a checkbox toggles.
+- Diffs list elements added together under their parent once, and many
+  removed ones as ranges of indices. A look at a window as it was names
+  only the app and window; a look that changed nothing is one line.
+- `set_value` doesn't echo a value the field now shows.
+- `tree::expand` and `tree::index_of` read records back one a line, for
+  code that reads trees.
+
+### Looking at less
+
+- `get_app_state(within=index)`: one element and what is in it, without
+  moving the base of later diffs.
+- `get_app_state(about="…")`: only the parts of the window about that,
+  the others folded to a line each; by the words (names and values), or
+  by the decision model's judgment when one is set up.
+- `find_element(offset)` pages through many matches.
+- `tree.report`: `"full"` (default), `"relevant"` (the changes around what
+  the action acted on, added elements, the focused one, and a count of the
+  rest) or `"brief"` (how many, and a new screen). `tree.quiet_volatile`
+  (off): elements that keep changing on their own summed up in a line.
+- When the pixels change where the tree reports nothing (GTK keeps a
+  filtered table's old cell text over AT-SPI), `get_app_state` says where,
+  and to trust the screenshot there.
+
+### OCR
+
+- Every reading takes out thin lines that cross most of the picture (graph
+  paper, rulers, table borders), then reads it as it is and enlarged,
+  keeping the surer line of each place: the benchmark's board now reads
+  all eight labels.
+- A strip of one or two lines is read as a line (Tesseract mode 7), the
+  rest as sparse text; shapes and rulers' evenly stepped numbers are left
+  out of every reading; a line read with low confidence says `unsure
+  reading`.
+
+### Pictures
+
+- `screenshot.adaptive` (off): once the model has looked at an app a few
+  times without using its pixels, a well-described window's automatic
+  picture is held back (and the result says so once); any use of pixels
+  brings them back.
+- `locate` can answer without its picture (`picture: false`, or
+  `screenshot.locate_picture = false`).
+- `screenshot.icon_sprite` (off, experimental): with no screenshot
+  attached, a strip of the buttons that have no name, numbered with their
+  indices, each shown once.
+
+### The tool surface
+
+- `tools.descriptions = "lean"`: nested objects as the list of their keys,
+  no `window` (still accepted) and no defaults in the schemas, `decide`
+  only once a decision model is set up.
+- `tools.manager` (off): `"dispatch"` shows the base tools and
+  `find_tools`, which returns the others (by category or by what they do)
+  with their arguments, run through `use_tool`; the list never changes, so
+  any client and its prompt cache keep working. `"list_changed"`: a
+  category found joins the list for good, and the client is told. Hidden
+  is not forbidden: a direct call still runs, and the settings still
+  decide what may run.
+- `tools.preset = "small"`: ten tools for smaller models.
+- `tools.default_app`: a call without `app` acts on the app last named.
+- `server.instructions`: `"short"` or `"off"` for clients that load the
+  skills. The computer-use skill is shorter and says the new ways.
+- Definitions per request (estimated): full 13,088 tokens, compact 4,986,
+  lean 3,715, small 1,049.
+
+### Actions: checked, and fewer round trips
+
+- **`expect`** on `click`, `set_value`, `type_text`, `press_key` and
+  `perform_secondary_action`: `"dialog"`, `"menu"`, `"change"`,
+  `"value"`, `"gone"`, or a text that should then be on screen. The server
+  waits for it (up to `timing.expect_wait_ms`, 2 s) and says on the
+  action's line: confirmed, not seen, or uncertain (and not to repeat what
+  isn't confirmed without looking).
+- **`click(name, role)`**: when one element has that name (an exact name
+  wins over a part of one); several are listed and nothing is clicked.
+- **`batch` lines**: `click 12`, `click "Save"`, `double 12`, `right 12`,
+  `set 4 "Ada"`, `type "text"`, `key cmd+s`, `scroll 7 down 2`, `select 4
+  "word"`, `action 9 show_menu`, `wait "Saved"`, `find "Total"`, `look`,
+  each with an optional `expect …`. A batch stops when a step brings up a
+  window it didn't expect (`through_windows: true` goes on) or what a step
+  expected isn't confirmed, and ends with **one report** of what the steps
+  changed.
+- **`launch_app`** returns the app's first state (`tools.launch_look`).
+- A **table cell** whose press changed nothing is clicked with the mouse
+  (GTK's press doesn't select the row; selecting is safe to repeat).
+- **Long conversations**: `cache.rebase_after_tokens` (off) sends a whole
+  tree and a picture again once that many tokens have gone by since the
+  app's tree was last sent whole; `get_app_state(rebase=true)` asks for it.
+
+### Design and scene
+
+- After the first answer, only what changed: the layers (objects)
+  changed, added or removed and the new order; checks and paint steps
+  "as before"; no picture when its pixels are the ones sent last. A call
+  that changes nothing gets everything.
+- `tools.design_steps = "asked"` (default `"always"`): the paint steps
+  only with `show: {"steps": true}`.
+- Layers, scene objects and `draw` strokes can be **lines**, the way the
+  listings show them: `"sun ellipse 80 20 12 12 fill #ffcc00"`, `"seat box
+  0.5 0.5 0.05 at 0 0 0.45 color #884422"`, `"rect 10 10 50 30"`.
+
+### Optional layers and hosts
+
+- `decide(app, pick, read=true)`: the element's whole text or value, read
+  by the server (extraction without reading the window).
+- Linux: a control without a name gets the name of the label it is
+  labelled by (AT-SPI relation; GTK's mnemonic labels). The benchmark's
+  form fields are `text field "Full name"` now, not a nameless field.
+- `server.result_meta` (off): each tool result's `_meta` has a number and
+  the earlier results it repeats whole
+  (`zero-use-computer/supersedes`) or whose pictures it replaces
+  (`zero-use-computer/supersedes-images`), so a host that trims its
+  context can drop them.
+
+### Benchmark
+
+- `--plan batch`: scripted ways through that use batch lines, clicks by
+  name and `expect`, next to the one-action-a-call way (`--plan step`).
+- `bench/configs/lean.toml` (every opt-in that saves tokens) and
+  `manager.toml` (the same with the tool manager), for A/B runs.
+- Scripted results against v3.2 and v3.5: [bench/results](bench/results/README.md).
+
+## v3.5.0 (released as part of v3.6.0)
 
 The first step of the road to v4.0 ([roadmap](docs/ROADMAP.md)): spend
 fewer tokens on finishing a task, measured with the real model before

@@ -1,0 +1,17 @@
+# v3.6: lean.toml with the tool manager: the base tools and find_tools; the
+# rest are found and run through use_tool (bench/README.md, "A/B").
+[tools]
+descriptions = "lean"
+design_steps = "asked"
+manager = "dispatch"
+
+[tree]
+report = "relevant"
+quiet_volatile = true
+
+[screenshot]
+adaptive = true
+locate_picture = false
+
+[ocr]
+blind_regions = true

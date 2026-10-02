@@ -25,14 +25,16 @@ Photoshop, Paint, Blender, Revit…) also load `computer-use-design`.
    checkboxes; prefer it over typing), `type_text` (`\n` presses Return),
    `press_key` (`"Return"`, `"cmd+s"`: Cmd on a Mac, Ctrl elsewhere),
    `perform_secondary_action` (an entry of `actions=[…]`), `select_text`,
-   `scroll`, `drag`, `draw`.
+   `scroll`, `drag`, `draw`. `click(name="Save")` works when one element
+   has that name.
 3. Read the "state after the action" each action returns; call
    `get_app_state` only when you need more. Later calls return a diff, or
    one line when nothing changed.
 
-`list_apps` finds an app; `launch_app` opens one by name, or a web address
-(`https://…`) in the default browser. If `find_tools` is in your tools,
-the others (design, windows, scripts, clipboard…) are found with it.
+`list_apps` finds an app; `launch_app` opens one by name (and returns its
+first state), or a web address (`https://…`) in the default browser. If
+`find_tools` is in your tools, the others (design, windows, scripts,
+clipboard…) are found with it.
 
 ## Rules
 
@@ -60,8 +62,16 @@ Every result stays in the conversation, so ask only for what you need:
 - Leave `screenshot` unset: one comes when it adds something, and a picture
   you already have isn't sent again. `screenshot: true` for a fresh look;
   `screenshot(app, element_index)` zooms into one element.
-- `wait_for` instead of polling; `batch` for a known sequence of steps;
-  one `script` for work that repeats or branches.
+- Steps you already know go in one `batch` of lines: `["set 4 \"Ada\"",
+  "click \"Japan\"", "click \"Save\""]` (`click 12`, `double 12`, `type
+  "text"`, `key cmd+s`, `scroll 7 down`, `look`…); it stops when a window
+  comes up that a step didn't `expect`, and ends with one report.
+- `expect` on an action (`"dialog"`, `"change"`, `"value"`, `"gone"`, or a
+  text to see) waits for it and says confirmed, not seen or uncertain:
+  look before repeating anything not confirmed.
+- `get_app_state(about="shipping address")` shows just the parts about
+  that. `wait_for` instead of polling; one `script` for work that repeats
+  or branches.
 - Trust `screen #N (seen before)`: what you learnt about it still holds.
 
 ## The decision model (optional)

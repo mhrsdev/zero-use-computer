@@ -16,8 +16,35 @@ agent), or embed the **library** (`computer-use`) in your own agent.
 
 ## What's new
 
-**v3.5.0** (in progress; [roadmap](docs/ROADMAP.md)) — tokens measured
-the way they are spent:
+**v3.6.0** ([changelog](CHANGELOG.md), [upgrading](docs/MIGRATING.md))
+— everything the [roadmap](docs/ROADMAP.md) planned up to v4.0, in one
+release; the defaults wait for real-model A/B runs:
+
+- **Each thing said once**: look-alike siblings as records, a table a row
+  a line, no flags the role implies, one line for a look that changed
+  nothing (`tree.compact`, on). Scripted benchmark: the 300-row table
+  task −39% result tokens, the long session −26%.
+- **Actions that check themselves and need fewer turns**: `expect` (a
+  dialog, a value, a text to see: confirmed, not seen or uncertain),
+  `click(name="Save")`, `batch` steps as lines (`set 4 "Ada"`, `click
+  "Save" expect dialog`) that stop on a window they didn't expect and end
+  with one report, `launch_app` returning the first state. The form task
+  takes 2 calls instead of 6 (scripted).
+- **Looking at less**: `get_app_state(within=…)`, `get_app_state(about=
+  "shipping address")`, `find_element(offset)`, reports in levels.
+- **A lighter tool surface** (opt-in): lean schemas, a tool manager
+  (`find_tools` + `use_tool`), a small preset for smaller models, short
+  server instructions.
+- **OCR** reads framed and gridded text at two sizes without the lines,
+  leaves out rulers and shapes, and marks unsure lines; on Linux, fields
+  get the name of their label.
+- **Design and scene** answer with what changed, send no picture twice,
+  and take layers as lines (`"sun ellipse 80 20 12 12 fill #ffcc00"`).
+- **Optional layers**: `decide(pick, read=true)` reads a value out of a
+  window; `_meta` on results tells a host which earlier ones it can drop.
+  Nothing depends on the decision model.
+
+**v3.5** (part of v3.6.0) — tokens measured the way they are spent:
 
 - An **agent benchmark** ([bench/](bench/README.md)): six tasks in real
   apps (a form, a 300-row table, a canvas with painted labels under a full
@@ -116,9 +143,9 @@ This project follows the same architecture and behaviour:
 | Tool | What it does |
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
-| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments) and wait for a window; or open a web address in the default browser. |
-| `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. |
-| `click` | Click an element by `element_index` (uses its accessibility action) or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. |
+| `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments), wait for a window and return its first state; or open a web address in the default browser. |
+| `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. `within` shows one element's part, `about` only the parts about something, `rebase` all of it again. |
+| `click` | Click an element by `element_index` (uses its accessibility action), by `name` (and `role`) when one element has it, or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. `expect` (here and on the other actions) waits for a dialog, a change, a value or a text and says whether it came. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
 | `set_value` | Set a field's text, a slider, or a checkbox/switch directly. |
 | `select_text` | Select a substring (or all) in a text element. |
@@ -133,9 +160,9 @@ This project follows the same architecture and behaviour:
 | `type_text` | Type into the focused element (`x`/`y` as for `press_key`). |
 | `find_element` | Search the tree by role/name/text/editable; returns just the matches with their indices. |
 | `wait_for` | Poll until an element (role/name/text + state) appears, with a timeout; or, with `until`, until the decision model answers yes about the window ("have the results loaded?"). |
-| `decide` | Typed answers from a **decision model** (Jev, or a fast OpenAI-compatible model): yes/no with a probability, one of some options, or a score on a scale, about text, each of many items in parallel, or an app's window; `pick` returns the element a description means. See [Decision model](#decision-model-jev). |
+| `decide` | Typed answers from a **decision model** (Jev, or a fast OpenAI-compatible model): yes/no with a probability, one of some options, or a score on a scale, about text, each of many items in parallel, or an app's window; `pick` returns the element a description means (`read` also its value). See [Decision model](#decision-model-jev). |
 | `screenshot` | Capture the **full screen**, a **screen region**, or a window; optional set-of-marks overlay, a labelled coordinate **grid**, the main colours (**palette**) and exact colours at points (**pick**); with `canvas` the grid and pick use the document's units or a plot's range, as `draw` does, **cells** lays named graph paper over the document and `cell` magnifies one cell. `zoom` magnifies around a point to aim exactly. |
-| `batch` | Run several tools in one call (fill a form, then submit). |
+| `batch` | Run several tools in one call (fill a form, then submit), as lines (`set 4 "Ada"`, `click "Save" expect dialog`, `key cmd+s`) or objects; stops on a window a step didn't expect, and ends with one report of what changed. |
 | `script` | Run a small program inside the server for what the tools can't do in one call: loops and conditions over any tool, maths, data from files or the web, pictures built on a graph-paper page. `save` keeps a script as a **new tool** of its own. See [Scripts](#scripts). |
 | `get_clipboard` / `set_clipboard` | Read/write the system clipboard. |
 
@@ -735,25 +762,26 @@ applying after a reload. The agent has no tool to change settings.
 
 | Section | What you control |
 |---|---|
-| `[tools]` | hide tools (`disabled`), allow-list them (`enabled`), `compact` or `full` descriptions |
+| `[tools]` | hide tools (`disabled`), allow-list them (`enabled`), `compact`, `lean` or `full` descriptions, the tool `manager`, a `small` preset, `default_app`, `launch_look`, `design_steps` |
 | `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
-| `[tree]` | size limits, text length, indentation, shown actions/states, diffs, change reports |
-| `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults |
+| `[tree]` | size limits, text length, indentation, shown actions/states, diffs, `compact`, change reports and their level (`report`), `quiet_volatile` |
+| `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults, how long `expect` waits |
 | `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings |
-| `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window |
+| `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window, `rebase_after_tokens` |
 | `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
-| `[server]` | log level, HTTP address and token |
+| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 
 ### Token use
 
 Everything a tool returns stays in the model's context for the rest of the
-task, so the server spends tokens only where they buy something. None of
-this costs accuracy or speed: nothing the model needs is withheld (what is
-folded is still searchable, and pictures are re-sent when they change), and
-the checks are cheap compared with reading the app:
+task, so the server spends tokens only where they buy something. What is
+on by default withholds nothing the model needs (what is folded is still
+searchable, and pictures are re-sent when they change); what could cost
+accuracy is marked opt-in and stays off until the real-model
+[benchmark](bench/README.md) has measured it:
 
 | Where | What it does | Setting |
 |---|---|---|
@@ -763,6 +791,13 @@ the checks are cheap compared with reading the app:
 | **Diffs and screen memory** | Later views of a screen are diffs; a screen the model has seen comes back as "seen before" with only what changed. | `tree.diff`, `[cache]` |
 | **Pictures only when they change** | Screenshots are compared with the one the model has: an unchanged one isn't sent, a small change is sent as just that part, whether it comes with `get_app_state` or from `screenshot(app)`. Every screenshot is numbered, and a changed part names the one it patches. | `cache.dedupe_screenshots`, `screenshot.scope` |
 | **Blind areas** (opt-in) | A canvas or picture the tree says nothing about, found however many elements the rest of the window has: its text is read off the screen and its pixels checked on every look, so the model doesn't have to ask. | `ocr.blind_regions` |
+| **Each thing said once** | Look-alike siblings are records (the roles once, then a line a record), a table is its column names and a row a line, flags and actions the role implies are left out, many removed elements are ranges, a look that changed nothing is one line, a value just set isn't echoed. Nothing is lost: `find_element` and indices work as before. | `tree.compact` |
+| **Reports in levels** (opt-in) | An action's report of what changed: all of it, the changes around what it acted on (and a count of the rest), or just how many; elements that keep changing on their own summed up. | `tree.report`, `tree.quiet_volatile` |
+| **Fewer round trips** | `batch` lines with one report at the end, `click` by name, `expect` (the server waits for what should follow and says whether it came), `launch_app` returning the first state. | `tools.launch_look`, `timing.expect_wait_ms` |
+| **Fewer automatic pictures** (opt-in) | While the model doesn't use an app's pixels, a well-described window's automatic picture is held back; `locate` can answer without one. | `screenshot.adaptive`, `screenshot.locate_picture` |
+| **Lighter definitions** (opt-in) | Lean schemas (≈ 3,700 tokens instead of ≈ 5,000), a tool manager that lists the base tools and finds the rest (`find_tools`, `use_tool`; the list never changes, so the prompt cache holds), a ten-tool preset, short server instructions. | `tools.descriptions`, `tools.manager`, `tools.preset`, `server.instructions` |
+| **Design answers** | After the first, only what changed, no picture twice, layers as lines; paint steps only when asked (opt-in). | `tree.compact`, `tools.design_steps` |
+| **Long conversations** (opt-in) | Past a number of tokens, the next look sends the whole tree and a picture again; hosts that trim their context can drop the results a later one repeats (`_meta`). | `cache.rebase_after_tokens`, `server.result_meta` |
 | **Skills in layers** | Each skill is a short core (always loaded) that points to reference files the model reads only when it needs them. | — |
 | **Stable tool list** | Tool definitions go with every request; they are kept compact and *stable* (they change only when you change the settings or a script is saved or deleted), so the client's prompt cache serves them for a fraction of the price. Hide tools you never use with `tools.disabled`. | `tools.descriptions`, `tools.disabled`, `script.saved_as_tools` |
 | **Measured** | Each audit-log line records the estimated tokens of that result (text, plus image at width × height / 750). | `audit.enabled` |

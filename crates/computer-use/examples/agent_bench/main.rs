@@ -47,6 +47,8 @@ struct Options {
     max_turns: usize,
     config: Option<PathBuf>,
     preset: String,
+    /// Scripted runs: "step" (one action a call) or "batch" (v3.6).
+    plan: String,
     label: String,
     out: PathBuf,
     python: Option<String>,
@@ -58,7 +60,7 @@ const USAGE: &str =
     "usage: agent_bench [--scripted] [--scenarios form,table,board,shapes,orders,long|all]
                    [--runs N] [--model ID] [--effort low|medium|high|xhigh|max]
                    [--max-turns N] [--config FILE] [--preset default|codex]
-                   [--label NAME] [--out DIR] [--python PY] [--calibrate] [--verbose]";
+                   [--plan step|batch] [--label NAME] [--out DIR] [--python PY] [--calibrate] [--verbose]";
 
 fn parse_args() -> Result<Options, String> {
     let mut o = Options {
@@ -70,6 +72,7 @@ fn parse_args() -> Result<Options, String> {
         max_turns: 40,
         config: None,
         preset: "default".into(),
+        plan: "step".into(),
         label: "dev".into(),
         out: PathBuf::from("target/bench"),
         python: None,
@@ -110,6 +113,12 @@ fn parse_args() -> Result<Options, String> {
             }
             "--config" => o.config = Some(PathBuf::from(value("--config")?)),
             "--preset" => o.preset = value("--preset")?,
+            "--plan" => {
+                o.plan = value("--plan")?;
+                if o.plan != "step" && o.plan != "batch" {
+                    return Err("--plan: step or batch".into());
+                }
+            }
             "--label" => o.label = value("--label")?,
             "--out" => o.out = PathBuf::from(value("--out")?),
             "--python" => o.python = Some(value("--python")?),
@@ -199,7 +208,7 @@ fn main() {
                 c.model,
                 c.effort.as_deref().unwrap_or("default")
             ))
-            .unwrap_or_default(),
+            .unwrap_or_else(|| format!(" (plan {})", o.plan)),
         o.label,
         o.preset,
         o.scenarios.len(),
@@ -232,7 +241,12 @@ fn main() {
             r.fixed_tokens_est = fixed_tokens;
             match &client {
                 None => {
-                    let outcome = (sc.scripted)(&mut session);
+                    let way = if o.plan == "batch" {
+                        sc.batched
+                    } else {
+                        sc.scripted
+                    };
+                    let outcome = way(&mut session);
                     r.stop = match outcome {
                         Ok(()) => "done".into(),
                         Err(e) => format!("script: {e}"),

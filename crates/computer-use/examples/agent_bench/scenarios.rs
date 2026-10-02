@@ -17,6 +17,9 @@ pub struct Scenario {
     pub about: &'static str,
     pub check: fn(&Value) -> Result<(), String>,
     pub scripted: fn(&mut Session) -> Result<(), String>,
+    /// The way through with v3.6's fewer round trips (`--plan batch`):
+    /// batch lines, clicks by name, `expect`.
+    pub batched: fn(&mut Session) -> Result<(), String>,
 }
 
 pub const ALL: &[Scenario] = &[
@@ -28,6 +31,7 @@ pub const ALL: &[Scenario] = &[
         about: "a form: named fields, radio buttons, a check box",
         check: check_form,
         scripted: scripted_form,
+        batched: batched_form,
     },
     Scenario {
         id: "table",
@@ -37,6 +41,7 @@ pub const ALL: &[Scenario] = &[
         about: "a 300-row table with a filter",
         check: check_table,
         scripted: scripted_table,
+        batched: batched_table,
     },
     Scenario {
         id: "board",
@@ -46,6 +51,7 @@ pub const ALL: &[Scenario] = &[
         about: "a canvas of labelled boxes under a full toolbar (text the tree doesn't have)",
         check: check_board,
         scripted: scripted_board,
+        batched: scripted_board,
     },
     Scenario {
         id: "shapes",
@@ -55,6 +61,7 @@ pub const ALL: &[Scenario] = &[
         about: "a canvas of shapes without any text",
         check: check_shapes,
         scripted: scripted_shapes,
+        batched: scripted_shapes,
     },
     Scenario {
         id: "orders",
@@ -64,6 +71,7 @@ pub const ALL: &[Scenario] = &[
         about: "mixed: painted text, a field, a confirmation dialog",
         check: check_orders,
         scripted: scripted_orders,
+        batched: batched_orders,
     },
     Scenario {
         id: "long",
@@ -73,6 +81,7 @@ pub const ALL: &[Scenario] = &[
         about: "a longer session: the same table, five items in turn",
         check: check_long,
         scripted: scripted_long,
+        batched: batched_long,
     },
 ];
 
@@ -362,5 +371,115 @@ fn scripted_orders(s: &mut Session) -> Result<(), String> {
     s.call("click", json!({"app": app, "element_index": submit}))?;
     let confirm = need(s.index(|l| l.starts_with("button \"Confirm\"")), "Confirm")?;
     s.call("click", json!({"app": app, "element_index": confirm}))?;
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// the same with fewer round trips (v3.6): what is known is done in one
+// batch of lines, by name where the name is plain
+
+fn batched_form(s: &mut Session) -> Result<(), String> {
+    let app = s.app.clone();
+    s.call("get_app_state", json!({"app": app}))?;
+    let name = need(
+        s.index(|l| l.starts_with("text field \"Full name\"")),
+        "Full name field",
+    )?;
+    let email = need(
+        s.index(|l| l.starts_with("text field \"Email\"")),
+        "Email field",
+    )?;
+    s.call(
+        "batch",
+        json!({"app": app, "steps": [
+            format!("set {name} \"Ada Lovelace\""),
+            format!("set {email} \"ada@example.com\""),
+            "click \"Japan\"",
+            "click \"Subscribe to newsletter\"",
+            "click \"Save\"",
+        ]}),
+    )?;
+    Ok(())
+}
+
+/// Filter to one SKU, then select its row and press Open in one batch.
+fn batched_open(s: &mut Session, sku: &str, clear: bool) -> Result<(), String> {
+    let app = s.app.clone();
+    let filter = need(s.index(|l| l.contains("\"Filter\"")), "filter field")?;
+    if clear {
+        // GTK 3 keeps the old row's cells when one filter replaces
+        // another: clear it first.
+        s.call(
+            "set_value",
+            json!({"app": app, "element_index": filter, "value": ""}),
+        )?;
+    }
+    s.call(
+        "set_value",
+        json!({"app": app, "element_index": filter, "value": sku}),
+    )?;
+    let quoted = format!("\"{sku}\"");
+    let cell = match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
+        Some(i) => i,
+        None => {
+            s.call("get_app_state", json!({"app": app}))?;
+            match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
+                Some(i) => i,
+                None => need(s.index(|l| l.starts_with("cell \"K-")), sku)?,
+            }
+        }
+    };
+    s.call(
+        "batch",
+        json!({"app": app, "steps": [format!("double {cell}"), "click \"Open\""]}),
+    )?;
+    Ok(())
+}
+
+fn batched_table(s: &mut Session) -> Result<(), String> {
+    let app = s.app.clone();
+    s.call("get_app_state", json!({"app": app}))?;
+    batched_open(s, "K-0137", false)
+}
+
+fn batched_long(s: &mut Session) -> Result<(), String> {
+    let app = s.app.clone();
+    s.call("get_app_state", json!({"app": app}))?;
+    for (n, sku) in LONG.iter().enumerate() {
+        batched_open(s, sku, n > 0)?;
+    }
+    Ok(())
+}
+
+fn batched_orders(s: &mut Session) -> Result<(), String> {
+    let app = s.app.clone();
+    let first = s.call("get_app_state", json!({"app": app}))?;
+    let text = if first.contains("order number:") {
+        first
+    } else {
+        s.call("get_app_state", json!({"app": app, "ocr": true}))?
+    };
+    let number = text
+        .lines()
+        .find_map(|l| {
+            let at = l.find("order number:")?;
+            let rest = &l[at + "order number:".len()..];
+            rest.split(|c: char| c.is_whitespace() || c == '"')
+                .find(|t| !t.is_empty())
+                .map(String::from)
+        })
+        .ok_or("the notice wasn't read")?;
+    let field = need(
+        s.index(|l| l.starts_with("text field \"Order number\"")),
+        "Order number field",
+    )?;
+    s.call(
+        "batch",
+        json!({"app": app, "steps": [
+            format!("set {field} \"{number}\""),
+            "click \"Submit\" expect dialog",
+            "click \"Confirm\"",
+        ]}),
+    )?;
     Ok(())
 }
