@@ -1,0 +1,5 @@
+# zero-use-computer as shipped (v3.1.0 defaults): OCR auto, screenshots
+# attached when needed, screen memory, unchanged-picture dedupe, changed-part
+# screenshots. Only the audit log is turned on, as a measuring instrument.
+[audit]
+enabled = true
