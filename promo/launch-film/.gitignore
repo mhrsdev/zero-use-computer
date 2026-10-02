@@ -1,0 +1,11 @@
+# render scratch and drafts
+renders/work-*
+renders/.*transaction*
+renders/draft-*
+snapshots/
+.hyperframes/
+node_modules/
+# intermediate audio (regenerate with audio/master.sh)
+audio/mix-raw.wav
+__pycache__/
+renders/render-*
