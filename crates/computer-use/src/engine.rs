@@ -272,6 +272,8 @@ pub struct Engine<B: Backend> {
     /// Tool categories `find_tools` has added to the tool list ([tools]
     /// manager = "list_changed"); they stay.
     active_tools: HashSet<&'static str>,
+    /// The tool lists, until what they depend on changes.
+    tools_cache: Option<scripting::ToolsCache>,
     /// The app the last call named ([tools] default_app).
     last_app: Option<String>,
     /// What the last action's `expect` found (a batch stops on anything
@@ -423,6 +425,7 @@ impl<B: Backend> Engine<B> {
             shots: 0,
             target: None,
             active_tools: HashSet::new(),
+            tools_cache: None,
             last_app: None,
             last_expect: None,
             sent_tokens: 0,

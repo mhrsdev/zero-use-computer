@@ -144,7 +144,7 @@ This project follows the same architecture and behaviour:
 |------|--------------|
 | `list_apps` | List running desktop apps (id, pid, window state). |
 | `launch_app` | Start an app by its name in the app menu ("Google Chrome"), bundle id or executable (no arguments), wait for a window and return its first state; or open a web address in the default browser. |
-| `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first each turn. `within` shows one element's part, `about` only the parts about something, `rebase` all of it again. |
+| `get_app_state` | The window's numbered accessibility tree **+ a screenshot**. Call first; actions then report the state after them. `within` shows one element's part, `about` only the parts about something, `rebase` all of it again. |
 | `click` | Click an element by `element_index` (uses its accessibility action), by `name` (and `role`) when one element has it, or at `x`/`y` screenshot pixels; `snap` moves the point onto the nearest corner, edge, small shape's centre or colour first. `expect` (here and on the other actions) waits for a dialog, a change, a value or a text and says whether it came. |
 | `perform_secondary_action` | A non-click action listed for the element (`show_menu`, `increment`, `expand`, `toggle`…). |
 | `set_value` | Set a field's text, a slider, or a checkbox/switch directly. |

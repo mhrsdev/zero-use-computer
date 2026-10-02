@@ -43,7 +43,7 @@ pub struct Server<R: BufRead, W: Write, B: Backend> {
     writer: W,
     shutdown: bool,
     /// Tool set last announced to the client, to detect settings changes.
-    tools_sig: Option<String>,
+    tools_sig: Option<u64>,
 }
 
 /// What the reader thread passes on.
@@ -254,7 +254,7 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
             self.write_msg(&resp)?;
         }
         // A hot-reloaded config can change which tools exist; tell the client.
-        if let Some(prev) = self.tools_sig.clone() {
+        if let Some(prev) = self.tools_sig {
             let now = self.tools_signature();
             if now != prev {
                 self.tools_sig = Some(now);
@@ -332,14 +332,11 @@ impl<R: BufRead, W: Write, B: Backend> Server<R, W, B> {
         reply
     }
 
-    fn tools_signature(&mut self) -> String {
-        let engine = self.engine.as_mut().expect("engine present");
-        engine
-            .tool_definitions()
-            .iter()
-            .map(|d| format!("{}:{}", d.name, d.description))
-            .collect::<Vec<_>>()
-            .join("|")
+    fn tools_signature(&mut self) -> u64 {
+        self.engine
+            .as_mut()
+            .expect("engine present")
+            .tools_signature()
     }
 
     fn tools_list(&mut self) -> Value {
@@ -403,8 +400,9 @@ const SHORT_INSTRUCTIONS: &str = "Control desktop apps through their accessibili
 
 pub(crate) fn instructions() -> String {
     "Control desktop apps through their accessibility tree plus screenshots. \
-     On every turn, call get_app_state(app) first: it returns the app's numbered \
-     accessibility tree and a screenshot. Act on elements by their element_index \
+     Call get_app_state(app) first: it returns the app's numbered \
+     accessibility tree and a screenshot. Each action then returns the state \
+     after it; call get_app_state again only when you need more. Act on elements by their element_index \
      (click, set_value, perform_secondary_action, select_text, scroll, drag, \
      press_key, type_text); indices are only valid until the next get_app_state, \
      which afterwards returns a diff. Prefer element_index over x/y coordinates. \

@@ -1949,8 +1949,13 @@ fn acting(title: &str) -> Value {
     json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true})
 }
 
-/// Tool definitions, ready to hand to an LLM or list over MCP.
+/// Tool definitions, ready to hand to an LLM or list over MCP. Built once.
 pub fn definitions() -> Vec<ToolDefinition> {
+    static DEFS: std::sync::OnceLock<Vec<ToolDefinition>> = std::sync::OnceLock::new();
+    DEFS.get_or_init(build_definitions).clone()
+}
+
+fn build_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "list_apps".into(),
@@ -1974,7 +1979,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "get_app_state".into(),
             title: "Get app state".into(),
-            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first on every turn before acting on an app. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.".into(),
+            description: "Get the current state of an app window: its accessibility tree with numbered elements, plus a screenshot when it adds information (first view of a window, a large change, custom-drawn UI; set screenshot=true to always include one). Call this first, before acting on an app; each action then reports the state after it, so call it again only when you need more. Element indices are only valid until the next get_app_state. After the first call, the tree may come back as a diff against the previous one; pass disable_diff=true to get the full tree. When the app is back on a screen you already saw (\"screen #N (seen before)\"), only what changed since then is sent, its element indices are the ones you saw then, and a new screenshot comes only if its pixels changed. A very large tree has its long lists folded (find_element finds folded items); max_tokens=0 returns it whole.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -2452,7 +2457,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first; actions then report the state after them, so call again only for more. Element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
         }
         "click" => {
             "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
@@ -2809,12 +2814,33 @@ pub fn definitions_for(cfg: &crate::config::ToolsConfig) -> Vec<ToolDefinition> 
 /// Tools whose schema requires `app`: the ones [tools] default_app fills
 /// in.
 pub fn needs_app(name: &str) -> bool {
-    definitions().iter().any(|d| {
-        d.name == name
-            && d.input_schema
-                .get("required")
-                .and_then(Value::as_array)
-                .is_some_and(|r| r.iter().any(|v| v == "app"))
+    static NAMES: std::sync::OnceLock<Vec<Cow<'static, str>>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            definitions()
+                .into_iter()
+                .filter(|d| {
+                    d.input_schema
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|r| r.iter().any(|v| v == "app"))
+                })
+                .map(|d| d.name)
+                .collect()
+        })
+        .iter()
+        .any(|n| n == name)
+}
+
+/// Tools that take an `app` argument (a script's `set_app` fills it in).
+pub fn takes_app() -> &'static [Cow<'static, str>] {
+    static NAMES: std::sync::OnceLock<Vec<Cow<'static, str>>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        definitions()
+            .into_iter()
+            .filter(|d| d.input_schema["properties"].get("app").is_some())
+            .map(|d| d.name)
+            .collect()
     })
 }
 
