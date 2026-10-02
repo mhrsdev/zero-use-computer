@@ -56,6 +56,8 @@ preset = "full"
 # A call without `app` acts on the app of the last call that named one, and
 # the schemas don't require `app` (fewer tokens for the model to write).
 default_app = false
+# launch_app answers with the app's first state, as get_app_state would.
+launch_look = true
 
 [screenshot]
 enabled = true
@@ -146,6 +148,7 @@ key_delay_ms = 10           # pause between keys in a press_key sequence
 app_cache_ms = 1500         # reuse the running-app list for this long
 wait_timeout_ms = 10000     # wait_for default timeout
 wait_poll_ms = 400          # wait_for default poll interval
+expect_wait_ms = 2000       # how long an action with `expect` waits for it to show
 
 [cache]
 # Screen memory: when the app shows a screen the model has already seen (it
@@ -159,6 +162,11 @@ dedupe_screenshots = true   # don't re-send an unchanged screenshot of a screen
 pixel_grid = 64             # fingerprint cells across the longer side
 pixel_tolerance = 2         # per-cell brightness drift still "unchanged"
 snapshot_ttl_ms = 200       # reuse a tree/window read this recent if nothing ran since (0 = off)
+# After this many (estimated) tokens of results since an app's tree was last
+# sent whole, the next get_app_state sends it whole again, with a picture: in
+# a long conversation the model, or a host that trims old results, may have
+# lost what diffs refer to. 0 = never.
+rebase_after_tokens = 0
 
 [overlay]
 # While the agent works: its own cursor (the real mouse is never moved or

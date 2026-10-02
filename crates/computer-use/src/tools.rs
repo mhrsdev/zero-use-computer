@@ -121,7 +121,8 @@ pub struct GetAppStateArgs {
     pub app: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub window: Option<String>,
-    #[serde(default, alias = "disableDiff")]
+    /// The whole tree, not a diff (`rebase`: everything sent again).
+    #[serde(default, alias = "disableDiff", alias = "rebase")]
     pub disable_diff: bool,
     /// Force (true) or suppress (false) the screenshot; default follows
     /// `screenshot.attach`.
@@ -160,6 +161,15 @@ pub struct ClickArgs {
     /// How far to look for it, in screenshot pixels (default 10).
     #[serde(default)]
     pub snap_radius: Option<f64>,
+    /// The element to click by its name (and role), when no index or
+    /// point is given: it must match one element.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub role: Option<String>,
+    /// What should follow, checked after the action ([`Expect`]).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 fn one() -> u8 {
@@ -174,6 +184,8 @@ pub struct SecondaryActionArgs {
     #[serde(deserialize_with = "de_index")]
     pub element_index: u32,
     pub action: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -185,6 +197,8 @@ pub struct SetValueArgs {
     pub element_index: u32,
     #[serde(deserialize_with = "de_value")]
     pub value: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 fn de_value<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
@@ -461,6 +475,8 @@ pub struct PressKeyArgs {
     /// Point the mouse here (screenshot pixels) while pressing.
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -474,6 +490,8 @@ pub struct TypeTextArgs {
     /// Point the mouse here (screenshot pixels) while typing.
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub expect: Option<String>,
 }
 
 /// A state an element can be matched on, for find_element / wait_for.
@@ -1025,11 +1043,233 @@ fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, 
     })
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+/// One step of a batch: `{tool, arguments}`, or a short line such as
+/// `click 12`, `set 4 "Ada"`, `key cmd+s` ([`parse_step`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct BatchStep {
     pub tool: String,
-    #[serde(default)]
     pub arguments: Value,
+}
+
+impl<'de> Deserialize<'de> for BatchStep {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Line(String),
+            Full {
+                tool: String,
+                #[serde(default)]
+                arguments: Value,
+            },
+        }
+        match Repr::deserialize(d)? {
+            Repr::Full { tool, arguments } => Ok(BatchStep { tool, arguments }),
+            Repr::Line(line) => parse_step(&line).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// A batch step written as a short line:
+///
+/// `click 12` · `click "Save"` (by name) · `double 12` · `right 12` ·
+/// `set 4 "Ada"` · `type "hello\n"` · `type 4 "hello"` · `key cmd+s` ·
+/// `scroll 7 down 2` · `select 4 "word"` · `action 9 show_menu` ·
+/// `wait "Saved"` · `find "Total"` · `look`; any action line can end with
+/// `expect dialog` (or `expect "text"`).
+pub fn parse_step(line: &str) -> std::result::Result<BatchStep, String> {
+    let bad = |why: &str| {
+        format!(
+            "step `{line}`: {why}; write click N, click \"name\", double N, right N, set N \"value\", type [N] \"text\", key K, scroll [N] up|down|left|right [pages], select N [\"text\"], action N name, wait \"text\", find \"text\" or look (each may end with expect …), or {{tool, arguments}}"
+        )
+    };
+    let mut words = words_of(line).map_err(|e| bad(&e))?;
+    // `… expect dialog`: the rest is what should follow.
+    let mut expect = None;
+    if let Some(at) = words
+        .iter()
+        .skip(1)
+        .position(|(w, quoted)| !quoted && w == "expect")
+    {
+        let rest: Vec<String> = words.drain(at + 1..).skip(1).map(|(w, _)| w).collect();
+        if rest.is_empty() {
+            return Err(bad("expect needs what to expect"));
+        }
+        expect = Some(rest.join(" "));
+    }
+    let Some((verb, _)) = words.first().cloned() else {
+        return Err(bad("empty"));
+    };
+    let args: Vec<(String, bool)> = words[1..].to_vec();
+    let index = |i: usize| -> Option<u32> {
+        args.get(i)
+            .filter(|(_, quoted)| !quoted)
+            .and_then(|(w, _)| w.parse().ok())
+    };
+    let joined = |from: usize| -> String {
+        args[from.min(args.len())..]
+            .iter()
+            .map(|(w, _)| w.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut m = serde_json::Map::new();
+    let tool = match verb.to_lowercase().as_str() {
+        "click" | "double" | "right" => {
+            match (index(0), args.first()) {
+                (Some(i), _) => m.insert("element_index".into(), json!(i)),
+                (None, Some(_)) => m.insert("name".into(), json!(joined(0))),
+                (None, None) => return Err(bad("click what")),
+            };
+            match verb.to_lowercase().as_str() {
+                "double" => m.insert("click_count".into(), json!(2)),
+                "right" => m.insert("button".into(), json!("right")),
+                _ => None,
+            };
+            "click"
+        }
+        "set" => {
+            let i = index(0).ok_or_else(|| bad("set needs an element number"))?;
+            if args.len() < 2 {
+                return Err(bad("set needs a value"));
+            }
+            m.insert("element_index".into(), json!(i));
+            m.insert("value".into(), json!(joined(1)));
+            "set_value"
+        }
+        "type" => {
+            let from = match index(0) {
+                Some(i) if args.len() > 1 => {
+                    m.insert("element_index".into(), json!(i));
+                    1
+                }
+                _ => 0,
+            };
+            if args.len() <= from {
+                return Err(bad("type needs the text"));
+            }
+            m.insert("text".into(), json!(joined(from)));
+            "type_text"
+        }
+        "key" | "press" => {
+            if args.is_empty() {
+                return Err(bad("key needs a key"));
+            }
+            m.insert("key".into(), json!(joined(0)));
+            "press_key"
+        }
+        "scroll" => {
+            let from = match index(0) {
+                Some(i) => {
+                    m.insert("element_index".into(), json!(i));
+                    1
+                }
+                None => 0,
+            };
+            let dir = args
+                .get(from)
+                .map(|(w, _)| w.to_lowercase())
+                .filter(|d| ["up", "down", "left", "right"].contains(&d.as_str()))
+                .ok_or_else(|| bad("scroll needs up, down, left or right"))?;
+            m.insert("direction".into(), json!(dir));
+            if let Some((n, _)) = args.get(from + 1) {
+                let pages: f64 = n.parse().map_err(|_| bad("pages must be a number"))?;
+                m.insert("amount".into(), json!(pages));
+            }
+            "scroll"
+        }
+        "select" => {
+            let i = index(0).ok_or_else(|| bad("select needs an element number"))?;
+            m.insert("element_index".into(), json!(i));
+            if args.len() > 1 {
+                m.insert("text".into(), json!(joined(1)));
+            }
+            "select_text"
+        }
+        "action" => {
+            let i = index(0).ok_or_else(|| bad("action needs an element number"))?;
+            if args.len() < 2 {
+                return Err(bad("action needs the action's name"));
+            }
+            m.insert("element_index".into(), json!(i));
+            m.insert("action".into(), json!(joined(1)));
+            "perform_secondary_action"
+        }
+        "wait" | "find" => {
+            if args.is_empty() {
+                return Err(bad("wait and find need the text"));
+            }
+            m.insert("text".into(), json!(joined(0)));
+            if verb.eq_ignore_ascii_case("wait") {
+                "wait_for"
+            } else {
+                "find_element"
+            }
+        }
+        "look" => {
+            if !args.is_empty() {
+                return Err(bad("look takes nothing"));
+            }
+            "get_app_state"
+        }
+        _ => return Err(bad("unknown step")),
+    };
+    if let Some(e) = expect {
+        if !matches!(
+            tool,
+            "click" | "set_value" | "type_text" | "press_key" | "perform_secondary_action"
+        ) {
+            return Err(bad("only an action can expect something"));
+        }
+        m.insert("expect".into(), json!(e));
+    }
+    Ok(BatchStep {
+        tool: tool.into(),
+        arguments: Value::Object(m),
+    })
+}
+
+/// The words of a step line, and whether each was quoted. A quoted word
+/// keeps its spaces; `\n`, `\t`, `\"` and `\\` inside quotes are
+/// what they say.
+fn words_of(line: &str) -> std::result::Result<Vec<(String, bool)>, String> {
+    let mut out = Vec::new();
+    let mut chars = line.trim().chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '"' {
+            chars.next();
+            let mut w = String::new();
+            loop {
+                match chars.next() {
+                    None => return Err("a quote isn't closed".into()),
+                    Some('"') => break,
+                    Some('\\') => match chars.next() {
+                        Some('n') => w.push('\n'),
+                        Some('t') => w.push('\t'),
+                        Some(other) => w.push(other),
+                        None => return Err("a quote isn't closed".into()),
+                    },
+                    Some(other) => w.push(other),
+                }
+            }
+            out.push((w, true));
+        } else {
+            let mut w = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                w.push(c);
+                chars.next();
+            }
+            out.push((w, false));
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -1041,6 +1281,11 @@ pub struct BatchArgs {
     /// Continue running after a step fails (default: stop).
     #[serde(default)]
     pub continue_on_error: bool,
+    /// Go on when a step brings up another window it didn't `expect`
+    /// (default: stop there, since later steps were meant for the window
+    /// before).
+    #[serde(default)]
+    pub through_windows: bool,
 }
 
 /// Run a script, or keep, show, list and delete saved ones.
@@ -1426,6 +1671,10 @@ fn scene_object_props() -> Value {
     })
 }
 
+fn expect_prop() -> Value {
+    json!({"type": "string", "description": "What should follow, checked after the action: \"dialog\" (another window comes up), \"change\", \"value\" (the element's value changes), \"gone\" (the element or its window goes), or a text that should then be on screen. The answer says confirmed, not seen, or uncertain."})
+}
+
 fn snap_prop() -> Value {
     json!({"type": "string", "description": "Move the x/y point to the nearest \"corner\", \"edge\", \"center\" (of the small shape there) or colour \"#RRGGBB\" first, to hit it exactly."})
 }
@@ -1455,7 +1704,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "launch_app".into(),
             title: "Launch app".into(),
-            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window; or open a web address (https://…) in the default browser. Then call get_app_state. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
+            description: "Start (or bring up) a desktop app by its name in the system's app menu (\"Google Chrome\"), a bundle id or an executable, and wait until it shows a window, then return its first state (as get_app_state would); or open a web address (https://…) in the default browser. The name must be exact (an error lists similar ones); arguments and command lines are never accepted.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {"app": {"type": "string", "description": "App name as the app menu shows it, bundle id or executable (no arguments), or an https:// address to open in the browser."}},
@@ -1484,7 +1733,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "click".into(),
             title: "Click".into(),
-            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background) or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.".into(),
+            description: "Click an element by element_index (preferred: uses the element's accessibility action and works in the background), by its name (and role) when that names one element, or at x/y screenshot coordinates. Use button=right for context menus and click_count=2 for double-click.".into(),
             input_schema: schema(
                 app_props(),
                 json!({
@@ -1494,7 +1743,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left"},
                     "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
                     "snap": snap_prop(),
-                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."}
+                    "snap_radius": {"type": "number", "description": "How far to look for the snap, in screenshot pixels (default 10)."},
+                    "name": {"type": "string", "description": "Instead of element_index: the name of the element to click (one element must have it)."},
+                    "role": {"type": "string", "description": "With name: its role (\"button\", \"menu item\")."},
+                    "expect": expect_prop()
                 }),
                 &[],
             ),
@@ -1508,7 +1760,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "element_index": index_prop("Target element, from the latest get_app_state."),
-                    "action": {"type": "string", "description": "Action name as listed in actions=[...] for the element."}
+                    "action": {"type": "string", "description": "Action name as listed in actions=[...] for the element."},
+                    "expect": expect_prop()
                 }),
                 &["element_index", "action"],
             ),
@@ -1522,7 +1775,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 app_props(),
                 json!({
                     "element_index": index_prop("Target element, from the latest get_app_state."),
-                    "value": {"type": "string", "description": "New value."}
+                    "value": {"type": "string", "description": "New value."},
+                    "expect": expect_prop()
                 }),
                 &["element_index", "value"],
             ),
@@ -1709,7 +1963,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "key": {"type": "string", "description": "Key combo(s): modifiers (cmd/ctrl/alt/option/shift/meta) joined with + and a key name."},
                     "element_index": index_prop("Element to focus before pressing."),
                     "x": hover_prop("X"),
-                    "y": hover_prop("Y")
+                    "y": hover_prop("Y"),
+                    "expect": expect_prop()
                 }),
                 &["key"],
             ),
@@ -1725,7 +1980,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "text": {"type": "string", "description": "Text to type. Newlines press Return."},
                     "element_index": index_prop("Element to focus before typing."),
                     "x": hover_prop("X"),
-                    "y": hover_prop("Y")
+                    "y": hover_prop("Y"),
+                    "expect": expect_prop()
                 }),
                 &["text"],
             ),
@@ -1802,23 +2058,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "batch".into(),
             title: "Batch actions".into(),
-            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit). Each step is {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true. Steps missing `app` inherit the top-level app.".into(),
+            description: "Run several computer-use tools in order in one call (e.g. fill a form then submit), and get one report of what changed. Each step is a line: click 12, click \"Save\" (by name), double 12, right 12, set 4 \"Ada\", type \"text\" (type 4 \"text\" focuses 4 first), key cmd+s, scroll 7 down 2, select 4 \"word\", action 9 show_menu, wait \"Saved\", find \"Total\", look; an action line may end with expect dialog (or another expect). Or {\"tool\": name, \"arguments\": {...}}. Stops at the first failure unless continue_on_error is true, and when a step brings up another window it didn't expect (through_windows=true goes on). Steps missing `app` inherit the top-level app.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "app": {"type": "string", "description": "Default app for steps that omit it."},
                     "continue_on_error": {"type": "boolean", "default": false},
+                    "through_windows": {"type": "boolean", "default": false, "description": "Go on when a step brings up another window it didn't expect."},
                     "steps": {
                         "type": "array",
                         "minItems": 1,
                         "items": {
-                            "type": "object",
-                            "properties": {
-                                "tool": {"type": "string"},
-                                "arguments": {"type": "object"}
-                            },
-                            "required": ["tool"],
-                            "additionalProperties": false
+                            "type": ["string", "object"],
+                            "description": "A step line (\"click 12\", \"set 4 \\\"Ada\\\"\", \"key Return\") or {tool, arguments}."
                         }
                     }
                 },
@@ -1936,18 +2188,20 @@ fn short_description(name: &str) -> Option<&'static str> {
     Some(match name {
         "list_apps" => "List running apps (name, id, pid).",
         "launch_app" => {
-            "Start an app by name/id and wait for its window, or open an https:// address in the browser."
+            "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
             "The app window's numbered accessibility tree (+ a screenshot when useful). Call first each turn; element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part."
         }
         "click" => {
-            "Click element_index (preferred) or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it."
+            "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
         }
         "perform_secondary_action" => {
-            "Run one of an element's listed actions=[...] (not a plain click)."
+            "Run one of an element's listed actions=[...] (not a plain click). expect as in click."
         }
-        "set_value" => "Set a field's text, a slider, or a checkbox (\"true\"/\"false\") directly.",
+        "set_value" => {
+            "Set a field's text, a slider, or a checkbox (\"true\"/\"false\") directly. expect as in click."
+        }
         "select_text" => "Select the given text (or all text) in a text element.",
         "scroll" => "Scroll an element or the area at x,y; amount is in pages.",
         "drag" => {
@@ -1957,10 +2211,10 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace or design + step draws one colour step of a trace_image picture or a design. preview=true only shows them (over named cells, A1 top-left). Returns the cells it covers and where a bucket click fills each closed outline."
         }
         "press_key" => {
-            "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it)."
+            "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it). expect as in click."
         }
         "type_text" => {
-            "Type text into the focused element (element_index focuses first; x,y points the mouse there first)."
+            "Type text into the focused element (element_index focuses first; x,y points the mouse there first). expect as in click."
         }
         "find_element" => {
             "Find elements by role/name/text; returns their indices (offset: the next page)."
@@ -1983,7 +2237,9 @@ fn short_description(name: &str) -> Option<&'static str> {
         "screenshot" => {
             "Image of the screen (auto: only what changed since the last one), a region (x,y,width,height), an app window (only what changed since your last picture of it; mode=window: all), or one element (element_index zooms in; annotate=true draws indices). grid=N (or true): labelled grid in the x/y click and draw use, or in canvas units with canvas; palette=true: main colours; pick=[[x,y]]: exact colours; compare=trace name (with canvas): where the canvas differs; cells=true (with canvas): named cells over the document, cell=\"C4\": that cell magnified; zoom=[x,y]: magnified view to aim."
         }
-        "batch" => "Run several tools in order: steps=[{tool, arguments}].",
+        "batch" => {
+            "Run steps in order, one report at the end. A step is a line (click 12 · click \"Save\" · double 12 · right 12 · set 4 \"Ada\" · type [4] \"text\" · key cmd+s · scroll [7] down [2] · select 4 \"word\" · action 9 name · wait \"text\" · find \"text\" · look; actions may end with expect …) or {tool, arguments}. Stops on an error, or on a window a step didn't expect (through_windows=true goes on)."
+        }
         "window" => {
             "Windows and screens: action displays|list|focus|move|resize|maximize|minimize|restore|fullscreen|exit_fullscreen|close|tile_left|tile_right|tile_top|tile_bottom|center|move_to_display|move_to_desktop; x/y/width/height in screen coordinates."
         }
@@ -2329,6 +2585,150 @@ mod tests {
     }
 
     #[test]
+    fn batch_steps_can_be_short_lines() {
+        let step = |line: &str| {
+            let s = parse_step(line).unwrap_or_else(|e| panic!("{e}"));
+            (s.tool, s.arguments)
+        };
+        assert_eq!(
+            step("click 12"),
+            ("click".into(), json!({"element_index": 12}))
+        );
+        assert_eq!(
+            step("click \"Save As\""),
+            ("click".into(), json!({"name": "Save As"}))
+        );
+        assert_eq!(
+            step("click Save As"),
+            ("click".into(), json!({"name": "Save As"}))
+        );
+        assert_eq!(
+            step("double 3"),
+            (
+                "click".into(),
+                json!({"element_index": 3, "click_count": 2})
+            )
+        );
+        assert_eq!(
+            step("right 4"),
+            (
+                "click".into(),
+                json!({"element_index": 4, "button": "right"})
+            )
+        );
+        assert_eq!(
+            step("set 4 \"Ada Lovelace\""),
+            (
+                "set_value".into(),
+                json!({"element_index": 4, "value": "Ada Lovelace"})
+            )
+        );
+        assert_eq!(
+            step("set 4 12"),
+            (
+                "set_value".into(),
+                json!({"element_index": 4, "value": "12"})
+            )
+        );
+        assert_eq!(
+            step("type \"hi\\n\""),
+            ("type_text".into(), json!({"text": "hi\n"}))
+        );
+        assert_eq!(
+            step("type 4 \"x y\""),
+            (
+                "type_text".into(),
+                json!({"element_index": 4, "text": "x y"})
+            )
+        );
+        // A number alone is the text.
+        assert_eq!(step("type 42"), ("type_text".into(), json!({"text": "42"})));
+        assert_eq!(
+            step("key cmd+s"),
+            ("press_key".into(), json!({"key": "cmd+s"}))
+        );
+        assert_eq!(
+            step("key Down Down Return"),
+            ("press_key".into(), json!({"key": "Down Down Return"}))
+        );
+        assert_eq!(
+            step("scroll 7 down 2"),
+            (
+                "scroll".into(),
+                json!({"element_index": 7, "direction": "down", "amount": 2.0})
+            )
+        );
+        assert_eq!(
+            step("scroll up"),
+            ("scroll".into(), json!({"direction": "up"}))
+        );
+        assert_eq!(
+            step("select 4 \"word\""),
+            (
+                "select_text".into(),
+                json!({"element_index": 4, "text": "word"})
+            )
+        );
+        assert_eq!(
+            step("select 4"),
+            ("select_text".into(), json!({"element_index": 4}))
+        );
+        assert_eq!(
+            step("action 9 show_menu"),
+            (
+                "perform_secondary_action".into(),
+                json!({"element_index": 9, "action": "show_menu"})
+            )
+        );
+        assert_eq!(
+            step("wait \"Saved\""),
+            ("wait_for".into(), json!({"text": "Saved"}))
+        );
+        assert_eq!(
+            step("find Total"),
+            ("find_element".into(), json!({"text": "Total"}))
+        );
+        assert_eq!(step("look"), ("get_app_state".into(), json!({})));
+        assert_eq!(
+            step("click 5 expect dialog"),
+            (
+                "click".into(),
+                json!({"element_index": 5, "expect": "dialog"})
+            )
+        );
+        assert_eq!(
+            step("set 3 \"expect\" expect \"Saved\""),
+            (
+                "set_value".into(),
+                json!({"element_index": 3, "value": "expect", "expect": "Saved"})
+            )
+        );
+        for bad in [
+            "",
+            "jump 3",
+            "set x \"v\"",
+            "set 3",
+            "type",
+            "look 3",
+            "wait \"x\" expect y",
+            "type \"open",
+            "click 3 expect",
+            "scroll 3 sideways",
+        ] {
+            assert!(parse_step(bad).is_err(), "{bad}");
+        }
+        // Lines and objects mix.
+        let args: BatchArgs = serde_json::from_value(json!({
+            "app": "X",
+            "steps": ["click 1", {"tool": "get_app_state"}]
+        }))
+        .unwrap();
+        assert_eq!(args.steps[0].tool, "click");
+        assert_eq!(args.steps[1].tool, "get_app_state");
+        assert!(serde_json::from_value::<BatchArgs>(json!({"steps": ["nope"]})).is_err());
+    }
+
+    #[test]
     fn declared_properties_are_accepted() {
         // Each declared property name must round-trip through the parser.
         let full: Value = serde_json::from_str(
@@ -2342,7 +2742,8 @@ mod tests {
             "timeout_ms": 1000, "poll_ms": 100, "mode": "full", "width": 10, "height": 10,
             "annotate": true, "continue_on_error": false, "tool": "list_apps", "screenshot": true,
             "action": "move", "display": 0, "desktop": 1, "ocr": true, "limit": 5,
-            "steps": [{"tool": "list_apps"}], "speed": 300, "grid": 50, "palette": true,
+            "steps": [{"tool": "list_apps"}, "click 3"], "speed": 300,
+            "through_windows": true, "expect": "dialog", "grid": 50, "palette": true,
             "preview": false,
             "pick": [[1, 2]], "canvas": {"box": [0, 0, 10, 10], "size": [100, 100]},
             "strokes": [{"points": [[1, 2], {"x": 3, "y": 4}], "closed": true, "smooth": true},

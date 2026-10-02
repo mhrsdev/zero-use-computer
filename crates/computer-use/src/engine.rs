@@ -72,6 +72,25 @@ struct AppState {
     pixel_uses: u32,
     /// Unnamed buttons already shown in an icon strip, by key.
     icons_shown: HashSet<u64>,
+    /// `sent_tokens` when this app's tree was last sent whole ([cache]
+    /// rebase_after_tokens).
+    full_at: usize,
+}
+
+/// What an action's `expect` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Confirmed,
+    NotSeen,
+    Uncertain,
+}
+
+/// An app as it was before an action that expects something.
+struct Before {
+    window: Option<u64>,
+    windows: Vec<u64>,
+    nodes: Vec<Node>,
+    fingerprint: Option<u64>,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -214,6 +233,12 @@ pub struct Engine<B: Backend> {
     active_tools: HashSet<&'static str>,
     /// The app the last call named ([tools] default_app).
     last_app: Option<String>,
+    /// What the last action's `expect` found (a batch stops on anything
+    /// but confirmed).
+    last_expect: Option<Outcome>,
+    /// Estimated tokens of every result handed out so far ([cache]
+    /// rebase_after_tokens).
+    sent_tokens: usize,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -349,6 +374,8 @@ impl<B: Backend> Engine<B> {
             target: None,
             active_tools: HashSet::new(),
             last_app: None,
+            last_expect: None,
+            sent_tokens: 0,
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -1989,6 +2016,18 @@ impl<B: Backend> Engine<B> {
         }
         let report_app = acting.filter(|_| self.store.config.tree.report_changes);
         let pixels_of_app = pixel_use(&call).map(str::to_string);
+        // `expect`: the app as it was, to tell what the action did.
+        let expecting = expectation(&call);
+        let before = expecting.as_ref().and_then(|(query, ..)| {
+            let pid = self.resolve_app(query).ok()?.pid;
+            let st = self.states.get(&pid).filter(|s| s.stamped)?;
+            Some(Before {
+                window: st.window_id,
+                windows: st.seen_windows.clone(),
+                nodes: st.nodes.clone(),
+                fingerprint: self.tree_fingerprint(pid),
+            })
+        });
         let out = match call {
             ToolCall::ListApps => self.list_apps(),
             ToolCall::LaunchApp(a) => self.launch_app(a),
@@ -2027,9 +2066,287 @@ impl<B: Backend> Engine<B> {
             let st = self.states.entry(app.pid).or_default();
             st.pixel_uses = st.pixel_uses.saturating_add(1);
         }
-        match report_app {
-            Some(app) => Ok(self.append_changes(&app, out)),
-            None => Ok(out),
+        self.last_expect = None;
+        let checked = match expecting {
+            Some((query, what, index)) if !out.is_error => {
+                let (outcome, note) = self.check_expect(&query, &what, index, before.as_ref());
+                self.last_expect = Some(outcome);
+                Some(note)
+            }
+            _ => None,
+        };
+        let mut out = match report_app {
+            Some(app) => self.append_changes(&app, out),
+            None => out,
+        };
+        // Said with the action's line (the one a batch keeps).
+        if let Some(note) = checked {
+            let end = out.text.find('\n').unwrap_or(out.text.len());
+            out.text.insert_str(end, &format!(" {note}"));
+        }
+        Ok(out)
+    }
+
+    /// Wait (up to [timing] expect_wait_ms) for what an action was expected
+    /// to bring, and say what was found: confirmed, not seen, or uncertain.
+    fn check_expect(
+        &mut self,
+        query: &str,
+        what: &str,
+        index: Option<u32>,
+        before: Option<&Before>,
+    ) -> (Outcome, String) {
+        let timing = &self.store.config.timing;
+        let wait = Duration::from_millis(timing.expect_wait_ms);
+        let poll = Duration::from_millis(timing.settle_poll_ms.clamp(50, 1000) * 3);
+        let start = (self.clock)();
+        let mut fresh = self.settled != Some(self.epoch);
+        let label = tree::truncate(what.trim().trim_matches('"'), 60);
+        loop {
+            let (outcome, detail, settled) = self.expect_now(query, what, index, before, fresh);
+            let waited = (self.clock)().saturating_duration_since(start);
+            if outcome == Outcome::Confirmed || settled || waited >= wait || self.halted() {
+                let detail = if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({detail})")
+                };
+                let note = match outcome {
+                    Outcome::Confirmed => format!("Expected {label}: confirmed{detail}."),
+                    Outcome::NotSeen => format!(
+                        "Expected {label}: not seen{detail}{}. Look before doing it again.",
+                        if waited.as_millis() >= 100 {
+                            format!(" after {:.1} s", waited.as_secs_f64())
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    Outcome::Uncertain => format!(
+                        "Expected {label}: uncertain{detail}. Don't repeat the action; look first."
+                    ),
+                };
+                return (outcome, note);
+            }
+            (self.sleep)(poll);
+            fresh = true;
+        }
+    }
+
+    /// Whether what was expected shows now, and whether waiting longer
+    /// could change the answer.
+    fn expect_now(
+        &mut self,
+        query: &str,
+        what: &str,
+        index: Option<u32>,
+        before: Option<&Before>,
+        fresh: bool,
+    ) -> (Outcome, String, bool) {
+        use Outcome::*;
+        let kind = crate::text::fold(what.trim().trim_matches('"'));
+        let kind = kind.trim();
+        let gone = matches!(
+            kind,
+            "gone" | "goes" | "closed" | "close" | "closes" | "disappear" | "disappears"
+        );
+        let Ok(app) = self.resolve_app(query) else {
+            return if gone {
+                (Confirmed, "the app closed".into(), true)
+            } else {
+                (Uncertain, "the app can't be found now".into(), true)
+            };
+        };
+        let window = match self.resolve_window(&app, None, fresh) {
+            Ok(w) => w,
+            Err(_) if gone => return (Confirmed, "its window closed".into(), true),
+            Err(_) => return (Uncertain, "the app shows no window".into(), false),
+        };
+        if self.observe(&app, &window, fresh).is_err() {
+            return (Uncertain, "the app couldn't be read after it".into(), false);
+        }
+        let target = index.or_else(|| self.target.filter(|(p, _)| *p == app.pid).map(|t| t.1));
+        let fingerprint = self.tree_fingerprint(app.pid);
+        let Some(st) = self.states.get(&app.pid).filter(|s| s.stamped) else {
+            return (Uncertain, "the app couldn't be read after it".into(), false);
+        };
+        let unseen = || {
+            (
+                Uncertain,
+                "the app wasn't looked at before it, so there's nothing to compare".to_string(),
+                true,
+            )
+        };
+        match kind {
+            "dialog" | "window" | "new window" | "popup" | "pop-up" | "sheet" | "alert" => {
+                let Some(b) = before else { return unseen() };
+                let opened = st.window_id != b.window
+                    || st.seen_windows.iter().any(|w| !b.windows.contains(w));
+                if opened {
+                    (Confirmed, format!("window \"{}\"", window.title), true)
+                } else {
+                    (NotSeen, "no other window came up".into(), false)
+                }
+            }
+            "menu" | "a menu" => {
+                let Some(b) = before else { return unseen() };
+                let menus = |nodes: &[Node]| {
+                    nodes
+                        .iter()
+                        .filter(|n| n.role == "menu" || n.role == "menu item")
+                        .filter(|n| !n.states.hidden)
+                        .count()
+                };
+                if menus(&st.nodes) > menus(&b.nodes) || st.window_id != b.window {
+                    (Confirmed, String::new(), true)
+                } else {
+                    (NotSeen, "no menu came up".into(), false)
+                }
+            }
+            "change" | "changes" | "a change" | "anything" => {
+                let Some(b) = before else { return unseen() };
+                if fingerprint != b.fingerprint {
+                    (Confirmed, String::new(), true)
+                } else {
+                    (NotSeen, "nothing changed".into(), false)
+                }
+            }
+            "value" | "new value" | "value changes" | "checked" | "selected" => {
+                let Some(b) = before else { return unseen() };
+                let Some(t) = target else {
+                    return (Uncertain, "no element_index to watch".into(), true);
+                };
+                let old = b.nodes.iter().find(|n| n.index == t);
+                match (old, st.nodes.iter().find(|n| n.index == t)) {
+                    (_, None) => (Uncertain, "the element is gone".into(), true),
+                    (None, Some(_)) => unseen(),
+                    (Some(o), Some(n))
+                        if o.value != n.value
+                            || o.states.checked != n.states.checked
+                            || o.states.selected != n.states.selected =>
+                    {
+                        (Confirmed, String::new(), true)
+                    }
+                    _ => (NotSeen, "its value is as it was".into(), false),
+                }
+            }
+            _ if gone => {
+                let Some(b) = before else { return unseen() };
+                if b.window.is_some_and(|w| !st.seen_windows.contains(&w)) {
+                    return (Confirmed, "its window closed".into(), true);
+                }
+                match target {
+                    Some(t) if !st.nodes.iter().any(|n| n.index == t) => {
+                        (Confirmed, String::new(), true)
+                    }
+                    Some(_) => (NotSeen, "it is still there".into(), false),
+                    None if st.window_id != b.window => {
+                        (Confirmed, "another window is in front".into(), true)
+                    }
+                    None => (NotSeen, "the window is still there".into(), false),
+                }
+            }
+            text => {
+                // A text that should be on screen.
+                let text = text
+                    .strip_prefix("text ")
+                    .unwrap_or(text)
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
+                let found = st
+                    .nodes
+                    .iter()
+                    .filter(|n| !crate::privacy::is_password(&n.role))
+                    .find(|n| node_text(n).contains(&text));
+                match found {
+                    Some(n) => (
+                        Confirmed,
+                        format!("{} {}", n.index, tree::truncate(&n.line, 80)),
+                        true,
+                    ),
+                    None if !st.blind.is_empty() || st.ocr_lines > 0 => (
+                        Uncertain,
+                        "the tree doesn't show it, and part of the window is only a picture".into(),
+                        false,
+                    ),
+                    None => (NotSeen, "no element shows it".into(), false),
+                }
+            }
+        }
+    }
+
+    /// The one element with this name (and role), for a click by name.
+    fn element_named(
+        &mut self,
+        app: &AppInfo,
+        window: Option<&str>,
+        name: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<u32> {
+        let w = self.resolve_window(app, window, false)?;
+        self.observe(app, &w, false)?;
+        let st = self.state(app.pid)?;
+        let role = role.map(|r| r.trim().to_lowercase());
+        let want = name.map(crate::text::fold);
+        let of_role: Vec<&Node> = st
+            .nodes
+            .iter()
+            .filter(|n| !n.states.hidden && role.as_deref().is_none_or(|r| n.role == r))
+            .collect();
+        let named = |exact: bool| -> Vec<&Node> {
+            of_role
+                .iter()
+                .copied()
+                .filter(|n| match &want {
+                    None => true,
+                    Some(q) => n.name.as_deref().map(crate::text::fold).is_some_and(|nm| {
+                        if exact {
+                            nm.trim() == q.trim()
+                        } else {
+                            nm.contains(q.trim())
+                        }
+                    }),
+                })
+                .collect()
+        };
+        let mut hits = named(true);
+        let exact = !hits.is_empty();
+        if !exact {
+            hits = named(false);
+        }
+        // Of several with that very name, the ones that do something when
+        // pressed (a part of a name must name one element).
+        if exact && hits.len() > 1 {
+            let active: Vec<&Node> = hits
+                .iter()
+                .copied()
+                .filter(|n| !n.actions.is_empty() && n.states.enabled)
+                .collect();
+            if !active.is_empty() {
+                hits = active;
+            }
+        }
+        match hits.as_slice() {
+            [one] => Ok(one.index),
+            [] => Err(Error::InvalidArgs(format!(
+                "no element in {} is named \"{}\"{}; find_element or get_app_state shows what is there",
+                app.name,
+                name.unwrap_or(""),
+                role.map(|r| format!(" with the role {r}"))
+                    .unwrap_or_default()
+            ))),
+            many => {
+                let list: Vec<String> = many
+                    .iter()
+                    .take(6)
+                    .map(|n| format!("{} {}", n.index, n.line))
+                    .collect();
+                Err(Error::InvalidArgs(format!(
+                    "{} elements match, so nothing was clicked; click one by element_index (or give its role):\n{}",
+                    many.len(),
+                    list.join("\n")
+                )))
+            }
         }
     }
 
@@ -2135,6 +2452,7 @@ impl<B: Backend> Engine<B> {
                 "\n\nNote: the user's emergency stop key ({key}) is not working: {problem}. Tell the user now, so they know they can't stop you with it."
             ));
         }
+        self.sent_tokens = self.sent_tokens.saturating_add(out.estimated_tokens());
         self.audit(name, app.as_deref(), &out);
         out
     }
@@ -2307,9 +2625,18 @@ impl<B: Backend> Engine<B> {
                 .or_else(|| apps.iter().find(|a| matches(a)));
             if let Some(app) = found {
                 let app = app.clone();
+                let launched = format!("Launched {} (id: {}, pid: {}).", app.name, app.id, app.pid);
+                // Its first state, saving the get_app_state that follows.
+                if self.store.config.tools.launch_look
+                    && let Some(state) = self.first_look(&app, deadline)
+                {
+                    return Ok(ToolOutput {
+                        text: format!("{launched}\n\n{}", state.text),
+                        ..state
+                    });
+                }
                 return Ok(ToolOutput::text(format!(
-                    "Launched {} (id: {}, pid: {}). Call get_app_state to see it.",
-                    app.name, app.id, app.pid
+                    "{launched} Call get_app_state to see it."
                 )));
             }
             if self.halted() {
@@ -2325,8 +2652,43 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn get_app_state(&mut self, args: GetAppStateArgs) -> Result<ToolOutput> {
+    /// A just-launched app's state, once it shows a window (by `deadline`).
+    fn first_look(&mut self, app: &AppInfo, deadline: Instant) -> Option<ToolOutput> {
+        loop {
+            if self.list_windows(app, true).is_ok_and(|w| !w.is_empty()) {
+                // Give it a moment to fill the window.
+                self.settle_on(app);
+                return self
+                    .get_app_state(GetAppStateArgs {
+                        app: app.pid.to_string(),
+                        ..Default::default()
+                    })
+                    .ok();
+            }
+            if self.halted() || (self.clock)() >= deadline {
+                return None;
+            }
+            (self.sleep)(Duration::from_millis(200));
+        }
+    }
+
+    fn get_app_state(&mut self, mut args: GetAppStateArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        // [cache] rebase_after_tokens: much said since this app's tree was
+        // last sent whole, so the model may have lost what a diff refers to.
+        let threshold = self.store.config.cache.rebase_after_tokens;
+        let rebase = threshold > 0
+            && !args.disable_diff
+            && args.within.is_none()
+            && self.states.get(&app.pid).is_some_and(|s| {
+                s.stamped
+                    && s.known.is_some()
+                    && self.sent_tokens.saturating_sub(s.full_at) >= threshold
+            });
+        if rebase {
+            args.disable_diff = true;
+            args.screenshot.get_or_insert(true);
+        }
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.force_ocr = args.ocr;
         let observed = self.observe(&app, &window, args.ocr);
@@ -2336,6 +2698,12 @@ impl<B: Backend> Engine<B> {
             return self.part_of_tree(&app, &window, index, args.max_tokens);
         }
         let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
+        if r.full {
+            let sent = self.sent_tokens;
+            if let Some(st) = self.states.get_mut(&app.pid) {
+                st.full_at = sent;
+            }
+        }
         // The action before this one showed the start of this very tree:
         // only the rest is sent.
         if let Some((pid, screen, hash, shown)) = self.partial_report.take()
@@ -2380,6 +2748,9 @@ impl<B: Backend> Engine<B> {
             Seen::New => header.push_str(" (new)"),
             Seen::Revisit => header.push_str(" (seen before)"),
             Seen::Same => {}
+        }
+        if rebase {
+            header.push_str(" · sent whole again (much has been said since it last was)");
         }
         let head_len = header.len();
         let (ocr_lines, blind) = self
@@ -2945,10 +3316,25 @@ impl<B: Backend> Engine<B> {
                 (Some(nx), Some(ny), note)
             }
         };
-        let anchor = self.anchor(&app, args.element_index, x, y, "click")?;
+        // By name: the one element that has it.
+        let mut named = String::new();
+        let index = match args.element_index {
+            None if x.is_none() && (args.name.is_some() || args.role.is_some()) => {
+                let i = self.element_named(
+                    &app,
+                    args.window.as_deref(),
+                    args.name.as_deref(),
+                    args.role.as_deref(),
+                )?;
+                named = format!(" ({i})");
+                Some(i)
+            }
+            i => i,
+        };
+        let anchor = self.anchor(&app, index, x, y, "click")?;
         // What things looked like, to tell whether the click did anything.
         let before = self.tree_fingerprint(app.pid);
-        let what = self.describe_anchor(&app, &anchor);
+        let what = format!("{}{named}", self.describe_anchor(&app, &anchor));
         let point = self.anchor_point(&app, &anchor).ok();
 
         // The agent cursor goes there first, so the user sees what is next.
@@ -2960,6 +3346,9 @@ impl<B: Backend> Engine<B> {
         let mut note = String::new();
         if let (Anchor::Element(h), MouseButton::Left, 1) = (&anchor, args.button, count) {
             let node = self.node_for_handle(&app, *h);
+            // A table cell's press may not select its row (GTK): clicking it
+            // again with the mouse only selects it, so that is safe.
+            let cell = node.is_some_and(|n| crate::roles::is_cell(&n.role));
             if let Some(action) = node
                 .and_then(|n| n.has_action("press"))
                 .map(|a| a.native.clone())
@@ -2971,7 +3360,7 @@ impl<B: Backend> Engine<B> {
                         let v = &self.store.config.verify;
                         if unchanged
                             && v.retry
-                            && v.retry_on_no_change
+                            && (v.retry_on_no_change || cell)
                             && let Some(p) = point
                         {
                             // Nothing happened: click it with the mouse.
@@ -5565,9 +5954,14 @@ impl<B: Backend> Engine<B> {
         if args.steps.is_empty() {
             return Err(Error::InvalidArgs("batch needs at least one step".into()));
         }
+        let total = args.steps.len();
         let mut report = String::new();
         let mut last_image = None;
         let mut any_error = false;
+        let mut ran = 0;
+        let mut stopped = String::new();
+        // The app the steps acted on last: the report at the end is of it.
+        let mut acted_on: Option<String> = None;
         // The report shows one line per step, so the trees the steps render
         // never reach the model: what it has seen of each app stays what it
         // saw before the batch (restored below).
@@ -5592,10 +5986,29 @@ impl<B: Backend> Engine<B> {
             {
                 step_args.insert("app".into(), serde_json::json!(app));
             }
+            let step_app = step_args
+                .get("app")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let expects = step_args
+                .get("expect")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|e| !e.trim().is_empty());
+            let more = i + 1 < total;
+            // The window in front before the step, to notice one coming up.
+            let window_before = match &step_app {
+                Some(a) if more && !args.through_windows && !expects => self.front_window(a),
+                _ => None,
+            };
             let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
+            let acting = parsed.as_ref().ok().and_then(mutating_app);
             let before = self.pending_images.len();
             let shot_before = self.pending_screen_shot.take();
             let result = parsed.and_then(|c| self.call(c));
+            ran += 1;
+            if acting.is_some() {
+                acted_on = acting;
+            }
             let imaged = result.as_ref().is_ok_and(|o| o.image.is_some());
             if !imaged {
                 // No image from this step: an earlier step's stays the one
@@ -5616,6 +6029,31 @@ impl<B: Backend> Engine<B> {
                         if !args.continue_on_error {
                             break;
                         }
+                        continue;
+                    }
+                    if !more {
+                        continue;
+                    }
+                    // The steps after this one were planned on what it
+                    // expected.
+                    if expects && self.last_expect != Some(Outcome::Confirmed) {
+                        stopped = format!(
+                            "Stopped after step {}: what it expected wasn't confirmed; the {} step(s) after it were not run.",
+                            i + 1,
+                            total - i - 1
+                        );
+                        break;
+                    }
+                    if let (Some((id, _)), Some(a)) = (window_before, &step_app)
+                        && let Some((now, title)) = self.front_window(a)
+                        && now != id
+                    {
+                        stopped = format!(
+                            "Stopped after step {}: window \"{title}\" came up, which it didn't expect; the {} step(s) after it were not run (they were meant for the window before; add expect dialog to a step that opens one, or through_windows=true).",
+                            i + 1,
+                            total - i - 1
+                        );
+                        break;
                     }
                 }
                 Err(e) => {
@@ -5629,11 +6067,41 @@ impl<B: Backend> Engine<B> {
             }
         }
         self.restore_known(seen_before);
-        Ok(ToolOutput {
-            text: format!("Ran {} step(s):\n{report}", args.steps.len()),
+        let head = if ran == total {
+            format!("Ran {total} step(s):\n")
+        } else {
+            format!("Ran {ran} of {total} step(s):\n")
+        };
+        let mut text = format!("{head}{report}");
+        if !stopped.is_empty() {
+            text.push_str(&stopped);
+            text.push('\n');
+        }
+        let mut out = ToolOutput {
+            text,
             image: last_image,
-            is_error: any_error,
-        })
+            is_error: false,
+        };
+        // One report of what the steps changed, against what the model saw
+        // before them.
+        if self.store.config.tree.report_changes
+            && let Some(app) = acted_on
+        {
+            let at = out.text.len();
+            out = self.append_changes(&app, out);
+            let tail = out.text.split_off(at);
+            out.text
+                .push_str(&tail.replacen("State after the action", "State after the steps", 1));
+        }
+        out.is_error = any_error;
+        Ok(out)
+    }
+
+    /// The window an app shows in front now (its id and title).
+    fn front_window(&mut self, query: &str) -> Option<(u64, String)> {
+        let app = self.resolve_app(query).ok()?;
+        let w = self.resolve_window(&app, None, false).ok()?;
+        Some((w.id, w.title))
     }
 
     /// What the model has seen of each app, to put back after calls whose
@@ -6751,6 +7219,21 @@ fn design_key(name: &str) -> String {
 }
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
+/// The app, what is expected and the element acted on, of an action with
+/// `expect`.
+fn expectation(call: &ToolCall) -> Option<(String, String, Option<u32>)> {
+    let (app, expect, index) = match call {
+        ToolCall::Click(a) => (&a.app, a.expect.as_ref()?, a.element_index),
+        ToolCall::PerformSecondaryAction(a) => (&a.app, a.expect.as_ref()?, Some(a.element_index)),
+        ToolCall::SetValue(a) => (&a.app, a.expect.as_ref()?, Some(a.element_index)),
+        ToolCall::PressKey(a) => (&a.app, a.expect.as_ref()?, a.element_index),
+        ToolCall::TypeText(a) => (&a.app, a.expect.as_ref()?, a.element_index),
+        _ => return None,
+    };
+    let expect = expect.trim();
+    (!expect.is_empty()).then(|| (app.clone(), expect.to_string(), index))
+}
+
 fn mutating_app(call: &ToolCall) -> Option<String> {
     match call {
         ToolCall::Click(a) => Some(a.app.clone()),
@@ -7354,8 +7837,12 @@ mod tests {
             }))
             .unwrap();
         assert!(out.text.contains("Launched Notes"));
+        // Its first state comes with it ([tools] launch_look).
+        assert!(out.text.contains("text area \"Document\""), "{}", out.text);
+        assert!(out.image.is_some());
         let out = e.call_tool("get_app_state", serde_json::json!({"app": "Notes"}));
         assert!(!out.is_error);
+        assert!(!out.text.contains("Document"), "already sent: {}", out.text);
     }
 
     #[test]
@@ -10958,6 +11445,328 @@ mod tests {
             out.text.contains("Receipt") && !out.text.contains("Ada"),
             "{}",
             out.text
+        );
+    }
+
+    // -- expect, click by name, batch lines, rebase -------------------------
+
+    /// The editor with a "Save As" button that opens a dialog (a second,
+    /// focused window).
+    fn dialog_engine(cfg: Config) -> Engine<MockBackend> {
+        let mut main = MockBackend::text_editor(4242);
+        main.elements
+            .push(button(20, "Save As", 2, 200.0).with_actions(&["AXPress"]));
+        let mut with_dialog = main.clone();
+        with_dialog.windows[0].focused = false;
+        with_dialog.windows.push(MockWindow {
+            id: 2,
+            title: "Save As".into(),
+            bounds: Rect::new(100.0, 100.0, 400.0, 200.0),
+            root: 40,
+            focused: true,
+        });
+        with_dialog.elements.extend([
+            MockElement::new(
+                40,
+                "window",
+                "Save As",
+                Rect::new(100.0, 100.0, 400.0, 200.0),
+            ),
+            MockElement::new(
+                41,
+                "text field",
+                "Name",
+                Rect::new(120.0, 130.0, 200.0, 24.0),
+            )
+            .child_of(40)
+            .editable(),
+            MockElement::new(42, "button", "Save", Rect::new(120.0, 170.0, 60.0, 24.0))
+                .child_of(40)
+                .with_actions(&["AXPress"]),
+        ]);
+        for el in &mut with_dialog.elements {
+            el.states.enabled = true;
+        }
+        let mut backend = MockBackend::new();
+        backend.add_app(main);
+        backend.on_press.insert(20, with_dialog);
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    fn no_wait() -> Config {
+        let mut cfg = Config::default();
+        cfg.timing.expect_wait_ms = 0;
+        cfg
+    }
+
+    #[test]
+    fn expect_says_confirmed_not_seen_or_uncertain() {
+        let mut e = dialog_engine(no_wait());
+        // Nothing seen of the app before: nothing to compare with.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "name": "Bold", "expect": "change"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("Expected change: uncertain"),
+            "{}",
+            out.text
+        );
+        state_of(&mut e, serde_json::json!({}));
+        let bold = index_named(&e, 4242, "Bold");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold, "expect": "dialog"}),
+        );
+        let first = out.text.lines().next().unwrap();
+        assert!(first.contains("Expected dialog: not seen"), "{}", out.text);
+        assert!(first.contains("Look before"), "{}", out.text);
+        let save_as = index_named(&e, 4242, "Save As");
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": save_as, "expect": "dialog"}),
+        );
+        let first = out.text.lines().next().unwrap();
+        assert!(
+            first.contains("Expected dialog: confirmed (window \"Save As\")"),
+            "{}",
+            out.text
+        );
+        // A text that should be on screen, and a value.
+        let name = index_named(&e, 4242, "Name");
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": name, "value": "report.txt", "expect": "value"}),
+        );
+        assert!(
+            out.text.contains("Expected value: confirmed"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": name, "value": "notes.txt", "expect": "notes.txt"}),
+        );
+        assert!(
+            out.text.contains("Expected notes.txt: confirmed (") && out.text.contains("text field"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": name, "value": "a", "expect": "Saved!"}),
+        );
+        assert!(
+            out.text.contains("Expected Saved!: not seen"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn click_by_name_needs_one_element() {
+        let mut e = dialog_engine(no_wait());
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "name": "bold"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let bold = index_named(&e, 4242, "Bold");
+        assert!(
+            out.text
+                .starts_with(&format!("Pressed button \"Bold\" ({bold})")),
+            "{}",
+            out.text
+        );
+        assert!(
+            e.backend()
+                .events
+                .contains(&Event::Action(3, "AXPress".into()))
+        );
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "name": "Print"}),
+        );
+        assert!(
+            out.is_error && out.text.contains("no element"),
+            "{}",
+            out.text
+        );
+        // "Save" is part of "Save As" only: found by its part.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "name": "save", "role": "button"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        // Now "Save" names two buttons ("Save" exactly, and "Save As"):
+        // the exact one wins.
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "name": "Save"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("button \"Save\" ("), "{}", out.text);
+        let out = e.call_tool("click", serde_json::json!({"app": "TextEdit", "name": "a"}));
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("elements match, so nothing was clicked"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn batch_lines_run_and_one_report_ends_them() {
+        let mut e = dialog_engine(no_wait());
+        state_of(&mut e, serde_json::json!({}));
+        let doc = index_named(&e, 4242, "Document");
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                format!("set {doc} \"Dear Ada\""),
+                "click \"Bold\"",
+                "key cmd+a",
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("Ran 3 step(s):"), "{}", out.text);
+        assert!(out.text.contains("1. set_value"), "{}", out.text);
+        assert!(
+            out.text.contains("2. click — Pressed button \"Bold\""),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("3. press_key"), "{}", out.text);
+        assert!(out.text.contains("State after the steps"), "{}", out.text);
+        assert!(out.text.contains("Dear Ada"), "{}", out.text);
+        // A bad line is refused before anything runs.
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": ["jump 3"]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("unknown step"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn batch_stops_on_a_window_it_did_not_expect() {
+        let mut e = dialog_engine(no_wait());
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": ["click \"Save As\"", "type \"x\""]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("Ran 1 of 2 step(s):"), "{}", out.text);
+        assert!(
+            out.text
+                .contains("Stopped after step 1: window \"Save As\" came up"),
+            "{}",
+            out.text
+        );
+        assert!(
+            !e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Type(..)))
+        );
+        assert!(out.text.contains("State after the steps"), "{}", out.text);
+
+        // Expected, it goes on.
+        let mut e = dialog_engine(no_wait());
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                "click \"Save As\" expect dialog",
+                "set 99 \"x\""
+            ]}),
+        );
+        assert!(out.text.contains("2. set_value"), "{}", out.text);
+        assert!(
+            out.text.contains("Expected dialog: confirmed"),
+            "{}",
+            out.text
+        );
+
+        // An expectation not met stops it too.
+        let mut e = dialog_engine(no_wait());
+        state_of(&mut e, serde_json::json!({}));
+        let out = e.call_tool(
+            "batch",
+            serde_json::json!({"app": "TextEdit", "steps": [
+                "click \"Bold\" expect dialog",
+                "type \"x\""
+            ]}),
+        );
+        assert!(
+            out.text.contains("what it expected wasn't confirmed"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("2. type_text"), "{}", out.text);
+    }
+
+    #[test]
+    fn a_long_conversation_gets_the_whole_tree_again() {
+        let mut cfg = Config::default();
+        cfg.cache.rebase_after_tokens = 50;
+        let mut e = dialog_engine(cfg);
+        state_of(&mut e, serde_json::json!({}));
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(out.text.contains("sent whole again"), "{}", out.text);
+        assert!(out.text.contains("text area \"Document\""), "{}", out.text);
+        assert!(out.image.is_some());
+        // Right after, nothing much has been said: a short answer again.
+        let mut cfg = e.store().config.clone();
+        cfg.cache.rebase_after_tokens = 100_000;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = state_of(&mut e, serde_json::json!({}));
+        assert!(!out.text.contains("sent whole again"), "{}", out.text);
+        assert!(!out.text.contains("Document"), "{}", out.text);
+    }
+
+    #[test]
+    fn a_table_cell_press_that_selects_nothing_is_clicked() {
+        let mut app = MockBackend::text_editor(4242);
+        app.elements.push(
+            MockElement::new(60, "table", "Stock", Rect::new(0.0, 100.0, 400.0, 200.0)).child_of(1),
+        );
+        app.elements.push(
+            MockElement::new(61, "cell", "SKU-1", Rect::new(0.0, 100.0, 100.0, 20.0))
+                .child_of(60)
+                .with_actions(&["AXPress"]),
+        );
+        let mut backend = MockBackend::new();
+        backend.add_app(app);
+        let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {});
+        state_of(&mut e, serde_json::json!({}));
+        let cell = index_named(&e, 4242, "SKU-1");
+        let out = press(&mut e, cell);
+        assert!(
+            out.text.contains("clicked it with the mouse too"),
+            "{}",
+            out.text
+        );
+        assert!(
+            e.backend()
+                .events
+                .iter()
+                .any(|ev| matches!(ev, Event::Click(..)))
+        );
+        // Not so for a button: pressing it again could repeat what it does.
+        let bold = index_named(&e, 4242, "Bold");
+        let n = e.backend().events.len();
+        press(&mut e, bold);
+        assert!(
+            !e.backend().events[n..]
+                .iter()
+                .any(|ev| matches!(ev, Event::Click(..)))
         );
     }
 }

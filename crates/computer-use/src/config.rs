@@ -309,7 +309,7 @@ pub const SMALL_TOOLS: &[&str] = &[
     "scroll",
 ];
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
     /// Tools to hide from the model entirely (e.g. ["drag", "batch"]).
@@ -324,6 +324,23 @@ pub struct ToolsConfig {
     /// A call without `app` acts on the app of the last call that named
     /// one, and `app` isn't required in the tools' schemas.
     pub default_app: bool,
+    /// launch_app answers with the app's first state (its tree, as
+    /// get_app_state would), saving the call that always follows.
+    pub launch_look: bool,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            disabled: Vec::new(),
+            enabled: Vec::new(),
+            descriptions: DescriptionStyle::default(),
+            manager: ToolManager::default(),
+            preset: ToolPreset::default(),
+            default_app: false,
+            launch_look: true,
+        }
+    }
 }
 
 impl ToolsConfig {
@@ -775,6 +792,11 @@ pub struct CacheConfig {
     /// Reuse a window list / tree snapshot this recent (ms) when no action
     /// ran in between. 0 turns it off.
     pub snapshot_ttl_ms: u64,
+    /// After this many (estimated) tokens of results since an app's tree
+    /// was last sent whole, the next get_app_state sends it whole again,
+    /// with a picture: in a long conversation the model (or a host that
+    /// trims its context) may have lost what diffs refer to. 0 = never.
+    pub rebase_after_tokens: usize,
 }
 
 impl Default for CacheConfig {
@@ -788,6 +810,7 @@ impl Default for CacheConfig {
             pixel_grid: 64,
             pixel_tolerance: 2,
             snapshot_ttl_ms: 200,
+            rebase_after_tokens: 0,
         }
     }
 }
@@ -822,6 +845,8 @@ pub struct TimingConfig {
     /// Default wait_for timeout and poll interval.
     pub wait_timeout_ms: u64,
     pub wait_poll_ms: u64,
+    /// How long an action with `expect` waits for what it expects to show.
+    pub expect_wait_ms: u64,
 }
 
 impl Default for TimingConfig {
@@ -835,6 +860,7 @@ impl Default for TimingConfig {
             app_cache_ms: 1500,
             wait_timeout_ms: 10_000,
             wait_poll_ms: 400,
+            expect_wait_ms: 2000,
         }
     }
 }
