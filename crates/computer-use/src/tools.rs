@@ -3212,6 +3212,9 @@ mod tests {
     fn lean_definitions_are_smaller_still_and_lose_no_tool() {
         use crate::config::{Config, DescriptionStyle, ToolPreset};
         let mut cfg = Config::default();
+        // Lean is the default.
+        assert_eq!(cfg.tools.descriptions, DescriptionStyle::Lean);
+        cfg.tools.descriptions = DescriptionStyle::Compact;
         let compact = definitions_from(&cfg);
         cfg.tools.descriptions = DescriptionStyle::Lean;
         let lean = definitions_from(&cfg);
@@ -3270,8 +3273,10 @@ mod tests {
     fn compact_definitions_are_smaller_and_filterable() {
         use crate::config::{DescriptionStyle, ToolsConfig};
         let full = model_visible_len(&definitions());
-        let compact_cfg = ToolsConfig::default();
-        assert_eq!(compact_cfg.descriptions, DescriptionStyle::Compact);
+        let compact_cfg = ToolsConfig {
+            descriptions: DescriptionStyle::Compact,
+            ..ToolsConfig::default()
+        };
         let compact = definitions_for(&compact_cfg);
         assert_eq!(compact.len(), 26);
         let compact_len = model_visible_len(&compact);
@@ -3303,7 +3308,10 @@ mod tests {
     #[test]
     fn compact_schemas_send_a_repeated_schema_once() {
         use crate::config::ToolsConfig;
-        let compact = definitions_for(&ToolsConfig::default());
+        let compact = definitions_for(&ToolsConfig {
+            descriptions: crate::config::DescriptionStyle::Compact,
+            ..ToolsConfig::default()
+        });
         for name in ["design", "scene"] {
             let d = compact.iter().find(|d| d.name == name).unwrap();
             let props = &d.input_schema["properties"];

@@ -235,7 +235,12 @@ fn screen_memory_over_real_backend() {
     if !live() {
         return;
     }
+    // The tree's screen memory; with blind areas on, the canvas's pixels
+    // are checked on every look and the page transition shows in them.
     let mut e = engine();
+    let mut cfg = e.store().config.clone();
+    cfg.ocr.blind_regions = false;
+    e.set_config(ConfigStore::in_memory(cfg));
     let app = wait_for_app(&mut e);
 
     let first = e.call_tool(

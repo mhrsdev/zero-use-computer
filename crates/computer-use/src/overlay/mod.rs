@@ -209,6 +209,9 @@ pub struct Overlay {
     /// The same for the settings key.
     settings_key: Arc<Mutex<Option<(String, bool)>>>,
     excluded: bool,
+    /// The helper has answered a `Hide` in time once: it is up (until then
+    /// it may still be starting, and the first pictures wait for it).
+    hide_answered: bool,
     next_id: u64,
 }
 
@@ -332,6 +335,7 @@ impl Overlay {
             hotkey: hotkey_state,
             settings_key: settings_state,
             excluded: false,
+            hide_answered: false,
             next_id: 0,
         };
         o.configure(config, keys);
@@ -436,10 +440,15 @@ impl Overlay {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&Cmd::Hide { id });
+        // A helper that has just started can take longer to answer than
+        // one that is up: a picture taken meanwhile would have it in it
+        // (and its label read as the app's text).
+        let wait = if self.hide_answered { 150 } else { 1000 };
         let r = self.wait_for(
-            Duration::from_millis(150),
+            Duration::from_millis(wait),
             |r| matches!(r, Reply::Hidden { id: i, .. } if *i == id),
         );
+        self.hide_answered |= r.is_some();
         Some(matches!(r, Some(Reply::Hidden { shown: true, .. })))
     }
 }

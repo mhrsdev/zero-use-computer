@@ -130,6 +130,12 @@ pub fn config(file: Option<&Path>, preset: &str, scripts: &Path) -> Result<Confi
             cfg.cache.enabled = false;
             cfg.cache.dedupe_screenshots = false;
             cfg.tree.report_changes = false;
+            // And none of what this server adds on top: every tool listed,
+            // no reading of what the tree doesn't have, no pictures held
+            // back.
+            cfg.tools.manager = computer_use::config::ToolManager::Off;
+            cfg.ocr.blind_regions = false;
+            cfg.screenshot.adaptive = false;
         }
         other => return Err(format!("unknown preset {other} (default, codex)")),
     }

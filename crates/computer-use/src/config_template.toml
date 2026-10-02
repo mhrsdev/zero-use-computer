@@ -36,7 +36,7 @@ launch_timeout_secs = 15.0
 [tools]
 disabled = []               # e.g. ["drag", "batch"]
 enabled = []                # if non-empty, ONLY these tools are exposed
-descriptions = "compact"    # "compact" (fewer tokens), "lean" (fewer still) or "full"
+descriptions = "lean"       # "lean" (fewest tokens, default), "compact" or "full"
 # "lean" also lists the keys of nested objects (a design's layers, a
 # drawing's strokes) by name instead of typing each, leaves `window` (still
 # accepted) and defaults out of the schemas. `decide` is listed once a
@@ -61,9 +61,9 @@ preset = "full"
 default_app = false
 # launch_app answers with the app's first state, as get_app_state would.
 launch_look = true
-# When design lists the steps to paint a design: "always" (default) or
-# "asked" (show steps=true; otherwise only how many there are).
-design_steps = "always"
+# When design lists the steps to paint a design: "asked" (default:
+# show steps=true; otherwise only how many there are) or "always".
+design_steps = "asked"
 
 [screenshot]
 enabled = true
@@ -96,8 +96,8 @@ region_min_size = 200       # the part is at least this big on each side, for co
 # Attach automatic screenshots by how the model works in an app: once it
 # has looked a few times without ever using pixels there (no x/y, no
 # screenshot asked for), well-described windows come without one.
-adaptive = false
-locate_picture = true       # locate sends the window with the places found numbered
+adaptive = true
+locate_picture = false      # true: locate sends the window with the places found numbered
 # Experimental: when no screenshot is attached, a small strip of the
 # buttons without a name, each numbered with its element_index.
 icon_sprite = false
@@ -134,14 +134,14 @@ brief_repeats = true        # explain notes in full once, then briefly (false = 
 # value just set.
 compact = true
 # What an action's result says of what changed:
-#   "full"     = every change, up to report_changes_max_lines (default)
+#   "full"     = every change, up to report_changes_max_lines
 #   "relevant" = changes in and around what the action acted on, new windows
-#                and added elements, and how many others there are
+#                and added elements, and how many others there are (default)
 #   "brief"    = how many changes, and a new screen or window
-report = "full"
+report = "relevant"
 # Elements that change on their own (clocks, progress, spinners): after a
 # few reports in a row, summed up in one line instead of listed each time.
-quiet_volatile = false
+quiet_volatile = true
 
 [timing]
 settle_ms = 40              # pause after each action before looking again
@@ -229,9 +229,8 @@ tesseract_path = "tesseract"
 # Areas of a window the tree says nothing about (a canvas next to a full
 # toolbar, a picture, a custom-drawn panel), however many elements the rest
 # of the window has: read their text off the screen and check their pixels
-# on every look (an unchanged picture still isn't sent again). Off until
-# measured: bench/README.md.
-blind_regions = false
+# on every look (an unchanged picture still isn't sent again).
+blind_regions = true
 
 # Reading desktop notifications (the get_notifications tool). Off by
 # default: notifications carry other apps' messages and codes.
@@ -326,7 +325,7 @@ instructions = "full"
 # For hosts that trim their context: each tool result's _meta gets a number
 # and the earlier results it repeats whole ("zero-use-computer/supersedes")
 # or whose pictures it replaces ("zero-use-computer/supersedes-images").
-result_meta = false
+result_meta = true
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

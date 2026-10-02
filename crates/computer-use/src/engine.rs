@@ -1157,11 +1157,39 @@ impl<B: Backend> Engine<B> {
         let sig = PixelSig::of(&cap, cache.pixel_grid);
         let lines = match cached {
             Some((old, lines)) if old.same_as(&sig, cache.pixel_tolerance) => lines,
-            _ => self.run_ocr(&cap),
+            _ => {
+                let mut lines = self.run_ocr(&cap);
+                lines.retain(|l| !self.overlay_text(&l.text));
+                lines
+            }
         };
         self.states.entry(app.pid).or_default().ocr_cache = Some((sig, lines.clone()));
         self.last_capture = Some((app.pid, window.id, self.epoch, cap));
         lines
+    }
+
+    /// Whether text read off the screen is the on-screen indicator's own
+    /// label (a picture can catch it where the platform can't leave it
+    /// out): never the app's text.
+    fn overlay_text(&self, text: &str) -> bool {
+        let o = &self.store.config.overlay;
+        if !o.enabled || self.overlay.is_none() {
+            return false;
+        }
+        let read = crate::text::fold(text.trim().trim_end_matches(['…', '.']));
+        if read.chars().count() < 4 {
+            return false;
+        }
+        [
+            &o.label_working,
+            &o.label_thinking,
+            &o.label_error,
+            &o.label_done,
+            &o.label_paused,
+            &o.label_stopped,
+        ]
+        .iter()
+        .any(|label| reads_as_start_of(&read, &crate::text::fold(label)))
     }
 
     /// Recognise the text in a capture with the configured engine.
@@ -1440,6 +1468,7 @@ impl<B: Backend> Engine<B> {
                                             b.x + b.width / 2.0,
                                             b.y + b.height / 2.0,
                                         )) && crate::ocr::plausible(l)
+                                            && !self.overlay_text(&l.text)
                                     })
                                     .collect(),
                             };
@@ -7764,6 +7793,29 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
 }
 
 /// A hash of a rendered tree, to tell whether it is the same text.
+/// Whether `read` (text read off the screen) is the start of `label`, with
+/// at most one misread character in six ("zero is thir" for "zero is
+/// thinking").
+fn reads_as_start_of(read: &str, label: &str) -> bool {
+    let a: Vec<char> = read.chars().collect();
+    let b: Vec<char> = label.chars().take(a.len()).collect();
+    if b.len() < a.len() {
+        return false;
+    }
+    // Levenshtein distance between the two.
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()] <= (a.len() / 6).max(usize::from(a.len() >= 6))
+}
+
 /// A hash of a picture's exact pixels (and size).
 fn pixels_hash(cap: &Capture) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -7979,6 +8031,15 @@ mod tests {
     use crate::config::Config;
     use crate::mock::{Event, MockBackend};
     use crate::tree::{expand, index_of};
+
+    /// An engine whose `design` lists its paint steps with every answer.
+    fn steps_engine() -> Engine<MockBackend> {
+        let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.tools.design_steps = crate::config::DesignSteps::Always;
+        e.set_config(ConfigStore::in_memory(cfg));
+        e
+    }
 
     fn engine() -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
@@ -9467,7 +9528,7 @@ mod tests {
 
     #[test]
     fn designs_are_composed_seen_and_painted_step_by_step() {
-        let mut e = engine();
+        let mut e = steps_engine();
         state_of(&mut e, serde_json::json!({}));
         // A name nobody started yet needs a size.
         let out = e.call_tool("design", serde_json::json!({"name": "Badge"}));
@@ -9688,6 +9749,9 @@ mod tests {
     #[test]
     fn pixel_targeting_snaps_finds_and_magnifies() {
         let mut e = engine();
+        let mut cfg = e.store().config.clone();
+        cfg.screenshot.locate_picture = true;
+        e.set_config(ConfigStore::in_memory(cfg));
         state_of(&mut e, serde_json::json!({}));
         // A dark square drawn on the (mock) window: 200..260 x 150..210.
         e.backend_mut().patch = Some((Rect::new(200.0, 150.0, 60.0, 60.0), 20));
@@ -11254,6 +11318,14 @@ mod tests {
     }
 
     #[test]
+    fn the_indicator_label_is_never_the_apps_text() {
+        assert!(reads_as_start_of("zero is thir", "zero is thinking…"));
+        assert!(reads_as_start_of("zero", "zero is done"));
+        assert!(!reads_as_start_of("zero balance", "zero is done"));
+        assert!(!reads_as_start_of("save", "zero is done"));
+    }
+
+    #[test]
     fn the_tool_manager_shows_the_base_and_finds_the_rest() {
         use crate::config::ToolManager;
         let mut e = engine();
@@ -12333,7 +12405,7 @@ mod tests {
 
     #[test]
     fn designs_and_scenes_say_what_changed() {
-        let mut e = engine();
+        let mut e = steps_engine();
         let out = e.call_tool(
             "design",
             serde_json::json!({"name": "logo", "size": [200, 100], "background": "#FFFFFF",
@@ -12482,8 +12554,11 @@ mod tests {
         state_of(&mut e, serde_json::json!({"rebase": true}));
         let m = meta(&mut e);
         assert_eq!(m["zero-use-computer/supersedes"], serde_json::json!([1, 3]));
-        // Off (the default): no meta.
-        let mut e = dialog_engine(Config::default());
+        // Off: no meta.
+        assert!(Config::default().server.result_meta);
+        let mut off = Config::default();
+        off.server.result_meta = false;
+        let mut e = dialog_engine(off);
         state_of(&mut e, serde_json::json!({}));
         assert!(e.take_result_meta().is_none());
     }
