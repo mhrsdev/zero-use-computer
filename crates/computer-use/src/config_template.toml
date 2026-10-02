@@ -58,6 +58,9 @@ preset = "full"
 default_app = false
 # launch_app answers with the app's first state, as get_app_state would.
 launch_look = true
+# When design lists the steps to paint a design: "always" (default) or
+# "asked" (show steps=true; otherwise only how many there are).
+design_steps = "always"
 
 [screenshot]
 enabled = true

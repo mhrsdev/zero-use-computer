@@ -77,6 +77,19 @@ struct AppState {
     full_at: usize,
 }
 
+/// What the model was last shown of a design or a scene: the next answer
+/// says only what changed ([tree] compact).
+#[derive(Default, Clone)]
+struct DraftSeen {
+    head: String,
+    items: Vec<(String, String)>,
+    checks: String,
+    steps: String,
+    picture: u64,
+    /// The cells named on a design's picture, as said.
+    cells: String,
+}
+
 /// What an action's `expect` found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
@@ -239,6 +252,9 @@ pub struct Engine<B: Backend> {
     /// Estimated tokens of every result handed out so far ([cache]
     /// rebase_after_tokens).
     sent_tokens: usize,
+    /// What each design and scene looked like in its last answer, by
+    /// "design:<name>" / "scene:<name>".
+    drafts_seen: HashMap<String, DraftSeen>,
     /// Read text off the screen in the next observe (get_app_state ocr=true).
     force_ocr: bool,
     /// Reuse the last OCR result instead of reading again (while settling).
@@ -376,6 +392,7 @@ impl<B: Backend> Engine<B> {
             last_app: None,
             last_expect: None,
             sent_tokens: 0,
+            drafts_seen: HashMap::new(),
             force_ocr: false,
             ocr_reuse: false,
             traces: Vec::new(),
@@ -4092,12 +4109,14 @@ impl<B: Backend> Engine<B> {
         if key.is_empty() {
             return Err(Error::InvalidArgs("give the scene a name".into()));
         }
-        let mut s = self
-            .scenes
-            .iter()
-            .find(|(n, _)| *n == key)
-            .map(|(_, s)| s.clone())
-            .unwrap_or_default();
+        let seen_key = format!("scene:{key}");
+        let mut s = match self.scenes.iter().find(|(n, _)| *n == key) {
+            Some((_, s)) => s.clone(),
+            None => {
+                self.drafts_seen.remove(&seen_key);
+                Default::default()
+            }
+        };
         // All or nothing: the stored scene changes only if every part works.
         s.apply(&args).map_err(Error::InvalidArgs)?;
         self.scenes.retain(|(n, _)| *n != key);
@@ -4105,30 +4124,58 @@ impl<B: Backend> Engine<B> {
         if self.scenes.len() > 8 {
             self.scenes.remove(0);
         }
+        // Said once, then only what changed ([tree] compact); a call that
+        // changes nothing is a look, and gets all of it.
+        let looking = args.add.is_none()
+            && args.change.is_none()
+            && args.remove.is_none()
+            && args.mirror.is_none()
+            && args.repeat.is_none()
+            && args.ground.is_none();
+        let prev = self
+            .drafts_seen
+            .get(&seen_key)
+            .filter(|_| self.store.config.tree.compact && !looking)
+            .cloned();
+        let items = s.items();
         let mut text = match s.bounds() {
             None => format!(
                 "Scene \"{key}\": empty. Add objects: add=[{{\"id\", \"shape\", \"size\", \"at\"}}]."
             ),
-            Some((lo, hi)) => format!(
-                "Scene \"{key}\": {} object{}, {} x {} x {} (x {} to {}, y {} to {}, z {} to {}), Z up{}. {}.",
-                s.objects.len(),
-                if s.objects.len() == 1 { "" } else { "s" },
-                num(hi[0] - lo[0]),
-                num(hi[1] - lo[1]),
-                num(hi[2] - lo[2]),
-                num(lo[0]),
-                num(hi[0]),
-                num(lo[1]),
-                num(hi[1]),
-                num(lo[2]),
-                num(hi[2]),
-                if s.ground { ", the ground at z 0" } else { "" },
-                s.listing()
-            ),
+            Some((lo, hi)) => {
+                let head = format!(
+                    "Scene \"{key}\": {} object{}, {} x {} x {} (x {} to {}, y {} to {}, z {} to {}), Z up{}.",
+                    s.objects.len(),
+                    if s.objects.len() == 1 { "" } else { "s" },
+                    num(hi[0] - lo[0]),
+                    num(hi[1] - lo[1]),
+                    num(hi[2] - lo[2]),
+                    num(lo[0]),
+                    num(hi[0]),
+                    num(lo[1]),
+                    num(hi[1]),
+                    num(lo[2]),
+                    num(hi[2]),
+                    if s.ground { ", the ground at z 0" } else { "" },
+                );
+                match &prev {
+                    Some(p) => match items_diff(&p.items, &items) {
+                        Some(diff) => format!("{head} Since the last answer: {diff}."),
+                        None => format!("{head} Objects as before."),
+                    },
+                    None => format!("{head} {}.", s.listing()),
+                }
+            }
         };
+        let mut checks_said = String::new();
         if !s.objects.is_empty() {
             let checks = s.checks();
-            if checks.is_empty() {
+            checks_said = checks.join("; ");
+            if prev.as_ref().is_some_and(|p| p.checks == checks_said) {
+                if !checks.is_empty() {
+                    text.push_str("\nChecks as before.");
+                }
+            } else if checks.is_empty() {
                 text.push_str(if s.ground {
                     "\nChecks: everything rests on the ground or on something; nothing runs into anything."
                 } else {
@@ -4199,9 +4246,27 @@ impl<B: Backend> Engine<B> {
                 written.1.div_ceil(1024)
             ));
         }
+        let mut seen = DraftSeen {
+            head: String::new(),
+            items,
+            checks: checks_said,
+            steps: String::new(),
+            picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
+            cells: String::new(),
+        };
         let Some(picture) = picture.filter(|_| !self.store.config.text_only && cfg.enabled) else {
+            self.drafts_seen.insert(seen_key, seen);
             return Ok(ToolOutput::text(text));
         };
+        // The very picture the model has: not sent again.
+        let hash = picture_hash(&picture);
+        if prev.as_ref().is_some_and(|p| p.picture == hash) {
+            text.push_str("\nThe picture is as before.");
+            self.drafts_seen.insert(seen_key, seen);
+            return Ok(ToolOutput::text(text));
+        }
+        seen.picture = hash;
+        self.drafts_seen.insert(seen_key, seen);
         if !s.objects.is_empty() {
             let long = format!(
                 "\nThe picture: front (x right, z up), right (y right, z up) and top (x right, y up) to one scale, a grid line every {}; and a perspective view (look [{}, {}]) with shadows straight down onto the ground. view=\"front\" (or right, top, perspective) shows one bigger.",
@@ -4226,9 +4291,11 @@ impl<B: Backend> Engine<B> {
         if key.is_empty() {
             return Err(Error::InvalidArgs("give the design a name".into()));
         }
+        let seen_key = format!("design:{key}");
         let mut d = match self.designs.iter().position(|(n, _)| *n == key) {
             Some(i) => self.designs[i].1.clone(),
             None => {
+                self.drafts_seen.remove(&seen_key);
                 let [w, h] = args.size.ok_or_else(|| {
                     Error::InvalidArgs(format!(
                         "no design called \"{key}\" yet: give size [width, height] to start one"
@@ -4245,22 +4312,65 @@ impl<B: Backend> Engine<B> {
         if self.designs.len() > 8 {
             self.designs.remove(0);
         }
-        let mut text = format!(
-            "Design \"{key}\": {} x {}, background {}, margin {}. {} layer{}, back to front: {}.",
+        // Said once, then only what changed ([tree] compact); a call that
+        // changes nothing is a look, and gets all of it.
+        let looking = args.size.is_none()
+            && args.background.is_none()
+            && args.margin.is_none()
+            && args.cell_size.is_none()
+            && args.add.is_none()
+            && args.change.is_none()
+            && args.remove.is_none()
+            && args.mirror.is_none()
+            && args.align.is_none()
+            && args.distribute.is_none()
+            && args.order.is_none();
+        let prev = self
+            .drafts_seen
+            .get(&seen_key)
+            .filter(|_| self.store.config.tree.compact && !looking)
+            .cloned();
+        let head = format!(
+            "Design \"{key}\": {} x {}, background {}, margin {}.",
             d.width,
             d.height,
             hex(d.background),
             d.margin,
-            d.layers.len(),
-            if d.layers.len() == 1 { "" } else { "s" },
-            if d.layers.is_empty() {
-                "none yet".to_string()
-            } else {
-                d.listing(&mut self.fonts)
-            }
         );
+        let items = d.items(&mut self.fonts);
+        let count = format!(
+            "{} layer{}",
+            d.layers.len(),
+            if d.layers.len() == 1 { "" } else { "s" }
+        );
+        let mut text = match &prev {
+            Some(p) => {
+                let head = if p.head == head {
+                    format!("Design \"{key}\":")
+                } else {
+                    head.clone()
+                };
+                match items_diff(&p.items, &items) {
+                    Some(diff) => format!("{head} {count}; since the last answer: {diff}."),
+                    None => format!("{head} {count}, as before."),
+                }
+            }
+            None => format!(
+                "{head} {count}, back to front: {}.",
+                if d.layers.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    d.listing(&mut self.fonts)
+                }
+            ),
+        };
         let checks = d.checks(&mut self.fonts);
-        if checks.is_empty() {
+        let checks_said = checks.join("; ");
+        if prev.as_ref().is_some_and(|p| p.checks == checks_said) {
+            if !checks.is_empty() {
+                text.push_str("\nChecks as before.");
+            }
+        } else if checks.is_empty() {
             if !d.layers.is_empty() {
                 text.push_str("\nChecks: nothing off.");
             }
@@ -4268,7 +4378,16 @@ impl<B: Backend> Engine<B> {
             text.push_str(&format!("\nChecks: {}.", checks.join("; ")));
         }
         let steps = d.steps();
-        if !steps.is_empty() {
+        let show = args.show.clone().unwrap_or_default();
+        let list_steps = show.steps
+            || self.store.config.tools.design_steps == crate::config::DesignSteps::Always;
+        let mut steps_said = prev.as_ref().map(|p| p.steps.clone()).unwrap_or_default();
+        if !steps.is_empty() && !list_steps {
+            text.push_str(&format!(
+                "\n{} step(s) to paint it (show steps=true lists them).",
+                steps.len()
+            ));
+        } else if !steps.is_empty() {
             let list: Vec<String> = steps
                 .iter()
                 .enumerate()
@@ -4289,12 +4408,26 @@ impl<B: Backend> Engine<B> {
                 " Each: set the colour, then draw(strokes=[{\"design\": <name>, \"step\": n, \"fill\": <brush size>}], canvas=...); a lines step uses a brush that wide; type text steps with the text tool. Or export=\"svg\" / \"png\" and import the file.",
                 "",
             );
-            text.push_str(&format!(
-                "\nTo paint it in an app: background {} first, then steps {}.{how}",
+            let said = format!(
+                "background {} first, then steps {}.",
                 hex(d.background),
                 list.join("; ")
-            ));
+            );
+            if prev.as_ref().is_some_and(|p| p.steps == said) {
+                text.push_str("\nThe steps to paint it are as before.");
+            } else {
+                text.push_str(&format!("\nTo paint it in an app: {said}{how}"));
+            }
+            steps_said = said;
         }
+        let mut seen = DraftSeen {
+            head,
+            items,
+            checks: checks_said,
+            steps: steps_said,
+            picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
+            cells: prev.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
+        };
         if let Some(format) = args.export {
             let (bytes, ext) = match format {
                 ExportFormat::Png => (d.png(&mut self.fonts).map_err(Error::InvalidArgs)?, "png"),
@@ -4317,11 +4450,12 @@ impl<B: Backend> Engine<B> {
         }
         let cfg = self.store.config.screenshot.clone();
         if self.store.config.text_only || !cfg.enabled {
+            self.drafts_seen.insert(seen_key, seen);
             return Ok(ToolOutput::text(text));
         }
-        let show = args.show.clone().unwrap_or_default();
         // One cell, magnified: its picture and what is in it.
         if let Some(cell) = &show.cell {
+            self.drafts_seen.insert(seen_key, seen);
             let (picture, about) = d
                 .render_cell(cell, &mut self.fonts)
                 .map_err(Error::InvalidArgs)?;
@@ -4339,15 +4473,27 @@ impl<B: Backend> Engine<B> {
             guides: show.guides,
             cells: show.cells.unwrap_or(true),
         };
-        if extras.cells {
-            text.push_str(&format!(
-                "\nOn the picture, {} (A1 top-left); show {{\"cell\": \"C4\"}} looks at one closely.",
-                d.cells().describe()
-            ));
-        }
+        let cells = extras.cells;
         let picture = d
             .render(cfg.max_dimension.clamp(256, 1024), extras, &mut self.fonts)
             .map_err(Error::InvalidArgs)?;
+        // The very picture the model has: not sent again.
+        let hash = picture_hash(&picture);
+        if prev.as_ref().is_some_and(|p| p.picture == hash) {
+            text.push_str("\nThe picture is as before.");
+            self.drafts_seen.insert(seen_key, seen);
+            return Ok(ToolOutput::text(text));
+        }
+        // The cells are as they were: said with the first picture only.
+        let described = d.cells().describe();
+        if cells && prev.as_ref().is_none_or(|p| p.cells != described) {
+            text.push_str(&format!(
+                "\nOn the picture, {described} (A1 top-left); show {{\"cell\": \"C4\"}} looks at one closely."
+            ));
+            seen.cells = described;
+        }
+        seen.picture = hash;
+        self.drafts_seen.insert(seen_key, seen);
         let (img, _) = imaging::encode(picture, &cfg)?;
         Ok(ToolOutput {
             text,
@@ -7219,6 +7365,63 @@ fn design_key(name: &str) -> String {
 }
 
 /// For a mutating tool, the app to re-inspect afterwards (change reporting).
+/// What changed between two listings of a design's layers or a scene's
+/// objects (by id, in order): None when nothing did.
+fn items_diff(old: &[(String, String)], new: &[(String, String)]) -> Option<String> {
+    let before: HashMap<&str, &str> = old.iter().map(|(i, l)| (i.as_str(), l.as_str())).collect();
+    let now: HashSet<&str> = new.iter().map(|(i, _)| i.as_str()).collect();
+    let changed: Vec<&str> = new
+        .iter()
+        .filter(|(i, l)| before.get(i.as_str()).is_some_and(|o| o != l))
+        .map(|(_, l)| l.as_str())
+        .collect();
+    let added: Vec<&str> = new
+        .iter()
+        .filter(|(i, _)| !before.contains_key(i.as_str()))
+        .map(|(_, l)| l.as_str())
+        .collect();
+    let removed: Vec<&str> = old
+        .iter()
+        .filter(|(i, _)| !now.contains(i.as_str()))
+        .map(|(i, _)| i.as_str())
+        .collect();
+    let mut parts = Vec::new();
+    if !changed.is_empty() {
+        parts.push(format!("changed {}", changed.join("; ")));
+    }
+    if !added.is_empty() {
+        parts.push(format!("added {}", added.join("; ")));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("removed {}", removed.join(", ")));
+    }
+    // The order, when it isn't the old one with the new ones on top.
+    let expected: Vec<&str> = old
+        .iter()
+        .map(|(i, _)| i.as_str())
+        .filter(|i| now.contains(i))
+        .chain(
+            new.iter()
+                .map(|(i, _)| i.as_str())
+                .filter(|i| !before.contains_key(i)),
+        )
+        .collect();
+    let order: Vec<&str> = new.iter().map(|(i, _)| i.as_str()).collect();
+    if order != expected {
+        parts.push(format!("back to front now {}", order.join(", ")));
+    }
+    (!parts.is_empty()).then(|| parts.join(". "))
+}
+
+/// A picture's identity, to tell whether it is the one sent last.
+fn picture_hash(c: &Capture) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (c.width, c.height).hash(&mut h);
+    c.rgba.hash(&mut h);
+    h.finish()
+}
+
 /// The app, what is expected and the element acted on, of an action with
 /// `expect`.
 fn expectation(call: &ToolCall) -> Option<(String, String, Option<u32>)> {
@@ -11767,6 +11970,131 @@ mod tests {
             !e.backend().events[n..]
                 .iter()
                 .any(|ev| matches!(ev, Event::Click(..)))
+        );
+    }
+
+    #[test]
+    fn designs_and_scenes_say_what_changed() {
+        let mut e = engine();
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "size": [200, 100], "background": "#FFFFFF",
+                "add": ["sun ellipse 50 50 20 20 fill #FFCC00",
+                        "sky rect 0 0 200 40 fill #3366FF",
+                        "title text \"Hi\" at 150 60 size 20 fill #222222"]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.image.is_some());
+        assert!(
+            out.text.contains("3 layers, back to front: sun ellipse"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("To paint it in an app"), "{}", out.text);
+        // One layer changes: only it is said, with a new picture.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "change": ["sun fill #FF0000"]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.starts_with("Design \"logo\": 3 layers; since the last answer: changed sun ellipse x 30 y 30 w 40 h 40 fill #FF0000."),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("sky rect"), "{}", out.text);
+        assert!(!out.text.contains("On the picture, cells"), "{}", out.text);
+        assert!(out.image.is_some());
+        // A change that changes nothing: no picture.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "change": ["sun fill #FF0000"]}),
+        );
+        assert!(out.text.contains("3 layers, as before."), "{}", out.text);
+        assert!(
+            out.text.contains("The picture is as before."),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("The steps to paint it are as before."),
+            "{}",
+            out.text
+        );
+        assert!(out.image.is_none());
+        // Removing and reordering.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "remove": ["title"], "order": [{"id": "sun", "to": "front"}]}),
+        );
+        assert!(out.text.contains("removed title"), "{}", out.text);
+        assert!(
+            out.text.contains("back to front now sky, sun"),
+            "{}",
+            out.text
+        );
+        // A look gets all of it.
+        let out = e.call_tool("design", serde_json::json!({"name": "logo"}));
+        assert!(out.text.contains("back to front: sky rect"), "{}", out.text);
+        assert!(out.image.is_some());
+        // Steps only when asked.
+        let mut cfg = e.store().config.clone();
+        cfg.tools.design_steps = crate::config::DesignSteps::Asked;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "change": ["sky fill #2255EE"]}),
+        );
+        assert!(
+            out.text.contains("2 step(s) to paint it (show steps=true"),
+            "{}",
+            out.text
+        );
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "logo", "show": {"steps": true}}),
+        );
+        assert!(out.text.contains("To paint it in an app"), "{}", out.text);
+
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "add": [
+                "seat cylinder 0.4 0.05 at 0 0 0.475 color #884422",
+                "leg box 0.05 0.05 0.45 at 0 0 0.225"
+            ]}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("seat cylinder"), "{}", out.text);
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "change": ["seat color #000000"]}),
+        );
+        assert!(
+            out.text
+                .contains("Since the last answer: changed seat cylinder"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("leg box"), "{}", out.text);
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "change": ["seat color #000000"]}),
+        );
+        assert!(out.text.contains("Objects as before."), "{}", out.text);
+        assert!(
+            out.text.contains("The picture is as before."),
+            "{}",
+            out.text
+        );
+        assert!(out.image.is_none());
+        let out = e.call_tool(
+            "scene",
+            serde_json::json!({"name": "stool", "add": ["x wobble 1 1 1"]}),
+        );
+        assert!(
+            out.is_error && out.text.contains("`wobble` is not a field"),
+            "{}",
+            out.text
         );
     }
 }

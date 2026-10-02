@@ -308,6 +308,8 @@ pub struct DrawArgs {
     pub app: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub window: Option<String>,
+    /// Objects, or lines ("rect 10 10 50 30", [`stroke_line`]).
+    #[serde(deserialize_with = "de_strokes")]
     pub strokes: Vec<DrawStroke>,
     /// Coordinates are fractions of this element's box instead of
     /// screenshot pixels.
@@ -680,9 +682,11 @@ pub struct DesignArgs {
     /// The cells' size in the design's units (0: about eight across).
     #[serde(default)]
     pub cell_size: Option<f64>,
-    #[serde(default)]
+    /// Layers as objects, or as lines ("sun ellipse 80 20 12 12 fill
+    /// #ffcc00"; [`layer_line`]).
+    #[serde(default, deserialize_with = "de_layers")]
     pub add: Option<Vec<DesignLayer>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_layers")]
     pub change: Option<Vec<DesignLayer>>,
     #[serde(default)]
     pub remove: Option<Vec<String>>,
@@ -854,6 +858,9 @@ pub struct DesignShow {
     /// Show just this cell, magnified ("C4").
     #[serde(default, deserialize_with = "de_opt_string")]
     pub cell: Option<String>,
+    /// List the steps to paint it ([tools] design_steps = "asked").
+    #[serde(default)]
+    pub steps: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -905,9 +912,11 @@ pub enum TraceDetail {
 #[serde(deny_unknown_fields)]
 pub struct SceneArgs {
     pub name: String,
-    #[serde(default)]
+    /// Objects as objects, or as lines ("seat box 0.5 0.5 0.05 at 0 0
+    /// 0.45 color #884422"; [`object_line`]).
+    #[serde(default, deserialize_with = "de_objects")]
     pub add: Option<Vec<SceneObject>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_objects")]
     pub change: Option<Vec<SceneObject>>,
     #[serde(default)]
     pub remove: Option<Vec<String>>,
@@ -1041,6 +1050,245 @@ fn de_grid<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<f64>, 
             )));
         }
     })
+}
+
+/// What a word after a field's name is.
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+    /// Words, joined.
+    Text,
+    /// One number.
+    Num,
+    /// Numbers, as a list.
+    Nums,
+    /// Present (true), or followed by true/false.
+    Flag,
+    /// `line #RRGGBB [width]`: the outline's colour and width.
+    Outline,
+}
+
+const LAYER_FIELDS: &[(&str, Field)] = &[
+    ("id", Field::Text),
+    ("rect", Field::Nums),
+    ("ellipse", Field::Nums),
+    ("polygon", Field::Nums),
+    ("star", Field::Nums),
+    ("arc", Field::Nums),
+    ("rotate", Field::Num),
+    ("about", Field::Nums),
+    ("text", Field::Text),
+    ("at", Field::Nums),
+    ("size", Field::Num),
+    ("font", Field::Text),
+    ("bold", Field::Flag),
+    ("align", Field::Text),
+    ("fill", Field::Text),
+    ("stroke", Field::Text),
+    ("line", Field::Outline),
+    ("width", Field::Num),
+    ("opacity", Field::Num),
+    ("move", Field::Nums),
+    ("to", Field::Nums),
+    ("below", Field::Text),
+    ("above", Field::Text),
+    ("closed", Field::Flag),
+    ("smooth", Field::Flag),
+];
+
+const OBJECT_FIELDS: &[(&str, Field)] = &[
+    ("id", Field::Text),
+    ("shape", Field::Text),
+    ("size", Field::Nums),
+    ("at", Field::Nums),
+    ("rotate", Field::Nums),
+    ("color", Field::Text),
+    ("on", Field::Text),
+    ("move", Field::Nums),
+];
+
+const STROKE_FIELDS: &[(&str, Field)] = &[
+    ("rect", Field::Nums),
+    ("ellipse", Field::Nums),
+    ("polygon", Field::Nums),
+    ("star", Field::Nums),
+    ("arc", Field::Nums),
+    ("axes", Field::Nums),
+    ("rotate", Field::Num),
+    ("about", Field::Nums),
+    ("fill", Field::Num),
+    ("closed", Field::Flag),
+    ("smooth", Field::Flag),
+    ("steps", Field::Num),
+    ("trace", Field::Text),
+    ("design", Field::Text),
+    ("step", Field::Num),
+];
+
+const SOLIDS: &[&str] = &[
+    "box", "cube", "cylinder", "sphere", "cone", "torus", "plane",
+];
+
+/// A design layer written as a line: its id first, then fields by name,
+/// as the layer listing shows them: `sun ellipse 80 20 12 12 fill #ffcc00`,
+/// `title text "Hello" at 50 10 size 8 align center`, `box rect 10 10 50
+/// 30 4 fill none line #000000 2`.
+pub fn layer_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, LAYER_FIELDS, &[], true)
+}
+
+/// A draw stroke written as a line of fields by name: `rect 10 10 50 30`,
+/// `ellipse 100 100 40 40 fill 6`, `design logo step 2 fill 8`.
+pub fn stroke_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, STROKE_FIELDS, &[], false)
+}
+
+/// A scene object written as a line: its id, its shape and size, then
+/// fields by name: `seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422`,
+/// `leg cylinder 0.04 0.45 at 0.2 0.2 0.225`, `seat at 0 0 0.5`.
+pub fn object_line(line: &str) -> std::result::Result<Value, String> {
+    fields_line(line, OBJECT_FIELDS, SOLIDS, true)
+}
+
+/// A line of fields by name (after an id, when `id`) as a JSON object.
+fn fields_line(
+    line: &str,
+    fields: &[(&str, Field)],
+    shapes: &[&str],
+    id: bool,
+) -> std::result::Result<Value, String> {
+    let bad = |why: String| {
+        let names: Vec<&str> = fields.iter().map(|f| f.0).collect();
+        format!(
+            "`{line}`: {why} ({}{})",
+            if id { "an id first, then " } else { "fields: " },
+            names.join(", ")
+        )
+    };
+    let words = words_of(line).map_err(|e| bad(e.to_string()))?;
+    let field = |w: &(String, bool)| {
+        (!w.1)
+            .then(|| fields.iter().find(|f| f.0 == w.0.to_lowercase()))
+            .flatten()
+            .copied()
+    };
+    let shape = |w: &(String, bool)| !w.1 && shapes.contains(&w.0.to_lowercase().as_str());
+    let starts = |w: &(String, bool)| field(w).is_some() || shape(w);
+    // Whole numbers as integers: they also fill integer fields (step).
+    let number = |w: &(String, bool)| {
+        w.0.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(|n| {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    json!(n as i64)
+                } else {
+                    json!(n)
+                }
+            })
+            .ok_or_else(|| bad(format!("`{}` is not a number", w.0)))
+    };
+    let mut m = serde_json::Map::new();
+    let mut i = 0;
+    if let Some(first) = words.first()
+        && id
+        && !starts(first)
+    {
+        m.insert("id".into(), json!(first.0));
+        i = 1;
+    }
+    while i < words.len() {
+        let at = &words[i];
+        i += 1;
+        let from = i;
+        while i < words.len() && !starts(&words[i]) {
+            i += 1;
+        }
+        let values = &words[from..i];
+        if shape(at) {
+            m.insert("shape".into(), json!(at.0.to_lowercase()));
+            if !values.is_empty() {
+                let nums: Vec<Value> = values.iter().map(number).collect::<Result<_, _>>()?;
+                m.insert("size".into(), Value::Array(nums));
+            }
+            continue;
+        }
+        let Some((name, kind)) = field(at) else {
+            return Err(bad(format!("`{}` is not a field", at.0)));
+        };
+        let value = match kind {
+            Field::Text if values.is_empty() => return Err(bad(format!("{name} needs a value"))),
+            Field::Text => json!(
+                values
+                    .iter()
+                    .map(|w| w.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Field::Num => match values {
+                [one] => number(one)?,
+                _ => return Err(bad(format!("{name} takes one number"))),
+            },
+            Field::Nums if values.is_empty() => return Err(bad(format!("{name} needs numbers"))),
+            Field::Nums => Value::Array(values.iter().map(number).collect::<Result<_, _>>()?),
+            Field::Flag => match values {
+                [] => json!(true),
+                [w] if w.0 == "true" || w.0 == "false" => json!(w.0 == "true"),
+                _ => return Err(bad(format!("{name} takes true or false"))),
+            },
+            Field::Outline => match values {
+                [colour] => json!(colour.0),
+                [colour, width] => {
+                    m.insert("width".into(), number(width)?);
+                    json!(colour.0)
+                }
+                _ => return Err(bad("line takes a colour and a width".into())),
+            },
+        };
+        let key = if kind == Field::Outline {
+            "stroke"
+        } else {
+            name
+        };
+        m.insert(key.into(), value);
+    }
+    Ok(Value::Object(m))
+}
+
+fn de_layers<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<DesignLayer>>, D::Error> {
+    de_lines(d, layer_line)
+}
+
+fn de_strokes<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<DrawStroke>, D::Error> {
+    de_lines(d, stroke_line)?.ok_or_else(|| serde::de::Error::custom("strokes are needed"))
+}
+
+fn de_objects<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<SceneObject>>, D::Error> {
+    de_lines(d, object_line)
+}
+
+/// A list whose items are objects, or lines `parse` turns into them.
+fn de_lines<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    d: D,
+    parse: fn(&str) -> std::result::Result<Value, String>,
+) -> std::result::Result<Option<Vec<T>>, D::Error> {
+    let Some(items) = Option::<Vec<Value>>::deserialize(d)? else {
+        return Ok(None);
+    };
+    items
+        .into_iter()
+        .map(|v| {
+            let v = match v {
+                Value::String(line) => parse(&line).map_err(serde::de::Error::custom)?,
+                other => other,
+            };
+            serde_json::from_value(v).map_err(serde::de::Error::custom)
+        })
+        .collect::<std::result::Result<Vec<T>, _>>()
+        .map(Some)
 }
 
 /// One step of a batch: `{tool, arguments}`, or a short line such as
@@ -1650,13 +1898,14 @@ fn layer_props() -> Value {
             _ => unreachable!("an object"),
         },
     );
-    json!({"type": "object", "properties": Value::Object(m), "additionalProperties": false})
+    json!({"type": ["object", "string"], "properties": Value::Object(m), "additionalProperties": false, "description": "Or a line: id, then fields by name (\"sun ellipse 80 20 12 12 fill #ffcc00\", \"t text \\\"Hi\\\" at 50 10 size 8\", \"sun fill #ff0000\" to change)."})
 }
 
 /// A solid in a 3D scene.
 fn scene_object_props() -> Value {
     json!({
-        "type": "object",
+        "type": ["object", "string"],
+        "description": "Or a line: id, shape and size, then fields by name (\"seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422\", \"seat at 0 0 0.5\" to change).",
         "properties": {
             "id": {"type": "string", "description": "Its name (\"seat\", \"leg-fl\"); used by change, mirror, repeat, on."},
             "shape": {"type": "string", "enum": ["box", "cylinder", "sphere", "cone", "torus", "plane"]},
@@ -1846,9 +2095,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "minItems": 1,
                         "description": "One press-move-release each.",
                         "items": {
-                            "type": "object",
+                            "type": ["object", "string"],
                             "properties": stroke_props(),
-                            "additionalProperties": false
+                            "additionalProperties": false,
+                            "description": "Or a line of fields by name: \"rect 10 10 50 30\", \"ellipse 100 100 40 40 fill 6\", \"design logo step 2 fill 8\"."
                         }
                     },
                     "element_index": index_prop("Draw inside this element; coordinates are fractions of its box."),
@@ -1921,7 +2171,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "align": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "x": {"type": "string", "enum": ["left", "center", "right"]}, "y": {"type": "string", "enum": ["top", "middle", "bottom"]}, "to": {"type": "string", "description": "page (default), margins, each other, or a layer id."}}, "required": ["ids"], "additionalProperties": false}},
                     "distribute": {"type": "array", "items": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}, "axis": {"type": "string", "enum": ["x", "y"]}}, "required": ["ids"], "additionalProperties": false}, "description": "Equal gaps between 3 or more layers."},
                     "order": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "to": {"type": "string", "enum": ["front", "back", "up", "down"]}}, "required": ["id", "to"], "additionalProperties": false}},
-                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}, "cells": {"type": "boolean"}, "cell": {"type": "string"}}, "additionalProperties": false, "description": "On the picture: the named cells (A1 top-left, on unless cells=false), a grid in the design's units, the layers' ids, guides (margins, centre, thirds); cell=\"C4\" shows just that cell, magnified, with the layers in it."},
+                    "show": {"type": "object", "properties": {"grid": {"type": ["number", "boolean"]}, "ids": {"type": "boolean"}, "guides": {"type": "boolean"}, "cells": {"type": "boolean"}, "cell": {"type": "string"}, "steps": {"type": "boolean"}}, "additionalProperties": false, "description": "On the picture: the named cells (A1 top-left, on unless cells=false), a grid in the design's units, the layers' ids, guides (margins, centre, thirds); cell=\"C4\" shows just that cell, magnified, with the layers in it. steps=true lists the steps to paint it."},
                     "export": {"type": "string", "enum": ["png", "svg"], "description": "Write a temporary file to import into an app."}
                 },
                 "required": ["name"],
@@ -2208,7 +2458,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Drag from an element/point to another element/point; snap moves the ends onto a corner/edge/center/#hex."
         }
         "draw" => {
-            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}. Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace or design + step draws one colour step of a trace_image picture or a design. preview=true only shows them (over named cells, A1 top-left). Returns the cells it covers and where a bucket click fills each closed outline."
+            "Draw with the mouse held down along strokes: rect [x,y,w,h(,r)], ellipse [cx,cy,rx,ry], polygon [cx,cy,r,n], star [cx,cy,R,r,n], arc [cx,cy,r,a0,a1], bezier, points (closed, smooth), a curve x,y in t over t=[from,to] (steps=n), or a plot {y: \"sin(x)\"}; rotate/about, repeat {count, offset, rotate, about}; a stroke may be a line (\"ellipse 100 100 40 40 fill 6\"). Screenshot pixels; element_index fractions; canvas {box:[l,t,r,b], size:[w,h]} document units or {box, range:[x0,x1,y0,y1]} math (y up; axes [dx,dy]). fill=w paints a closed shape solid with a w-wide brush; trace or design + step draws one colour step of a trace_image picture or a design. preview=true only shows them (over named cells, A1 top-left). Returns the cells it covers and where a bucket click fills each closed outline."
         }
         "press_key" => {
             "Press keys or shortcuts, e.g. \"cmd+s\", \"Down Down Return\". x,y points the mouse there first (Blender sends keys to what is under it). expect as in click."
@@ -2226,10 +2476,10 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Exact places in a window (x/y click takes): color=#hex areas, like=[l,t,r,b] look-alikes, or near=[x,y] + feature corner/edge/center."
         }
         "design" => {
-            "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; returns the picture, layers, checks and paint steps; export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
+            "Design board (like Canva): build a picture from layers (draw shapes, text) with add/change/remove/mirror/align/distribute/order; a layer may be a line (\"sun ellipse 80 20 12 12 fill #ffcc00\"; change: \"sun fill #ff0000\"). Returns the picture, layers, checks and paint steps, then only what changed (a call that changes nothing shows all); export svg/png (temporary) or draw {design, step, fill}. Plan every drawing here first."
         }
         "scene" => {
-            "3D scene: plan a model as solids (box, cylinder, sphere, cone, torus, plane; size, at = centre, rotate; metres, Z up) with add/change/remove/mirror/repeat; returns front/right/top views to scale + perspective, extents, checks (floating, sinking, overlaps) and build numbers; export obj (temporary). Plan every 3D model here first."
+            "3D scene: plan a model as solids (box, cylinder, sphere, cone, torus, plane; size, at = centre, rotate; metres, Z up) with add/change/remove/mirror/repeat; an object may be a line (\"seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422\"). Returns front/right/top views to scale + perspective, extents, checks (floating, sinking, overlaps) and build numbers, then only what changed (a call that changes nothing shows all); export obj (temporary). Plan every 3D model here first."
         }
         "trace_image" => {
             "Turn a reference picture (path, or app [+box]) into flat colour steps to paint back to front; then draw {trace, step, fill} per step, after setting the step's colour."
@@ -2497,13 +2747,16 @@ fn lighten(schema: &mut Value) {
         let Value::Object(p) = prop else { continue };
         p.remove("default");
         if let Some(k) = keys(&Value::Object(p.clone())) {
-            *prop = json!({"type": "object", "description": format!("keys: {k}")});
+            let kind = p.get("type").cloned().unwrap_or(json!("object"));
+            *prop = json!({"type": kind, "description": format!("keys: {k}")});
             continue;
         }
         if let Some(items) = p.get_mut("items")
             && let Some(k) = keys(items)
         {
-            *items = json!({"type": "object", "description": format!("keys: {k}")});
+            let kind = items.get("type").cloned().unwrap_or(json!("object"));
+            let line = if kind.is_array() { " (or a line)" } else { "" };
+            *items = json!({"type": kind, "description": format!("keys: {k}{line}")});
         }
     }
 }
@@ -2582,6 +2835,70 @@ mod tests {
                 Err(Error::UnknownTool(_))
             ));
         }
+    }
+
+    #[test]
+    fn layers_and_objects_can_be_lines() {
+        assert_eq!(
+            layer_line("sun ellipse 80 20 12 12 fill #ffcc00").unwrap(),
+            json!({"id": "sun", "ellipse": [80, 20, 12, 12], "fill": "#ffcc00"})
+        );
+        assert_eq!(
+            layer_line("title text \"Hello there\" at 50 10 size 8 align center bold").unwrap(),
+            json!({"id": "title", "text": "Hello there", "at": [50, 10], "size": 8,
+                   "align": "center", "bold": true})
+        );
+        assert_eq!(
+            layer_line("box rect 10 10 50 30 4 fill none line #000000 2").unwrap(),
+            json!({"id": "box", "rect": [10, 10, 50, 30, 4], "fill": "none",
+                   "stroke": "#000000", "width": 2})
+        );
+        // An id that is a field's name is quoted.
+        assert_eq!(
+            layer_line("\"text\" fill #000000").unwrap(),
+            json!({"id": "text", "fill": "#000000"})
+        );
+        assert_eq!(
+            object_line("seat box 0.5 0.5 0.05 at 0 0 0.45 color #884422").unwrap(),
+            json!({"id": "seat", "shape": "box", "size": [0.5, 0.5, 0.05],
+                   "at": [0, 0, 0.45], "color": "#884422"})
+        );
+        assert_eq!(
+            object_line("leg-2 at 1 2 3 rotate 0 90 0").unwrap(),
+            json!({"id": "leg-2", "at": [1, 2, 3], "rotate": [0, 90, 0]})
+        );
+        for bad in [
+            "a size",
+            "a size 1 2",
+            "a rect x",
+            "a bold maybe",
+            "a line",
+            "a wobble 1",
+        ] {
+            assert!(layer_line(bad).is_err(), "{bad}");
+        }
+        let args: DesignArgs = serde_json::from_value(json!({
+            "name": "d", "add": ["a rect 0 0 1 1", {"id": "b", "ellipse": [1, 1, 1, 1]}]
+        }))
+        .unwrap();
+        let add = args.add.unwrap();
+        assert_eq!(add[0].rect, Some(vec![0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(add[1].id.as_deref(), Some("b"));
+        let args: SceneArgs =
+            serde_json::from_value(json!({"name": "s", "change": ["seat at 0 0 1"]})).unwrap();
+        assert_eq!(args.change.unwrap()[0].at, Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            stroke_line("design logo step 2 fill 8").unwrap(),
+            json!({"design": "logo", "step": 2, "fill": 8})
+        );
+        assert!(stroke_line("logo rect 1 2 3 4").is_err());
+        let args: DrawArgs = serde_json::from_value(json!({
+            "app": "X", "strokes": ["ellipse 100 100 40 40 fill 6", {"rect": [1, 2, 3, 4]}]
+        }))
+        .unwrap();
+        assert_eq!(args.strokes[0].ellipse, Some([100.0, 100.0, 40.0, 40.0]));
+        assert_eq!(args.strokes[0].fill, Some(6.0));
+        assert_eq!(args.strokes[1].rect, Some(vec![1.0, 2.0, 3.0, 4.0]));
     }
 
     #[test]

@@ -327,6 +327,20 @@ pub struct ToolsConfig {
     /// launch_app answers with the app's first state (its tree, as
     /// get_app_state would), saving the call that always follows.
     pub launch_look: bool,
+    /// When `design` lists the steps to paint a design (see
+    /// [`DesignSteps`]).
+    pub design_steps: DesignSteps,
+}
+
+/// When `design` lists the steps to paint a design ([tools] design_steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DesignSteps {
+    /// With every answer (default).
+    #[default]
+    Always,
+    /// When asked (show steps=true); otherwise only how many there are.
+    Asked,
 }
 
 impl Default for ToolsConfig {
@@ -339,6 +353,7 @@ impl Default for ToolsConfig {
             preset: ToolPreset::default(),
             default_app: false,
             launch_look: true,
+            design_steps: DesignSteps::Always,
         }
     }
 }
