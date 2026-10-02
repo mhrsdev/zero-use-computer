@@ -53,6 +53,7 @@
 pub mod backend;
 pub mod cells;
 pub mod config;
+pub mod coverage;
 pub mod decision;
 pub mod design;
 pub mod draw;

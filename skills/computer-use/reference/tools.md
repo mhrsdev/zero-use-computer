@@ -16,10 +16,16 @@
   `get_app_state` afterwards to see the result.
 - `screenshot`:
   - `mode: "full"` the whole screen, `"auto"` only what changed since the
-    last full one, `"region"` with `x`, `y`, `width`, `height` (screen
-    coordinates);
-  - `app` (+ `window`) one window; `annotate: true` draws each element's
-    index on it; `element_index` zooms into one element at full resolution.
+    last full one; `x`, `y`, `width`, `height` (screen coordinates) a
+    region of the screen;
+  - `app` (+ `window`) one window: nothing if it looks as in your last
+    picture of it ("unchanged … not re-sent": that picture is current),
+    else only the part that changed when that is small, else all of it;
+    `mode: "window"` always all of it. `annotate: true` draws each
+    element's index on it; `element_index` zooms into one element at full
+    resolution.
+  - Screenshots are numbered (`Screenshot #7`); a changed part says which
+    one it patches, and `x`/`y` still refer to that whole one.
   - `grid: 100` draws a labelled grid every 100 px, in the x/y that
     `click`, `drag` and `draw` use for that window (screen coordinates for
     full/region shots): read positions off it instead of guessing.

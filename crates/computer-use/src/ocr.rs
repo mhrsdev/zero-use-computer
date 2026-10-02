@@ -119,6 +119,71 @@ pub fn tesseract(cap: &Capture, languages: &[String], program: &str) -> Result<V
     } else {
         1
     };
+    tesseract_at(cap, languages, program, scale)
+}
+
+/// Run Tesseract on a part of a window at both sizes and keep the best
+/// reading of each place: enlarging helps small UI text but can make
+/// Tesseract take a framed label for one big glyph (a canvas's boxes read
+/// as "Ecce"), which it reads as it is.
+pub fn tesseract_both(cap: &Capture, languages: &[String], program: &str) -> Result<Vec<OcrLine>> {
+    let big = if cap.width.max(cap.height) <= 2400 {
+        tesseract_at(cap, languages, program, 2)?
+    } else {
+        Vec::new()
+    };
+    let small = tesseract_at(cap, languages, program, 1)?;
+    Ok(merge(small, big))
+}
+
+/// Lines from two readings of the same picture: where they overlap, the
+/// one read with more confidence.
+pub fn merge(a: Vec<OcrLine>, b: Vec<OcrLine>) -> Vec<OcrLine> {
+    let overlap = |x: &Rect, y: &Rect| {
+        let w = (x.x + x.width).min(y.x + y.width) - x.x.max(y.x);
+        let h = (x.y + x.height).min(y.y + y.height) - x.y.max(y.y);
+        if w <= 0.0 || h <= 0.0 {
+            return false;
+        }
+        let smaller = (x.width * x.height).min(y.width * y.height).max(1e-9);
+        w * h >= 0.5 * smaller
+    };
+    let mut out: Vec<OcrLine> = Vec::with_capacity(a.len() + b.len());
+    for line in a.into_iter().chain(b) {
+        match out.iter_mut().find(|o| overlap(&o.bounds, &line.bounds)) {
+            Some(o) if line.confidence > o.confidence => *o = line,
+            Some(_) => {}
+            None => out.push(line),
+        }
+    }
+    out
+}
+
+/// Whether a line read off a picture is likely text: mostly letters or
+/// digits, few symbols, and not as tall as a shape (Tesseract reads
+/// a canvas's circles and stars as big glyphs: "AH @®@").
+pub fn plausible(line: &OcrLine) -> bool {
+    const PUNCTUATION: &str = ".,:;!?'\"-–—/()&%#+$€£@";
+    let chars: Vec<char> = line.text.chars().filter(|c| !c.is_whitespace()).collect();
+    let alnum = chars.iter().filter(|c| c.is_alphanumeric()).count();
+    let symbols = chars
+        .iter()
+        .filter(|c| !c.is_alphanumeric() && !PUNCTUATION.contains(**c))
+        .count();
+    alnum >= 2
+        && alnum * 2 >= chars.len()
+        && symbols * 3 <= chars.len()
+        && line.bounds.height <= 80.0
+}
+
+/// Run Tesseract on a capture enlarged `scale` times.
+pub fn tesseract_at(
+    cap: &Capture,
+    languages: &[String],
+    program: &str,
+    scale: u32,
+) -> Result<Vec<OcrLine>> {
+    let scale = scale.max(1);
     let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
         .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
     let img = if scale > 1 {
@@ -291,6 +356,34 @@ mod tests {
             rgba: vec![255; 200 * 100 * 4],
             bounds: Rect::new(100.0, 50.0, 100.0, 50.0),
         }
+    }
+
+    #[test]
+    fn shapes_read_as_glyphs_are_not_text() {
+        let line = |text: &str, h: f64| OcrLine {
+            text: text.into(),
+            bounds: Rect::new(0.0, 0.0, 100.0, h),
+            confidence: 0.8,
+        };
+        assert!(plausible(&line("Today's order number: 58213-QX", 22.0)));
+        assert!(plausible(&line("DELTA", 13.0)));
+        assert!(!plausible(&line("AH @®@", 30.0)), "mostly symbols");
+        assert!(!plausible(&line("HeA", 114.0)), "as tall as a shape");
+        assert!(!plausible(&line("~", 12.0)));
+    }
+
+    #[test]
+    fn two_readings_keep_the_surer_line_of_each_place() {
+        let line = |text: &str, x: f64, conf: f32| OcrLine {
+            text: text.into(),
+            bounds: Rect::new(x, 10.0, 60.0, 20.0),
+            confidence: conf,
+        };
+        let small = vec![line("DELTA", 100.0, 0.9), line("ECHO", 300.0, 0.8)];
+        let big = vec![line("Ecce", 95.0, 0.45), line("GOLF", 500.0, 0.7)];
+        let merged = merge(small, big);
+        let texts: Vec<&str> = merged.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["DELTA", "ECHO", "GOLF"]);
     }
 
     #[test]

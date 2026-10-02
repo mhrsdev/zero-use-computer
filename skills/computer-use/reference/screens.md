@@ -39,8 +39,8 @@ Every view is labelled with a screen number:
   `screenshot: true` for full detail.)
 - "Screenshot: unchanged, not re-sent": the picture you have is current.
 - A follow-up screenshot may be only the part that changed. The text says
-  where it sits in your earlier screenshot; `x`/`y` still refer to that
-  whole screenshot.
+  where it sits in which earlier screenshot (`#3`); `x`/`y` still refer
+  to that whole screenshot. `screenshot(app)` behaves the same way.
 - `x`/`y` always refer to the latest screenshot you got of that window,
   whatever its size.
 - A screenshot said to be "one flat colour": the app doesn't draw while in

@@ -169,6 +169,12 @@ languages = []              # e.g. ["en", "de"]; [] = your languages (Tesseract:
 min_confidence = 0.4        # leave out lines recognised with less confidence (0–1)
 max_lines = 150
 tesseract_path = "tesseract"
+# Areas of a window the tree says nothing about (a canvas next to a full
+# toolbar, a picture, a custom-drawn panel), however many elements the rest
+# of the window has: read their text off the screen and check their pixels
+# on every look (an unchanged picture still isn't sent again). Off until
+# measured: bench/README.md.
+blind_regions = false
 
 # Reading desktop notifications (the get_notifications tool). Off by
 # default: notifications carry other apps' messages and codes.

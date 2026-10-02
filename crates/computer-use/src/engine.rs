@@ -54,6 +54,12 @@ struct AppState {
     ocr_cache: Option<(PixelSig, Vec<OcrLine>)>,
     /// Lines of OCR text in the latest snapshot.
     ocr_lines: usize,
+    /// Areas of the window the tree says nothing about ([ocr]
+    /// blind_regions), in the latest snapshot (screen coordinates).
+    blind: Vec<Rect>,
+    /// The last picture those areas were found and read in: its
+    /// fingerprint, the areas and the text read in them.
+    blind_cache: Option<(PixelSig, Vec<Rect>, Vec<OcrLine>)>,
 }
 
 /// A screenshot handed out but not yet known to have reached the model
@@ -1070,10 +1076,22 @@ impl<B: Backend> Engine<B> {
         };
         let mut raw = self.backend.snapshot(app, window, &opts)?;
         let snap_at = (self.clock)();
-        // Custom-drawn UI: add the text read off the window.
+        // Custom-drawn UI: add the text read off the window, or off the
+        // areas of it the tree says nothing about.
         let mut ocr_lines = 0;
-        if !raw.is_empty() && self.ocr_wanted(&raw) {
-            let lines = self.read_screen_text(app, window);
+        let mut blind = Vec::new();
+        let lines = if raw.is_empty() {
+            Vec::new()
+        } else if self.ocr_wanted(&raw) {
+            self.read_screen_text(app, window)
+        } else if self.blind_wanted() {
+            let (areas, lines) = self.read_blind_areas(app, window, &raw);
+            blind = areas;
+            lines
+        } else {
+            Vec::new()
+        };
+        if !lines.is_empty() {
             let cfg = &self.store.config.ocr;
             let mut extra = crate::ocr::nodes(&lines, cfg.min_confidence, cfg.max_lines);
             // Leave out glyph noise and what the tree already says there.
@@ -1181,8 +1199,109 @@ impl<B: Backend> Engine<B> {
         st.stamped = true;
         st.private = private;
         st.ocr_lines = ocr_lines;
+        st.blind = blind;
         self.states.insert(app.pid, st);
         Ok(())
+    }
+
+    /// Look for areas the tree says nothing about ([ocr] blind_regions):
+    /// pixels are needed to tell them from empty background.
+    fn blind_wanted(&self) -> bool {
+        let cfg = &self.store.config;
+        cfg.ocr.blind_regions && cfg.screenshot.enabled && !cfg.text_only
+    }
+
+    /// The areas of a window no informative element covers that show
+    /// something, and the text read off them (unless OCR is off). An
+    /// unchanged picture isn't read again, and while settling after an
+    /// action the last reading is kept.
+    fn read_blind_areas(
+        &mut self,
+        app: &AppInfo,
+        window: &WindowInfo,
+        raw: &[RawNode],
+    ) -> (Vec<Rect>, Vec<OcrLine>) {
+        let Some(bounds) = window.bounds else {
+            return Default::default();
+        };
+        let candidates = crate::coverage::uncovered(raw, bounds);
+        if candidates.is_empty() {
+            return Default::default();
+        }
+        let cached = self
+            .states
+            .get(&app.pid)
+            .and_then(|s| s.blind_cache.clone());
+        if self.ocr_reuse
+            && let Some((_, areas, lines)) = &cached
+        {
+            return (areas.clone(), lines.clone());
+        }
+        let cap = match self.capture_clean(|b| b.capture(app, window)) {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("no capture for blind areas: {e}");
+                return Default::default();
+            }
+        };
+        let cache = &self.store.config.cache;
+        let sig = PixelSig::of(&cap, cache.pixel_grid);
+        let (areas, lines) = match cached {
+            Some((old, areas, lines)) if old.same_as(&sig, cache.pixel_tolerance) => (areas, lines),
+            _ => {
+                let areas: Vec<Rect> = candidates
+                    .into_iter()
+                    .filter(|a| crate::coverage::shows_something(&cap, a))
+                    .map(|a| a.rect)
+                    .collect();
+                let mut lines = Vec::new();
+                if self.store.config.ocr.mode != crate::config::OcrMode::Off {
+                    for r in &areas {
+                        if let Some(px) = crate::coverage::pixels_of(&cap, *r) {
+                            let read = self.run_area_ocr(&imaging::crop(&cap, px));
+                            // Only what is in the area (an engine may read
+                            // around it).
+                            lines.extend(read.into_iter().filter(|l| {
+                                let b = l.bounds;
+                                r.contains(Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0))
+                                    && crate::ocr::plausible(l)
+                            }));
+                        }
+                    }
+                }
+                (areas, lines)
+            }
+        };
+        self.states.entry(app.pid).or_default().blind_cache =
+            Some((sig, areas.clone(), lines.clone()));
+        self.last_capture = Some((app.pid, window.id, self.epoch, cap));
+        (areas, lines)
+    }
+
+    /// Read a part of a window. Tesseract reads it both enlarged and as it
+    /// is: a part can hold big painted labels as well as small text.
+    fn run_area_ocr(&mut self, cap: &Capture) -> Vec<OcrLine> {
+        use crate::config::OcrEngineChoice;
+        let cfg = self.store.config.ocr.clone();
+        let tesseract = || crate::ocr::tesseract_both(cap, &cfg.languages, &cfg.tesseract_path);
+        let result = match cfg.engine {
+            OcrEngineChoice::Native => self.backend.ocr(cap, &cfg.languages),
+            OcrEngineChoice::Tesseract => tesseract(),
+            OcrEngineChoice::Auto => self
+                .backend
+                .ocr(cap, &cfg.languages)
+                .or_else(|_| tesseract()),
+        };
+        match result {
+            Ok(lines) => lines,
+            Err(e) => {
+                if self.ocr_note.is_none() {
+                    log::warn!("text recognition unavailable: {e}");
+                }
+                self.ocr_note = Some(e.to_string());
+                Vec::new()
+            }
+        }
     }
 
     /// Render the latest snapshot against what the model has seen of that
@@ -2020,8 +2139,28 @@ impl<B: Backend> Engine<B> {
             Seen::Revisit => header.push_str(" (seen before)"),
             Seen::Same => {}
         }
-        let ocr_lines = self.state(app.pid).map(|s| s.ocr_lines).unwrap_or(0);
-        if ocr_lines > 0 {
+        let (ocr_lines, blind) = self
+            .state(app.pid)
+            .map(|s| (s.ocr_lines, s.blind.len()))
+            .unwrap_or((0, 0));
+        if blind > 0 && !args.ocr {
+            // Said on a screen's first view (and the first time at all).
+            if r.seen != Seen::Same || self.explain_first("blind") {
+                header.push_str("\nPart of this window has no accessibility information (a canvas or a picture): ");
+                if ocr_lines > 0 {
+                    let how = self.explain(
+                        "ocr-elements",
+                        " (\"ocr text\" elements: click them by element_index; they can't be set or selected)",
+                        " (\"ocr text\")",
+                    );
+                    header.push_str(&format!(
+                        "{ocr_lines} line(s) of its text were read off the screen{how}; the screenshot shows the rest."
+                    ));
+                } else {
+                    header.push_str("the screenshot shows it.");
+                }
+            }
+        } else if ocr_lines > 0 {
             // What OCR elements are is said once.
             let how = self.explain(
                 "ocr-elements",
@@ -2038,7 +2177,7 @@ impl<B: Backend> Engine<B> {
         }
         if let Some(note) = &self.ocr_note
             && !self.ocr_note_shown
-            && (args.ocr || r.interactive < self.store.config.ocr.sparse_threshold)
+            && (args.ocr || blind > 0 || r.interactive < self.store.config.ocr.sparse_threshold)
         {
             header.push_str(&format!("\n[Text recognition unavailable: {note}]"));
             self.ocr_note_shown = true;
@@ -2069,6 +2208,9 @@ impl<B: Backend> Engine<B> {
                         // unchanged picture isn't sent again).
                         || r.changes > 0
                         || r.seen == Seen::Revisit
+                        // What changes in an area the tree says nothing
+                        // about only the pixels show.
+                        || blind > 0
                 }
             });
         let force = args.screenshot == Some(true);
@@ -9621,6 +9763,123 @@ mod tests {
         e.backend_mut().fill = 90;
         e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
         assert_eq!(e.backend().ocr_runs, runs + 1);
+    }
+
+    /// A drawing app: a toolbar full of buttons over a canvas the tree
+    /// knows nothing about, with something drawn on it.
+    fn board_engine(blind_regions: bool) -> Engine<MockBackend> {
+        let win = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut elements = vec![MockElement::new(1, "window", "Board", win)];
+        for i in 0..20u64 {
+            elements.push(
+                MockElement::new(
+                    10 + i,
+                    "button",
+                    &format!("Tool {i}"),
+                    Rect::new(i as f64 * 40.0, 0.0, 38.0, 30.0),
+                )
+                .child_of(1),
+            );
+        }
+        elements.push(
+            MockElement::new(2, "canvas", "", Rect::new(0.0, 40.0, 800.0, 560.0)).child_of(1),
+        );
+        let app = MockApp {
+            info: AppInfo {
+                name: "Board".into(),
+                id: "board".into(),
+                pid: 78,
+                exe: None,
+                frontmost: true,
+                hidden: false,
+            },
+            windows: vec![MockWindow {
+                id: 9,
+                title: "Board".into(),
+                bounds: win,
+                root: 1,
+                focused: true,
+            }],
+            elements,
+        };
+        let mut backend = MockBackend::new();
+        backend.add_app(app);
+        backend.ocr_text = Some(vec![
+            line("DELTA", 500.0, 400.0),
+            line("Tool 3", 120.0, 5.0),
+        ]);
+        // Four framed boxes, as the canvas draws them.
+        backend.ink = [(60.0, 80.0), (460.0, 80.0), (60.0, 360.0), (460.0, 360.0)]
+            .iter()
+            .map(|&(x, y)| {
+                vec![
+                    Point::new(x, y),
+                    Point::new(x + 200.0, y),
+                    Point::new(x + 200.0, y + 120.0),
+                    Point::new(x, y + 120.0),
+                    Point::new(x, y),
+                ]
+            })
+            .collect();
+        let mut cfg = Config::default();
+        cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
+        cfg.ocr.blind_regions = blind_regions;
+        cfg.cache.snapshot_ttl_ms = 0;
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    #[test]
+    fn a_canvas_under_a_full_toolbar_is_read_and_watched() {
+        let look = |e: &mut Engine<MockBackend>| {
+            e.call_tool("get_app_state", serde_json::json!({"app": "Board"}))
+        };
+        // Off (the default): 20 buttons look like a well-described window.
+        let mut e = board_engine(false);
+        let out = look(&mut e);
+        assert!(!out.text.contains("DELTA"), "{}", out.text);
+
+        let mut e = board_engine(true);
+        let out = look(&mut e);
+        assert!(out.text.contains("ocr text \"DELTA\""), "{}", out.text);
+        assert!(
+            out.text.contains("no accessibility information"),
+            "{}",
+            out.text
+        );
+        // Only what is in the area, and not what the tree already says.
+        assert!(!out.text.contains("ocr text \"Tool 3\""), "{}", out.text);
+        assert!(out.image.is_some());
+        let delta = index_of_name(&out.text, "\"DELTA\"");
+        let r = e.call_tool(
+            "click",
+            serde_json::json!({"app": "Board", "element_index": delta}),
+        );
+        assert!(!r.is_error, "{}", r.text);
+
+        // Nothing changed: not read again, the picture not sent again.
+        let runs = e.backend().ocr_runs;
+        let out = look(&mut e);
+        assert_eq!(e.backend().ocr_runs, runs, "{}", out.text);
+        assert!(out.image.is_none(), "{}", out.text);
+        // Something drawn on the canvas: the tree can't tell, the pixels
+        // can.
+        e.backend_mut()
+            .ink
+            .push(vec![Point::new(200.0, 500.0), Point::new(260.0, 520.0)]);
+        let out = look(&mut e);
+        assert!(out.image.is_some(), "{}", out.text);
+        assert!(out.text.contains("Screenshot #"), "{}", out.text);
+
+        // An empty canvas is just background: nothing to read.
+        let mut e = board_engine(true);
+        e.backend_mut().ink.clear();
+        let out = look(&mut e);
+        assert!(
+            !out.text.contains("no accessibility information"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("DELTA"), "{}", out.text);
     }
 
     #[test]

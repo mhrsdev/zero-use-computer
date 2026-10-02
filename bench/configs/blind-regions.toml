@@ -1,0 +1,4 @@
+# v3.5: find the areas of a window the tree says nothing about, read their
+# text and watch their pixels (bench/README.md, "A/B").
+[ocr]
+blind_regions = true

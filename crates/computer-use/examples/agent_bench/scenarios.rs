@@ -273,8 +273,11 @@ fn scripted_long(s: &mut Session) -> Result<(), String> {
 fn scripted_board(s: &mut Session) -> Result<(), String> {
     let app = s.app.clone();
     s.call("get_app_state", json!({"app": app}))?;
-    // The labels are painted: ask for the text read off the screen.
-    s.call("get_app_state", json!({"app": app, "ocr": true}))?;
+    // The labels are painted: unless the look read them already, ask for
+    // the text read off the screen.
+    if s.index(|l| l.starts_with("ocr text \"DELTA")).is_none() {
+        s.call("get_app_state", json!({"app": app, "ocr": true}))?;
+    }
     if let Some(delta) = s.index(|l| l.starts_with("ocr text \"DELTA")) {
         s.call("click", json!({"app": app, "element_index": delta}))?;
         return Ok(());
@@ -329,8 +332,14 @@ fn areas(text: &str) -> Vec<(f64, f64, f64, f64)> {
 
 fn scripted_orders(s: &mut Session) -> Result<(), String> {
     let app = s.app.clone();
-    s.call("get_app_state", json!({"app": app}))?;
-    let text = s.call("get_app_state", json!({"app": app, "ocr": true}))?;
+    let first = s.call("get_app_state", json!({"app": app}))?;
+    // The notice is painted: unless the look read it already, ask for the
+    // text read off the screen.
+    let text = if first.contains("order number:") {
+        first
+    } else {
+        s.call("get_app_state", json!({"app": app, "ocr": true}))?
+    };
     let number = text
         .lines()
         .find_map(|l| {

@@ -477,6 +477,10 @@ pub struct OcrConfig {
     pub max_lines: usize,
     /// The Tesseract program.
     pub tesseract_path: String,
+    /// Find the areas of a window the tree says nothing about (a canvas
+    /// next to a full toolbar), read their text, and check their pixels
+    /// on every look, however many elements the rest of the window has.
+    pub blind_regions: bool,
 }
 
 impl Default for OcrConfig {
@@ -489,6 +493,7 @@ impl Default for OcrConfig {
             min_confidence: 0.4,
             max_lines: 150,
             tesseract_path: "tesseract".into(),
+            blind_regions: false,
         }
     }
 }
