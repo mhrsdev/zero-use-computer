@@ -622,6 +622,9 @@ impl<B: Backend> Engine<B> {
         if self.observe(&app, &window, fresh).is_err() {
             return out;
         }
+        // The first-time explanations rendering uses up: back if the
+        // rendered text isn't shown (a brief report).
+        let hints_before = self.hints.0.borrow().clone();
         let Ok(r) = self.render(app.pid, false, None) else {
             return out;
         };
@@ -647,6 +650,7 @@ impl<B: Backend> Engine<B> {
         use crate::config::Report;
         let text = match self.store.config.tree.report {
             Report::Brief => {
+                *self.hints.0.borrow_mut() = hints_before;
                 let count = if r.full {
                     format!(
                         "{} element(s)",

@@ -521,6 +521,96 @@ impl<'a> Wm<'a> {
     }
 
     pub fn apply(&self, win: Window, op: &WindowOp) -> Result<()> {
+        let before = self.geometry(win);
+        self.request(win, op)?;
+        self.check_done(win, op, before)
+    }
+
+    /// Wait until the window manager has done what was asked, or say it
+    /// didn't: these are requests it may refuse or ignore (a tiling one
+    /// keeps its layout), and success was reported without a look.
+    fn check_done(&self, win: Window, op: &WindowOp, before: Option<Rect>) -> Result<()> {
+        const WAIT: Duration = Duration::from_millis(1500);
+        let until = |done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                if done() {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let refused = |what: &str| {
+            Err(Error::ActionFailed(format!(
+                "the window manager didn't {what} (it may not allow it, or arrange windows itself)"
+            )))
+        };
+        match *op {
+            WindowOp::SetBounds(r) => {
+                // `r` is the frame; the geometry read back is the client's.
+                let e = self
+                    .prop32(win, "_NET_FRAME_EXTENTS", AtomEnum::CARDINAL)
+                    .filter(|v| v.len() >= 4)
+                    .unwrap_or_else(|| vec![0; 4]);
+                let [l, rt, t, b] = [e[0], e[1], e[2], e[3]].map(f64::from);
+                let near = |g: Rect| {
+                    (g.x - (r.x + l)).abs() <= 16.0
+                        && (g.y - (r.y + t)).abs() <= 16.0
+                        && (g.width - (r.width - l - rt)).abs() <= 16.0
+                        && (g.height - (r.height - t - b)).abs() <= 16.0
+                };
+                let moved = until(&|| {
+                    self.geometry(win)
+                        .is_some_and(|g| near(g) || Some(g) != before)
+                });
+                if !moved {
+                    return refused("move or resize the window");
+                }
+            }
+            WindowOp::Maximize if self.supports("_NET_WM_STATE_MAXIMIZED_VERT") => {
+                let done = until(&|| {
+                    self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
+                        || self.geometry(win) != before
+                });
+                if !done {
+                    return refused("maximize the window");
+                }
+            }
+            WindowOp::Minimize => {
+                if !until(&|| !self.viewable(win)) {
+                    return refused("minimize the window");
+                }
+            }
+            WindowOp::Fullscreen(on) => {
+                if !until(&|| self.state_has(win, "_NET_WM_STATE_FULLSCREEN") == on) {
+                    return refused(if on {
+                        "make the window full screen"
+                    } else {
+                        "take the window out of full screen"
+                    });
+                }
+            }
+            WindowOp::ToDesktop(n) => {
+                let there = until(&|| {
+                    self.prop32(win, "_NET_WM_DESKTOP", AtomEnum::CARDINAL)
+                        .and_then(|v| v.first().copied())
+                        == Some(n)
+                });
+                if !there {
+                    return refused("move the window to that desktop");
+                }
+            }
+            // Focus and Restore check the front themselves; a window asked
+            // to close may first ask the user something (save changes?).
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn request(&self, win: Window, op: &WindowOp) -> Result<()> {
         match *op {
             WindowOp::Focus => self.activate(win)?,
             WindowOp::SetBounds(r) => self.set_bounds(win, r)?,

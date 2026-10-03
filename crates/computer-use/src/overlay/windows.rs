@@ -320,11 +320,31 @@ impl Surface for WinSurface {
         // Draw at the scale (1.5 at 150%) of the monitor the overlay is on,
         // so it isn't tiny there; before it is shown anywhere, the
         // system's.
-        let shown = self.layers.values().find(|w| w.visible);
-        let dpi = shown
-            .and_then(|w| monitor_dpi(w.hwnd))
-            // SAFETY: a plain query.
-            .unwrap_or_else(|| unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() });
+        // The primary monitor's (the border's and the label's are drawn
+        // per monitor through scale_at); before, whichever layer the map
+        // gave first decided, and could change from one paint to the next.
+        let main = self.main_screen();
+        self.scale_at(main.width / 2.0, main.height / 2.0)
+    }
+
+    fn scale_at(&self, x: f64, y: f64) -> f32 {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+        use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+        let (mut dx, mut dy) = (0u32, 0u32);
+        let p = POINT {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        };
+        // SAFETY: read-only queries into locals.
+        let dpi = unsafe {
+            let m = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+            if m.is_invalid() || GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).is_err() {
+                windows::Win32::UI::HiDpi::GetDpiForSystem()
+            } else {
+                dx
+            }
+        };
         (dpi as f32 / 96.0).max(1.0)
     }
 
@@ -535,22 +555,6 @@ fn capture_exclusion_supported() -> bool {
         .parse::<u32>()
         .ok()
         .is_none_or(|build| build >= 19041)
-}
-
-/// The scale (DPI) of the monitor a window is on.
-fn monitor_dpi(hwnd: HWND) -> Option<u32> {
-    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
-    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-    let (mut x, mut y) = (0u32, 0u32);
-    // SAFETY: read-only queries into locals.
-    unsafe {
-        let m = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if m.is_invalid() {
-            return None;
-        }
-        GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut x, &mut y).ok()?;
-    }
-    (x > 0).then_some(x)
 }
 
 /// Whether process `pid` is still running.

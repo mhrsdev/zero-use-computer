@@ -251,6 +251,12 @@ pub struct WaylandSurface {
     xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     viewporter: Option<wp_viewporter::WpViewporter>,
     surfs: HashMap<Layer, Surf>,
+    /// Where each layer was last placed (logical units), so one the
+    /// compositor closes can be put back.
+    placed: HashMap<Layer, (f64, f64)>,
+    /// Layers whose surface the compositor closed and that couldn't be put
+    /// back yet (no output there): their image, for the next move.
+    orphans: HashMap<Layer, (Vec<u8>, u32, u32)>,
     hidden: bool,
     /// The global keys, bound in the compositor (stop, settings).
     keys: [super::wayland_stop::BoundKey; 2],
@@ -287,6 +293,8 @@ impl WaylandSurface {
             xdg_outputs,
             viewporter,
             surfs: HashMap::new(),
+            placed: HashMap::new(),
+            orphans: HashMap::new(),
             hidden: false,
             keys: Hotkey::ALL.map(super::wayland_stop::BoundKey::new),
         };
@@ -576,6 +584,20 @@ impl WaylandSurface {
             return false;
         };
         s.margin = ((x - r.x).round() as i32, (y - r.y).round() as i32);
+        self.placed.insert(layer, (x, y));
+        true
+    }
+
+    /// Show `image` for `layer` at (x, y) on a new surface (its old one
+    /// was closed); false when no output is there.
+    fn restore(&mut self, layer: Layer, x: f64, y: f64, image: (Vec<u8>, u32, u32)) -> bool {
+        if !self.place(layer, x, y, (image.1, image.2)) {
+            return false;
+        }
+        if let Some(s) = self.surfs.get_mut(&layer) {
+            s.image = Some(image);
+        }
+        self.present(layer);
         true
     }
 }
@@ -614,6 +636,7 @@ impl Surface for WaylandSurface {
     }
 
     fn show(&mut self, layer: Layer, img: &Pixmap, x: f64, y: f64) {
+        self.orphans.remove(&layer);
         let (w, h) = (img.width(), img.height());
         if !self.place(layer, x, y, (w, h)) {
             return;
@@ -626,6 +649,14 @@ impl Surface for WaylandSurface {
     }
 
     fn move_to(&mut self, layer: Layer, x: f64, y: f64) {
+        // Closed by the compositor before: back where it goes now.
+        if let Some(image) = self.orphans.remove(&layer) {
+            if !self.restore(layer, x, y, image.clone()) {
+                self.orphans.insert(layer, image);
+            }
+            let _ = self.conn.flush();
+            return;
+        }
         let Some(pixels) = self
             .surfs
             .get(&layer)
@@ -650,6 +681,7 @@ impl Surface for WaylandSurface {
     }
 
     fn hide(&mut self, layer: Layer) {
+        self.orphans.remove(&layer);
         let shown = self.surfs.get_mut(&layer).and_then(|s| s.image.take());
         if shown.is_some() {
             self.present(layer);
@@ -685,9 +717,17 @@ impl Surface for WaylandSurface {
         // Outputs plugged in since.
         self.bind_outputs();
         for layer in std::mem::take(&mut self.state.closed) {
-            // Its output went away: it gets a new surface when next shown.
-            self.surfs.remove(&layer);
+            // Its output went away (or the compositor closed it): a new
+            // surface where it was, on an output still there, or on the
+            // next move. It used to stay hidden until its image changed.
+            let image = self.surfs.remove(&layer).and_then(|mut s| s.image.take());
+            if let (Some(image), Some(&(x, y))) = (image, self.placed.get(&layer))
+                && !self.restore(layer, x, y, image.clone())
+            {
+                self.orphans.insert(layer, image);
+            }
         }
+        let _ = self.conn.flush();
         let mut events = Vec::new();
         for (key, which) in self.keys.iter_mut().zip(Hotkey::ALL) {
             key.refresh();

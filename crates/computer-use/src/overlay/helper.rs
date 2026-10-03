@@ -110,6 +110,11 @@ pub trait Surface {
     }
     /// How large to draw (1 = 100%).
     fn render_scale(&self) -> f32;
+    /// How large to draw at (x, y): the scale of the monitor there, where
+    /// monitors differ (Windows); else [`Surface::render_scale`].
+    fn scale_at(&self, _x: f64, _y: f64) -> f32 {
+        self.render_scale()
+    }
     /// Image pixels per screen unit (2 on a Retina Mac, else 1).
     fn px_per_unit(&self) -> f32;
     /// Show `img` for `layer` with its top-left corner at (x, y).
@@ -741,9 +746,10 @@ fn color_key(c: Color) -> [u8; 4] {
 /// What the border was drawn with: band rects, colour, core width, opacity.
 type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 /// What the label was drawn with: text, colour, opacity, and its position.
-type LabelKey = (String, [u8; 4], u8, i64, i64);
-/// What the cursor image was drawn with: ring, body, ripple, opacity, tag.
-type CursorKey = ([u8; 4], [u8; 4], i32, u8, String);
+type LabelKey = (String, [u8; 4], u8, i64, i64, u32);
+/// What the cursor image was drawn with: ring, body, ripple, opacity, tag,
+/// and the scale (per cent) of the monitor it is on.
+type CursorKey = ([u8; 4], [u8; 4], i32, u8, String, u32);
 
 #[derive(Default)]
 pub struct Painter {
@@ -792,7 +798,7 @@ impl Painter {
         if self.tag != tag {
             self.tag = tag;
             if self.cursor_img.is_some() {
-                self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new()));
+                self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
             }
         }
     }
@@ -958,16 +964,27 @@ impl Painter {
         }
 
         // Label: centred over the target, above it when there is room.
+        // The label and the cursor at the scale of the monitor they are on
+        // (one monitor at 150%, another at 100%).
+        let scale_at = |s: &dyn Surface, x: f64, y: f64| {
+            draw::sane_scale(if cfg.scale > 0.0 {
+                cfg.scale as f32
+            } else {
+                s.scale_at(x, y)
+            })
+        };
         match &scene.label {
             Some((text, color)) if !text.is_empty() => {
+                let label_scale = scale_at(&*s, place.0, place.1);
+                let sk = (label_scale * 100.0).round() as u32;
                 let key = (text.clone(), color_key(*color), ak);
                 let redraw = self
                     .label
                     .as_ref()
-                    .is_none_or(|(t, c, a, _, _)| (t, c, *a) != (&key.0, &key.1, key.2));
+                    .is_none_or(|(t, c, a, _, _, k)| (t, c, *a, *k) != (&key.0, &key.1, key.2, sk));
                 let mut img = None;
                 if redraw {
-                    let pm = faded(draw::label(fonts, text, scale, *color), alpha);
+                    let pm = faded(draw::label(fonts, text, label_scale, *color), alpha);
                     self.label_size = (
                         f64::from(pm.width()) / f64::from(ppu),
                         f64::from(pm.height()) / f64::from(ppu),
@@ -992,7 +1009,7 @@ impl Painter {
                         }
                     }
                 }
-                self.label = Some((key.0, key.1, key.2, pos.0, pos.1));
+                self.label = Some((key.0, key.1, key.2, pos.0, pos.1, sk));
             }
             _ => {
                 if self.label.take().is_some() {
@@ -1005,15 +1022,18 @@ impl Painter {
         match scene.cursor {
             Some(c) => {
                 let tag = self.tag.as_deref().unwrap_or(&cfg.cursor_tag);
+                let cursor_scale = scale_at(&*s, c.pos.0, c.pos.1);
                 let key = (
                     color_key(c.ring),
                     color_key(c.body),
                     c.ripple.map_or(-1, |r| (r * 30.0) as i32),
                     ak,
                     tag.to_string(),
+                    (cursor_scale * 100.0).round() as u32,
                 );
                 let redraw = self.cursor_img.as_ref() != Some(&key);
-                let art = redraw.then(|| draw::cursor(fonts, tag, scale, c.body, c.ring, c.ripple));
+                let art = redraw
+                    .then(|| draw::cursor(fonts, tag, cursor_scale, c.body, c.ring, c.ripple));
                 if let Some(a) = &art {
                     self.cursor_hot = (
                         f64::from(a.hotspot.0) / f64::from(ppu),
@@ -1051,10 +1071,10 @@ impl Painter {
             self.border = Some(([i64::MIN; 16], [0; 4], 0, 0));
         }
         if self.label.is_some() {
-            self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN));
+            self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN, 0));
         }
         if self.cursor_img.is_some() {
-            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new()));
+            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
         }
     }
 
