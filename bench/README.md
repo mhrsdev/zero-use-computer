@@ -152,3 +152,5 @@ design board without a desktop: a badge built and fixed in ten calls and a
 page of 150 layers, each call's tokens (text and picture) and time. Run it
 on two releases to compare them
 ([v3.8.0 against v3.8.1](results/v3.8.1-design/compare.md)).
+The speed of v3.8.3 against v3.8.2:
+[results/v3.8.3-speed/compare.md](results/v3.8.3-speed/compare.md).

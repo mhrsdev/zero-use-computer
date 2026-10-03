@@ -880,6 +880,11 @@ pub struct TimingConfig {
     pub wait_poll_ms: u64,
     /// How long an action with `expect` waits for what it expects to show.
     pub expect_wait_ms: u64,
+    /// After an action, reads that still show the state from before are
+    /// believed ("nothing changed") after 500 ms; after 200 for an app
+    /// that has shown every change at once so far (3 or more, none late).
+    /// `false`: 500 ms for every app.
+    pub adaptive_grace: bool,
 }
 
 impl Default for TimingConfig {
@@ -894,6 +899,7 @@ impl Default for TimingConfig {
             wait_timeout_ms: 10_000,
             wait_poll_ms: 400,
             expect_wait_ms: 2000,
+            adaptive_grace: true,
         }
     }
 }

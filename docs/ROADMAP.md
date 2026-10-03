@@ -30,6 +30,7 @@ v3.5, v3.6, … are steps; v4.0 is the stable release of what they proved.
 | v3.8 | the decision model built in: a decision layer that asks it where it saves a turn (expect, about, find_tools), answers the same question once, sends many together, and never holds the agent up; nothing changes without one | done (tested with a stand-in model); real-model runs left |
 | v3.8.1 | the design board: only the part of the picture that changed, shapes worked out once, look-alike layers as one record; 10 accuracy fixes (turns, bold, SVG, checks, steps); the on-screen cursor waited for before each action | done: −66% tokens and −36% time on the design benchmark |
 | v3.8.2 | stable across systems: the fixes from a review of each system and the core (layouts, Store and Electron apps, administrator apps, Wayland without the usual tools, headless sessions, broken settings files), no hangs | done (checked by CI on Windows and macOS, not on the hardware) |
+| v3.8.3 | faster only: 38% fewer accessibility calls for a window read again (Linux), "nothing changed" sooner for apps that show changes at once, OCR's enlargement in milliseconds | done: −15% server time on the benchmark, the same results |
 | v4.0 | stable: defaults set from real-model A/B runs | open |
 
 The steps first planned as v3.7 (the tool surface), v3.8 (checking

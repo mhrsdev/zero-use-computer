@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.8.3
+
+Faster, and nothing else: the tool results are the same text and the
+same pictures as v3.8.2. The six benchmark tasks take 15% less time on the
+server (13.9 → 11.9 s, scripted, median of 3 runs;
+[measured](bench/results/v3.8.3-speed/compare.md)).
+
+| | v3.8.2 | v3.8.3 |
+|---|---:|---:|
+| a click that changed nothing, in an app that shows changes at once | 736 ms | 363 ms |
+| a look whose text is read off the picture (OCR) | 600 ms | 458 ms |
+| a click in the long task (mean) | 342 ms | 203 ms |
+| reading a 270-element window again (Linux) | 2148 calls, 117 ms | 1336 calls, 78–87 ms |
+| the six tasks, server time | 13.9 s | 11.9 s |
+
+- **Fewer questions to the app (Linux).** An element's role and
+  interfaces don't change while it lives, so they are asked for once, not
+  on every one of the reads that follow each action (only for apps that
+  never give a gone element's name to another: GTK); an element that has
+  no children isn't asked for them, and one without actions isn't asked
+  for its actions. Each element's children are asked for as soon as its
+  own answers are in. A window read again: 38% fewer calls.
+- **"Nothing changed" sooner, where it is safe.** After an action, reads
+  that still show the state from before were waited on for 500 ms, for
+  apps (browsers, Electron) that show a change a little after making it.
+  An app that has shown every change at once so far (3 or more, none
+  late) now gets 200 ms; one change shown late and it gets 500 again, for
+  good. `timing.adaptive_grace = false` keeps 500 for every app.
+- **OCR:** the picture enlarged for the second reading was made with a
+  general resize that took a third of the time; now a dedicated one gives
+  the very same pixels (tested against it) in a few milliseconds.
+
+Not faster: a window's first read (nothing is remembered about it yet),
+and actions whose app shows a change late (the wait is the app's).
+
 ## v3.8.2
 
 Stable across Windows, macOS and Linux, and predictable on setups that
