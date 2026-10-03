@@ -22,6 +22,7 @@ decide whether a change is turned on by default.
 | `v3.6-lean-batch/` | v3.6.0 | `lean.toml`, `--plan batch` |
 | `v3.6-manager/` | v3.6.0 | `--config ../configs/manager.toml` (lean + the tool manager), `--plan batch` |
 | `v3.7-releases/` | v0.1.0, v3.0.0, v3.6.0, v3.7.0 as they ship, over MCP (`--server`), each with its own skills | defaults; `-batch`: `--plan batch`; `-plugin`: `--instructions short`. [step.md](v3.7-releases/step.md), [batch.md](v3.7-releases/batch.md) |
+| `v3.9-releases/` | the newest patch of every minor version, v0.1.5 to v3.9.0, as they ship, over MCP (`--server`), each with its own skills; **every task in a run of its own** (see below) | defaults; `-batch`: `--plan batch` (v3.6 on). [step.md](v3.9-releases/step.md), [batch.md](v3.9-releases/batch.md) |
 | `v3.7-codex/` | v3.7.0, in process | `--preset codex` (Codex's behaviour, simulated) against defaults and `--plan batch`. [compare.md](v3.7-codex/compare.md) |
 
 The scripted ways through were refined after the v3.2 run (they look for
@@ -160,3 +161,17 @@ this server, not a run of Codex. [compare.md](v3.7-codex/compare.md).
 orders is left out: its scripted way reads the dialog's Confirm button
 from the change report, which the Codex-style run doesn't have (a model
 would look once more).
+
+## Every minor version, v0.1 → v3.9 (scripted, over MCP, 3 runs each)
+
+The tables and what each version changed are in the README:
+[Version history and token use](../../README.md#version-history-and-token-use).
+
+**Measured differently from the sections above:** every task of every
+version ran in a desktop of its own (`--runs 1 --scenarios <one>`, three
+rounds), with the server's helper processes ended in between. Run one
+after another in one desktop, as `v3.7-releases/` was, some tasks come out
+differently (an extra look or picture), so its figures are a little off:
+v3.7.0's four tasks 250,701 there, v3.7.5 249,895 alone; its canvas task
+24,769 there, 16,995 alone.
+
