@@ -1267,12 +1267,20 @@ impl Backend for LinuxBackend {
             }
         }
         // Checkbox/toggle: flip to the requested boolean via its action.
+        // Only for one: "activate" on a read-only field is Enter (the
+        // dialog's default button), and "click" on a button presses it.
+        let toggle = acc.states.has(state::CHECKABLE)
+            || ["check", "radio", "toggle", "switch"]
+                .iter()
+                .any(|r| acc.role_name.to_lowercase().contains(r));
         let want = matches!(
             value.trim().to_lowercase().as_str(),
             "true" | "1" | "on" | "checked" | "yes"
         );
         let is = acc.states.has(state::CHECKED) || acc.states.has(state::PRESSED);
-        if is != want {
+        if !toggle {
+            // Nothing below applies.
+        } else if is != want {
             for action in ["toggle", "click", "press", "activate"] {
                 if let Some(idx) = a11y.action_index(&r, action)?
                     && a11y
@@ -1298,12 +1306,27 @@ impl Backend for LinuxBackend {
     ) -> Result<()> {
         self.revive_a11y();
         let a11y = self.bus()?;
-        let r = self.resolve(element)?;
+        let (pid, r) = self.resolve_owned(element)?;
+        // Read errors are errors: as "empty" they made a selection of
+        // nothing that reported success.
+        let acc = a11y.describe(&r)?;
+        if !acc.has_iface("Text") {
+            return Err(Error::ActionFailed(
+                "this element has no text to select".into(),
+            ));
+        }
         let count = a11y.character_count(&r);
+        if count == 0 && text.is_none() {
+            return Err(Error::ActionFailed(
+                "there is no text here to select (it is empty, or it couldn't be read)".into(),
+            ));
+        }
         let (start, end) = match text {
             None => (0, count),
             Some(needle) => {
-                let hay = a11y.get_text(&r, 0, count).unwrap_or_default();
+                let hay = a11y
+                    .get_text(&r, 0, count)
+                    .map_err(|e| self.sent_error(pid, e))?;
                 let chars: Vec<char> = hay.chars().collect();
                 let needle_chars: Vec<char> = needle.chars().collect();
                 let start =

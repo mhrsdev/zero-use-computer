@@ -776,13 +776,20 @@ pub fn axes(frame: &Frame, tick_x: f64, tick_y: f64, tick_len: f64) -> Result<Ve
         if !step.is_finite() || (hi - lo) / step > 200.0 {
             return Err("too many ticks: use a larger tick step".into());
         }
-        let mut v = Vec::new();
-        let mut k = (lo / step).ceil();
-        while k * step <= hi + step * 1e-9 {
-            v.push(k * step);
-            k += 1.0;
+        // Counted, not stepped: far from 0 (2e16), adding 1 to k no longer
+        // changes it, and a loop on it never ends.
+        let first = (lo / step).ceil();
+        let n = ((hi + step * 1e-9) / step).floor() - first;
+        if !(0.0..=200.0).contains(&n) {
+            return if n < 0.0 {
+                Ok(Vec::new())
+            } else {
+                Err("too many ticks: use a larger tick step".into())
+            };
         }
-        Ok(v)
+        Ok((0..=n as u32)
+            .map(|i| (first + f64::from(i)) * step)
+            .collect())
     };
     let half_y = tick_len / 2.0 / sy.abs();
     for v in ticks(frame.x0, frame.x1, tick_x)? {
@@ -2125,5 +2132,20 @@ mod tests {
         assert_eq!(f.to_frame(Point::new(400.0, 200.0)), (0.5, 0.5));
         let err = plan(&[circle(None)], &screen(), 3.0, 50).unwrap_err();
         assert!(err.contains("more than 50"), "{err}");
+    }
+
+    /// Ticks far from 0 (where adding 1 to a float no longer changes it)
+    /// end, instead of looping until the memory runs out.
+    #[test]
+    fn axes_far_from_zero_end() {
+        let f = Frame::range(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            2e16,
+            2e16 + 100.0,
+            -1.0,
+            1.0,
+        );
+        let shapes = axes(&f, 1.0, 1.0, 4.0).unwrap();
+        assert!(shapes.len() < 400, "{}", shapes.len());
     }
 }

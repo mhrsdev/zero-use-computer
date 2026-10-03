@@ -294,7 +294,7 @@ impl<B: Backend> Engine<B> {
                 }
                 let now = (self.clock)();
                 self.sent
-                    .retain(|t| now.saturating_duration_since(*t) < Duration::from_secs(60));
+                    .retain(|t| now.saturating_duration_since(*t) < Duration::from_secs(61));
                 if self.sent.len() >= crate::overlay::hub::MESSAGES_A_MINUTE {
                     return Err(Error::ActionFailed(format!(
                         "at most {} messages a minute: not sent; say more in fewer messages",

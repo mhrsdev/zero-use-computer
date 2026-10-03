@@ -14,9 +14,9 @@ hub, so each agent has:
   screenshots) never waits.
 - **One stop key**: it stops every agent at once.
 
-The first result after the number of agents changes says so: "2 agents
-share this desktop: you are agent 1, your part of the screen: x 0–960, y
-0–1080".
+The first result after the number of agents changes says so: "Agents on
+this desktop: 2 (you: 1, screen part x 0–960 y 0–1080; turns at the
+keyboard; `agents` lists them)."
 
 ## The `agents` tool
 

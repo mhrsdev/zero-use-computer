@@ -335,7 +335,21 @@ impl<B: Backend> Engine<B> {
             // Raised by the engine on the stop key or a cancel.
             stop: Arc::new(AtomicBool::new(self.halted())),
             app_tools,
-            decision: self.store.config.decision.clone(),
+            // A decision model the user turned off ([tools]) is none for
+            // scripts too.
+            decision: if self.store.config.tools.is_enabled("decide") {
+                self.store.config.decision.clone()
+            } else {
+                Default::default()
+            },
+            private: {
+                // The server's folder, unless it is the user's whole home
+                // (or holds it): then only the settings file.
+                let home = crate::config::home_dir();
+                let user = dirs::home_dir().unwrap_or_default();
+                let folder = (!user.starts_with(&home)).then_some(home);
+                folder.into_iter().chain(self.store.path.clone()).collect()
+            },
         };
         let started = Instant::now();
         let running = script::start(script::Job {
@@ -348,6 +362,9 @@ impl<B: Backend> Engine<B> {
         .map_err(|e| Error::Internal(format!("can't start the script: {e}")))?;
         let halt = running.halt.clone();
         let seen_before = self.known_screens();
+        // Pictures waiting from before the script (a batch's earlier
+        // steps) stay; only the script's own are replaced.
+        let pending_base = self.ctx.pending_images.len();
         self.ctx.in_script = true;
         self.ctx.script_calls = 0;
         let mut images: Vec<Option<ScriptImage>> = Vec::new();
@@ -397,12 +414,12 @@ impl<B: Backend> Engine<B> {
         self.ctx.in_script = false;
         self.restore_known(seen_before);
         // Only the picture the script shows reaches the model.
-        self.ctx.pending_images.clear();
+        self.ctx.pending_images.truncate(pending_base);
         self.ctx.pending_screen_shot = None;
         let image = shown
             .and_then(|i| images.get_mut(i).and_then(Option::take))
             .map(|img| {
-                self.ctx.pending_images = img.pending;
+                self.ctx.pending_images.extend(img.pending);
                 self.ctx.pending_screen_shot = img.shot;
                 img.image
             });

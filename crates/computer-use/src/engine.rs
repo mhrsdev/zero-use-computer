@@ -25,6 +25,11 @@ mod agents;
 mod batch;
 mod boards;
 mod deciding;
+
+/// How many things `decide` judges at a time, at most (scripts too).
+pub(crate) fn deciding_max_items() -> usize {
+    deciding::MAX_ITEMS
+}
 mod drawing;
 mod expect;
 mod finding;
@@ -87,6 +92,9 @@ struct AppState {
     /// Elements whose line changed in the last reports, by key, and in how
     /// many of them in a row ([tree] quiet_volatile).
     volatile: HashMap<u64, u8>,
+    /// `Engine::inputs` at the last look committed: changes since are the
+    /// model's own doing when it has moved.
+    volatile_inputs: u64,
     /// Looks at this app, and calls that used its pixels (x/y, a
     /// screenshot asked for): [screenshot] adaptive.
     looks: u32,
@@ -122,11 +130,11 @@ struct DraftSeen {
 struct ResultNote {
     /// Apps whose whole tree it shows (a look), and apps it looked at
     /// with a diff.
-    looks_full: Vec<u32>,
-    looks_diff: Vec<u32>,
+    looks_full: Vec<(u32, u32)>,
+    looks_diff: Vec<(u32, u32)>,
     /// Apps it has a whole picture of, and a changed part of.
-    pictures_whole: Vec<u32>,
-    pictures_part: Vec<u32>,
+    pictures_whole: Vec<(u32, u32)>,
+    pictures_part: Vec<(u32, u32)>,
     /// Designs and scenes ("design:<name>") it shows whole, or what
     /// changed in them, and those it has a picture of.
     drafts_full: Vec<String>,
@@ -141,8 +149,10 @@ struct Results {
     /// Results that brought other agents' messages: never superseded (a
     /// later look doesn't repeat them).
     kept: HashSet<u64>,
-    looks: HashMap<u32, Vec<u64>>,
-    pictures: HashMap<u32, Vec<u64>>,
+    /// By app and screen: a look stands in only for looks of the same
+    /// screen (going back to another shows it as it was then).
+    looks: HashMap<(u32, u32), Vec<u64>>,
+    pictures: HashMap<(u32, u32), Vec<u64>>,
     drafts: HashMap<String, Vec<u64>>,
     draft_pictures: HashMap<String, Vec<u64>>,
 }
@@ -326,6 +336,8 @@ pub struct Engine<B: Backend> {
     /// When the engine's own synthesized input last ended, so the system
     /// idle time isn't mistaken for the user's input.
     last_input: Option<Instant>,
+    /// Actions sent so far (counted as each starts).
+    inputs: u64,
     /// The action epoch whose result has a fresh snapshot (after settling).
     settled: Option<u64>,
     /// Per app (pid): how its tree has shown what an action changed, so
@@ -509,6 +521,7 @@ impl<B: Backend> Engine<B> {
             stop: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             last_input: None,
+            inputs: 0,
             settled: None,
             promptness: HashMap::new(),
             screen_shot: None,
@@ -581,6 +594,9 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.settings_problem = None;
                 self.backend.configure(&store.config);
+                if store.config.decision != self.store.config.decision {
+                    self.judge.forget();
+                }
                 // Another hub (or none): leave this one, the next call joins.
                 let hub_changed = {
                     let (old, new) = (&self.store.config.hub, &store.config.hub);
@@ -641,6 +657,10 @@ impl<B: Backend> Engine<B> {
             f(&mut store.config);
         }
         self.backend.configure(&store.config);
+        // Another model: the old one's failures and answers aren't its.
+        if store.config.decision != self.store.config.decision {
+            self.judge.forget();
+        }
         self.store = store;
         self.scripts.set_dir(self.store.config.script.library());
         self.epoch += 1;
@@ -698,7 +718,13 @@ impl<B: Backend> Engine<B> {
     /// Whether the call in progress must end now: the user stopped the
     /// agent, or the client cancelled the call.
     fn halted(&self) -> bool {
-        self.is_stopped() || self.cancel.load(Ordering::SeqCst)
+        self.is_stopped() || self.cancel.load(Ordering::SeqCst) || self.turn_lost()
+    }
+
+    /// The hub gave this agent's turn at the keyboard and mouse to another
+    /// (it held them too long without a word): it must not act on.
+    fn turn_lost(&self) -> bool {
+        self.ctx.turn && self.hub_link().is_some_and(|l| l.revoked())
     }
 
     /// Stop the agent (or let it continue), as the stop key does.
@@ -710,6 +736,11 @@ impl<B: Backend> Engine<B> {
     }
 
     fn stopped_error(&self) -> Error {
+        if !self.is_stopped() && self.turn_lost() {
+            return Error::ActionFailed(
+                "another agent on this desktop was given the keyboard and mouse (this action held them too long): it stopped part way; look again before going on".into(),
+            );
+        }
         if !self.is_stopped() && self.cancel.load(Ordering::SeqCst) {
             return Error::Cancelled;
         }
@@ -1385,6 +1416,7 @@ impl<B: Backend> Engine<B> {
         if mutating {
             // Anything read before this action is stale now.
             self.epoch += 1;
+            self.inputs += 1;
             // Don't act while the user is using the mouse or keyboard…
             self.wait_for_user()?;
             // …nor while another agent on the desktop is: one at a time.
@@ -1704,23 +1736,28 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// An app and the screen it shows now, for [`ResultNote`].
+    fn screen_key(&self, pid: u32) -> (u32, u32) {
+        (pid, self.states.get(&pid).map_or(0, |s| s.screen))
+    }
+
     fn note_result(&mut self) {
         let id = self.result_id;
         let note = std::mem::take(&mut self.note);
         let r = &mut self.results;
         let mut sup: Vec<u64> = Vec::new();
         let mut images: Vec<u64> = Vec::new();
-        for pid in note.looks_full {
-            sup.extend(r.looks.insert(pid, vec![id]).unwrap_or_default());
+        for key in note.looks_full {
+            sup.extend(r.looks.insert(key, vec![id]).unwrap_or_default());
         }
-        for pid in note.looks_diff {
-            r.looks.entry(pid).or_default().push(id);
+        for key in note.looks_diff {
+            r.looks.entry(key).or_default().push(id);
         }
-        for pid in note.pictures_whole {
-            images.extend(r.pictures.insert(pid, vec![id]).unwrap_or_default());
+        for key in note.pictures_whole {
+            images.extend(r.pictures.insert(key, vec![id]).unwrap_or_default());
         }
-        for pid in note.pictures_part {
-            r.pictures.entry(pid).or_default().push(id);
+        for key in note.pictures_part {
+            r.pictures.entry(key).or_default().push(id);
         }
         for k in note.drafts_full {
             sup.extend(r.drafts.insert(k, vec![id]).unwrap_or_default());

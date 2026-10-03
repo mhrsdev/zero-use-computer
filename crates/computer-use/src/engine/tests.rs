@@ -5191,3 +5191,115 @@ fn alone_nothing_changes() {
     let out = e.call_tool("agents", serde_json::json!({}));
     assert!(out.text.contains("works alone"), "{}", out.text);
 }
+
+/// A program in the scripts' folder (a script may have downloaded it) is
+/// never started.
+#[test]
+fn launch_app_refuses_programs_in_the_scripts_folder() {
+    let dir = std::env::temp_dir().join(format!("cu-launch-scripts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    let exe = dir.join("files").join("x.exe");
+    std::fs::write(&exe, "MZ").unwrap();
+    let mut e = engine();
+    let mut cfg = e.store.config.clone();
+    cfg.script.dir = Some(dir.clone());
+    e.store.config = cfg;
+    let out = e.call_tool(
+        "launch_app",
+        serde_json::json!({"app": exe.display().to_string()}),
+    );
+    assert!(
+        out.is_error && out.text.contains("scripts' folder"),
+        "{}",
+        out.text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Going to a new screen doesn't mark the old screen's look as repeated:
+/// coming back shows it "as it was", which the host must still have.
+#[test]
+fn a_new_screen_does_not_supersede_the_last_screens_look() {
+    let mut e = nav_engine(false);
+    e.store.config.server.result_meta = true;
+    let meta = |e: &mut Engine<MockBackend>| e.take_result_meta().expect("meta");
+    state_of(&mut e, serde_json::json!({}));
+    assert_eq!(meta(&mut e)["zero-use-computer/result"], 1);
+    let next = index_named(&e, 7, "Next");
+    press(&mut e, next);
+    meta(&mut e);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.text.contains("screen #2 (new)"), "{}", out.text);
+    let m = meta(&mut e);
+    assert_eq!(
+        m["zero-use-computer/supersedes"],
+        serde_json::json!([]),
+        "{m}"
+    );
+    assert_eq!(
+        m["zero-use-computer/supersedes-images"],
+        serde_json::json!([]),
+        "{m}"
+    );
+}
+
+/// A script inside a batch, after a step with a picture, no longer
+/// empties the batch's list of pictures (it panicked).
+#[test]
+fn a_script_step_after_a_picture_in_a_batch() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"steps": [
+            {"tool": "get_app_state", "arguments": {"app": "TextEdit", "screenshot": true}},
+            {"tool": "script", "arguments": {"code": "let p = page(\"t\", 50, 50); p.rect(5, 5, 10, 10); p"}}
+        ]}),
+    );
+    assert!(!out.text.contains("unexpectedly"), "{}", out.text);
+    assert!(out.text.contains("2. script"), "{}", out.text);
+}
+
+/// The batch's app goes only to tools that take one: a design step in a
+/// batch with an app works, and an `expect` the tool doesn't check stops
+/// nothing.
+#[test]
+fn batch_app_and_expect_only_where_they_apply() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"app": "TextEdit", "steps": [
+            {"tool": "get_app_state", "arguments": {}},
+            {"tool": "design", "arguments": {"name": "b1", "size": [100, 100], "add": ["rect 10 10 20 20"]}},
+            {"tool": "get_app_state", "arguments": {"expect": "Total"}},
+            {"tool": "list_apps", "arguments": {}}
+        ]}),
+    );
+    assert!(!out.text.contains("unknown field `app`"), "{}", out.text);
+    assert!(!out.text.contains("wasn't confirmed"), "{}", out.text);
+    assert!(out.text.contains("4. list_apps"), "{}", out.text);
+}
+
+/// The pen never goes down outside the window: an element whose box
+/// reaches past it (a zoomed canvas) is refused, not drawn over other apps.
+#[test]
+fn draw_never_presses_outside_the_window() {
+    let mut e = engine();
+    // The document is a canvas zoomed far past its 800x600 window.
+    for el in &mut e.backend_mut().app_mut(4242).unwrap().elements {
+        if el.name.as_deref() == Some("Document") {
+            el.bounds = Rect::new(-1000.0, -1000.0, 3000.0, 3000.0);
+        }
+    }
+    state_of(&mut e, serde_json::json!({}));
+    let doc = index_named(&e, 4242, "Document");
+    let out = e.call_tool(
+        "draw",
+        serde_json::json!({"app": "TextEdit", "element_index": doc,
+            "strokes": [{"ellipse": [0.5, 0.5, 0.45, 0.45]}]}),
+    );
+    assert!(
+        out.is_error && out.text.contains("outside the window"),
+        "{}",
+        out.text
+    );
+}

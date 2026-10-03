@@ -597,11 +597,13 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
     );
 
     // Several agents on this desktop share one hub.
+    let mut hub_running = false;
     if c.hub.enabled {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], c.hub.port));
         let running =
             std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
                 .is_ok();
+        hub_running = running;
         println!(
             "agents:   hub on port {} {}; messages between agents {}",
             c.hub.port,
@@ -619,6 +621,10 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
     let stop_key = c.control.stop_hotkey.trim().to_string();
     let settings_key = c.control.settings_hotkey.trim().to_string();
     let decision = c.decision.clone();
+    // doctor is not an agent: joining the hub would split the screen of
+    // the agents at work, move their windows and draw another cursor.
+    let mut store = store;
+    store.config.hub.enabled = false;
     match build_engine(common, store) {
         Ok(engine) => {
             let mut engine = with_overlay(engine);
@@ -637,6 +643,12 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             }
             if stop_key.is_empty() {
                 println!("stop key: none (control.stop_hotkey is empty)");
+            } else if hub_running {
+                // The hub holds the key for every agent: a second
+                // registration here would be refused, though it works.
+                println!(
+                    "stop key: {stop_key} — held by the running hub for the agents at work (checked when the first server starts)"
+                );
             } else {
                 match engine.check_stop_key(std::time::Duration::from_secs(3)) {
                     Ok(()) => println!("stop key: ✓ {stop_key}"),
@@ -647,6 +659,8 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
                 println!(
                     "settings key: none (control.settings_hotkey is empty; `computer-use-mcp settings` opens the page)"
                 );
+            } else if hub_running {
+                println!("settings key: {settings_key} — held by the running hub");
             } else {
                 match engine.settings_key_ok(std::time::Duration::from_secs(3)) {
                     Some(true) => println!(

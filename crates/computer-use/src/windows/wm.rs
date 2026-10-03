@@ -309,11 +309,27 @@ pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
                     )));
                 }
             }
+            // Windows reports (and the engine works in) the visible frame,
+            // but SetWindowPos places the whole window, with Windows 10/11's
+            // invisible resize borders: grow the rect by them, or the frame
+            // lands 7-11 px off and smaller.
+            let (l, t, rt, b) = match (super::capture::visible_frame(hwnd), window_rect(hwnd)) {
+                (Some(v), Some(f)) => {
+                    let inset = |d: i32| d.clamp(0, 32);
+                    (
+                        inset(v.left - f.left),
+                        inset(v.top - f.top),
+                        inset(f.right - v.right),
+                        inset(f.bottom - v.bottom),
+                    )
+                }
+                _ => (0, 0, 0, 0),
+            };
             let want = (
-                r.x.round() as i32,
-                r.y.round() as i32,
-                r.width.round().max(1.0) as i32,
-                r.height.round().max(1.0) as i32,
+                r.x.round() as i32 - l,
+                r.y.round() as i32 - t,
+                r.width.round().max(1.0) as i32 + l + rt,
+                r.height.round().max(1.0) as i32 + t + b,
             );
             let target = RECT {
                 left: want.0,

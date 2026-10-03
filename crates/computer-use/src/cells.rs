@@ -64,6 +64,14 @@ impl Cells {
         } else {
             1.0
         };
+        // Never more than a few hundred cells a side: a target a millionth
+        // of the area wide would ask for billions (and their memory).
+        let area = (ax1 - ax0).max(ay1 - ay0);
+        let step = if area.is_finite() && area > 0.0 && area / step > 500.0 {
+            imaging::nice_step(area, ACROSS)
+        } else {
+            step
+        };
         let left = (ax0 / step + 1e-9).floor() * step;
         let cols = ((ax1 - left) / step - 1e-9).ceil().max(1.0) as usize;
         let (top, rows) = if y_up {
@@ -477,5 +485,19 @@ mod tests {
             Some(Rect::new(200.0, 0.0, 200.0, 300.0)),
         );
         assert!(cap2.rgba[..4 * 150].iter().all(|v| *v == 255));
+    }
+
+    /// A target a millionth of the area wide gets cells for the area, not
+    /// billions of cells for the target.
+    #[test]
+    fn a_tiny_target_does_not_ask_for_billions_of_cells() {
+        let t = Span {
+            x0: 400.0,
+            x1: 400.000001,
+            y0: 300.0,
+            y1: 300.0,
+        };
+        let c = Cells::new(0.0, 800.0, 0.0, 600.0, false, Some(t));
+        assert!(c.cols <= 1000 && c.rows <= 1000, "{} x {}", c.cols, c.rows);
     }
 }

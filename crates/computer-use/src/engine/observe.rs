@@ -194,7 +194,8 @@ impl<B: Backend> Engine<B> {
                         let line_sized = a.height <= 3.0 * b.height.max(8.0);
                         [&n.name, &n.value].into_iter().flatten().any(|t| {
                             let t = crate::ocr::words(t);
-                            t.contains(&text) || (line_sized && t.len() >= 3 && text.contains(&t))
+                            t.contains(&text)
+                                || (line_sized && t.chars().count() >= 3 && text.contains(&t))
                         })
                     })
             });
@@ -569,6 +570,10 @@ impl<B: Backend> Engine<B> {
                 // Which elements changed since the model's last look, and
                 // how many looks in a row they did (the acted-on element's
                 // change isn't its own doing).
+                // Changes after the model's own actions are theirs, not
+                // the element's: only looks with no action between count.
+                let acted = st.volatile_inputs != self.inputs;
+                st.volatile_inputs = self.inputs;
                 if quiet_volatile {
                     let d = k.view.diff(&st.nodes);
                     // The focused element changes with the model's own keys.
@@ -581,7 +586,9 @@ impl<B: Backend> Engine<B> {
                         .collect();
                     st.volatile.retain(|key, _| changed.contains(key));
                     for key in changed {
-                        if Some(key) != target_key {
+                        if acted {
+                            // Kept as it was: neither restless nor calm.
+                        } else if Some(key) != target_key {
                             let c = st.volatile.entry(key).or_default();
                             *c = c.saturating_add(1);
                         } else {

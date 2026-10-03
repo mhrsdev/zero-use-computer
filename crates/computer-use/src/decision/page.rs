@@ -304,6 +304,7 @@ impl Page {
     fn merged(&self, body: &Value) -> std::result::Result<DecisionConfig, String> {
         let mut d = self.current();
         let was_provider = d.provider.clone();
+        let was_url = d.base_url.clone();
         let field = |k: &str| {
             body.get(k)
                 .and_then(Value::as_str)
@@ -333,8 +334,9 @@ impl Page {
         if let Some(k) = field("api_key").filter(|k| !k.is_empty()) {
             d.api_key = k;
             d.api_key_env.clear();
-        } else if d.provider != was_provider {
-            // One provider's key is never sent to another.
+        } else if d.provider != was_provider || d.base_url != was_url {
+            // One provider's key, or one address's, is never sent to
+            // another: a new address needs its key typed again.
             d.api_key.clear();
             d.api_key_env.clear();
         }

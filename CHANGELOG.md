@@ -1,5 +1,116 @@
 # Changelog
 
+## v3.9.2
+
+A debugging release: five reviews, one for each part of the code (the
+engine, drawing and design, scripts and the decision model, the
+platforms, the hub and the server), a fuzz test of every tool and runs
+on a real desktop found the bugs below; each is fixed, most with a test
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.1...v3.9.2)).
+Nothing is added; what the tools return for the benchmark's tasks is
+the same, to the token.
+
+### Security
+
+- **The decision model's key could be sent elsewhere.** The settings
+  page kept the saved key when only the model's address changed, and
+  `decide setup="open"` showed the agent the page's secret address, so
+  a script could post a new address there and test it with the key.
+  Now a new address needs its key typed again, and the address isn't
+  shown.
+- **Scripts could read the keys.** In the default `files = "read"` a
+  script could read the settings file (the key, the HTTP token) or
+  `/proc/self/environ`. Now scripts never read or write the server's
+  folder (but their own `files/`), the settings file or `/proc`, under
+  any setting.
+- **A script could start a program it downloaded** (on Windows a `.exe`
+  or `.bat` runs as it is): `launch_app` never starts one from the
+  scripts' folder.
+- A decision model turned off in `[tools]` is off for scripts too, and
+  `decide_each` takes at most 500 things, like the tool.
+
+### Crashes and hangs
+
+- **A script could end the whole server**: a value nested thousands
+  deep overflowed the stack when it was turned into data or printed (a
+  stack overflow can't be caught). Refused past 128 levels.
+- `regex_replace` and `regex_groups` refuse a result too big before
+  building it (one match could ask for gigabytes).
+- Axis ticks far from 0 looped forever; cells sized for a tiny target
+  asked for billions; both ended the server.
+- Linux: connecting to the accessibility or session bus gives up after
+  5 s (a hung bus daemon hung the server).
+- A script after a picture in a batch emptied the batch's pictures (a
+  panic, the steps' report lost).
+
+### Wrong results and wrong actions
+
+- **`draw` never presses outside the window**: an element bigger than
+  its window (a zoomed canvas) or a canvas size too small to map pressed
+  and dragged over other apps.
+- `set_value`: 2004 was taken for 2024 (a 1% tolerance); a field now
+  holds exactly what was typed, sliders keep their tolerance.
+- Linux `set_value` on a field or button that takes no value pressed or
+  activated it (Enter on a read-only field) and said it worked.
+- `select_text` (Linux, macOS) said "selected" when it couldn't read
+  the text.
+- Changes the model's own actions caused were hidden as "keeps changing
+  on its own" (the page number after pressing Next three times).
+- Going to a new screen told the host it could drop the last screen's
+  look, which a return shows "as it was".
+- A batch's `app` went to tools that refuse or misread it (design,
+  scene, script, notifications, screenshot); a batch stopped on an
+  `expect` its step's tool never checks.
+- Designs painted with `draw` were stretched when their size wasn't
+  whole; SVG rounded corners came out oval.
+- OCR: 35 more language codes (an unknown one, like `sv`, stopped all
+  OCR); capitals of every script compared as lowercase.
+
+### Several agents and the overlay
+
+- A turn the hub took back is enforced: the action stops instead of
+  typing on into another agent's turn.
+- A stop key the system refuses no longer drops the one that works (the
+  desktop was left with none).
+- `doctor` no longer joins the running hub (it split the agents'
+  screen and moved their windows).
+- The hub shares out the screen the last agent saw; a host's "working"
+  ends after two minutes with no call; at most 32 connections wait to
+  say hello, within 5 s; the engine never sends a message the hub drops.
+- Windows: the overlay's layers go back on top in paint order (the
+  cursor stays above the label).
+
+### Typing and windows
+
+- **X11: Persian and other characters off the keyboard** are typed with
+  32 spare keys and 150 ms for a busy app to read each (30 ms lost or
+  changed letters in Electron and office apps). Checked: a 70-character
+  Persian sentence typed whole in a real GTK field.
+- Windows: a window moved or resized lands where asked (7-11 px off and
+  smaller each time before); with Caps Lock on, `press_key` of a letter
+  gives that letter; a click that went in only in part, and an X11 drag
+  that failed half way, let go of the button.
+- X11: windows partly off the screen can be captured; Latin-1 titles
+  are read right.
+
+### Checked
+
+- Every tool called with odd arguments built from its own schema
+  (`tests/fuzz_tools.rs`, a new test): no panics.
+- 417 tests in the library and the fuzz test, 41 in the server; clippy on Linux, Windows
+  and macOS; Rust 1.88; the benchmark's six tasks, same tokens as
+  v3.9.0.
+
+### Not fixed yet
+
+Found, but left for a later release (each is narrow, or needs a real
+desktop to check): a minimized or suspended Store app on Windows loses
+its window; X11 window moves and closes report success without checking;
+on Wayland a layer the compositor closed stays hidden until it changes;
+Windows draws every layer at one monitor's scale; one-character OCR
+lines (a CJK label, a digit) are dropped; a few first-time explanations
+are used up by results the model never sees.
+
 ## v3.9.1
 
 A fix for Windows: the indicator no longer slips behind the taskbar

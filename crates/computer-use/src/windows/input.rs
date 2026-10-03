@@ -154,6 +154,10 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
         inputs.push(mouse_input(up, 0, 0, 0));
     }
     let sent = send(&inputs);
+    if sent.is_err() {
+        // Some of the events may have gone in: never leave the button held.
+        let _ = send(&[mouse_input(up, 0, 0, 0)]);
+    }
     restore(back);
     sent
 }
@@ -542,6 +546,11 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
         && !c.is_control()
         && !combo.modifiers.any()
     {
+        // With Caps Lock on, a key plus Shift gives the other case ("a"
+        // came out "A"): the character itself then, typed as text.
+        if caps_lock_on() && c.is_alphabetic() {
+            return type_text(&c.to_string());
+        }
         match plain_char_key(c, layout) {
             CharKey::Unicode => return type_text(&c.to_string()),
             CharKey::Key(vk, extra) => return press_vk(vk, extra, layout),
@@ -562,6 +571,13 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
         },
     };
     press_vk(vk, mods, layout)
+}
+
+/// Whether Caps Lock is on (the system's state, not the key held).
+fn caps_lock_on() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
+    // SAFETY: a plain query of the keyboard state.
+    unsafe { GetKeyState(i32::from(VK_CAPITAL.0)) & 1 != 0 }
 }
 
 /// Press and release `vk` with `mods` held around it.

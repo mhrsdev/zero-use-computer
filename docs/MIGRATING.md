@@ -1,3 +1,17 @@
+# Upgrading to v3.9.2
+
+Mostly nothing to change. What now refuses what it used to allow:
+
+- Scripts can't read or write the server's folder (its settings, keys
+  and tokens), the settings file or `/proc`, whatever `[script] files`
+  says; their own `files/` folder is theirs as before.
+- `launch_app` doesn't start programs in the scripts' folder.
+- On the decision model's settings page, a new address needs its key
+  typed again.
+- `draw` refuses a drawing that would press outside the window.
+- `set_value` on a text field reports a number the app changed (2004
+  for 2024) as not taken.
+
 # Upgrading to v3.9.1
 
 Nothing to change: a fix for the Windows overlay, which now stays above
