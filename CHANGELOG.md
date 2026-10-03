@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.9.1
+
+A fix for Windows: the indicator no longer slips behind the taskbar
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.0...v3.9.1);
+[issue #5](https://github.com/mhrsdev/zero-use-computer/issues/5)).
+
+- **The overlay stays above the taskbar.** It put itself on top only when
+  it was shown or moved, so once the user clicked the taskbar (or brought
+  any other always-on-top window forward), Windows placed that window
+  above the overlay, and part of the glow and label stayed behind it until
+  the next move. Now the overlay goes back on top as soon as the
+  foreground window changes, and at least once a second while it is
+  shown. It needs no administrator rights.
+- **Not covered:** the Start menu, the notification centre and other
+  system surfaces sit in a band above every program's windows. Only an
+  app with UI access (signed and installed under Program Files) can be
+  drawn above them, which this release doesn't do.
+- **Checked:** builds and passes clippy for Windows, as CI does. Not yet
+  seen on a real Windows desktop: CI can't show which window is on top.
+  It should be checked there before it is called fixed.
+
 ## v3.9.0
 
 Several agents on one desktop: a client's subagents, or Claude Code

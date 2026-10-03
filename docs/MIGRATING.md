@@ -1,3 +1,8 @@
+# Upgrading to v3.9.1
+
+Nothing to change: a fix for the Windows overlay, which now stays above
+the taskbar.
+
 # Upgrading to v3.9.0
 
 Nothing to change. With one agent, nothing looks or acts differently,
