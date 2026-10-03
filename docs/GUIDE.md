@@ -470,6 +470,62 @@ task is complete) can say so with a JSON-RPC notification:
 `Engine::set_status`). Every text, colour, size and timing is in `[overlay]`;
 `computer-use-mcp overlay --demo` shows each state once on your screen.
 
+## Several agents on one desktop (v3.9)
+
+More than one agent can use the computer at once: a client's subagents,
+or Claude Code beside Codex. Every server on the desktop joins one **hub**,
+whichever client started it:
+
+![Four agents sharing a desktop](images/hub-four-agents.png)
+
+- **Numbers in turn.** The first server to start runs the hub
+  (`computer-use-mcp hub`, a small process of its own) and is agent 1; the
+  next ones are 2, 3… in the order they join. A number freed by an agent
+  that left goes to the next one. The hub ends a few seconds after the
+  last agent leaves.
+- **A cursor each.** One overlay draws every agent's purple cursor, tagged
+  with its number once there are two or more ("Zero" when alone), and its
+  glow and label ("2 · Zero is thinking…") in its own part of the screen.
+- **One stop key** stops them all. (Before v3.9 a second server couldn't
+  even register it: the system gives a key to one program.)
+- **The screen shared out:** halves for two, thirds for three, a 2×2 grid
+  for four. An agent may ask for a full, half, third or quarter screen
+  (`agents` area): given when it fits beside the others, otherwise the
+  screen is shared evenly and it is told so. With `hub.arrange`, the
+  window an agent works with is moved into its part when it first looks
+  at it.
+- **Turns at the keyboard and mouse.** An action waits until no other
+  agent is typing or clicking (at most `hub.turn_wait_secs`); a turn kept
+  over 30 s ends by itself. Looking (trees, screenshots, `find_element`)
+  never waits, so the agents think and read at once. Another agent's input
+  is never taken for the user's (no pause for it).
+- **Messages** (`hub.chat`, off): agents send each other short notes
+  (`agents` send, at most 20 a minute and 1,000 characters each); they come
+  with the recipient's next result, marked as another agent's words,
+  never instructions. The user switches them on and off on the settings
+  page (Ctrl+Alt+J) or with `computer-use-mcp config set hub.chat true`.
+
+The model hears of it in its results ("2 agents share this desktop: you
+are agent 1, your part of the screen: x 0–960, y 0–1080") and through the
+`agents` tool (category `agents` in `find_tools`): `list`, `area`, `send`,
+`read`, `wait`. [skills/computer-use/reference/agents.md](../skills/computer-use/reference/agents.md)
+says how to split a task between subagents.
+
+**Which clients give each subagent its own number.** A server is an agent:
+
+| Client | Subagents | What to do |
+|---|---|---|
+| Codex | each starts its own servers | nothing: each subagent is an agent of its own |
+| Claude Code | share the main agent's server by default (one agent) | define the subagent with a server of its own: [examples/claude-code-agents/desktop-worker.md](../examples/claude-code-agents/desktop-worker.md), copied to `~/.claude/agents/` with your path |
+| Claude Code beside Codex (or any two clients) | | nothing: each client's server is an agent |
+| VS Code, Zed, Gemini CLI, OpenCode | share one server | one agent between them (their calls take turns) |
+
+**Security.** The hub listens on a port of this computer only
+(`hub.port`, 47381), and answers only those that show its token, a file in
+the server's folder that only this user can read (`hub.token`). It logs to
+`hub.log` there. `hub.enabled = false` gives each server an overlay of its
+own, as before.
+
 ## You stay in control
 
 - **Emergency stop key** — `Ctrl+Alt+Esc` by default (`Ctrl+Option+Esc` on a
@@ -749,6 +805,7 @@ applying after a reload. The agent has no tool to change settings.
 | `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
+| `[hub]` | several agents on one desktop: `enabled`, `port`, `arrange`, `chat`, `turn_wait_secs` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 

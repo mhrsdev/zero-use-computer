@@ -1,3 +1,19 @@
+# Upgrading to v3.9.0
+
+Nothing to change. With one agent, nothing looks or acts differently,
+except that the overlay is drawn by the hub process. With two or more:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| Two servers on one desktop | an overlay each, the stop key working for the first only | one overlay, numbered cursors, one stop key for all | `hub.enabled = false` |
+| The window an agent works with, beside others | left where it was | moved into the agent's part of the screen | `hub.arrange = false` |
+| Two agents acting at once | their input mixed | one at a time at the keyboard and mouse | `hub.enabled = false` |
+| Another agent's typing | taken for the user's (a pause) | not the user's | none |
+
+New settings: `[hub]` `enabled` (true), `port` (47381), `arrange` (true),
+`chat` (false), `turn_wait_secs` (60). A new tool, `agents`, in
+`find_tools`.
+
 # Upgrading to v3.8.5
 
 Nothing to change over stdio. Over HTTP, and for hosts that read the

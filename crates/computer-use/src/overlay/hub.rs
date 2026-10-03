@@ -148,7 +148,13 @@ fn start_hub(launcher: &Launcher, opts: &JoinOptions) -> std::io::Result<()> {
         .arg(&opts.home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        // What it says (no display, a port taken) goes to a file beside
+        // its token, for `doctor` and for whoever wonders.
+        .stderr(
+            std::fs::File::create(opts.home.join("hub.log"))
+                .map(std::process::Stdio::from)
+                .unwrap_or_else(|_| std::process::Stdio::null()),
+        );
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -1301,7 +1307,8 @@ mod tests {
             text: "found it: 42 dollars".into(),
         });
         until("message", || l1.has_messages());
-        let m = l1.take_messages();
+        let (m, left) = l1.take_messages(10);
+        assert_eq!(left, 0);
         assert_eq!((m[0].from, m[0].client.as_str()), (2, "codex"));
         assert_eq!(m[0].text, "found it: 42 dollars");
         assert!(!l2.has_messages());

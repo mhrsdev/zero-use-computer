@@ -152,6 +152,9 @@ impl<B: Backend> Engine<B> {
             args.screenshot.get_or_insert(true);
         }
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
+        // Other agents on the desktop: this one's window in its part.
+        let window = self.arrange(&app, window);
+        self.tell_doing(&app);
         self.ctx.force_ocr = args.ocr;
         let observed = self.observe(&app, &window, args.ocr);
         self.ctx.force_ocr = false;

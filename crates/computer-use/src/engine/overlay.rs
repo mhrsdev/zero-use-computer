@@ -41,7 +41,55 @@ impl<B: Backend> Engine<B> {
                 return None;
             }
             let on_settings = self.settings_handler();
-            match Overlay::spawn(&launcher, cfg, &keys, self.stop.clone(), Some(on_settings)) {
+            // The screen to share out, read when the hub is joined.
+            let screen = if self.store.config.hub.enabled {
+                self.work_area()
+            } else {
+                None
+            };
+            let cfg = &self.store.config.overlay;
+            // One hub for every agent on the desktop; an overlay of this
+            // server's own when it can't be had.
+            let hub = &self.store.config.hub;
+            let joined = if hub.enabled {
+                let opts = crate::overlay::hub::JoinOptions {
+                    port: hub.port,
+                    home: self
+                        .hub_home
+                        .clone()
+                        .unwrap_or_else(crate::config::home_dir),
+                    client: self.client.clone(),
+                    want: self.hub_agent,
+                    screen,
+                };
+                match Overlay::join_hub(
+                    &launcher,
+                    &opts,
+                    cfg,
+                    &keys,
+                    self.stop.clone(),
+                    Some(on_settings.clone()),
+                ) {
+                    Ok(o) => {
+                        let agent = o.hub().map(|h| h.agent());
+                        log::info!("joined the hub as agent {}", agent.unwrap_or(0));
+                        self.hub_agent = agent;
+                        Some(o)
+                    }
+                    Err(e) => {
+                        log::info!("no hub ({e}): this server's own overlay");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let cfg = &self.store.config.overlay;
+            let started = match joined {
+                Some(o) => Ok(o),
+                None => Overlay::spawn(&launcher, cfg, &keys, self.stop.clone(), Some(on_settings)),
+            };
+            match started {
                 Ok(o) => {
                     self.overlay = Some(o);
                     self.overlay_error = None;
@@ -55,6 +103,16 @@ impl<B: Backend> Engine<B> {
             }
         }
         self.overlay.as_mut()
+    }
+
+    /// The primary screen's work area (without task bars and docks).
+    fn work_area(&mut self) -> Option<crate::types::Rect> {
+        let displays = self.backend.displays().ok()?;
+        displays
+            .iter()
+            .find(|d| d.primary)
+            .or(displays.first())
+            .map(|d| d.work_area)
     }
 
     pub(super) fn overlay_send(&mut self, cmd: OverlayCmd) {

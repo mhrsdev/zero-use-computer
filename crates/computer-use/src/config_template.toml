@@ -338,6 +338,17 @@ result_meta = true
 # clients would send both.
 structured_output = false
 
+[hub]
+# Several agents on one desktop (a client's subagents, Claude Code and
+# Codex side by side): every server joins one hub that draws a cursor for
+# each (numbered once there are two), has one stop key for all, shares the
+# screen out and gives the keyboard and mouse to one at a time.
+enabled = true
+port = 47381                # this computer only, with a token only you can read
+arrange = true              # move each agent's window into its part of the screen
+chat = false                # let the agents send each other short messages
+turn_wait_secs = 60         # longest wait for the keyboard and mouse
+
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently
 text_max_chars = 2000       # longest text read from a text element

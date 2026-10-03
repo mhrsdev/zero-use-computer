@@ -1,5 +1,91 @@
 # Changelog
 
+## v3.9.0
+
+Several agents on one desktop: a client's subagents, or Claude Code
+beside Codex, each with a numbered cursor, its own part of the screen and
+turns at the keyboard and mouse, and one stop key for all of them
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.5...v3.9.0);
+[how it works](docs/GUIDE.md#several-agents-on-one-desktop-v39);
+[upgrading](docs/MIGRATING.md#upgrading-to-v390)).
+
+![Four agents on one desktop](docs/images/hub-four-agents.png)
+
+### One hub for every server on the desktop
+
+- **Numbers in turn.** The first server to start runs a hub
+  (`computer-use-mcp hub`) and is agent 1; every other server joins it, 2,
+  3… in the order they come, whichever client started them. A number an
+  agent left is given to the next. The hub goes a few seconds after the
+  last agent.
+- **A cursor each.** One overlay draws them all: the purple cursor tagged
+  with its number once there are two or more ("Zero" when alone, as
+  before), and each agent's glow and label ("2 · Zero is thinking…") in
+  its own part of the screen.
+- **One stop key for all.** Before, a second server's overlay couldn't
+  even register the key (the system gives a key to one program), so
+  Ctrl+Alt+Esc stopped only the first agent.
+- **The screen shared out:** halves, thirds, a 2×2 grid. An agent may ask
+  for a full, half, third or quarter screen; it gets it when it fits
+  beside the others, else the hub shares the screen evenly and says so.
+  The window an agent works with is moved into its part when it first
+  looks at it (`hub.arrange`).
+- **Turns at the keyboard and mouse.** An action waits while another agent
+  types or clicks, so one's keys never land in another's field; reading
+  never waits. A turn kept over 30 s ends by itself, and another agent's
+  input is never taken for the user's (no pause for it).
+- **Messages between agents** (`hub.chat`, off): short notes that come
+  with the other agent's next result, marked as another agent's words,
+  never instructions. The user switches them on and off on the settings
+  page (Ctrl+Alt+J), which has a new "Several agents" switch, or with
+  `computer-use-mcp config set hub.chat true`.
+- **The `agents` tool** (in `find_tools`, category `agents`): `list`
+  (numbers, clients, apps, parts of the screen), `area`, `send`, `read`,
+  `wait`. The first result after the number of agents changes says so.
+- **Safety:** the hub listens on this computer only (`hub.port`, 47381)
+  and answers only those that show its token, a file in the server's
+  folder that only this user can read; `doctor` says whether it runs.
+  The security skill counts other agents' messages as data.
+
+### Which clients
+
+Checked in their documentation and source code (October 2026):
+
+- **Codex** starts each subagent's servers anew: each subagent is an
+  agent of its own, with nothing to set up.
+- **Claude Code**'s subagents share the main agent's server unless their
+  definition starts one of its own:
+  [`examples/claude-code-agents/desktop-worker.md`](examples/claude-code-agents/desktop-worker.md).
+- **Two clients side by side** (Claude Code and Codex): each is an agent.
+- VS Code, Zed, Gemini CLI and OpenCode share one server between their
+  subagents: one agent, whose calls take turns.
+
+### Checked
+
+- The hub's bookkeeping on its own (numbers, layouts, turns, the message
+  limit), and agents over its socket: numbers, turns, messages, parts of
+  the screen, a wrong token, the token file's mode (11 new tests; 405 in
+  the library, 40 in the server).
+- Two engines on one hub: told of each other, each window moved into its
+  half, an action waiting for the other's turn, messages when allowed and
+  refused when not.
+- Seen under Xvfb with one, three and four agents, and with two real
+  servers (one saying it is Claude Code, one Codex): the first started
+  the hub, both were numbered and given their half, and the hub ended
+  after them.
+- Clippy on Linux, Windows and macOS; Rust 1.88.
+- Cost: the new tool's category adds 26 tokens to every request
+  (2,163 → 2,189).
+
+### Not done
+
+- Real Windows and macOS desktops, as before: the hub draws with the same
+  code as the overlay there, but it hasn't been seen on them.
+- Not tried with the real clients (Claude Code, Codex) driving subagents.
+- An agent's own subagents that share its server (Claude Code without the
+  worker definition, VS Code, Zed) are one agent, not one each.
+- The parts of the screen are on the main display only.
+
 ## v3.8.5
 
 The MCP side brought up to the protocol, and the code made easier to work

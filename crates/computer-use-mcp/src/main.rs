@@ -596,6 +596,26 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         c.screenshot.max_dimension
     );
 
+    // Several agents on this desktop share one hub.
+    if c.hub.enabled {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], c.hub.port));
+        let running =
+            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
+                .is_ok();
+        println!(
+            "agents:   hub on port {} {}; messages between agents {}",
+            c.hub.port,
+            if running {
+                "running (another server uses it)"
+            } else {
+                "not running (the first server starts it)"
+            },
+            if c.hub.chat { "on" } else { "off" }
+        );
+    } else {
+        println!("agents:   no hub (hub.enabled = false): an overlay of each server's own");
+    }
+
     let stop_key = c.control.stop_hotkey.trim().to_string();
     let settings_key = c.control.settings_hotkey.trim().to_string();
     let decision = c.decision.clone();

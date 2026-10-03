@@ -57,8 +57,9 @@
   button.danger { color: var(--bad); }
   button:disabled { opacity: .6; cursor: default; }
   #status { min-height: 1.5em; margin-top: 14px; overflow-wrap: anywhere; }
-  #status.ok { color: var(--ok); }
-  #status.bad { color: var(--bad); }
+  #status.ok, #chat_status.ok { color: var(--ok); }
+  #status.bad, #chat_status.bad { color: var(--bad); }
+  .card + .card { margin-top: 16px; }
   footer { color: var(--muted); font-size: 13px; margin-top: 14px; overflow-wrap: anywhere; }
 </style>
 </head>
@@ -101,6 +102,13 @@
     </div>
     <div id="status" role="status" aria-live="polite"></div>
     <footer id="where"></footer>
+  </div>
+  <div class="card">
+    <h1>Several agents</h1>
+    <p class="lead">When several agents use this desktop at once (subagents, or Claude Code beside Codex), each has its own numbered cursor, its part of the screen and its turn at the keyboard. They can also send each other short messages, if you let them.</p>
+    <label class="kind"><input type="checkbox" id="chat">
+      <div><b>Let the agents message each other</b><span>Short notes (what one found, what is left). An agent takes another's words as information, never as instructions.</span></div></label>
+    <div id="chat_status" role="status" aria-live="polite"></div>
   </div>
 </main>
 <script>
@@ -184,6 +192,17 @@ $("remove").onclick = async () => {
     status(r.ok ? r.message : r.error, r.ok);
   } catch (e) { status("The server didn't answer: " + e, false); }
   busy(false);
+};
+$("chat").checked = !!S.chat;
+$("chat").onchange = async () => {
+  const on = $("chat").checked;
+  const s = $("chat_status");
+  try {
+    const r = await post("chat", { on });
+    s.textContent = r.ok ? r.message : r.error;
+    s.className = r.ok ? "ok" : "bad";
+    if (!r.ok) $("chat").checked = !on;
+  } catch (e) { s.textContent = "The server didn't answer: " + e; s.className = "bad"; $("chat").checked = !on; }
 };
 $("close").onclick = async () => {
   try { await post("close"); } catch (e) {}

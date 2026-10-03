@@ -21,6 +21,7 @@ use crate::tree::{self, IndexAllocator, Node};
 use crate::types::*;
 
 mod actions;
+mod agents;
 mod batch;
 mod boards;
 mod deciding;
@@ -273,6 +274,8 @@ struct CallState {
     pending_screen_shot: Option<ScreenShot>,
     /// Tools the running script has called (its progress).
     script_calls: u32,
+    /// The keyboard and mouse are this agent's (the hub's turn).
+    turn: bool,
 }
 
 pub struct Engine<B: Backend> {
@@ -382,6 +385,18 @@ pub struct Engine<B: Backend> {
     judge: crate::decision::judge::Judge,
     /// Where the progress of the calls goes, set by the host.
     progress: Option<progress::Reporter>,
+    /// The MCP client this engine serves, for the other agents.
+    client: String,
+    /// This engine's number on the desktop, kept for a hub started again.
+    hub_agent: Option<u32>,
+    /// Where the hub's token is, instead of the server's folder (tests).
+    hub_home: Option<std::path::PathBuf>,
+    /// Windows put in this agent's part of the screen, and the part.
+    arranged: HashMap<u64, crate::types::Rect>,
+    /// The app the other agents were told this one works with.
+    doing: Option<String>,
+    /// How many agents the model was last told share the desktop.
+    agents_told: usize,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -508,6 +523,12 @@ impl<B: Backend> Engine<B> {
             scripts,
             judge: Default::default(),
             progress: None,
+            client: String::new(),
+            hub_agent: None,
+            hub_home: None,
+            arranged: HashMap::new(),
+            doing: None,
+            agents_told: 0,
             ocr_note: None,
             ocr_note_shown: false,
             partial_report: None,
@@ -706,8 +727,14 @@ impl<B: Backend> Engine<B> {
                 break Ok(());
             };
             let now = (self.clock)();
-            // Input after the engine's own last input is the user's.
-            let own = self.last_input.map(|t| now.saturating_duration_since(t));
+            // Input after the engine's own last input (or another agent's
+            // on this desktop) is the user's.
+            let own = self
+                .last_input
+                .into_iter()
+                .chain(self.others_input())
+                .max()
+                .map(|t| now.saturating_duration_since(t));
             let user_active = idle < resume && own.is_none_or(|o| idle + OWN_INPUT_MARGIN < o);
             if !user_active {
                 break Ok(());
@@ -1336,10 +1363,16 @@ impl<B: Backend> Engine<B> {
             || matches!(call, ToolCall::LaunchApp(_))
             || matches!(&call, ToolCall::Window(w) if w.action.mutating());
         if mutating {
+            // Other agents on the desktop: one at a time at the keyboard
+            // and mouse.
+            self.take_turn()?;
             // Anything read before this action is stale now.
             self.epoch += 1;
             // Don't act while the user is using the mouse or keyboard.
-            self.wait_for_user()?;
+            if let Err(e) = self.wait_for_user() {
+                self.end_turn();
+                return Err(e);
+            }
         }
         let report_app = acting.filter(|_| {
             self.store.config.tree.report_changes && self.ctx.quiet_depth != Some(self.ctx.depth)
@@ -1384,9 +1417,11 @@ impl<B: Backend> Engine<B> {
             ToolCall::GetNotifications(a) => self.get_notifications(a),
             ToolCall::Script(a) => self.script(a),
             ToolCall::Decide(a) => self.decide(a),
+            ToolCall::Agents(a) => self.agents(a),
         };
         if mutating {
             self.last_input = Some((self.clock)());
+            self.end_turn();
         }
         let out = out?;
         if let Some(query) = pixels_of_app
@@ -1581,6 +1616,7 @@ impl<B: Backend> Engine<B> {
                 // its state (a batch step's quiet reports, the element it
                 // aimed at, what its `expect` found…), and the tree start
                 // a result may have shown only in part.
+                self.end_turn();
                 self.ctx = CallState::default();
                 self.partial_report = None;
                 self.cancel.store(false, Ordering::SeqCst);
@@ -1593,6 +1629,10 @@ impl<B: Backend> Engine<B> {
         };
         if out.is_error {
             self.structured = None;
+        }
+        // The other agents on the desktop: how many, and what they said.
+        if let Some(note) = self.hub_notes() {
+            out.text.push_str(&note);
         }
         // The user is counting on the stop key: if it doesn't work, say so
         // (once), so the agent can tell them.

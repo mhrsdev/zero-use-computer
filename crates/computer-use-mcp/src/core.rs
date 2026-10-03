@@ -173,6 +173,10 @@ impl<B: Backend> Core<B> {
     fn initialize(&mut self, params: &Value) -> Value {
         let protocol = negotiate_protocol(params.get("protocolVersion").and_then(Value::as_str));
         self.protocol = Some(protocol);
+        // Who this server works for, as the other agents on the desktop see it.
+        if let Some(name) = params.pointer("/clientInfo/name").and_then(Value::as_str) {
+            self.engine.set_client(name);
+        }
         let mut reply = json!({
             "protocolVersion": protocol,
             "capabilities": crate::catalog::capabilities(self.list_changed),

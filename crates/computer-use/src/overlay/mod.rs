@@ -423,9 +423,12 @@ impl HubLink {
         lock(&self.region).unwrap_or((None, true))
     }
 
-    /// The messages that came since the last call.
-    pub fn take_messages(&self) -> Vec<Message> {
-        lock(&self.inbox).drain(..).collect()
+    /// The oldest `max` messages that came, and how many are left.
+    pub fn take_messages(&self, max: usize) -> (Vec<Message>, usize) {
+        let mut inbox = lock(&self.inbox);
+        let n = max.min(inbox.len());
+        let taken = inbox.drain(..n).collect();
+        (taken, inbox.len())
     }
 
     /// Whether a message is waiting.

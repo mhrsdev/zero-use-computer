@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v3.8.5](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v3.9.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
 · [Benchmarks](bench/README.md)
@@ -63,6 +63,13 @@ State after the steps:
   which element is "the add-to-cart button". The server also asks it
   on its own where that saves a turn, answers the same question once,
   and never waits on it. Without one, everything works as before.
+- **Several agents at once.** Subagents, or Claude Code beside Codex:
+  each gets a numbered cursor, its own part of the screen and turns at
+  the keyboard and mouse, and one stop key stops them all. They can send
+  each other short notes, if you let them.
+  [How](docs/GUIDE.md#several-agents-on-one-desktop-v39).
+
+  ![Four agents on one desktop, each with its numbered cursor and part of the screen](docs/images/hub-four-agents.png)
 - **You stay in control.** An on-screen indicator, an emergency stop key
   (Ctrl+Alt+Esc), a pause while you use the mouse, masked passwords and
   card numbers, and keystrokes that only ever go to the app they're meant

@@ -96,6 +96,17 @@ printf '%s\n' \
  | computer-use-mcp serve
 ```
 
+### Subagents, and several clients at once
+
+Every server on the desktop joins one hub: each agent gets a numbered
+cursor, a part of the screen and turns at the keyboard and mouse
+([details](GUIDE.md#several-agents-on-one-desktop-v39)). Codex's subagents
+and different clients side by side need nothing. Claude Code's subagents
+share the main agent's server unless their definition starts one of its
+own: copy [`examples/claude-code-agents/desktop-worker.md`](../examples/claude-code-agents/desktop-worker.md)
+to `~/.claude/agents/` and put your path in it (from a plugin, Claude Code
+ignores a subagent's own servers).
+
 ## 3. HTTP (remote agent, same machine or trusted network)
 
 Build with the feature, pick a token, and keep it on loopback:

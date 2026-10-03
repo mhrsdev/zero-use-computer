@@ -11,6 +11,41 @@ use crate::error::{Error, Result};
 
 pub const HOME_ENV: &str = "COMPUTER_USE_HOME";
 
+/// Several agents on one desktop ([hub]): every server (whichever client
+/// started it, subagents included) joins one hub that draws a cursor for
+/// each, has one stop key for all, shares the screen out and gives the
+/// keyboard and mouse to one at a time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HubConfig {
+    /// Join the hub (the first server to start runs it). Off: an overlay
+    /// of this server's own, as before v3.9.
+    pub enabled: bool,
+    /// The port of this computer the hub listens on (only this computer
+    /// can reach it, and only with the token in the server's folder).
+    pub port: u16,
+    /// With two agents or more, move the window an agent works with into
+    /// its part of the screen.
+    pub arrange: bool,
+    /// Let the agents send each other short messages (`agents` send). Off
+    /// by default: the user turns it on.
+    pub chat: bool,
+    /// Longest wait for a turn at the keyboard and mouse, in seconds.
+    pub turn_wait_secs: u64,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 47_381,
+            arrange: true,
+            chat: false,
+            turn_wait_secs: 60,
+        }
+    }
+}
+
 /// Optional JSONL audit log of every tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1024,6 +1059,7 @@ pub struct Config {
     pub decision: DecisionConfig,
     pub audit: AuditConfig,
     pub server: ServerConfig,
+    pub hub: HubConfig,
     pub linux: LinuxConfig,
     pub macos: MacosConfig,
     pub windows: WindowsConfig,
@@ -1061,6 +1097,7 @@ impl Default for Config {
             decision: DecisionConfig::default(),
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
+            hub: HubConfig::default(),
             linux: LinuxConfig::default(),
             macos: MacosConfig::default(),
             windows: WindowsConfig::default(),
@@ -1077,6 +1114,15 @@ impl Default for Config {
 impl Config {
     /// Range checks the types can't express.
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.hub.port == 0 {
+            return Err("hub.port must be a port number (1 to 65535)".into());
+        }
+        if !(1..=600).contains(&self.hub.turn_wait_secs) {
+            return Err(format!(
+                "hub.turn_wait_secs must be between 1 and 600 (got {})",
+                self.hub.turn_wait_secs
+            ));
+        }
         let c = &self.cache;
         if !(0.0..=1.0).contains(&c.match_threshold) {
             return Err(format!(
