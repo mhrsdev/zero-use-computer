@@ -1,3 +1,9 @@
+# Upgrading to v3.9.3
+
+Nothing to change. On X11, a window move, resize, maximize, minimize or
+full screen that the window manager refuses or ignores is now reported
+as an error instead of done.
+
 # Upgrading to v3.9.2
 
 Mostly nothing to change. What now refuses what it used to allow:

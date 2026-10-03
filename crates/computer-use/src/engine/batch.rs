@@ -208,6 +208,11 @@ impl<B: Backend> Engine<B> {
                 .collect(),
             memory: self.memory.views(),
             hints: self.hints.0.borrow().clone(),
+            shown: self
+                .states
+                .iter()
+                .map(|(pid, st)| (*pid, (st.header_seen.clone(), st.icons_shown.clone())))
+                .collect(),
         }
     }
 
@@ -216,8 +221,14 @@ impl<B: Backend> Engine<B> {
             known: seen_before,
             memory,
             hints,
+            mut shown,
         } = seen;
         *self.hints.0.borrow_mut() = hints;
+        for (pid, st) in self.states.iter_mut() {
+            let (header, icons) = shown.remove(pid).unwrap_or_default();
+            st.header_seen = header;
+            st.icons_shown = icons;
+        }
         self.memory.restore_views(memory);
         let mut refile = Vec::new();
         for (pid, st) in self.states.iter_mut() {

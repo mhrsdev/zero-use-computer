@@ -1,5 +1,51 @@
 # Changelog
 
+## v3.9.3
+
+The six bugs v3.9.2 found and left ([not fixed yet](#not-fixed-yet)),
+fixed ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.2...v3.9.3)).
+Nothing is added; what the tools return for the benchmark's six tasks is
+the same as v3.9.2's, to the token.
+
+- **Windows: a minimized or suspended Store app keeps its window.** Its
+  own window leaves the frame Windows draws around it, so the frame read
+  as ApplicationFrameHost's and the app had no window to restore or
+  focus. The server now remembers which app each frame held and keeps
+  that while the app runs. A frame the server never saw with its app in
+  it (the app was minimized before the server started) still reads as
+  ApplicationFrameHost's.
+- **X11: window moves, resizes, maximize, minimize, full screen and
+  desktop moves are checked.** They were requests the window manager
+  may refuse or ignore (a tiling one keeps its layout), and success was
+  reported without a look. Now the server waits up to 1.5 s for the
+  change and says so if it doesn't come. Focus and restore were already
+  checked; close is not (the app may first ask about saving).
+- **Wayland: a layer the compositor closed comes back.** The overlay
+  dropped it and it stayed hidden until it next changed; now it is made
+  again at once, where it was.
+- **Windows: each overlay layer is drawn at its own monitor's scale.**
+  All of them used the main monitor's, so on a 100% screen beside a 150%
+  one the label and cursor came out too big or too small.
+- **OCR keeps one-character lines** that are words on their own: a CJK
+  or Hangul character, or a digit, when the reading is sure of it (80%,
+  90% for a digit) and the box is the size of a letter. One Latin letter
+  alone is still dropped (it is usually noise).
+- **First-time explanations aren't used up by results the model never
+  sees.** A look inside a batch (only its summary reaches the model) and
+  a brief report used them, so the model never got them.
+
+### Checked
+
+- 419 tests in the library (2 new: one-character OCR words, a look
+  inside a batch), 41 in the server and the fuzz test; clippy on Linux,
+  Windows and macOS; Rust 1.88; the live X11 test (window moves, resize,
+  tile, minimize and restore checked on a real X server without a window
+  manager); the benchmark's six tasks, the same tokens as v3.9.2.
+- **Not seen on real desktops:** the Windows fixes (a Store app, two
+  monitors at different scales), the Wayland one (a compositor that
+  closes a layer) and the X11 check under a window manager that refuses.
+  They build and pass clippy, but CI can't show them.
+
 ## v3.9.2
 
 A debugging release: five reviews, one for each part of the code (the

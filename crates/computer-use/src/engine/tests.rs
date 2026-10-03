@@ -5303,3 +5303,20 @@ fn draw_never_presses_outside_the_window() {
         out.text
     );
 }
+
+/// A look inside a batch (whose text the model never sees) doesn't make
+/// the next real look's header the short one, without the app's id.
+#[test]
+fn a_look_inside_a_batch_does_not_use_up_the_header() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"steps": [
+            {"tool": "get_app_state", "arguments": {"app": "TextEdit"}},
+            {"tool": "list_apps", "arguments": {}}
+        ]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.text.contains("pid 4242"), "{}", out.text);
+}

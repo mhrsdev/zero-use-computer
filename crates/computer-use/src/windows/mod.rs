@@ -1936,8 +1936,56 @@ fn core_window_index(
 
 /// The process a top-level window belongs to, as the user sees it: for a
 /// store app's frame, the app's, not ApplicationFrameHost's.
+/// A minimized or suspended store app's CoreWindow leaves its frame, which
+/// then reads as ApplicationFrameHost's: the app it was last seen holding
+/// is remembered, while that app runs.
 pub(super) fn window_pid(hwnd: HWND) -> u32 {
-    creator_pid(uwp_core_window(hwnd).unwrap_or(hwnd))
+    static FRAME_APPS: std::sync::Mutex<Option<HashMap<isize, u32>>> = std::sync::Mutex::new(None);
+    let key = hwnd.0 as isize;
+    if let Some(core) = uwp_core_window(hwnd) {
+        let pid = creator_pid(core);
+        if let Ok(mut map) = FRAME_APPS.lock() {
+            let map = map.get_or_insert_with(HashMap::new);
+            if map.len() >= 256 {
+                // SAFETY: IsWindow only checks a handle.
+                map.retain(|h, _| unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
+            }
+            map.insert(key, pid);
+        }
+        return pid;
+    }
+    if !hwnd.0.is_null() && class_name(hwnd) == UWP_FRAME_CLASS {
+        let remembered = FRAME_APPS.lock().ok().and_then(|mut map| {
+            let map = map.as_mut()?;
+            let pid = *map.get(&key)?;
+            if process_running(pid) {
+                Some(pid)
+            } else {
+                map.remove(&key);
+                None
+            }
+        });
+        if let Some(pid) = remembered {
+            return pid;
+        }
+    }
+    creator_pid(hwnd)
+}
+
+/// Whether process `pid` is still running.
+fn process_running(pid: u32) -> bool {
+    use windows::Win32::System::Threading::GetExitCodeProcess;
+    const STILL_ACTIVE: u32 = 259;
+    // SAFETY: a limited query handle, closed before returning.
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
+        let _ = CloseHandle(handle);
+        ok && code == STILL_ACTIVE
+    }
 }
 
 /// Whether a pattern is available (live call within the budget).

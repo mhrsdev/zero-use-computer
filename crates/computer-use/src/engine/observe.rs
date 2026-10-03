@@ -180,7 +180,7 @@ impl<B: Backend> Engine<B> {
                     return false;
                 }
                 let text = crate::ocr::words(o.name.as_deref().unwrap_or(""));
-                text.chars().filter(|c| c.is_alphanumeric()).count() >= 2
+                crate::ocr::enough_text(&text)
                     && !raw.iter().any(|n| {
                         // The window itself overlaps everything: not a match.
                         let Some((a, b)) = n.bounds.zip(o.bounds) else {

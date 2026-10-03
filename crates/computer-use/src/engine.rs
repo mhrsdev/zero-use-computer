@@ -427,6 +427,10 @@ pub(super) struct SeenBefore {
     known: HashMap<u32, Option<Screen>>,
     memory: HashMap<u32, crate::screens::View>,
     hints: HashSet<&'static str>,
+    /// What the model was shown of each app besides its tree: the header
+    /// it has, and the icons it was shown (a look inside a batch or a
+    /// script, whose result the model never sees, mustn't count).
+    shown: HashMap<u32, (Option<String>, HashSet<u64>)>,
 }
 
 /// Host-level settings forced on top of the config file.

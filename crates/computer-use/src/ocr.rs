@@ -331,10 +331,34 @@ pub fn plausible(line: &OcrLine) -> bool {
         .iter()
         .filter(|c| !c.is_alphanumeric() && !PUNCTUATION.contains(**c))
         .count();
-    alnum >= 2
+    // One glyph that is a word of its own ("是", "예", a keypad's "7"),
+    // read surely and in a text-sized box; other single glyphs are mostly
+    // lines and icons read as letters.
+    let single = chars.len() == 1 && one_glyph_word(chars[0]) && {
+        let b = &line.bounds;
+        let sure = if chars[0].is_ascii_digit() { 0.9 } else { 0.8 };
+        line.confidence >= sure && b.height >= 6.0 && b.width <= b.height * 2.0
+    };
+    (alnum >= 2 || single)
         && alnum * 2 >= chars.len()
         && symbols * 3 <= chars.len()
         && line.bounds.height <= 80.0
+}
+
+/// A character that is a word by itself: a Han character, kana, a Hangul
+/// syllable, or a digit.
+fn one_glyph_word(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+    ) || c.is_ascii_digit()
+}
+
+/// Whether OCR text says enough to be an element: two letters or digits,
+/// or one glyph that is a word by itself.
+pub fn enough_text(text: &str) -> bool {
+    let alnum: Vec<char> = text.chars().filter(|c| c.is_alphanumeric()).collect();
+    alnum.len() >= 2 || (alnum.len() == 1 && one_glyph_word(alnum[0]))
 }
 
 /// Run Tesseract on a capture enlarged `scale` times.
@@ -801,5 +825,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A one-glyph word (a CJK label, a keypad digit) is text; a stray
+    /// glyph, a mark or a doubtful reading is not.
+    #[test]
+    fn single_glyph_words_are_text() {
+        let line = |t: &str, c: f32, w: f64| OcrLine {
+            text: t.into(),
+            bounds: Rect::new(0.0, 0.0, w, 20.0),
+            confidence: c,
+        };
+        for t in ["是", "开", "예", "の"] {
+            assert!(plausible(&line(t, 0.85, 20.0)), "{t}");
+        }
+        assert!(plausible(&line("7", 0.95, 12.0)));
+        assert!(
+            !plausible(&line("7", 0.85, 12.0)),
+            "a digit needs a sure reading"
+        );
+        assert!(!plausible(&line("a", 0.99, 12.0)), "a Latin letter alone");
+        assert!(!plausible(&line("|", 0.99, 4.0)));
+        assert!(!plausible(&line("是", 0.5, 20.0)), "unsure");
+        assert!(!plausible(&line("是", 0.9, 200.0)), "not a glyph's box");
+        assert!(enough_text("是") && enough_text("ab") && !enough_text("a"));
     }
 }
