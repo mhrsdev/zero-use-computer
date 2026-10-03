@@ -556,11 +556,9 @@ pub fn find_helper(config: &OverlayConfig) -> Option<Launcher> {
 
 /// Whether process `pid` is still running (the helper's parent watchdog).
 pub(crate) fn process_alive(pid: u32) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
-    }
-    #[cfg(target_os = "macos")]
+    // (Not /proc: some containers don't mount it, and the helper would
+    // take its parent for gone and quit.)
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // SAFETY: signal 0 only checks that the process exists.
         let r = unsafe { libc::kill(pid as libc::pid_t, 0) };

@@ -109,12 +109,22 @@ fn header<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
 
 /// The bearer token matches (compared in constant time).
 fn authorized(request: &Request, expected: &str) -> bool {
-    let Some(given) = header(request, "Authorization").and_then(|v| v.strip_prefix("Bearer "))
-    else {
+    let Some(given) = header(request, "Authorization").and_then(bearer) else {
         return false;
     };
     let (a, b) = (given.as_bytes(), expected.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// The token of `Bearer <token>`; the scheme's case doesn't matter (RFC
+/// 7235), and neither do spaces around it.
+fn bearer(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let (scheme, token) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim())
+        .filter(|t| !t.is_empty())
 }
 
 /// No `Origin` (not a browser), or a page on this machine. Browsers send
@@ -263,6 +273,16 @@ fn handle(engine: &mut Engine<Box<dyn Backend>>, body: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bearer_scheme_in_any_case() {
+        assert_eq!(bearer("Bearer abc"), Some("abc"));
+        assert_eq!(bearer("bearer abc"), Some("abc"));
+        assert_eq!(bearer("  BEARER   abc "), Some("abc"));
+        assert_eq!(bearer("Basic abc"), None);
+        assert_eq!(bearer("Bearer "), None);
+        assert_eq!(bearer("Bearerabc"), None);
+    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let mut test = tiny_http::TestRequest::new().with_method(Method::Post);

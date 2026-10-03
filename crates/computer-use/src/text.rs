@@ -64,47 +64,63 @@ pub fn strip_bidi_controls(s: &str) -> std::borrow::Cow<'_, str> {
 ///   combining marks, zero-width (non-)joiners and bidi controls are
 ///   dropped;
 /// * any run of whitespace (including no-break spaces) is one space.
+///
+/// Accents on Latin letters don't count, however they are written ("é" as
+/// one letter, or as "e" and an accent mark, as macOS file names store
+/// it); other text is composed (NFC), so Korean syllables written as their
+/// parts match whole syllables, never a part of one.
 pub fn fold(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
     let mut out = String::with_capacity(s.len());
     let mut space = false;
-    for c in s.chars() {
-        if let Some(d) = decimal_digit(c) {
-            out.push((b'0' + d) as char);
-            space = false;
-            continue;
+    for c in s.nfc() {
+        if matches!(c, '\u{00C0}'..='\u{024F}' | '\u{1E00}'..='\u{1EFF}') {
+            unicode_normalization::char::decompose_canonical(c, |p| {
+                fold_char(p, &mut out, &mut space)
+            });
+        } else {
+            fold_char(c, &mut out, &mut space);
         }
-        let c = match c {
-            // U+064A, U+0649 -> U+06CC; U+0643 -> U+06A9.
-            '\u{064A}' | '\u{0649}' => '\u{06CC}',
-            '\u{0643}' => '\u{06A9}',
-            // Tatweel, harakat and other Arabic marks, joiners, bidi controls.
-            '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{200B}'..='\u{200D}' => {
-                continue;
-            }
-            // Latin combining marks (the dot "İ" leaves when lowercased,
-            // decomposed accents).
-            '\u{0300}'..='\u{036F}' => continue,
-            c if is_bidi_control(c) => continue,
-            c => c,
-        };
-        if c.is_whitespace() {
-            if !space && !out.is_empty() {
-                out.push(' ');
-            }
-            space = true;
-            continue;
-        }
-        space = false;
-        // Lowercasing can make a combining mark ("İ" → "i" + U+0307).
-        out.extend(
-            c.to_lowercase()
-                .filter(|l| !matches!(l, '\u{0300}'..='\u{036F}')),
-        );
     }
     if out.ends_with(' ') {
         out.pop();
     }
     out
+}
+
+fn fold_char(c: char, out: &mut String, space: &mut bool) {
+    if let Some(d) = decimal_digit(c) {
+        out.push((b'0' + d) as char);
+        *space = false;
+        return;
+    }
+    let c = match c {
+        // U+064A, U+0649 -> U+06CC; U+0643 -> U+06A9.
+        '\u{064A}' | '\u{0649}' => '\u{06CC}',
+        '\u{0643}' => '\u{06A9}',
+        // Tatweel, harakat and other Arabic marks, joiners, bidi controls.
+        '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{200B}'..='\u{200D}' => {
+            return;
+        }
+        // Latin combining marks left over (on a letter with no
+        // accented form of its own).
+        '\u{0300}'..='\u{036F}' => return,
+        c if is_bidi_control(c) => return,
+        c => c,
+    };
+    if c.is_whitespace() {
+        if !*space && !out.is_empty() {
+            out.push(' ');
+        }
+        *space = true;
+        return;
+    }
+    *space = false;
+    // Lowercasing can make a combining mark ("İ" → "i" + U+0307).
+    out.extend(
+        c.to_lowercase()
+            .filter(|l| !matches!(l, '\u{0300}'..='\u{036F}')),
+    );
 }
 
 /// Whether `haystack` contains `needle`, compared in [`fold`]ed form.
@@ -135,6 +151,16 @@ mod tests {
     fn latin_combining_marks_fold_away() {
         assert!(contains("İptal", "iptal"));
         assert_eq!(fold("cafe\u{0301}"), fold("cafe"));
+        // However the accent is written.
+        assert_eq!(fold("caf\u{00E9}"), fold("cafe\u{0301}"));
+        assert!(contains("Résumé.pdf", "resume"));
+        assert!(contains("Re\u{0301}sume\u{0301}.pdf", "résumé"));
+        // Korean written as its parts (macOS file names) is the syllables.
+        let parts = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}"; // 한글
+        assert!(contains(parts, "한글"));
+        assert!(contains("한글", parts));
+        // A part of a syllable doesn't match the syllable.
+        assert!(!contains("각", "가"));
     }
 
     #[test]

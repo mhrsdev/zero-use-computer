@@ -562,7 +562,8 @@ impl ScriptConfig {
     /// The folder of saved scripts.
     pub fn library(&self) -> PathBuf {
         self.dir
-            .clone()
+            .as_deref()
+            .and_then(settings_path)
             .unwrap_or_else(|| home_dir().join("scripts"))
     }
 }
@@ -1093,6 +1094,40 @@ impl Config {
                 self.ocr.min_confidence
             ));
         }
+        // A level misspelt ("verbose") would turn logging off unnoticed.
+        let log = self.server.log.trim().to_ascii_lowercase();
+        if !(matches!(
+            log.as_str(),
+            "" | "off" | "error" | "warn" | "info" | "debug" | "trace"
+        ) || log.contains('=')
+            || log.contains(','))
+        {
+            return Err(format!(
+                "server.log must be off, error, warn, info, debug or trace (got \"{}\")",
+                self.server.log
+            ));
+        }
+        // Waits the stop key can't end: a typo (600000 for 600) would hold
+        // every action for minutes.
+        let t = &self.timing;
+        for (key, value, max) in [
+            ("timing.settle_ms", t.settle_ms, 10_000),
+            ("timing.settle_max_ms", t.settle_max_ms, 60_000),
+            ("timing.settle_poll_ms", t.settle_poll_ms, 10_000),
+            ("timing.key_delay_ms", t.key_delay_ms, 5_000),
+            ("timing.wait_poll_ms", t.wait_poll_ms, 60_000),
+            ("timing.expect_wait_ms", t.expect_wait_ms, 60_000),
+            ("overlay.move_ms", self.overlay.move_ms, 5_000),
+            (
+                "overlay.capture_hide_ms",
+                self.overlay.capture_hide_ms,
+                2_000,
+            ),
+        ] {
+            if value > max {
+                return Err(format!("{key} must be at most {max} (got {value})"));
+            }
+        }
         let r = self.screenshot.region_max_ratio;
         if !(0.0..=1.0).contains(&r) {
             return Err(format!(
@@ -1190,13 +1225,56 @@ impl Config {
     }
 }
 
+/// The server's own folder: `$COMPUTER_USE_HOME`, else `~/.computer-use`.
+/// Never relative: the folder a host starts the server in differs from
+/// host to host (`/` for some, the project for others).
 pub fn home_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os(HOME_ENV) {
-        return PathBuf::from(dir);
+    let user = dirs::home_dir();
+    let env = std::env::var_os(HOME_ENV).map(PathBuf::from);
+    home_from(env.as_deref(), user.as_deref())
+}
+
+/// `home_dir` from the environment variable and the user's home: an empty
+/// variable counts as unset (as the install scripts take it), `~` is the
+/// user's home, and a relative path is taken in it. With no home known,
+/// the system's temporary folder.
+fn home_from(env: Option<&Path>, user: Option<&Path>) -> PathBuf {
+    let user = user
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    match env.filter(|p| !p.as_os_str().is_empty()) {
+        Some(p) => in_folder(p, &user, &user),
+        None => user.join(".computer-use"),
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".computer-use")
+}
+
+/// `p` with a leading `~` (`~`, `~/…`, `~\…`) as `user`, and taken in
+/// `base` when it is still relative.
+fn in_folder(p: &Path, user: &Path, base: &Path) -> PathBuf {
+    let text = p.to_string_lossy();
+    let expanded = if text == "~" {
+        user.to_path_buf()
+    } else if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
+        user.join(rest)
+    } else {
+        p.to_path_buf()
+    };
+    if expanded.is_relative() {
+        base.join(expanded)
+    } else {
+        expanded
+    }
+}
+
+/// A path from the settings (`script.dir`, `audit.path`): `~` is the
+/// user's home and a relative path is in the server's folder
+/// (`home_dir`); empty is no path.
+pub fn settings_path(p: &Path) -> Option<PathBuf> {
+    if p.as_os_str().is_empty() {
+        return None;
+    }
+    let user = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    Some(in_folder(p, &user, &home_dir()))
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -1289,11 +1367,47 @@ pub fn edit_file(path: &Path, key: &str, edit: Edit) -> Result<()> {
     edit_file_many(path, &[(key, edit)])
 }
 
+/// A settings file as text: UTF-8 (with or without a byte-order mark), or
+/// UTF-16 with its mark, as Windows PowerShell 5.1 writes with `>` and
+/// Notepad can save. Written back, it is UTF-8.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    decode_text(&std::fs::read(path)?).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not text in UTF-8 or UTF-16 (save the file as UTF-8)",
+        )
+    })
+}
+
+fn decode_text(bytes: &[u8]) -> Option<String> {
+    let utf16 = |rest: &[u8], le: bool| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| {
+                if le {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                }
+            })
+            .collect();
+        (rest.len() % 2 == 0)
+            .then(|| String::from_utf16(&units).ok())
+            .flatten()
+    };
+    match bytes {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).ok(),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
+        _ => String::from_utf8(bytes.to_vec()).ok(),
+    }
+}
+
 /// Several settings changed at once (all or none), as `edit_file` does
 /// one: validated as a whole before anything is written. A file that
 /// holds an API key is kept readable by its owner only.
 pub fn edit_file_many(path: &Path, edits: &[(&str, Edit)]) -> Result<()> {
-    let mut text = match std::fs::read_to_string(path) {
+    let mut text = match read_text(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(Error::Config(format!("{}: {e}", path.display()))),
@@ -1426,8 +1540,12 @@ pub fn masked_key(key: &str) -> String {
 fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
     let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Unique per save: two saves at once (the settings page and a tool)
+    // never share a temporary file.
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}.tmp", std::process::id()));
+    tmp.push(format!(".{}-{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
@@ -1442,16 +1560,35 @@ fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
         let mut f = opts.open(&tmp).map_err(fail)?;
         f.write_all(text.as_bytes()).map_err(fail)?;
     }
+    // (On Windows a permission is only "read-only", which would stop the
+    // file being replaced.)
+    #[cfg(unix)]
     if let Ok(meta) = std::fs::metadata(&path) {
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
     }
     if private {
         owner_only(&tmp);
     }
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        fail(e)
-    })
+    // Windows refuses to replace a file another program has open for a
+    // moment (an antivirus scan, the search indexer): try a few times.
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(&tmp, &path) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if cfg!(windows)
+                    && e.kind() == std::io::ErrorKind::PermissionDenied
+                    && tries < 10 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(fail(e));
+            }
+        }
+    }
 }
 
 fn doc_to_config(text: &str) -> Result<Config> {
@@ -1502,7 +1639,7 @@ impl ConfigStore {
         let path = path
             .map(Path::to_path_buf)
             .unwrap_or_else(default_config_path);
-        let config = match std::fs::read_to_string(&path) {
+        let config = match read_text(&path) {
             Ok(text) => {
                 for key in unknown_keys(&text) {
                     log::warn!("{}: unknown setting `{key}` (ignored)", path.display());
@@ -1527,6 +1664,66 @@ impl ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waits_the_stop_key_cant_end_are_refused() {
+        let mut c = Config::default();
+        assert!(c.validate().is_ok());
+        c.timing.settle_ms = 600_000;
+        assert!(c.validate().unwrap_err().contains("timing.settle_ms"));
+        c.timing.settle_ms = 40;
+        c.overlay.move_ms = 60_000;
+        assert!(c.validate().unwrap_err().contains("overlay.move_ms"));
+        c.overlay.move_ms = 220;
+        c.server.log = "verbose".into();
+        assert!(c.validate().unwrap_err().contains("server.log"));
+        c.server.log = "computer_use=debug".into();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn folders_never_depend_on_where_the_server_started() {
+        // Absolute on every system (a path like /home/u isn't on Windows).
+        let user_dir = std::env::temp_dir().join("u");
+        let user = user_dir.as_path();
+        let home = |env: Option<&str>| home_from(env.map(Path::new), Some(user));
+        assert_eq!(home(None), user.join(".computer-use"));
+        assert_eq!(home(Some("")), user.join(".computer-use"), "empty is unset");
+        assert_eq!(home(Some("~/.cu")), user.join(".cu"));
+        assert_eq!(home(Some("~")), user.to_path_buf());
+        assert_eq!(home(Some("cu")), user.join("cu"));
+        let abs = std::env::temp_dir().join("cu-abs");
+        assert_eq!(home_from(Some(&abs), Some(user)), abs);
+        assert!(
+            home_from(None, None).is_absolute(),
+            "no home: still absolute"
+        );
+        let base_dir = user.join(".computer-use");
+        let base = base_dir.as_path();
+        assert_eq!(in_folder(Path::new("~/s"), user, base), user.join("s"));
+        assert_eq!(in_folder(Path::new("s"), user, base), base.join("s"));
+        assert_eq!(settings_path(Path::new("")), None);
+        assert!(settings_path(Path::new("scripts")).unwrap().is_absolute());
+    }
+
+    #[test]
+    fn settings_saved_as_utf16_or_with_a_mark_are_read() {
+        let text = "[tree]\nmax_nodes = 300 # é\n";
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(text.encode_utf16().flat_map(u16::to_be_bytes));
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend(text.as_bytes());
+        for bytes in [le, be, bom, text.as_bytes().to_vec()] {
+            let t = decode_text(&bytes).unwrap();
+            assert_eq!(t, text);
+            let c: Config = toml::from_str(&t).unwrap();
+            assert_eq!(c.tree.max_nodes, 300);
+        }
+        assert_eq!(decode_text(&[0xFF, 0xFE, 0x41]), None, "odd length");
+        assert_eq!(decode_text(&[0xC3, 0x28]), None, "not UTF-8");
+    }
 
     #[test]
     fn defaults_when_missing() {
