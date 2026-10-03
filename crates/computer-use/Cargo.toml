@@ -25,6 +25,7 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 toml.workspace = true
 toml_edit.workspace = true
 unicode-bidi = "0.3"
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -66,6 +67,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_Storage_Xps",
     "Win32_System_Com",
     "Win32_System_Console",

@@ -447,7 +447,7 @@ impl Surface for MacSurface {
         let Some(combo) = combo else {
             return false;
         };
-        let Some((code, _)) = crate::macos::cg::keycode(combo.key) else {
+        let Some((code, _)) = crate::macos::cg::keycode(&combo) else {
             return false;
         };
         // SAFETY: Carbon calls on the main thread with valid arguments; the

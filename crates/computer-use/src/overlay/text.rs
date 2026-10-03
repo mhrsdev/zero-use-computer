@@ -46,8 +46,17 @@ impl Fonts {
             paths.push(custom.trim().to_string());
         }
         #[cfg(target_os = "linux")]
-        // A font for right-to-left scripts first, then the usual one.
-        for query in ["sans:lang=ar", "sans:lang=he", "sans"] {
+        // A font for right-to-left scripts first, then the usual one, then
+        // Chinese, Japanese and Korean ones (app names in those scripts
+        // were boxes).
+        for query in [
+            "sans:lang=ar",
+            "sans:lang=he",
+            "sans",
+            "sans:lang=zh-cn",
+            "sans:lang=ja",
+            "sans:lang=ko",
+        ] {
             if let Ok(out) = std::process::Command::new("fc-match")
                 .args(["-f", "%{file}", query])
                 .output()
@@ -60,7 +69,7 @@ impl Fonts {
 
         let mut faces = Vec::new();
         for p in paths {
-            if faces.len() >= 4 {
+            if faces.len() >= 6 {
                 break;
             }
             let Some(data) = open_font(&p) else {
@@ -96,13 +105,31 @@ const CANDIDATES: &[&str] = &[
     "/System/Library/Fonts/Supplemental/Tahoma.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/System/Library/Fonts/Geneva.ttf",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
 ];
+/// In the Windows folder's `Fonts` (wherever Windows is installed): the
+/// usual fonts, then Chinese, Japanese and Korean ones for labels in those
+/// scripts.
 #[cfg(target_os = "windows")]
-const CANDIDATES: &[&str] = &[
-    "C:\\Windows\\Fonts\\segoeui.ttf",
-    "C:\\Windows\\Fonts\\tahoma.ttf",
-    "C:\\Windows\\Fonts\\arial.ttf",
-];
+static CANDIDATES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    let root = std::env::var("SystemRoot")
+        .or_else(|_| std::env::var("WINDIR"))
+        .ok()
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| "C:\\Windows".into());
+    [
+        "segoeui.ttf",
+        "tahoma.ttf",
+        "arial.ttf",
+        "msyh.ttc",
+        "YuGothM.ttc",
+        "malgun.ttf",
+    ]
+    .iter()
+    .map(|f| format!("{}\\Fonts\\{f}", root.trim_end_matches(['\\', '/'])))
+    .collect()
+});
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const CANDIDATES: &[&str] = &[];
 

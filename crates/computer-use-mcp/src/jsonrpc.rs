@@ -75,6 +75,8 @@ pub struct RpcError {
 /// (-32700), or not a request, notification or response object (-32600,
 /// with the message's id when it has a valid one).
 pub fn parse_message(text: &str) -> Result<Incoming, Box<Response>> {
+    // Some Windows pipelines start the stream with a byte-order mark.
+    let text = text.trim_start_matches('\u{feff}');
     let value: Value = serde_json::from_str(text).map_err(|e| {
         Box::new(Response::err(
             Value::Null,
@@ -188,6 +190,13 @@ mod tests {
     fn code(text: &str) -> (i64, Value) {
         let e = parse_message(text).unwrap_err();
         (e.error.unwrap().code, e.id)
+    }
+
+    #[test]
+    fn a_byte_order_mark_before_the_first_message() {
+        let m = parse_message("\u{feff}{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
+            .unwrap();
+        assert_eq!(m.id, Some(serde_json::json!(1)));
     }
 
     #[test]

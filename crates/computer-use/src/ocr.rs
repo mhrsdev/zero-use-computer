@@ -344,6 +344,14 @@ pub fn tesseract_at(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // No console window of its own (a server started without one would
+    // open one per reading, and it could take the keyboard focus).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let child = cmd.spawn().map_err(|e| {
         Error::Unsupported(format!(
             "no OCR: `{program}` could not be started ({e}); install Tesseract or set ocr.tesseract_path"

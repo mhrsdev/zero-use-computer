@@ -23,7 +23,7 @@ how many tools are exposed. Fix what it flags before connecting a client:
 |---|---|
 | **macOS** | System Settings ▸ Privacy & Security ▸ **Accessibility** and **Screen Recording** for the app that *launches* the server (Terminal, Claude Desktop, Codex, your IDE). Restart that app afterwards. |
 | **Windows** | Nothing to grant. Apps running as administrator can't be controlled from a normal process. |
-| **Linux** | An **X11 or XWayland** session with the AT-SPI accessibility bus running (GNOME: `gsettings set org.gnome.desktop.interface toolkit-accessibility true`). Native Wayland input and capture aren't supported. |
+| **Linux** | An **X11 or XWayland** session with the AT-SPI accessibility bus running. The server switches accessibility on when it is off (the desktop remembers it; GNOME: `gsettings set org.gnome.desktop.interface toolkit-accessibility false` turns it off again) and starts the apps it opens with it on. Without the bus it still starts: screenshots, input and windows work, the tree doesn't. Native Wayland input and capture aren't supported. |
 
 ## 1. Give the agent the skills
 

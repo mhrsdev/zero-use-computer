@@ -321,7 +321,7 @@ enabled = false             # append a JSONL line (metadata only) per call
 # path = "/path/to/audit.log"   # default: <COMPUTER_USE_HOME>/audit.log
 
 [server]
-log = "warn"                # error, warn, info, debug, trace
+log = "warn"                # off, error, warn, info, debug, trace ($COMPUTER_USE_LOG overrides)
 http_addr = ""              # e.g. "127.0.0.1:8787" to serve over HTTP
 http_token = ""             # bearer token, required when http_addr is set
 # The MCP instructions sent at connection: "full", "short" (the loop and

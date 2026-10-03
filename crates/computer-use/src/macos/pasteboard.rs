@@ -23,8 +23,22 @@ pub fn get() -> Result<String> {
             "it holds concealed content (a password or another secret, as marked by the app that copied it)".into(),
         ));
     }
-    let s = unsafe { pb.stringForType(NSPasteboardTypeString) };
-    let mut text = s.map(|s| s.to_string()).unwrap_or_default();
+    let Some(s) = (unsafe { pb.stringForType(NSPasteboardTypeString) }) else {
+        // Something other than text (an image, files…), or nothing.
+        let types: Vec<String> = pb
+            .types()
+            .map(|t| {
+                (0..t.count())
+                    .map(|i| t.objectAtIndex(i).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        return match no_text(&types) {
+            Some(why) => Err(Error::ActionFailed(why)),
+            None => Ok(String::new()),
+        };
+    };
+    let mut text = s.to_string();
     if text.len() > MAX_BYTES {
         let total = text.chars().count();
         let mut cut = MAX_BYTES;
@@ -40,6 +54,22 @@ pub fn get() -> Result<String> {
     Ok(text)
 }
 
+/// Most pasteboard types named in a message.
+const TYPES_SHOWN: usize = 6;
+
+/// The message for a clipboard holding `types` but no text; `None` when it
+/// holds nothing (it is empty).
+fn no_text(types: &[String]) -> Option<String> {
+    if types.is_empty() {
+        return None;
+    }
+    let mut shown = types[..types.len().min(TYPES_SHOWN)].join(", ");
+    if types.len() > TYPES_SHOWN {
+        shown.push_str(&format!(" and {} more", types.len() - TYPES_SHOWN));
+    }
+    Some(format!("the clipboard holds no text (it holds: {shown})"))
+}
+
 pub fn set(text: &str) -> Result<()> {
     let pb = NSPasteboard::generalPasteboard();
     let written = unsafe {
@@ -53,5 +83,23 @@ pub fn set(text: &str) -> Result<()> {
         Err(Error::Platform(
             "could not write the text to the pasteboard".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::no_text;
+
+    #[test]
+    fn a_clipboard_without_text_names_what_it_holds() {
+        assert_eq!(no_text(&[]), None);
+        let types = vec!["public.png".to_string(), "public.tiff".to_string()];
+        assert_eq!(
+            no_text(&types).as_deref(),
+            Some("the clipboard holds no text (it holds: public.png, public.tiff)")
+        );
+        let many: Vec<String> = (0..9).map(|i| format!("t{i}")).collect();
+        let msg = no_text(&many).unwrap();
+        assert!(msg.ends_with("t5 and 3 more)"), "{msg}");
     }
 }

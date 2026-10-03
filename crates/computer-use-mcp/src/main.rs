@@ -221,8 +221,11 @@ fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Ba
     Ok(Engine::new(backend, store).with_overrides(apply_overrides(common)))
 }
 
+/// Log at `level` (`server.log`), or at what `$COMPUTER_USE_LOG` says.
+/// Not `$RUST_LOG`: one exported for another program (`trace`, say) would
+/// flood the client's log with this server's every message.
 fn init_logging(level: &str) {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
+    env_logger::Builder::from_env(env_logger::Env::new().filter_or("COMPUTER_USE_LOG", level))
         .target(env_logger::Target::Stderr)
         .format_timestamp_millis()
         .init();
@@ -260,12 +263,30 @@ fn run() -> Result<()> {
         return config_cmd(&cli.common, action);
     }
 
-    let store = load_store(&cli.common)?;
+    let command = cli.command.unwrap_or(Command::Serve);
+    // Serving with a broken settings file starts with the defaults and
+    // says why (the client would only see "server failed to start");
+    // the other commands stop on it.
+    let (store, problem) = match load_store(&cli.common) {
+        Ok(store) => (store, None),
+        Err(e) if matches!(command, Command::Serve) => {
+            let mut store = ConfigStore {
+                config: Default::default(),
+                path: Some(config_path(&cli.common)),
+            };
+            apply_overrides(&cli.common)(&mut store.config);
+            (store, Some(format!("{e:#}")))
+        }
+        Err(e) => return Err(e),
+    };
     init_logging(&store.config.server.log);
+    if let Some(p) = &problem {
+        log::error!("{p}; serving with the default settings");
+    }
     warn_unknown_keys(&config_path(&cli.common));
 
-    match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(&cli.common, store),
+    match command {
+        Command::Serve => serve(&cli.common, store, problem),
         Command::Apps => run_and_print(&cli.common, store, "list_apps", json!({})),
         Command::State {
             app,
@@ -325,7 +346,7 @@ fn shown(mut cfg: Config) -> Config {
 }
 
 fn warn_unknown_keys(path: &std::path::Path) {
-    if let Ok(text) = std::fs::read_to_string(path) {
+    if let Ok(text) = config::read_text(path) {
         for key in config::unknown_keys(&text) {
             log::warn!("{}: unknown setting `{key}` (ignored)", path.display());
         }
@@ -379,7 +400,7 @@ fn config_cmd(common: &Common, action: &ConfigCmd) -> Result<()> {
             print_setting(&path, key)?;
         }
         ConfigCmd::Check => {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let text = config::read_text(&path).unwrap_or_default();
             ConfigStore::load(Some(&path))?;
             let unknown = config::unknown_keys(&text);
             if unknown.is_empty() {
@@ -415,11 +436,14 @@ fn with_overlay(engine: Engine<Box<dyn Backend>>) -> Engine<Box<dyn Backend>> {
     }
 }
 
-fn serve(common: &Common, store: ConfigStore) -> Result<()> {
+fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result<()> {
     let server_cfg = store.config.server.clone();
     // Before anything is started: no child may hold the client's pipes.
     computer_use::backend::keep_stdio_private();
     let mut engine = with_overlay(build_engine(common, store)?);
+    if let Some(p) = problem {
+        engine = engine.with_settings_problem(p);
+    }
     // Listen for the stop key from the start, not only from the first call.
     engine.arm();
 
@@ -450,7 +474,7 @@ fn serve(common: &Common, store: ConfigStore) -> Result<()> {
     // call while it runs).
     let stdin = std::io::BufReader::new(std::io::stdin());
     let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin, stdout.lock());
+    let mut server = Server::new(engine, stdin, stdout.lock()).stop_when_input_ends();
     server.run().context("serving MCP over stdio")
 }
 
@@ -525,7 +549,7 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             " (not created; defaults in use — run `config init`)"
         }
     );
-    if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+    if let Ok(text) = config::read_text(&cfg_path) {
         for key in config::unknown_keys(&text) {
             println!("          ! unknown setting `{key}`");
         }

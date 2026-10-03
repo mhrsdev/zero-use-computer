@@ -575,3 +575,27 @@ fn the_reference_chart_draws() {
     let d = e.call_tool("design", json!({"name": "chart"}));
     assert!(d.text.contains("7 layers"), "{}", d.text);
 }
+
+#[test]
+fn a_script_never_takes_a_tool_manager_name() {
+    let dir = library("manager-names");
+    let mut e = engine_with(&dir, |c| {
+        c.tools.manager = crate::config::ToolManager::Off;
+    });
+    let out = e.call_tool("script", json!({"save": "use_tool", "code": "1"}));
+    assert!(
+        out.is_error && out.text.contains("built-in"),
+        "{}",
+        out.text
+    );
+    // One dropped into the folder by hand is not a tool: with the manager
+    // on, the list would name it twice, which clients refuse.
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("find_tools.rhai"), "1").unwrap();
+    let names: Vec<String> = e
+        .tool_definitions()
+        .iter()
+        .map(|d| d.name.to_string())
+        .collect();
+    assert!(!names.iter().any(|n| n == "find_tools"), "{names:?}");
+}

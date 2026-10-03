@@ -57,6 +57,12 @@ fn banners(el: &AxRef, depth: usize, out: &mut Vec<Notification>) {
 
 /// The notifications on screen. The caller holds an autorelease pool.
 pub fn recent() -> Result<Vec<Notification>> {
+    // Without Accessibility access every read comes back empty: say so,
+    // rather than "no notifications".
+    // SAFETY: a plain query, without side effects (no prompt).
+    if unsafe { ffi::AXIsProcessTrusted() } == 0 {
+        return Err(super::accessibility_off());
+    }
     let running = NSWorkspace::sharedWorkspace().runningApplications();
     let pid = (0..running.count())
         .map(|i| running.objectAtIndex(i))

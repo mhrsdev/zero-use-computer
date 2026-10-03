@@ -261,7 +261,7 @@ fn covers(outer: Rectangle, inner: Rectangle) -> bool {
 
 impl X11Surface {
     pub fn open() -> Result<Self, String> {
-        let (conn, num) = x11rb::connect(None).map_err(err)?;
+        let (conn, num) = crate::linux::x11::connect_display().map_err(err)?;
         if conn
             .extension_information(shape::X11_EXTENSION_NAME)
             .map_err(err)?

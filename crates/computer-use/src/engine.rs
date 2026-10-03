@@ -256,6 +256,10 @@ pub struct Engine<B: Backend> {
     overlay_error: Option<String>,
     /// The user was told the stop key doesn't work (told once).
     stop_note_shown: bool,
+    /// What is wrong with the settings file, while it can't be used; told
+    /// to the agent once.
+    settings_problem: Option<String>,
+    settings_problem_shown: bool,
     /// Explanations already given in full.
     hints: Hints,
     /// Set by the user's stop key (through the overlay helper) or the host;
@@ -441,6 +445,8 @@ impl<B: Backend> Engine<B> {
             overlay_retry_at: None,
             overlay_error: None,
             stop_note_shown: false,
+            settings_problem: None,
+            settings_problem_shown: false,
             hints: Hints::default(),
             stop: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -511,6 +517,7 @@ impl<B: Backend> Engine<B> {
                     f(&mut store.config);
                 }
                 log::info!("reloaded settings from {}", path.display());
+                self.settings_problem = None;
                 self.backend.configure(&store.config);
                 self.store = store;
                 self.scripts.set_dir(self.store.config.script.library());
@@ -519,11 +526,29 @@ impl<B: Backend> Engine<B> {
             }
             Err(e) => {
                 log::warn!("keeping previous settings; {e}");
+                let problem =
+                    format!("{e}; the settings in use until it is fixed are the ones before");
+                if self.settings_problem.as_deref() != Some(&problem) {
+                    self.settings_problem = Some(problem);
+                    self.settings_problem_shown = false;
+                }
                 // Maybe read half-written: look once more next time, even if
                 // the finished file keeps this modification time.
                 self.config_retry = changed;
             }
         }
+    }
+
+    /// The settings file couldn't be used when the server started (`problem`
+    /// says why), so the defaults are in use: the agent is told once, and a
+    /// fixed file is picked up as soon as it is saved.
+    pub fn with_settings_problem(mut self, problem: impl Into<String>) -> Self {
+        self.settings_problem = Some(format!(
+            "{}; the default settings are in use until it is fixed",
+            problem.into()
+        ));
+        self.settings_problem_shown = false;
+        self
     }
 
     /// Settings the host always forces (e.g. command-line flags). Applied now
@@ -2704,6 +2729,14 @@ impl<B: Backend> Engine<B> {
                 "\n\nNote: the user's emergency stop key ({key}) is not working: {problem}. Tell the user now, so they know they can't stop you with it."
             ));
         }
+        if !self.settings_problem_shown
+            && let Some(problem) = &self.settings_problem
+        {
+            self.settings_problem_shown = true;
+            out.text.push_str(&format!(
+                "\n\nNote: the settings file has an error: {problem}. Tell the user, so they can fix it (it is read again when saved)."
+            ));
+        }
         self.sent_tokens = self.sent_tokens.saturating_add(out.estimated_tokens());
         if !out.is_error {
             self.note_result();
@@ -2936,7 +2969,8 @@ impl<B: Backend> Engine<B> {
         }
         let path = audit
             .path
-            .clone()
+            .as_deref()
+            .and_then(crate::config::settings_path)
             .unwrap_or_else(|| crate::config::home_dir().join("audit.log"));
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

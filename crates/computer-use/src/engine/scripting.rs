@@ -135,7 +135,12 @@ impl<B: Backend> Engine<B> {
             return defs;
         }
         for s in self.scripts.list() {
-            if BUILTIN.contains(&s.name.as_str()) || !self.store.config.tools.is_enabled(&s.name) {
+            // A name the tool manager uses would list a tool twice, which
+            // clients refuse for the whole session.
+            if BUILTIN.contains(&s.name.as_str())
+                || crate::tools::MANAGER_TOOLS.contains(&s.name.as_str())
+                || !self.store.config.tools.is_enabled(&s.name)
+            {
                 continue;
             }
             defs.push(ToolDefinition {
@@ -260,7 +265,9 @@ impl<B: Backend> Engine<B> {
         if let Some(name) = &args.save {
             let name = name.trim().to_lowercase();
             script::valid_name(&name).map_err(Error::InvalidArgs)?;
-            if BUILTIN.contains(&name.as_str()) {
+            if BUILTIN.contains(&name.as_str())
+                || crate::tools::MANAGER_TOOLS.contains(&name.as_str())
+            {
                 return Err(Error::InvalidArgs(format!(
                     "\"{name}\" is a built-in tool: give the script another name"
                 )));

@@ -4,6 +4,7 @@
 
 pub(crate) mod cg;
 mod ffi;
+mod layout;
 mod notify;
 mod ocr;
 mod pasteboard;
@@ -45,6 +46,9 @@ pub struct MacBackend {
     /// apart so a snapshot (which renews the app's element handles) doesn't
     /// invalidate a window list callers still reuse.
     window_handles: HashMap<ElementHandle, (u32, AxRef)>,
+    /// pid → the CGWindowIDs its latest `list_windows` found, to tell a
+    /// real window id from a made-up one in an [`InputTarget`].
+    cg_windows: HashMap<u32, HashSet<u32>>,
     next_handle: ElementHandle,
     /// Read all of an element's attributes in one AX call.
     batch_attributes: bool,
@@ -126,6 +130,8 @@ struct Walk {
     /// the same way (after waiting out the timeout), so the walk stops.
     failed: Option<AXError>,
     timed_out: bool,
+    /// The element the walk started at no longer exists.
+    root_gone: bool,
 }
 
 impl Walk {
@@ -134,6 +140,7 @@ impl Walk {
             deadline: Instant::now() + WALK_DEADLINE,
             failed: None,
             timed_out: false,
+            root_gone: false,
         }
     }
 
@@ -158,6 +165,33 @@ fn accessibility_off() -> Error {
     Error::Permission(
         "Accessibility is turned off for this server: enable the app that runs it (your terminal or MCP client) under System Settings ▸ Privacy & Security ▸ Accessibility, then try again".into(),
     )
+}
+
+/// An error after which an element is not read further: it no longer
+/// exists, or the app isn't answering ([`ffi::is_fatal`]).
+fn ends_walk(err: AXError) -> bool {
+    err == ffi::kAXErrorInvalidUIElement || ffi::is_fatal(err)
+}
+
+/// The error for a read the app did not complete: `timeout` is the
+/// messaging timeout (s).
+fn read_error(err: AXError, app: &str, timeout: f32) -> Error {
+    match err {
+        ffi::kAXErrorAPIDisabled => accessibility_off(),
+        ffi::kAXErrorCannotComplete => Error::ActionFailed(format!(
+            "{app} is not responding: it did not answer the accessibility request within {timeout:.1} s (it may be busy, hung, or showing a dialog). Wait a moment and try again."
+        )),
+        ffi::kAXErrorCannotCompleteAtOnce => Error::ActionFailed(format!(
+            "{app} could not answer the accessibility request right now (it may still be starting up, or this part of it is drawn by another process). Try again in a moment."
+        )),
+        ffi::kAXErrorInvalidUIElement => Error::ActionFailed(format!(
+            "this part of {app} no longer exists (its window closed, or the app quit). Call get_app_state again."
+        )),
+        e => match ffi::describe(e) {
+            Some(what) => Error::Platform(format!("{app}: {what} (accessibility error {e})")),
+            None => Error::Platform(format!("accessibility error {e} from {app}")),
+        },
+    }
 }
 
 /// The app's name for messages.
@@ -191,6 +225,7 @@ impl MacBackend {
             apps: HashMap::new(),
             handles: HashMap::new(),
             window_handles: HashMap::new(),
+            cg_windows: HashMap::new(),
             next_handle: 1,
             batch_attributes: defaults.batch_attributes,
             messaging_timeout: defaults.messaging_timeout_secs,
@@ -202,6 +237,7 @@ impl MacBackend {
     /// Set the messaging timeout globally (on the system-wide element) and
     /// on the app elements already made.
     fn apply_timeout(&self) {
+        ffi::set_messaging_timeout(self.messaging_timeout);
         for el in self.system_wide.iter().chain(self.apps.values()) {
             // SAFETY: a live AX element.
             unsafe { ffi::AXUIElementSetMessagingTimeout(el.as_ref(), self.messaging_timeout) };
@@ -215,9 +251,35 @@ impl MacBackend {
         let raw = unsafe { ffi::AXUIElementCreateApplication(pid as i32) };
         let el = unsafe { AxRef::from_create(raw) }
             .ok_or_else(|| Error::AppNotFound(format!("pid {pid}")))?;
+        // Chromium and Electron apps (VS Code, Slack…) build their tree
+        // only for assistive apps that ask: AXManualAccessibility does,
+        // without AXEnhancedUserInterface's slow window animations. Other
+        // apps refuse or ignore it. Asked once per app element (per pid),
+        // without waiting long on an app that doesn't answer.
+        // SAFETY: a live AX element.
+        unsafe {
+            ffi::AXUIElementSetMessagingTimeout(el.as_ref(), self.messaging_timeout.min(0.5))
+        };
+        let enabled = ffi::set_bool(el.as_ref(), "AXManualAccessibility", true).is_ok();
         unsafe { ffi::AXUIElementSetMessagingTimeout(el.as_ref(), self.messaging_timeout) };
         self.apps.insert(pid, el.clone());
+        if enabled {
+            // Let it start building the tree; a first snapshot may still
+            // be thin, the next one fuller.
+            log::debug!("enabled AXManualAccessibility for pid {pid}");
+            std::thread::sleep(Duration::from_millis(150));
+        }
         Ok(el)
+    }
+
+    /// The target's window as a CGWindowID, when it is one the app's
+    /// latest window list found (window ids without one are made up).
+    fn cg_window(&self, target: &InputTarget) -> Option<u32> {
+        let id = u32::try_from(target.window_id?).ok()?;
+        self.cg_windows
+            .get(&target.pid)
+            .is_some_and(|ids| ids.contains(&id))
+            .then_some(id)
     }
 
     fn handle_for(&mut self, pid: u32, el: AxRef) -> ElementHandle {
@@ -248,14 +310,7 @@ impl MacBackend {
 
     /// The error for a read the app did not complete.
     fn read_error(&self, err: AXError, app: &str) -> Error {
-        match err {
-            ffi::kAXErrorAPIDisabled => accessibility_off(),
-            ffi::kAXErrorCannotComplete => Error::ActionFailed(format!(
-                "{app} is not responding: it did not answer the accessibility request within {:.1} s (it may be busy, hung, or showing a dialog). Wait a moment and try again.",
-                self.messaging_timeout
-            )),
-            e => Error::Platform(format!("accessibility error {e} from {app}")),
-        }
+        read_error(err, app, self.messaging_timeout)
     }
 
     /// Read an element's attributes: one batched IPC call when enabled,
@@ -263,17 +318,35 @@ impl MacBackend {
     /// error ([`ffi::is_fatal`]), without the fallback: the app isn't
     /// answering (each read would wait out the timeout again) or AX access
     /// is off.
+    ///
+    /// An element that no longer exists (`kAXErrorInvalidUIElement`: its
+    /// window closed) is an error too, never a node without a role.
     fn read_attrs(&self, el: &AxRef) -> std::result::Result<Attrs, AXError> {
         let r = el.as_ref();
         if self.batch_attributes {
             match ffi::copy_attrs(r, &ATTRS) {
-                Ok(v) => return Ok(Attrs::from_values(&v)),
-                Err(e) if ffi::is_fatal(e) => return Err(e),
+                Ok(mut v) => {
+                    // No role: ask for it alone, to tell a vanished element.
+                    if v[0].is_none() {
+                        match ffi::try_copy_attr(r, ATTRS[0]) {
+                            Ok(role) => v[0] = Some(role),
+                            Err(e) if ends_walk(e) => return Err(e),
+                            Err(_) => {}
+                        }
+                    }
+                    return Ok(Attrs::from_values(&v));
+                }
+                Err(e) if ends_walk(e) => return Err(e),
                 Err(_) => {}
             }
         }
         let mut v = Vec::with_capacity(ATTRS.len());
-        for name in ATTRS {
+        v.push(match ffi::try_copy_attr(r, ATTRS[0]) {
+            Ok(role) => Some(role),
+            Err(e) if ends_walk(e) => return Err(e),
+            Err(_) => None,
+        });
+        for name in &ATTRS[1..] {
             v.push(ffi::read_attr(r, name)?);
         }
         Ok(Attrs::from_values(&v))
@@ -380,7 +453,11 @@ impl MacBackend {
         }
         let mut attrs = match self.read_attrs(el) {
             Ok(a) => a,
+            // Gone (closed meanwhile): skipped, as is all under it.
             Err(e) => {
+                if depth == 0 && e == ffi::kAXErrorInvalidUIElement {
+                    state.root_gone = true;
+                }
                 state.note(e);
                 return;
             }
@@ -481,6 +558,7 @@ impl Backend for MacBackend {
         });
         // Forget the elements of apps that quit (a pid may be reused).
         self.apps.retain(|pid, _| alive.contains(pid));
+        self.cg_windows.retain(|pid, _| alive.contains(pid));
         self.handles.retain(|_, (pid, _)| alive.contains(pid));
         self.window_handles
             .retain(|_, (pid, _)| alive.contains(pid));
@@ -490,10 +568,14 @@ impl Backend for MacBackend {
     fn launch_app(&mut self, query: &str) -> Result<Option<String>> {
         // LaunchServices finds the app by its exact name (`open -a`), else by
         // bundle id (`open -b`). No `--args`: nothing of the query is passed on.
+        // The app's bundle id is returned: it is the `id` list_apps shows,
+        // so the engine recognises the app by it even when its process is
+        // named otherwise ("Visual Studio Code" runs as "Code").
         let mut last = String::new();
         for flag in ["-a", "-b"] {
             match run_open(flag, query) {
-                Ok(()) => return Ok(None),
+                Ok(()) if flag == "-b" => return Ok(Some(query.to_string())),
+                Ok(()) => return Ok(autoreleasepool(|_| bundle_id_of(query))),
                 Err(e) => last = e,
             }
         }
@@ -509,6 +591,13 @@ impl Backend for MacBackend {
         let windows = ffi::read_attr(app_el.as_ref(), "AXWindows")
             .map_err(|e| self.read_error(e, &app.name))?;
         let windows = ffi::value_to_elements(&windows);
+        if windows.is_empty() {
+            // AX lists only the windows on the current Space.
+            let elsewhere = cg::offscreen_windows(app.pid);
+            if elsewhere > 0 {
+                return Err(Error::ActionFailed(other_space(app, elsewhere)));
+            }
+        }
         let main_id = ffi::copy_single_element(app_el.as_ref(), "AXMainWindow")
             .and_then(|m| ffi::window_id(m.as_ref()));
         let focused_id = ffi::copy_single_element(app_el.as_ref(), "AXFocusedWindow")
@@ -517,6 +606,7 @@ impl Backend for MacBackend {
         // This listing replaces the app's previous window handles, once it
         // has worked (a failed one leaves them as they were).
         let mut handles = Vec::new();
+        let mut cg_ids = HashSet::new();
         let mut out = Vec::new();
         for win in windows {
             let title = match ffi::read_attr(win.as_ref(), "AXTitle") {
@@ -528,6 +618,7 @@ impl Backend for MacBackend {
             let bounds = self.rect_of(&win);
             let minimized = ffi::copy_bool(win.as_ref(), "AXMinimized").unwrap_or(false);
             let cg_id = ffi::window_id(win.as_ref());
+            cg_ids.extend(cg_id);
             let id = cg_id
                 .map(u64::from)
                 .unwrap_or_else(|| stable_id(&title, out.len()));
@@ -550,6 +641,7 @@ impl Backend for MacBackend {
         }
         self.window_handles.retain(|_, (p, _)| *p != app.pid);
         self.window_handles.extend(handles);
+        self.cg_windows.insert(app.pid, cg_ids);
         Ok(out)
     }
 
@@ -566,6 +658,13 @@ impl Backend for MacBackend {
         let mut state = Walk::new();
         let mut out = Vec::new();
         self.walk(app.pid, &root, None, 0, opts, &mut state, &mut out);
+        if state.root_gone {
+            self.window_handles.remove(&window.handle);
+            return Err(Error::ActionFailed(format!(
+                "the window \"{}\" of {} was closed. Call get_app_state again to see its other windows.",
+                window.title, app.name
+            )));
+        }
         match state.failed {
             // Not even the window answered: say so rather than show nothing.
             Some(e) if out.is_empty() => return Err(self.read_error(e, &app.name)),
@@ -663,7 +762,10 @@ impl Backend for MacBackend {
         unsafe { ffi::AXUIElementSetMessagingTimeout(r, 0.0) };
         done.map_err(|e| {
             action_error(e, pid, || {
-                format!("the app rejected action `{native_action}` (AX error {e})")
+                let why = ffi::describe(e)
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default();
+                format!("the app rejected action `{native_action}`{why} (AX error {e})")
             })
         })
     }
@@ -752,12 +854,20 @@ impl Backend for MacBackend {
         button: MouseButton,
         count: u8,
     ) -> Result<()> {
-        cg::click(target.pid, CGPoint { x: at.x, y: at.y }, button, count)
+        let window = self.cg_window(target);
+        cg::click(
+            target.pid,
+            window,
+            CGPoint { x: at.x, y: at.y },
+            button,
+            count,
+        )
     }
 
     fn drag(&mut self, target: &InputTarget, from: Point, to: Point) -> Result<()> {
         cg::drag(
             target.pid,
+            self.cg_window(target),
             CGPoint {
                 x: from.x,
                 y: from.y,
@@ -767,7 +877,11 @@ impl Backend for MacBackend {
     }
 
     fn move_pointer(&mut self, target: &InputTarget, at: Point) -> Result<Option<Point>> {
-        cg::hover(target.pid, CGPoint { x: at.x, y: at.y })?;
+        cg::hover(
+            target.pid,
+            self.cg_window(target),
+            CGPoint { x: at.x, y: at.y },
+        )?;
         Ok(None)
     }
 
@@ -782,11 +896,17 @@ impl Backend for MacBackend {
             .iter()
             .map(|s| s.iter().map(|p| CGPoint { x: p.x, y: p.y }).collect())
             .collect();
-        cg::draw(target.pid, &strokes, button, pace)
+        cg::draw(target.pid, self.cg_window(target), &strokes, button, pace)
     }
 
     fn scroll_wheel(&mut self, target: &InputTarget, at: Point, dx: i32, dy: i32) -> Result<()> {
-        cg::scroll(target.pid, CGPoint { x: at.x, y: at.y }, dx, dy)
+        cg::scroll(
+            target.pid,
+            self.cg_window(target),
+            CGPoint { x: at.x, y: at.y },
+            dx,
+            dy,
+        )
     }
 
     fn press_key(&mut self, target: &InputTarget, combo: &KeyCombo) -> Result<()> {
@@ -796,6 +916,48 @@ impl Backend for MacBackend {
     fn type_text(&mut self, target: &InputTarget, text: &str) -> Result<()> {
         cg::type_text(target.pid, text)
     }
+}
+
+/// The bundle id of the app `open -a` found for `query` (a name, or a
+/// path to an .app); `None` when it can't be told. The caller holds an
+/// autorelease pool.
+fn bundle_id_of(query: &str) -> Option<String> {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    let path = if query.contains('/') {
+        NSString::from_str(query)
+    } else {
+        // Deprecated for URLForApplicationWithBundleIdentifier, which needs
+        // the bundle id this looks for; still the lookup by name `open -a`
+        // makes.
+        #[allow(deprecated)]
+        NSWorkspace::sharedWorkspace().fullPathForApplication(&NSString::from_str(query))?
+    };
+    let class = AnyClass::get(c"NSBundle")?;
+    // SAFETY: NSBundle's documented class and instance methods, with
+    // argument and return types as declared.
+    let id: Option<Retained<NSString>> = unsafe {
+        let bundle: Option<Retained<AnyObject>> = msg_send![class, bundleWithPath: &*path];
+        msg_send![&*bundle?, bundleIdentifier]
+    };
+    let id = id?.to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The message for an app whose `count` windows are all off this Space.
+fn other_space(app: &AppInfo, count: usize) -> String {
+    let (windows, are) = if count == 1 {
+        ("window", "is")
+    } else {
+        ("windows", "are")
+    };
+    format!(
+        "{} has no window on the current Space: {count} {windows} of it {are} on another Space or in full screen, where they can't be read. Bring it forward first with launch_app app=\"{}\" (that switches to it), or ask the user to; then try again.",
+        app.name, app.id
+    )
 }
 
 /// `open <flag> <app>`, waiting (up to 10 s) for its answer so an unknown
@@ -868,7 +1030,55 @@ fn stable_id(title: &str, index: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::utf16_range;
+    use super::*;
+
+    #[test]
+    fn read_errors_say_what_happened() {
+        let e = read_error(ffi::kAXErrorCannotCompleteAtOnce, "Code", 2.0).to_string();
+        assert!(!e.contains("-25299"), "{e}");
+        assert!(e.contains("Code") && e.contains("Try again"), "{e}");
+        let e = read_error(ffi::kAXErrorCannotComplete, "Code", 2.0).to_string();
+        assert!(e.contains("2.0 s"), "{e}");
+        let e = read_error(ffi::kAXErrorInvalidUIElement, "Code", 2.0).to_string();
+        assert!(e.contains("no longer exists"), "{e}");
+        assert!(matches!(
+            read_error(ffi::kAXErrorAPIDisabled, "Code", 2.0),
+            Error::Permission(_)
+        ));
+        let e = read_error(-25208, "Code", 2.0).to_string();
+        assert!(e.contains("does not implement"), "{e}");
+        // An undocumented code still names the app and the code.
+        let e = read_error(-1, "Code", 2.0).to_string();
+        assert!(e.contains("-1") && e.contains("Code"), "{e}");
+    }
+
+    #[test]
+    fn vanished_elements_end_the_walk_below_them() {
+        assert!(ends_walk(ffi::kAXErrorInvalidUIElement));
+        assert!(ends_walk(ffi::kAXErrorCannotComplete));
+        assert!(ends_walk(ffi::kAXErrorAPIDisabled));
+        assert!(!ends_walk(ffi::kAXErrorNoValue));
+        assert!(!ends_walk(ffi::kAXErrorCannotCompleteAtOnce));
+    }
+
+    #[test]
+    fn windows_elsewhere_point_to_launch_app() {
+        let app = AppInfo {
+            id: "com.microsoft.VSCode".into(),
+            name: "Code".into(),
+            pid: 42,
+            exe: None,
+            frontmost: false,
+            hidden: false,
+        };
+        let one = other_space(&app, 1);
+        assert!(one.contains("1 window of it is"), "{one}");
+        assert!(
+            one.contains("launch_app app=\"com.microsoft.VSCode\""),
+            "{one}"
+        );
+        assert!(other_space(&app, 3).contains("3 windows of it are"));
+    }
 
     #[test]
     fn selection_ranges_count_utf16_units() {

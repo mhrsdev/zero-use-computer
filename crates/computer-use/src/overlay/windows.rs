@@ -277,9 +277,24 @@ impl Surface for WinSurface {
     }
 
     fn render_scale(&self) -> f32 {
-        // Draw at the display's scale (1.5 at 150%), so it isn't tiny.
-        // SAFETY: a plain query.
-        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
+        // Draw at the scale (1.5 at 150%) of the monitor the overlay is on,
+        // so it isn't tiny there; before it is shown anywhere, the
+        // system's.
+        let shown = [
+            Layer::Top,
+            Layer::Left,
+            Layer::Right,
+            Layer::Bottom,
+            Layer::Label,
+            Layer::Cursor,
+        ]
+        .iter()
+        .filter_map(|l| self.layers.get(l))
+        .find(|w| w.visible);
+        let dpi = shown
+            .and_then(|w| monitor_dpi(w.hwnd))
+            // SAFETY: a plain query.
+            .unwrap_or_else(|| unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() });
         (dpi as f32 / 96.0).max(1.0)
     }
 
@@ -489,6 +504,22 @@ fn capture_exclusion_supported() -> bool {
         .parse::<u32>()
         .ok()
         .is_none_or(|build| build >= 19041)
+}
+
+/// The scale (DPI) of the monitor a window is on.
+fn monitor_dpi(hwnd: HWND) -> Option<u32> {
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    let (mut x, mut y) = (0u32, 0u32);
+    // SAFETY: read-only queries into locals.
+    unsafe {
+        let m = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if m.is_invalid() {
+            return None;
+        }
+        GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut x, &mut y).ok()?;
+    }
+    (x > 0).then_some(x)
 }
 
 /// Whether process `pid` is still running.

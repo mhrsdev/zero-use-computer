@@ -36,8 +36,23 @@ $cuHome = if ($env:COMPUTER_USE_HOME) { $env:COMPUTER_USE_HOME } else { Join-Pat
 $binDir = Join-Path $cuHome 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 $exe = Join-Path $binDir 'computer-use-mcp.exe'
-Copy-Item -Force $source $exe
+# Old copies left by earlier upgrades (see below), now that nothing runs them.
+Get-ChildItem -Path $binDir -Filter 'computer-use-mcp.exe.old*' -ErrorAction SilentlyContinue |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+try {
+  Copy-Item -Force $source $exe
+} catch {
+  # A running server locks its program, but it may be renamed: move it
+  # aside (it is removed next time) and put the new one in its place.
+  $old = "$exe.old-$(Get-Date -Format yyyyMMddHHmmss)"
+  Rename-Item -Path $exe -NewName (Split-Path $old -Leaf)
+  Copy-Item -Force $source $exe
+  Write-Host 'The server was running: the new version is used from its next start.'
+}
 Write-Host "Installed: $exe"
+if ($env:COMPUTER_USE_HOME -and ($binDir -ne (Join-Path (Join-Path $env:USERPROFILE '.computer-use') 'bin'))) {
+  Write-Host "Note: COMPUTER_USE_HOME is set, so the program is in $binDir; the plugin zip looks in %USERPROFILE%\.computer-use\bin, so register it with this script instead (without -NoRegister)."
+}
 if ($NoRegister) { Write-Host 'Done (not registered with Claude Code). Upload the plugin zip, or run this again without -NoRegister.'; return }
 
 $serverArgs = @('serve')

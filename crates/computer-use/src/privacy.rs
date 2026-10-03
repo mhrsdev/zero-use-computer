@@ -68,13 +68,19 @@ pub fn card_numbers(s: &str) -> Vec<Range<usize>> {
         // hide it.
         let mut a = 0;
         while a < groups.len() {
-            let found = (a..groups.len()).rev().find(|&b| {
-                let digits: Vec<u8> = groups[a..=b]
-                    .iter()
-                    .flat_map(|g| g.2.iter().copied())
-                    .collect();
-                (13..=19).contains(&digits.len()) && luhn(&digits)
-            });
+            // Grown a group at a time and given up past 19 digits, so a
+            // long line of digit groups costs no more than a short one.
+            let mut digits: Vec<u8> = Vec::new();
+            let mut found = None;
+            for (b, g) in groups.iter().enumerate().skip(a) {
+                digits.extend_from_slice(&g.2);
+                if digits.len() > 19 {
+                    break;
+                }
+                if digits.len() >= 13 && luhn(&digits) {
+                    found = Some(b);
+                }
+            }
             match found {
                 Some(b) => {
                     out.push(byte_at(groups[a].0)..byte_at(groups[b].1));
@@ -247,6 +253,25 @@ pub fn active(cfg: &PrivacyConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_line_of_digit_groups_is_quick() {
+        let line: String = (0..20_000).map(|i| format!("{} ", i % 10)).collect();
+        let start = std::time::Instant::now();
+        card_numbers(&line);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        // Still found among groups that aren't part of it.
+        let s = "qty 3 4 card 4111 1111 1111 1111 12 34";
+        assert_eq!(
+            mask_card_numbers(s).unwrap(),
+            mask_card_numbers("qty 3 4 card 4111 1111 1111 1111 12 34").unwrap()
+        );
+        assert!(mask_card_numbers(s).unwrap().contains("1111 12 34"));
+    }
 
     #[test]
     fn a_card_next_to_other_numbers_is_still_masked() {

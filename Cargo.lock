@@ -367,7 +367,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "computer-use"
-version = "3.8.1"
+version = "3.8.2"
 dependencies = [
  "async-io",
  "base64",
@@ -393,6 +393,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "unicode-bidi",
+ "unicode-normalization",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-misc",
@@ -405,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "computer-use-mcp"
-version = "3.8.1"
+version = "3.8.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1603,6 +1604,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "toml"
 version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1728,6 +1735,15 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-properties"

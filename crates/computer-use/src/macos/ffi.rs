@@ -6,6 +6,8 @@
 
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeID, CFTypeRef, TCFType};
@@ -35,17 +37,69 @@ pub const kAXErrorNoValue: AXError = -25212;
 /// call. Not a code macOS uses.
 pub const kAXErrorCannotCompleteAtOnce: AXError = -25299;
 
-/// Under this, `kAXErrorCannotComplete` is no timeout.
-const AT_ONCE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Under this (ms), `kAXErrorCannotComplete` is no timeout. Set from the
+/// messaging timeout by [`set_messaging_timeout`].
+static AT_ONCE_MS: AtomicU64 = AtomicU64::new(250);
 
-/// `err`, with a `kAXErrorCannotComplete` that came back sooner than any
-/// timeout told apart ([`kAXErrorCannotCompleteAtOnce`]).
-fn timed(err: AXError, started: std::time::Instant) -> AXError {
-    if err == kAXErrorCannotComplete && started.elapsed() < AT_ONCE {
+/// How soon a `kAXErrorCannotComplete` must come back to be no timeout: at
+/// most 250 ms, and under half the messaging timeout `secs` (a short
+/// timeout would otherwise read every real timeout as "at once").
+pub fn at_once_threshold(secs: f32) -> Duration {
+    // Half of it, in whole ms (NaN and negative read as 0).
+    let half_ms = (secs.max(0.0) * 500.0) as u64;
+    Duration::from_millis(half_ms.min(250))
+}
+
+/// Note the messaging timeout (s) in use, for telling timeouts apart.
+pub fn set_messaging_timeout(secs: f32) {
+    AT_ONCE_MS.store(
+        at_once_threshold(secs).as_millis() as u64,
+        Ordering::Relaxed,
+    );
+}
+
+/// `err`, with a `kAXErrorCannotComplete` that came back after `elapsed`,
+/// sooner than `threshold`, told apart ([`kAXErrorCannotCompleteAtOnce`]).
+pub fn timed_after(err: AXError, elapsed: Duration, threshold: Duration) -> AXError {
+    if err == kAXErrorCannotComplete && elapsed < threshold {
         kAXErrorCannotCompleteAtOnce
     } else {
         err
     }
+}
+
+/// [`timed_after`] for a call made at `started`.
+fn timed(err: AXError, started: Instant) -> AXError {
+    let threshold = Duration::from_millis(AT_ONCE_MS.load(Ordering::Relaxed));
+    timed_after(err, started.elapsed(), threshold)
+}
+
+/// What an AX error means, for messages (`None` for success and codes
+/// macOS doesn't document).
+pub fn describe(err: AXError) -> Option<&'static str> {
+    Some(match err {
+        -25200 => "the accessibility request failed in the system",
+        kAXErrorIllegalArgument => "the request was not valid for this element",
+        kAXErrorInvalidUIElement => {
+            "the element no longer exists (its window closed, or the app quit)"
+        }
+        -25203 => "the observer is no longer valid",
+        kAXErrorCannotComplete => {
+            "the app did not answer in time (it may be busy, hung, or showing a dialog)"
+        }
+        -25205 => "the element does not have this attribute",
+        -25206 => "the element does not support this action",
+        -25207 | -25209 | -25210 => "the app does not send this notification",
+        -25208 => "the app does not implement this part of the accessibility API",
+        kAXErrorAPIDisabled => "Accessibility access is turned off for this server",
+        kAXErrorNoValue => "the attribute has no value",
+        -25213 => "the element does not have this parameterized attribute",
+        -25214 => "the value cannot be given precisely enough",
+        kAXErrorCannotCompleteAtOnce => {
+            "the app could not answer right now (it may still be starting up, or this part of it is drawn by another process)"
+        }
+        _ => return None,
+    })
 }
 
 /// An error after which no further call to the app does better for now:
@@ -124,6 +178,20 @@ unsafe extern "C" {
     ) -> *const c_void; // CGImageRef
     /// The `CGBitmapInfo` of a `CGImageRef`: alpha placement, byte order.
     pub fn CGImageGetBitmapInfo(image: *const c_void) -> u32;
+    /// The image's data provider (+0), or null.
+    pub fn CGImageGetDataProvider(image: *const c_void) -> *const c_void;
+    /// A copy (+1 CFDataRef) of a data provider's bytes, or null.
+    pub fn CGDataProviderCopyData(provider: *const c_void) -> CFTypeRef;
+    /// A bitmap context (+1 CGContextRef) drawing into `data`, or null.
+    pub fn CGBitmapContextCreate(
+        data: *mut c_void,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: *const c_void,
+        bitmap_info: u32,
+    ) -> *mut c_void;
     pub fn CGMainDisplayID() -> u32;
     pub fn CGDisplayBounds(display: u32) -> CGRect;
     /// Seconds since the last input event of a type (only the time).
@@ -143,6 +211,8 @@ pub const kCGWindowListOptionIncludingWindow: u32 = 1 << 3;
 pub const kCGWindowListExcludeDesktopElements: u32 = 1 << 4;
 pub const kCGWindowImageBoundsIgnoreFraming: u32 = 1 << 0;
 pub const kCGWindowImageBestResolution: u32 = 1 << 3;
+/// One pixel per point, whatever the displays' scale.
+pub const kCGWindowImageNominalResolution: u32 = 1 << 4;
 
 /// Whether this process may capture other apps' windows (the Screen
 /// Recording permission), by `CGPreflightScreenCaptureAccess` (macOS
@@ -181,7 +251,7 @@ fn as_ref(s: &CFString) -> CFStringRef {
 pub fn try_copy_attr(element: AXUIElementRef, attr: &str) -> Result<CFType, AXError> {
     let name = cfstr(attr);
     let mut out: CFTypeRef = ptr::null();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let err = unsafe { AXUIElementCopyAttributeValue(element, as_ref(&name), &mut out) };
     // SAFETY: a +1 reference from a Copy call, released on drop.
     let value = (!out.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(out) });
@@ -229,10 +299,11 @@ pub fn copy_single_element(element: AXUIElementRef, attr: &str) -> Option<AxRef>
 /// The element's action names, or the AX error that stopped the call.
 pub fn action_names(element: AXUIElementRef) -> Result<Vec<String>, AXError> {
     let mut out: CFTypeRef = ptr::null();
+    let started = Instant::now();
     let err = unsafe { AXUIElementCopyActionNames(element, &mut out) };
     // SAFETY: a +1 reference from a Copy call, released on drop.
     let cf = (!out.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(out) });
-    check(err)?;
+    check(timed(err, started))?;
     let Some(array) = cf.and_then(|cf| cf.downcast::<CFArray>()) else {
         return Ok(Vec::new());
     };
@@ -258,7 +329,9 @@ pub fn perform_action(element: AXUIElementRef, action: &str) -> Result<(), AXErr
 pub fn try_is_settable(element: AXUIElementRef, attr: &str) -> Result<bool, AXError> {
     let name = cfstr(attr);
     let mut settable: u8 = 0;
-    check(unsafe { AXUIElementIsAttributeSettable(element, as_ref(&name), &mut settable) })?;
+    let started = Instant::now();
+    let err = unsafe { AXUIElementIsAttributeSettable(element, as_ref(&name), &mut settable) };
+    check(timed(err, started))?;
     Ok(settable != 0)
 }
 
@@ -347,7 +420,7 @@ pub fn copy_attrs(element: AXUIElementRef, names: &[&str]) -> Result<Vec<Option<
     let cf_names: Vec<CFString> = names.iter().map(|n| cfstr(n)).collect();
     let array = CFArray::from_CFTypes(&cf_names);
     let mut out: CFTypeRef = ptr::null();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let err = unsafe {
         AXUIElementCopyMultipleAttributeValues(element, array.as_CFTypeRef(), 0, &mut out)
     };
@@ -485,5 +558,55 @@ impl Drop for AxRef {
         if !self.0.is_null() {
             unsafe { core_foundation::base::CFRelease(self.0) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn at_once_is_under_half_the_timeout() {
+        assert_eq!(at_once_threshold(5.0), Duration::from_millis(250));
+        assert_eq!(at_once_threshold(0.5), Duration::from_millis(250));
+        assert_eq!(at_once_threshold(0.2), Duration::from_millis(100));
+        assert_eq!(at_once_threshold(0.0), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_real_timeout_is_not_read_as_at_once() {
+        // With a 0.2 s timeout, a failure after 180 ms is that timeout.
+        let threshold = at_once_threshold(0.2);
+        let late = Duration::from_millis(180);
+        assert_eq!(
+            timed_after(kAXErrorCannotComplete, late, threshold),
+            kAXErrorCannotComplete
+        );
+        let early = Duration::from_millis(5);
+        assert_eq!(
+            timed_after(kAXErrorCannotComplete, early, threshold),
+            kAXErrorCannotCompleteAtOnce
+        );
+        // Other errors are left alone.
+        assert_eq!(
+            timed_after(kAXErrorInvalidUIElement, early, threshold),
+            kAXErrorInvalidUIElement
+        );
+    }
+
+    #[test]
+    fn common_errors_are_described() {
+        for e in [
+            kAXErrorInvalidUIElement,
+            kAXErrorCannotComplete,
+            kAXErrorCannotCompleteAtOnce,
+            kAXErrorAPIDisabled,
+            -25205,
+            -25208,
+        ] {
+            assert!(describe(e).is_some_and(|d| !d.is_empty()), "{e}");
+        }
+        assert_eq!(describe(kAXErrorSuccess), None);
+        assert_eq!(describe(-1), None);
     }
 }

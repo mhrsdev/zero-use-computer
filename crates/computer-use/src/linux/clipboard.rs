@@ -22,7 +22,8 @@ struct Helper {
 
 const HELPERS: &[Helper] = &[
     Helper {
-        get: ("wl-paste", &["--no-newline"]),
+        // Text only: an image on the clipboard isn't text.
+        get: ("wl-paste", &["--no-newline", "--type", "text"]),
         set: ("wl-copy", &[]),
         wayland: true,
     },
@@ -41,8 +42,60 @@ const HELPERS: &[Helper] = &[
 
 /// The helpers that can work here: wl-clipboard only in a Wayland session.
 fn helpers() -> impl Iterator<Item = &'static Helper> {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
+    let wayland = super::wayland::session();
     HELPERS.iter().filter(move |h| wayland || !h.wayland)
+}
+
+/// Whether a helper that failed (with nothing on stdout) said that the
+/// clipboard has no text: it is empty, or holds something else (an image).
+fn says_empty(stdout: &[u8], stderr: &str) -> bool {
+    let e = stderr.to_ascii_lowercase();
+    stdout.is_empty()
+        && (e.contains("nothing is copied")
+            || e.contains("no selection")
+            || e.contains("no suitable type")
+            || (e.contains("target") && e.contains("not available")))
+}
+
+/// Read all of a pipe on another thread, so that a helper that never
+/// finishes (the clipboard's owner doesn't answer) can be given up on.
+fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(mut pipe) = pipe {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
+    }
+    rx
+}
+
+/// Write `data` to a child's stdin and wait for it to exit, all within
+/// `deadline` (a helper that doesn't read its input would block the write).
+/// Whether the write went through (or the error), and how it exited
+/// (`None`: killed).
+fn feed(child: &mut Child, data: &[u8], deadline: Instant) -> (std::io::Result<()>, Option<bool>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(mut stdin) = child.stdin.take() {
+        let data = data.to_vec();
+        std::thread::spawn(move || {
+            // Stdin is closed when this ends.
+            let _ = tx.send(stdin.write_all(&data));
+        });
+    } else {
+        let _ = tx.send(Ok(()));
+    }
+    let written = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "it didn't take the text in time",
+        )),
+    };
+    // Killed if it's still running: the writer's pipe then breaks too.
+    let done = wait_until(child, deadline);
+    (written, done)
 }
 
 fn is_enoent(e: &std::io::Error) -> bool {
@@ -74,7 +127,7 @@ pub fn get() -> Result<String> {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
         {
             Ok(c) => c,
@@ -83,23 +136,25 @@ pub fn get() -> Result<String> {
         };
         missing = false;
         let deadline = Instant::now() + DEADLINE;
-        // Read on another thread, so a helper that never finishes (the
-        // clipboard's owner doesn't answer) can be given up on.
-        let (tx, rx) = std::sync::mpsc::channel();
-        if let Some(mut out) = child.stdout.take() {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = tx.send(out.read_to_end(&mut buf).map(|_| buf));
-            });
-        }
-        let read = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-        match (wait_until(&mut child, deadline), read) {
-            (Some(true), Ok(Ok(out))) => return Ok(String::from_utf8_lossy(&out).into_owned()),
+        let out = read_all(child.stdout.take());
+        let err = read_all(child.stderr.take());
+        let read = out.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        let status = wait_until(&mut child, deadline);
+        let stderr = err
+            .recv_timeout(Duration::from_millis(100))
+            .map(|e| String::from_utf8_lossy(&e).into_owned())
+            .unwrap_or_default();
+        match (status, read) {
+            (Some(true), Ok(out)) => return Ok(String::from_utf8_lossy(&out).into_owned()),
+            // No text on the clipboard: empty, not a failure (and the next
+            // helper, the X11 one in a Wayland session, would read another
+            // clipboard).
+            (Some(false), Ok(out)) if says_empty(&out, &stderr) => return Ok(String::new()),
             (None, _) | (_, Err(_)) => {
                 log::warn!("{cmd} didn't finish within {} s", DEADLINE.as_secs());
                 timed_out = Some(cmd);
             }
-            _ => {}
+            _ => log::debug!("{cmd} failed: {}", stderr.trim()),
         }
     }
     if let Some(cmd) = timed_out {
@@ -129,14 +184,10 @@ pub fn set(text: &str) -> Result<()> {
             Err(e) => return Err(Error::Platform(format!("{cmd}: {e}"))),
         };
         missing = false;
-        let written = child
-            .stdin
-            .take()
-            .map(|mut stdin| stdin.write_all(text.as_bytes()))
-            .unwrap_or(Ok(()));
-        // Stdin is closed now; wait (the helper forks a daemon to serve the
-        // clipboard and returns promptly), and reap it whatever happened.
-        let done = wait_until(&mut child, Instant::now() + DEADLINE);
+        // Then wait (the helper forks a daemon to serve the clipboard and
+        // returns promptly once its input is closed), and reap it whatever
+        // happened.
+        let (written, done) = feed(&mut child, text.as_bytes(), Instant::now() + DEADLINE);
         match (written, done) {
             (Ok(()), Some(true)) => return Ok(()),
             (Err(e), _) => log::warn!("{cmd}: {e}"),
@@ -154,5 +205,58 @@ fn unavailable(missing: bool) -> Error {
         )
     } else {
         Error::Platform("the clipboard helper failed".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clipboard_without_text_is_empty_not_an_error() {
+        assert!(says_empty(b"", "Nothing is copied\n"));
+        assert!(says_empty(b"", "No suitable type of content copied\n"));
+        assert!(says_empty(b"", "No selection\n"));
+        assert!(says_empty(b"", "Error: target STRING not available\n"));
+        assert!(says_empty(b"", "Error: target UTF8_STRING not available\n"));
+        // Other failures stay failures.
+        assert!(!says_empty(b"", "Failed to connect to a Wayland server\n"));
+        assert!(!says_empty(b"", "Error: Can't open display: :0\n"));
+        assert!(!says_empty(b"", ""));
+        assert!(!says_empty(b"text", "Nothing is copied"));
+    }
+
+    #[test]
+    fn a_helper_that_doesnt_read_its_input_is_given_up_on() {
+        // More than a pipe holds, to a program that never reads it.
+        let mut child = Command::new("sleep")
+            .arg("10")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("sleep");
+        let t = Instant::now();
+        let (written, done) = feed(
+            &mut child,
+            &vec![b'x'; 1 << 20],
+            Instant::now() + Duration::from_millis(300),
+        );
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(written.is_err());
+        assert_eq!(done, None, "killed");
+    }
+
+    #[test]
+    fn a_helper_gets_all_of_the_text() {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("cat");
+        let out = read_all(child.stdout.take());
+        let (written, done) = feed(&mut child, b"hello", Instant::now() + DEADLINE);
+        assert!(written.is_ok());
+        assert_eq!(done, Some(true));
+        assert_eq!(out.recv_timeout(DEADLINE).unwrap(), b"hello");
     }
 }

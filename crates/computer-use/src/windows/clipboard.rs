@@ -2,15 +2,20 @@
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner, OpenClipboard,
+    SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
 
+use super::wm::{answers, hung};
 use crate::error::{Error, Result};
 
 const CF_UNICODETEXT: u32 = 13;
+/// How long the clipboard's owner may take to answer before it counts as
+/// not responding.
+const OWNER_PROBE: std::time::Duration = std::time::Duration::from_millis(500);
 /// Extra attempts to open a clipboard another process holds.
 const OPEN_RETRIES: u64 = 5;
 
@@ -44,6 +49,17 @@ impl Drop for ClipboardGuard {
 
 pub fn get() -> Result<String> {
     let _guard = ClipboardGuard::open()?;
+    // Text its owner renders only when asked for (delayed rendering) is
+    // asked for with a message that waits for the owner: a hung owner
+    // would block here for as long as it hangs.
+    // SAFETY: a read-only query.
+    if let Ok(owner) = unsafe { GetClipboardOwner() }
+        && (hung(owner) || !answers(owner, OWNER_PROBE))
+    {
+        return Err(Error::ActionFailed(
+            "the app that put the text on the clipboard isn't responding, so the clipboard can't be read now; try again in a moment".into(),
+        ));
+    }
     unsafe {
         let handle = GetClipboardData(CF_UNICODETEXT)
             .map_err(|_| Error::Platform("clipboard has no text".into()))?;

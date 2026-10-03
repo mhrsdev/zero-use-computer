@@ -85,10 +85,36 @@ impl<'a> Wm<'a> {
         None
     }
 
-    /// Whether a window manager runs, and what it supports.
+    /// Whether a window manager runs (EWMH: the window the root names in
+    /// `_NET_SUPPORTING_WM_CHECK` is there and names itself). One that quit
+    /// or crashed leaves the root's property behind.
     fn has_wm(&self) -> bool {
-        self.prop32(self.root, "_NET_SUPPORTING_WM_CHECK", AtomEnum::WINDOW)
-            .is_some_and(|v| !v.is_empty())
+        let Some(on_root) = self.prop32(self.root, "_NET_SUPPORTING_WM_CHECK", AtomEnum::WINDOW)
+        else {
+            return false;
+        };
+        let on_check = on_root
+            .first()
+            .copied()
+            .filter(|w| *w != 0)
+            .and_then(|w| self.prop32(w, "_NET_SUPPORTING_WM_CHECK", AtomEnum::WINDOW));
+        wm_check_holds(&on_root, on_check.as_deref())
+    }
+
+    /// A string property of the root window (`AT_SPI_BUS`).
+    pub fn root_string(&self, prop: &str) -> Option<String> {
+        let prop = self.atom(prop)?;
+        let r = self
+            .conn
+            .get_property(false, self.root, prop, AtomEnum::STRING, 0, 4096)
+            .ok()?
+            .reply()
+            .ok()?;
+        let s = String::from_utf8_lossy(&r.value)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string();
+        (!s.is_empty()).then_some(s)
     }
 
     fn supports(&self, name: &str) -> bool {
@@ -102,7 +128,7 @@ impl<'a> Wm<'a> {
     }
 
     /// Where a window is on screen.
-    fn geometry(&self, win: Window) -> Option<Rect> {
+    pub fn geometry(&self, win: Window) -> Option<Rect> {
         let g = self.conn.get_geometry(win).ok()?.reply().ok()?;
         let t = self
             .conn
@@ -145,23 +171,26 @@ impl<'a> Wm<'a> {
             .filter(|p| *p != 0)
     }
 
-    /// The process that made a client window: as it says, else as the X
-    /// server knows (the XRes extension; older apps such as xcalc never say).
-    /// Never for a window manager's frame, which the window manager made.
-    fn owner_pid(&self, win: Window) -> Option<u32> {
-        self.pid_of(win).or_else(|| {
-            let spec = ClientIdSpec {
-                client: win,
-                mask: ClientIdMask::LOCAL_CLIENT_PID,
-            };
-            let reply = self.conn.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
-            reply
-                .ids
-                .iter()
-                .find(|id| u32::from(id.spec.mask) & u32::from(ClientIdMask::LOCAL_CLIENT_PID) != 0)
-                .and_then(|id| id.value.first().copied())
-                .filter(|p| *p != 0)
-        })
+    /// The process that made a client window: as the X server knows (the
+    /// XRes extension), else as the window says (`_NET_WM_PID`; a client on
+    /// another machine, or a server without XRes).
+    pub fn owner_pid(&self, win: Window) -> Option<u32> {
+        owner(self.client_pid(win), || self.pid_of(win))
+    }
+
+    /// The pid of the local process connected as `win`'s client (XRes).
+    fn client_pid(&self, win: Window) -> Option<u32> {
+        let spec = ClientIdSpec {
+            client: win,
+            mask: ClientIdMask::LOCAL_CLIENT_PID,
+        };
+        let reply = self.conn.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
+        reply
+            .ids
+            .iter()
+            .find(|id| u32::from(id.spec.mask) & u32::from(ClientIdMask::LOCAL_CLIENT_PID) != 0)
+            .and_then(|id| id.value.first().copied())
+            .filter(|p| *p != 0)
     }
 
     /// A window's title.
@@ -626,10 +655,15 @@ impl<'a> Wm<'a> {
         if !out.iter().any(|d| d.primary) {
             out[0].primary = true;
         }
-        // The window manager's work area (panels excluded), per display.
+        // The window manager's work area (panels excluded), per display, on
+        // the current desktop.
+        let current = self
+            .prop32(self.root, "_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL)
+            .and_then(|v| v.first().copied())
+            .unwrap_or(0);
         if let Some(wa) = self
             .prop32(self.root, "_NET_WORKAREA", AtomEnum::CARDINAL)
-            .filter(|v| v.len() >= 4)
+            .and_then(|v| work_area(&v, current))
         {
             let wa = Rect::new(
                 f64::from(wa[0] as i32),
@@ -662,5 +696,65 @@ impl<'a> Wm<'a> {
             .and_then(|v| v.first().copied())
             .unwrap_or(0);
         Some((n, cur))
+    }
+}
+
+/// The pid behind a window: the X server's (XRes) when it knows, which is
+/// the real one; the window's own `_NET_WM_PID` only when it doesn't (a
+/// Flatpak app's is a pid in its sandbox, which means another process here).
+fn owner(xres: Option<u32>, net_wm: impl FnOnce() -> Option<u32>) -> Option<u32> {
+    xres.or_else(net_wm)
+}
+
+/// Whether EWMH's check holds: the root's `_NET_SUPPORTING_WM_CHECK` names
+/// a window whose own property (`None`: it has none, or doesn't exist)
+/// names that window too.
+fn wm_check_holds(on_root: &[u32], on_check: Option<&[u32]>) -> bool {
+    match on_root.first() {
+        Some(&w) if w != 0 => on_check.and_then(|v| v.first()) == Some(&w),
+        _ => false,
+    }
+}
+
+/// The work area (x, y, width, height) of desktop `current` in
+/// `_NET_WORKAREA` (four values per desktop), else of the first.
+fn work_area(v: &[u32], current: u32) -> Option<[u32; 4]> {
+    let at = |i: usize| v.get(i * 4..i * 4 + 4).map(|a| [a[0], a[1], a[2], a[3]]);
+    at(current as usize).or_else(|| at(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_manager_that_quit_is_not_running() {
+        assert!(wm_check_holds(&[0x40], Some(&[0x40])));
+        // The check window is gone (or has no property).
+        assert!(!wm_check_holds(&[0x40], None));
+        // It names another window: not the window manager's.
+        assert!(!wm_check_holds(&[0x40], Some(&[0x41])));
+        assert!(!wm_check_holds(&[0x40], Some(&[])));
+        assert!(!wm_check_holds(&[], None));
+        assert!(!wm_check_holds(&[0], Some(&[0])));
+    }
+
+    #[test]
+    fn the_x_servers_pid_wins_over_the_windows() {
+        // A Flatpak app says a pid from its sandbox.
+        assert_eq!(owner(Some(4242), || Some(2)), Some(4242));
+        assert_eq!(owner(None, || Some(2)), Some(2));
+        assert_eq!(owner(None, || None), None);
+        assert_eq!(owner(Some(7), || unreachable!()), Some(7));
+    }
+
+    #[test]
+    fn the_work_area_is_the_current_desktops() {
+        let v = [0, 0, 100, 100, 0, 30, 100, 70];
+        assert_eq!(work_area(&v, 1), Some([0, 30, 100, 70]));
+        assert_eq!(work_area(&v, 0), Some([0, 0, 100, 100]));
+        // A desktop it gives no area for: the first one's.
+        assert_eq!(work_area(&v, 5), Some([0, 0, 100, 100]));
+        assert_eq!(work_area(&v[..3], 0), None);
     }
 }

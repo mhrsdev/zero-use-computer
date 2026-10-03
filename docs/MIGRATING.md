@@ -1,3 +1,24 @@
+# Upgrading to v3.8.2
+
+Nothing to change for most setups. What behaves differently:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| A settings file with an error | the server didn't start | it serves with the defaults and says what is wrong | none (`computer-use-mcp config check` shows the error) |
+| `$RUST_LOG` | set the log level | ignored: `$COMPUTER_USE_LOG` or `server.log` | `COMPUTER_USE_LOG=…` |
+| `timing.*` over a minute, `overlay.move_ms` over 5 s, a misspelt `server.log` | accepted | refused, with the limit | none |
+| A relative `script.dir` / `audit.path` | in the folder the server was started in | in the server's folder (`~/.computer-use`) | an absolute path |
+| Matching text with accents | `é` matched `é` only | `é`, `e` + accent and `e` match each other | none |
+| The client closing the connection | the running call went on | it stops, and waiting calls don't run | none |
+| Windows: `press_key("A")` and other plain characters | the key's position, US-style | the character on the user's layout (Shift added for capitals) | `type_text` for text; shortcuts are unchanged |
+| Windows: an app run as administrator | input silently dropped | an error saying so | run the server as administrator |
+| Windows: a window change that didn't happen | reported as done | an error | none |
+| macOS: keys and shortcuts | US key codes | the current layout's keys | none |
+| macOS: Electron apps | the window frame only | their tree (`AXManualAccessibility` is set) | none |
+| Linux: accessibility switched off | left off (Qt, Firefox, Chromium had no tree) | switched on, and remembered by the desktop | switch it off again in the desktop's settings after use |
+| Linux: no accessibility bus | the server didn't start | it starts without the tree | none |
+| Linux: an empty clipboard | an error | `""` | none |
+
 # Upgrading to v3.8.1
 
 The design board changes what it sends, not what it takes:

@@ -122,13 +122,18 @@ pub fn parse_combo(input: &str) -> Result<KeyCombo> {
     }
     parts.push(rest);
     let (key_part, mod_parts) = parts.split_last().ok_or_else(|| bad("empty"))?;
+    // "Ctrl + Alt + Esc", as people write it; a key that is a space stays.
+    let key_part = match key_part.trim() {
+        "" => *key_part,
+        k => k,
+    };
     if key_part.is_empty() {
         return Err(bad("missing key after modifiers"));
     }
 
     let mut modifiers = Modifiers::default();
     for m in mod_parts {
-        match normalize(m).as_str() {
+        match normalize(m.trim()).as_str() {
             "shift" => modifiers.shift = true,
             "ctrl" | "control" | "ctl" => modifiers.ctrl = true,
             "alt" | "option" | "opt" => modifiers.alt = true,
@@ -231,6 +236,17 @@ fn parse_key(s: &str) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combos_written_with_spaces() {
+        let spaced = parse_combo("Ctrl + Alt + Esc").unwrap();
+        assert_eq!(spaced, parse_combo("ctrl+alt+esc").unwrap());
+        assert!(spaced.modifiers.ctrl && spaced.modifiers.alt);
+        assert_eq!(
+            parse_combo(" shift +a").unwrap(),
+            parse_combo("shift+a").unwrap()
+        );
+    }
 
     #[test]
     fn parses_modifiers_and_keys() {

@@ -40,11 +40,19 @@ fn is_window_role(role: &str) -> bool {
     )
 }
 
-/// How often to try connecting to an X server that isn't there.
+/// How often to try connecting to an X server (or an accessibility bus)
+/// that isn't there.
 const X11_RETRY: Duration = Duration::from_secs(5);
 
 pub struct LinuxBackend {
-    a11y: AtspiConnection,
+    /// The accessibility bus. Optional (over ssh, in a container, a
+    /// session without at-spi): screenshots, input and windows work
+    /// without it.
+    a11y: Option<AtspiConnection>,
+    /// When to try connecting to the accessibility bus again, and why the
+    /// last try failed.
+    a11y_retry: Option<Instant>,
+    a11y_error: String,
     x11: Option<X11>,
     /// When to try connecting to the X server again (after a failure).
     x11_retry: Option<Instant>,
@@ -79,6 +87,9 @@ pub struct LinuxBackend {
     /// they are seen in screenshots (and text read off them) and used with
     /// the mouse and keyboard.
     bare: HashMap<ElementHandle, Bare>,
+    /// pid → how much larger the app's windows are on the X screen than
+    /// its accessibility says (2 for a GTK 3 app with `GDK_SCALE=2`).
+    scales: HashMap<u32, f64>,
 }
 
 /// A window with no accessibility behind it.
@@ -91,7 +102,6 @@ struct Bare {
 
 impl LinuxBackend {
     pub fn new() -> Result<Self> {
-        let a11y = AtspiConnection::connect()?;
         // X11 is optional: element-level actions work without it, but input
         // and screenshots need it.
         let (x11, x11_retry) = match X11::connect() {
@@ -101,9 +111,20 @@ impl LinuxBackend {
                 (None, Some(Instant::now() + X11_RETRY))
             }
         };
+        // So is the accessibility bus (connected again later).
+        let x_bus = || x11.as_ref().and_then(|x| x.wm().root_string("AT_SPI_BUS"));
+        let (a11y, a11y_retry, a11y_error) = match AtspiConnection::connect(x_bus) {
+            Ok(c) => (Some(c), None, String::new()),
+            Err(e) => {
+                log::warn!("no accessibility bus: {e}");
+                (None, Some(Instant::now() + X11_RETRY), reason(&e))
+            }
+        };
         let defaults = crate::config::LinuxConfig::default();
         Ok(Self {
             a11y,
+            a11y_retry,
+            a11y_error,
             x11,
             x11_retry,
             restore_pointer: true,
@@ -124,6 +145,7 @@ impl LinuxBackend {
             },
             toplevels: HashMap::new(),
             bare: HashMap::new(),
+            scales: HashMap::new(),
         })
     }
 
@@ -215,25 +237,50 @@ impl LinuxBackend {
     }
 
     /// Reconnect to the accessibility bus if the connection broke (the bus
-    /// restarted); every element handle is stale then. Whether it did.
+    /// restarted), or connect if there was none (tried again every
+    /// [`X11_RETRY`]); every element handle is stale then. Whether it did.
     fn revive_a11y(&mut self) -> bool {
-        if !self.a11y.lost() {
+        let lost = match &self.a11y {
+            Some(a) if !a.lost() => return false,
+            Some(_) => true,
+            None => false,
+        };
+        if !lost && self.a11y_retry.is_some_and(|t| Instant::now() < t) {
             return false;
         }
-        match AtspiConnection::connect() {
+        if lost {
+            self.a11y = None;
+            self.app_refs.clear();
+            self.handles.clear();
+            self.window_handles.clear();
+        }
+        let x_bus = || {
+            self.x11
+                .as_ref()
+                .and_then(|x| x.wm().root_string("AT_SPI_BUS"))
+        };
+        match AtspiConnection::connect(x_bus) {
             Ok(c) => {
-                log::warn!("reconnected to the accessibility bus");
-                self.a11y = c;
+                log::warn!("connected to the accessibility bus");
+                self.a11y = Some(c);
+                self.a11y_retry = None;
                 self.app_refs.clear();
                 self.handles.clear();
                 self.window_handles.clear();
                 true
             }
             Err(e) => {
-                log::warn!("cannot reconnect to the accessibility bus: {e}");
+                log::warn!("cannot connect to the accessibility bus: {e}");
+                self.a11y_error = reason(&e);
+                self.a11y_retry = Some(Instant::now() + X11_RETRY);
                 false
             }
         }
+    }
+
+    /// The accessibility bus, or why there is none.
+    fn bus(&self) -> Result<&AtspiConnection> {
+        self.a11y.as_ref().ok_or_else(|| no_bus(&self.a11y_error))
     }
 
     /// Run an accessibility query, reconnecting and trying once more when
@@ -314,9 +361,10 @@ impl LinuxBackend {
 
     /// Application accessibles and their pids, looked up concurrently.
     fn refresh_apps(&mut self) -> Result<Vec<(ObjRef, u32)>> {
-        let root = self.a11y.root();
-        let children = self.a11y.children(&root)?;
-        let pids = self.a11y.pids_of(&children);
+        let a11y = self.bus()?;
+        let root = a11y.root();
+        let children = a11y.children(&root)?;
+        let pids = a11y.pids_of(&children);
         self.app_refs.clear();
         let mut apps = Vec::new();
         for (child, pid) in children.into_iter().zip(pids) {
@@ -333,6 +381,7 @@ impl LinuxBackend {
         self.toplevels.retain(|h, _| windows.contains(h));
         self.handles.retain(|_, (p, _)| live.contains_key(p));
         self.app_names.retain(|p, _| live.contains_key(p));
+        self.scales.retain(|p, _| live.contains_key(p));
         Ok(apps)
     }
 
@@ -352,23 +401,36 @@ impl LinuxBackend {
     /// sandbox): the only app with an active window of the same title.
     fn owner_by_window(&mut self, win: u32, apps: &[(ObjRef, u32)]) -> Option<u32> {
         let title = self.x11().ok()?.wm().title(win)?;
-        let refs: Vec<ObjRef> = apps.iter().map(|(r, _)| r.clone()).collect();
-        let mut windows = Vec::new();
-        for ((_, pid), kids) in apps.iter().zip(self.a11y.children_many(&refs)) {
-            windows.extend(kids.unwrap_or_default().into_iter().map(|w| (*pid, w)));
-        }
-        let refs: Vec<ObjRef> = windows.iter().map(|(_, w)| w.clone()).collect();
-        let mut owners: Vec<u32> = windows
-            .iter()
-            .zip(self.a11y.active_names(&refs))
-            .filter(|(_, name)| name.as_deref() == Some(title.as_str()))
-            .map(|((pid, _), _)| *pid)
+        let mut owners: Vec<u32> = self
+            .active_windows(apps)
+            .into_iter()
+            .filter(|(_, name)| *name == title)
+            .map(|(pid, _)| pid)
             .collect();
         owners.dedup();
         match owners.as_slice() {
             [pid] => Some(*pid),
             _ => None, // none, or several: never guess
         }
+    }
+
+    /// The windows that are active (have the focus) as their apps tell:
+    /// each one's app (pid) and title.
+    fn active_windows(&self, apps: &[(ObjRef, u32)]) -> Vec<(u32, String)> {
+        let Ok(a11y) = self.bus() else {
+            return Vec::new();
+        };
+        let refs: Vec<ObjRef> = apps.iter().map(|(r, _)| r.clone()).collect();
+        let mut windows = Vec::new();
+        for ((_, pid), kids) in apps.iter().zip(a11y.children_many(&refs)) {
+            windows.extend(kids.unwrap_or_default().into_iter().map(|w| (*pid, w)));
+        }
+        let refs: Vec<ObjRef> = windows.iter().map(|(_, w)| w.clone()).collect();
+        windows
+            .iter()
+            .zip(a11y.active_names(&refs))
+            .filter_map(|((pid, _), name)| Some((*pid, name?)))
+            .collect()
     }
 
     /// Who has the keyboard, for `list_apps`: marks the app in front, or
@@ -432,12 +494,28 @@ impl LinuxBackend {
                 }
             }
         }
-        let Some(front) = self.x11().ok().and_then(|x| x.wm().front()) else {
-            return; // can't tell
+        let front = self.x11().ok().and_then(|x| x.wm().front());
+        // A Wayland session whose compositor doesn't say (GNOME, KDE): X11
+        // sees only XWayland windows, so a native one in front looks like
+        // none; the apps' own accessibility says which window is active.
+        let blind = wayland_session() && self.comp.is_none();
+        let active: Vec<u32> = if blind && !matches!(front, Some(Front::Window { .. })) {
+            self.active_windows(apps)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect()
+        } else {
+            Vec::new()
         };
-        let (win, pid) = match front {
-            Front::Window { win, pid } => (win, pid),
-            Front::Nothing => {
+        let (win, pid) = match pick_front(blind, front, &active) {
+            FrontPick::Window(win, pid) => (win, pid),
+            FrontPick::App(pid) => {
+                for a in out.iter_mut() {
+                    a.frontmost = a.pid == pid;
+                }
+                return;
+            }
+            FrontPick::Desktop => {
                 out.push(AppInfo {
                     name: "Desktop".into(),
                     id: "desktop".into(),
@@ -448,6 +526,18 @@ impl LinuxBackend {
                 });
                 return;
             }
+            FrontPick::Unknown => {
+                out.push(AppInfo {
+                    name: "Unknown window".into(),
+                    id: "unknown".into(),
+                    pid: 0,
+                    exe: None,
+                    frontmost: true,
+                    hidden: false,
+                });
+                return;
+            }
+            FrontPick::CantTell => return,
         };
         let owner = pid
             .filter(|p| out.iter().any(|a| a.pid == *p))
@@ -479,8 +569,9 @@ impl LinuxBackend {
 
     /// Top-level windows of an app (children fetched concurrently).
     fn windows_of(&mut self, app_ref: &ObjRef) -> Result<Vec<(ObjRef, atspi::NodeData)>> {
-        let children = self.a11y.children(app_ref)?;
-        let data = self.a11y.fetch_many(&children);
+        let a11y = self.bus()?;
+        let children = a11y.children(app_ref)?;
+        let data = a11y.fetch_many(&children);
         Ok(children
             .into_iter()
             .zip(data)
@@ -578,10 +669,10 @@ impl Backend for LinuxBackend {
     }
 
     fn permissions(&mut self) -> Vec<PermissionStatus> {
-        let mut out = vec![PermissionStatus {
-            name: "AT-SPI accessibility bus".into(),
-            granted: true,
-            detail: "connected".into(),
+        self.revive_a11y();
+        let mut out = vec![match &self.a11y {
+            Some(_) => a11y_status(None, atspi::enabled()),
+            None => a11y_status(Some(&self.a11y_error), None),
         }];
         if wayland_session() {
             // What this compositor lets us do, and how.
@@ -624,20 +715,23 @@ impl Backend for LinuxBackend {
                 },
             });
         }
+        let input = self.x11().is_ok_and(|x| x.can_input());
         out.push(
             PermissionStatus {
                 name: "X11 input/capture".into(),
                 granted: if wayland_session() {
                     self.wl_points()
                 } else {
-                    self.x11().is_ok()
+                    input
                 },
                 detail: if wayland_session() && self.wl_points() {
                     "not needed: input and screenshots go through the compositor".into()
                 } else if wayland_session() {
                     "Wayland session: keys, clicks and screenshots only reach X11 (XWayland) apps; log in to an X11 (\"Xorg\") session for the rest".into()
-                } else if self.x11.is_some() {
+                } else if self.x11.is_some() && input {
                     "connected".into()
+                } else if self.x11.is_some() {
+                    "connected, but the X server has no XTEST extension: screenshots work, synthesized keyboard/mouse input doesn't".into()
                 } else {
                     "no X11 connection (DISPLAY unset or unreachable)".into()
                 },
@@ -674,9 +768,17 @@ impl Backend for LinuxBackend {
     }
 
     fn list_apps(&mut self) -> Result<Vec<AppInfo>> {
-        let apps = self.with_a11y(|b| b.refresh_apps())?;
+        let apps = match self.with_a11y(|b| b.refresh_apps()) {
+            Ok(apps) => apps,
+            // No accessibility bus: the apps with windows, below.
+            Err(_) if self.a11y.is_none() => Vec::new(),
+            Err(e) => return Err(e),
+        };
         let refs: Vec<ObjRef> = apps.iter().map(|(r, _)| r.clone()).collect();
-        let data = self.a11y.fetch_many(&refs);
+        let data = match self.bus() {
+            Ok(a11y) => a11y.fetch_many(&refs),
+            Err(_) => Vec::new(),
+        };
         let mut out = Vec::new();
         let mut answered = Vec::new();
         for ((r, pid), d) in apps.iter().zip(data) {
@@ -748,6 +850,9 @@ impl Backend for LinuxBackend {
                 hidden: false,
             });
         }
+        if out.is_empty() && self.a11y.is_none() {
+            return Err(no_bus(&self.a11y_error));
+        }
         // Who has the keyboard, from the window manager (one X11 query for
         // all apps rather than walking every app's windows).
         self.mark_front(&mut out, &answered);
@@ -758,7 +863,9 @@ impl Backend for LinuxBackend {
         use crate::launch::{self, Pick};
         // The whole query is the program: never split into arguments, so a
         // launch can't become a command line (`xterm -e …`).
-        let err = match crate::backend::spawn_detached(Command::new(query)) {
+        let mut cmd = Command::new(query);
+        with_a11y_env(&mut cmd);
+        let err = match crate::backend::spawn_detached(cmd) {
             Ok(()) => return Ok(None),
             Err(e) => e,
         };
@@ -773,6 +880,7 @@ impl Backend for LinuxBackend {
             Pick::One(entry) => {
                 let mut cmd = Command::new(&entry.exec[0]);
                 cmd.args(&entry.exec[1..]);
+                with_a11y_env(&mut cmd);
                 crate::backend::spawn_detached(cmd).map_err(|e| {
                     Error::ActionFailed(format!(
                         "could not launch `{}` ({}): {e}",
@@ -816,6 +924,14 @@ impl Backend for LinuxBackend {
                     app.name
                 )));
             }
+            // No accessibility bus at all: the same.
+            Err(e) if self.a11y.is_none() && pid != 0 => {
+                let bare = self.bare_windows(app);
+                if !bare.is_empty() {
+                    return Ok(bare);
+                }
+                return Err(e);
+            }
             Err(e) => return Err(e),
         };
         // Windows no longer listed drop their handles.
@@ -835,6 +951,7 @@ impl Backend for LinuxBackend {
             .map(|(_, d)| (d.acc.name.clone(), d.extents))
             .collect();
         let matched = match_toplevels(&frames, &mut tops);
+        let scale = self.scale_of(pid, &frames);
         let mut out = Vec::new();
         for ((r, d), top) in windows.into_iter().zip(matched) {
             let id = stable_id(&r.path);
@@ -847,9 +964,9 @@ impl Backend for LinuxBackend {
                 } else {
                     d.acc.name
                 },
-                bounds: d
-                    .extents
-                    .map(|(x, y, w, h)| Rect::new(x.into(), y.into(), w.into(), h.into())),
+                bounds: d.extents.map(|(x, y, w, h)| {
+                    scaled(Rect::new(x.into(), y.into(), w.into(), h.into()), scale)
+                }),
                 focused: active,
                 main: active,
                 minimized: !d.acc.states.has(state::SHOWING),
@@ -907,11 +1024,13 @@ impl Backend for LinuxBackend {
             }]);
         }
         self.revive_a11y();
+        self.bus()?;
         let root = self.resolve(window.handle)?;
         // Handles from this app's previous views are no longer needed; its
         // window handles (kept separately) stay valid for the next snapshot.
         self.handles.retain(|_, (p, _)| *p != app.pid);
-        let walked = self.a11y.walk(
+        let a11y = self.bus()?;
+        let walked = a11y.walk(
             &root,
             opts.max_nodes,
             opts.max_depth,
@@ -933,7 +1052,7 @@ impl Backend for LinuxBackend {
                 let d = &w.data.acc;
                 (matches!(d.role_name.as_str(), "document web" | "document frame")
                     && d.has_iface("Document"))
-                .then(|| self.a11y.doc_url(&w.r))
+                .then(|| a11y.doc_url(&w.r))
                 .flatten()
             })
             .collect();
@@ -954,6 +1073,12 @@ impl Backend for LinuxBackend {
             }
             if let Some(root) = out.first_mut().filter(|n| n.parent.is_none()) {
                 root.bounds = Some(rect);
+            }
+        }
+        // A HiDPI app whose accessibility is in its own (smaller) units.
+        if let Some(s) = self.scales.get(&app.pid).copied() {
+            for n in &mut out {
+                n.bounds = n.bounds.map(|b| scaled(b, s));
             }
         }
         Ok(out)
@@ -1062,6 +1187,14 @@ impl Backend for LinuxBackend {
             )));
         }
         self.x11_reaches(app.pid, "A screenshot")?;
+        if wayland_session() {
+            // Rootless XWayland (GNOME, KDE) has nothing on its root window:
+            // the app's own window has its pixels.
+            let x11 = self.x11()?;
+            if let Some(win) = x11.wm().find(app.pid, &window.title, window.bounds) {
+                return x11.capture_window(win, rect);
+            }
+        }
         self.x11()?.capture(rect)
     }
 
@@ -1091,14 +1224,14 @@ impl Backend for LinuxBackend {
 
     fn perform_action(&mut self, element: ElementHandle, native_action: &str) -> Result<()> {
         self.revive_a11y();
+        let a11y = self.bus()?;
         let (pid, r) = self.resolve_owned(element)?;
-        let idx = self.a11y.action_index(&r, native_action)?.ok_or_else(|| {
+        let idx = a11y.action_index(&r, native_action)?.ok_or_else(|| {
             Error::ActionFailed(format!("element no longer offers action `{native_action}`"))
         })?;
         // Timed out: sent, and maybe done (GTK runs the handler, a modal
         // dialog included, before it answers): never to be repeated.
-        let ok = self
-            .a11y
+        let ok = a11y
             .do_action(&r, idx)
             .map_err(|e| self.sent_error(pid, e))?;
         if ok {
@@ -1112,12 +1245,13 @@ impl Backend for LinuxBackend {
 
     fn set_value(&mut self, element: ElementHandle, value: &str) -> Result<()> {
         self.revive_a11y();
+        let a11y = self.bus()?;
         let (pid, r) = self.resolve_owned(element)?;
-        let acc = self.a11y.describe(&r)?;
+        let acc = a11y.describe(&r)?;
         // A request that timed out was sent: it may have set the value,
         // so nothing else is tried.
         if acc.has_iface("EditableText") || acc.states.has(state::EDITABLE) {
-            match self.a11y.set_text(&r, value) {
+            match a11y.set_text(&r, value) {
                 Ok(true) => return Ok(()),
                 Err(e) if e.fail == Fail::Timeout => return Err(self.sent_error(pid, e)),
                 _ => {}
@@ -1126,7 +1260,7 @@ impl Backend for LinuxBackend {
         if acc.has_iface("Value")
             && let Ok(n) = value.trim().parse::<f64>()
         {
-            match self.a11y.set_value(&r, n) {
+            match a11y.set_value(&r, n) {
                 Ok(true) => return Ok(()),
                 Err(e) if e.fail == Fail::Timeout => return Err(self.sent_error(pid, e)),
                 _ => {}
@@ -1140,9 +1274,8 @@ impl Backend for LinuxBackend {
         let is = acc.states.has(state::CHECKED) || acc.states.has(state::PRESSED);
         if is != want {
             for action in ["toggle", "click", "press", "activate"] {
-                if let Some(idx) = self.a11y.action_index(&r, action)?
-                    && self
-                        .a11y
+                if let Some(idx) = a11y.action_index(&r, action)?
+                    && a11y
                         .do_action(&r, idx)
                         .map_err(|e| self.sent_error(pid, e))?
                 {
@@ -1164,12 +1297,13 @@ impl Backend for LinuxBackend {
         occurrence: usize,
     ) -> Result<()> {
         self.revive_a11y();
+        let a11y = self.bus()?;
         let r = self.resolve(element)?;
-        let count = self.a11y.character_count(&r);
+        let count = a11y.character_count(&r);
         let (start, end) = match text {
             None => (0, count),
             Some(needle) => {
-                let hay = self.a11y.get_text(&r, 0, count).unwrap_or_default();
+                let hay = a11y.get_text(&r, 0, count).unwrap_or_default();
                 let chars: Vec<char> = hay.chars().collect();
                 let needle_chars: Vec<char> = needle.chars().collect();
                 let start =
@@ -1179,8 +1313,8 @@ impl Backend for LinuxBackend {
                 (start as i32, (start + needle_chars.len()) as i32)
             }
         };
-        let _ = self.a11y.set_caret(&r, end);
-        if self.a11y.set_selection(&r, start, end)? {
+        let _ = a11y.set_caret(&r, end);
+        if a11y.set_selection(&r, start, end)? {
             Ok(())
         } else {
             Err(Error::ActionFailed("could not select the text".into()))
@@ -1189,8 +1323,9 @@ impl Backend for LinuxBackend {
 
     fn focus(&mut self, element: ElementHandle) -> Result<Native> {
         self.revive_a11y();
+        let a11y = self.bus()?;
         let r = self.resolve(element)?;
-        if self.a11y.grab_focus(&r).unwrap_or(false) {
+        if a11y.grab_focus(&r).unwrap_or(false) {
             Ok(Native::Done("focused".into()))
         } else {
             Ok(Native::Unsupported)
@@ -1316,6 +1451,45 @@ impl Backend for LinuxBackend {
 }
 
 impl LinuxBackend {
+    /// How much larger `pid`'s windows are on the X screen than its
+    /// accessibility says (1: the same), measured once per app on the
+    /// windows (`frames`: title, extents) whose X window has the same
+    /// title. Only in an X11 session.
+    fn scale_of(&mut self, pid: u32, frames: &[Frame]) -> f64 {
+        if let Some(s) = self.scales.get(&pid) {
+            return *s;
+        }
+        if wayland_session() {
+            return 1.0;
+        }
+        let Ok(x) = self.x11() else {
+            return 1.0;
+        };
+        let xwins = x.wm().windows_of(pid);
+        let sizes: Vec<(f64, f64, f64, f64)> = frames
+            .iter()
+            .filter(|(title, _)| !title.is_empty())
+            .filter_map(|(title, ext)| {
+                let (_, _, w, h) = (*ext)?;
+                let (_, _, r, _) = xwins
+                    .iter()
+                    .find(|(_, t, r, shown)| t == title && *shown && r.is_some())?;
+                let r = (*r)?;
+                Some((f64::from(w), f64::from(h), r.width, r.height))
+            })
+            .collect();
+        match fit_scale(&sizes) {
+            Some(s) => {
+                if s != 1.0 {
+                    log::info!("pid {pid}: its accessibility is scaled by 1/{s} (HiDPI)");
+                }
+                self.scales.insert(pid, s);
+                s
+            }
+            None => 1.0, // nothing to compare yet
+        }
+    }
+
     /// The windows of an app that isn't on the accessibility bus, as the
     /// compositor (Wayland) or the X server lists them.
     fn bare_windows(&mut self, app: &AppInfo) -> Vec<WindowInfo> {
@@ -1484,6 +1658,129 @@ fn wayland_offset(walked: &[atspi::Walked], rect: Rect) -> (f64, f64) {
     (rect.x - f64::from(fx) - left, rect.y - f64::from(fy) - top)
 }
 
+/// Screen scales a HiDPI app may run at (`GDK_SCALE`, `QT_SCALE_FACTOR`).
+const SCALES: [f64; 6] = [1.0, 1.25, 1.5, 1.75, 2.0, 3.0];
+
+/// The scale by which an app's windows are larger on the X screen than its
+/// accessibility says, from (accessible width, height, X width, height) of
+/// some of its windows: one of [`SCALES`] that fits every window on both
+/// axes within 2 %, else 1 (never a guess); `None` with nothing to compare.
+fn fit_scale(sizes: &[(f64, f64, f64, f64)]) -> Option<f64> {
+    let sizes: Vec<_> = sizes
+        .iter()
+        .filter(|(aw, ah, xw, xh)| [aw, ah, xw, xh].iter().all(|v| **v >= 1.0))
+        .collect();
+    if sizes.is_empty() {
+        return None;
+    }
+    let near = |a: f64, x: f64| (a - x).abs() <= 0.02 * x;
+    let fits = |s: f64| {
+        sizes
+            .iter()
+            .all(|(aw, ah, xw, xh)| near(aw * s, *xw) && near(ah * s, *xh))
+    };
+    Some(SCALES.into_iter().find(|s| fits(*s)).unwrap_or(1.0))
+}
+
+/// A rectangle in an app's own units, on the screen.
+fn scaled(r: Rect, s: f64) -> Rect {
+    if s == 1.0 {
+        return r;
+    }
+    Rect::new(r.x * s, r.y * s, r.width * s, r.height * s)
+}
+
+/// What is in front, from what X11 says and (in a Wayland session whose
+/// compositor doesn't tell, `blind`) the apps whose windows are active.
+#[derive(Debug, PartialEq)]
+enum FrontPick {
+    /// This X window (and its pid, when known).
+    Window(u32, Option<u32>),
+    /// This accessible app's window.
+    App(u32),
+    Desktop,
+    /// Something, but not something accessible (or several say they are).
+    Unknown,
+    CantTell,
+}
+
+fn pick_front(blind: bool, x11: Option<Front>, active: &[u32]) -> FrontPick {
+    match x11 {
+        // An X window has the focus: X11 knows which.
+        Some(Front::Window { win, pid }) => FrontPick::Window(win, pid),
+        // X11 sees no window, or nothing: a native Wayland one may be.
+        _ if blind => {
+            let mut pids = active.to_vec();
+            pids.sort_unstable();
+            pids.dedup();
+            match pids.as_slice() {
+                [pid] => FrontPick::App(*pid),
+                _ => FrontPick::Unknown,
+            }
+        }
+        Some(Front::Nothing) => FrontPick::Desktop,
+        None => FrontPick::CantTell,
+    }
+}
+
+/// Environment that has a launched app's toolkit expose its accessibility
+/// whatever the desktop's setting (Qt, then GTK 2/older apps, Firefox and
+/// Chromium): those of `vars` that `set` says aren't set already.
+fn a11y_env(set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
+    [
+        ("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1"),
+        ("ACCESSIBILITY_ENABLED", "1"),
+        ("GNOME_ACCESSIBILITY", "1"),
+    ]
+    .into_iter()
+    .filter(|(k, _)| !set(k))
+    .collect()
+}
+
+fn with_a11y_env(cmd: &mut Command) {
+    cmd.envs(a11y_env(|k| std::env::var_os(k).is_some()));
+}
+
+/// What an error says, without its kind's prefix ("platform error: ").
+fn reason(e: &Error) -> String {
+    match e {
+        Error::Platform(m) | Error::Unsupported(m) => m.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The error of an accessibility call without an accessibility bus.
+fn no_bus(why: &str) -> Error {
+    Error::Unsupported(format!(
+        "no accessibility bus: {why}. Element trees and element_index actions need AT-SPI (at-spi2-core, with a D-Bus session); screenshots, keyboard/mouse input and windows still work."
+    ))
+}
+
+/// The accessibility entry of `permissions`: no bus (and why), or a bus and
+/// whether accessibility is switched on for the session.
+fn a11y_status(no_bus: Option<&str>, enabled: Option<bool>) -> PermissionStatus {
+    let (granted, detail) = match (no_bus, enabled) {
+        (Some(why), _) => (
+            false,
+            format!(
+                "no accessibility bus ({why}): no element trees; screenshots, input and windows still work (tried again every {} s)",
+                X11_RETRY.as_secs()
+            ),
+        ),
+        (None, Some(false)) => (
+            false,
+            "connected, but accessibility is switched off for the session (org.a11y.Status IsEnabled = false) and couldn't be switched on: Qt, Firefox and Chromium apps won't show their elements".into(),
+        ),
+        (None, Some(true)) => (true, "connected; accessibility is on".into()),
+        (None, None) => (true, "connected".into()),
+    };
+    PermissionStatus {
+        name: "AT-SPI accessibility bus".into(),
+        granted,
+        detail,
+    }
+}
+
 /// The failure of a request that does something (DoAction, setting a
 /// value): one that timed out was sent and may have happened, so the engine
 /// must not do it again another way ([`Error::Unanswered`]). Bridges that
@@ -1568,6 +1865,96 @@ mod tests {
             let e = sent_error(CallError::of(fail), || unreachable!());
             assert!(matches!(e, Error::Platform(_)), "{e}");
         }
+    }
+
+    #[test]
+    fn a_hidpi_apps_scale_is_found_only_when_clear() {
+        // GDK_SCALE=2: 400x300 to accessibility, 800x600 on the screen.
+        assert_eq!(fit_scale(&[(400.0, 300.0, 800.0, 600.0)]), Some(2.0));
+        assert_eq!(
+            fit_scale(&[(400.0, 300.0, 800.0, 600.0), (200.0, 100.0, 401.0, 199.0)]),
+            Some(2.0)
+        );
+        assert_eq!(fit_scale(&[(400.0, 300.0, 600.0, 450.0)]), Some(1.5));
+        assert_eq!(fit_scale(&[(401.0, 300.0, 501.0, 375.0)]), Some(1.25));
+        assert_eq!(fit_scale(&[(400.0, 300.0, 400.0, 300.0)]), Some(1.0));
+        // A frame around the window, or windows that disagree: no scaling.
+        assert_eq!(fit_scale(&[(400.0, 330.0, 400.0, 300.0)]), Some(1.0));
+        assert_eq!(fit_scale(&[(400.0, 300.0, 800.0, 300.0)]), Some(1.0));
+        assert_eq!(
+            fit_scale(&[(400.0, 300.0, 800.0, 600.0), (400.0, 300.0, 400.0, 300.0)]),
+            Some(1.0)
+        );
+        // Nothing to compare.
+        assert_eq!(fit_scale(&[]), None);
+        assert_eq!(fit_scale(&[(0.0, 0.0, 800.0, 600.0)]), None);
+        let r = scaled(Rect::new(10.0, 20.0, 30.0, 40.0), 2.0);
+        assert_eq!((r.x, r.y, r.width, r.height), (20.0, 40.0, 60.0, 80.0));
+    }
+
+    #[test]
+    fn a_native_wayland_window_in_front_is_found_by_accessibility() {
+        let win = Some(Front::Window {
+            win: 7,
+            pid: Some(42),
+        });
+        // An X window in front: X11 knows best, in any session.
+        assert_eq!(pick_front(false, win, &[]), FrontPick::Window(7, Some(42)));
+        assert_eq!(pick_front(true, win, &[9]), FrontPick::Window(7, Some(42)));
+        // X11 sees nothing: an X11 session's desktop...
+        assert_eq!(
+            pick_front(false, Some(Front::Nothing), &[9]),
+            FrontPick::Desktop
+        );
+        assert_eq!(pick_front(false, None, &[9]), FrontPick::CantTell);
+        // ... but on GNOME/KDE Wayland a native window may have the focus.
+        assert_eq!(
+            pick_front(true, Some(Front::Nothing), &[9, 9]),
+            FrontPick::App(9)
+        );
+        assert_eq!(pick_front(true, None, &[9]), FrontPick::App(9));
+        assert_eq!(
+            pick_front(true, Some(Front::Nothing), &[]),
+            FrontPick::Unknown
+        );
+        assert_eq!(
+            pick_front(true, Some(Front::Nothing), &[9, 3]),
+            FrontPick::Unknown
+        );
+    }
+
+    #[test]
+    fn launched_apps_expose_their_accessibility() {
+        let all = a11y_env(|_| false);
+        assert_eq!(
+            all,
+            [
+                ("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1"),
+                ("ACCESSIBILITY_ENABLED", "1"),
+                ("GNOME_ACCESSIBILITY", "1"),
+            ]
+        );
+        // The user's own setting stays.
+        let some = a11y_env(|k| k == "GNOME_ACCESSIBILITY");
+        assert_eq!(some.len(), 2);
+        assert!(!some.iter().any(|(k, _)| *k == "GNOME_ACCESSIBILITY"));
+    }
+
+    #[test]
+    fn accessibility_is_reported_as_it_is() {
+        let s = a11y_status(Some("no session bus"), None);
+        assert!(!s.granted);
+        assert!(s.detail.contains("no session bus"), "{}", s.detail);
+        assert!(s.detail.contains("screenshots"), "{}", s.detail);
+        assert!(!a11y_status(None, Some(false)).granted);
+        assert!(a11y_status(None, Some(true)).granted);
+        assert!(a11y_status(None, None).granted);
+        assert_eq!(
+            reason(&Error::Platform("AT-SPI: gone".into())),
+            "AT-SPI: gone"
+        );
+        let e = no_bus("x");
+        assert!(matches!(e, Error::Unsupported(ref m) if m.starts_with("no accessibility bus: x")));
     }
 
     #[test]

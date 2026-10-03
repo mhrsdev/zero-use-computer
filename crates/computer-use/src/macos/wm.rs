@@ -113,6 +113,47 @@ fn activate(app_el: ffi::AXUIElementRef, app: &AppInfo) -> Result<()> {
     }
 }
 
+/// The window's frame, if it tells it.
+fn frame(win: ffi::AXUIElementRef) -> Option<Rect> {
+    let p = ffi::copy_point(win, "AXPosition")?;
+    let s = ffi::copy_size(win, "AXSize")?;
+    Some(Rect::new(p.x, p.y, s.width, s.height))
+}
+
+/// Within this (points), a window's edge hasn't moved.
+const SAME: f64 = 1.0;
+
+/// What of a move and resize to `want` didn't happen, by the window's
+/// frame `before` and `after`: a part that was to change but didn't move
+/// at all. A part that changed counts as done even when it isn't exactly
+/// as asked (the system keeps windows below the menu bar, and some apps
+/// size in steps or have a minimum size). `None` when all is done, or
+/// the frames aren't known.
+fn unapplied(before: Option<Rect>, after: Option<Rect>, want: Rect) -> Option<String> {
+    let (b, a) = (before?, after?);
+    let near = |x: f64, y: f64| (x - y).abs() <= SAME;
+    let stuck = |from: (f64, f64), to: (f64, f64), wanted: (f64, f64)| {
+        let asked = !(near(from.0, wanted.0) && near(from.1, wanted.1));
+        asked && near(from.0, to.0) && near(from.1, to.1)
+    };
+    let not_moved = stuck((b.x, b.y), (a.x, a.y), (want.x, want.y));
+    let not_sized = stuck(
+        (b.width, b.height),
+        (a.width, a.height),
+        (want.width, want.height),
+    );
+    let what = match (not_moved, not_sized) {
+        (false, false) => return None,
+        (true, false) => "moved",
+        (false, true) => "resized",
+        (true, true) => "moved or resized",
+    };
+    Some(format!(
+        "the window could not be {what}: it is still at {:.0},{:.0}, {:.0}×{:.0} (the app may not allow it)",
+        a.x, a.y, a.width, a.height
+    ))
+}
+
 pub fn apply(
     win: ffi::AXUIElementRef,
     app_el: ffi::AXUIElementRef,
@@ -139,6 +180,7 @@ pub fn apply(
         }
         WindowOp::SetBounds(r) => {
             leave_full_screen(win, app)?;
+            let before = frame(win);
             let pos = CGPoint::new(r.x, r.y);
             let size = CGSize::new(r.width, r.height);
             // Move, size, then move again: a resize near a screen edge can
@@ -148,6 +190,17 @@ pub fn apply(
             let _ = ffi::set_point(win, "AXPosition", pos);
             if let (Err(e), Err(_)) = (moved, sized) {
                 return Err(failed(e, app, "a new position or size"));
+            }
+            // One of the two may have been refused, or ignored. (Given a
+            // moment: a window may animate there.)
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let mut why = unapplied(before, frame(win), r);
+            while why.is_some() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+                why = unapplied(before, frame(win), r);
+            }
+            if let Some(why) = why {
+                return Err(Error::ActionFailed(why));
             }
         }
         WindowOp::Maximize => {
@@ -197,4 +250,41 @@ pub fn apply(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_resize_is_reported() {
+        let before = Rect::new(0.0, 25.0, 800.0, 600.0);
+        let want = Rect::new(100.0, 100.0, 1000.0, 700.0);
+        // Moved, but the size stayed.
+        let after = Rect::new(100.0, 100.0, 800.0, 600.0);
+        let msg = unapplied(Some(before), Some(after), want).unwrap();
+        assert!(msg.contains("could not be resized"), "{msg}");
+        // Resized, but not moved.
+        let after = Rect::new(0.0, 25.0, 1000.0, 700.0);
+        let msg = unapplied(Some(before), Some(after), want).unwrap();
+        assert!(msg.contains("could not be moved"), "{msg}");
+        // Neither.
+        let msg = unapplied(Some(before), Some(before), want).unwrap();
+        assert!(msg.contains("moved or resized"), "{msg}");
+    }
+
+    #[test]
+    fn constrained_or_unchanged_parts_are_fine() {
+        let before = Rect::new(0.0, 25.0, 800.0, 600.0);
+        // Kept below the menu bar and sized in steps: both changed.
+        let want = Rect::new(200.0, 0.0, 1000.0, 700.0);
+        let after = Rect::new(200.0, 25.0, 994.0, 693.0);
+        assert_eq!(unapplied(Some(before), Some(after), want), None);
+        // Only a resize asked: the position never changing is fine.
+        let want = Rect::new(0.0, 25.0, 900.0, 600.0);
+        let after = Rect::new(0.0, 25.0, 900.0, 600.0);
+        assert_eq!(unapplied(Some(before), Some(after), want), None);
+        // Unknown frames: nothing to say.
+        assert_eq!(unapplied(None, Some(after), want), None);
+    }
 }

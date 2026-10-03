@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use computer_use::Backend;
@@ -44,6 +44,9 @@ pub struct Server<R: BufRead, W: Write, B: Backend> {
     shutdown: bool,
     /// Tool set last announced to the client, to detect settings changes.
     tools_sig: Option<u64>,
+    /// Set when the input ended and nobody is left to answer
+    /// (`stop_when_input_ends`).
+    closed: Option<Arc<AtomicBool>>,
 }
 
 /// What the reader thread passes on.
@@ -115,7 +118,17 @@ impl<R: BufRead + Send + 'static, W: Write, B: Backend> Server<R, W, B> {
             writer,
             shutdown: false,
             tools_sig: None,
+            closed: None,
         }
+    }
+
+    /// When the input ends, the client has gone (MCP's way of shutting a
+    /// stdio server down): stop the call that is running, as the stop key
+    /// would, and run none of those still waiting, rather than act on the
+    /// desktop for nobody until the client kills the server mid-drag.
+    pub fn stop_when_input_ends(mut self) -> Self {
+        self.closed = Some(Arc::new(AtomicBool::new(false)));
+        self
     }
 
     /// Read and dispatch messages until stdin closes. Messages are read on a
@@ -131,16 +144,41 @@ impl<R: BufRead + Send + 'static, W: Write, B: Backend> Server<R, W, B> {
             .expect("engine present")
             .cancel_handle();
         let cancels = Arc::new(Cancels::default());
-        let (tx, rx) = sync_channel(64);
+        // Unbounded: a reader that waited for room would stop reading the
+        // cancels for the call that is running.
+        let (tx, rx) = channel();
         {
             let cancels = cancels.clone();
             let engine_cancel = engine_cancel.clone();
+            let closed = self.closed.clone();
             std::thread::Builder::new()
                 .name("mcp-reader".into())
-                .spawn(move || read_loop(reader, &tx, &cancels, &engine_cancel))?;
+                .spawn(move || {
+                    read_loop(reader, &tx, &cancels, &engine_cancel);
+                    if let Some(closed) = closed {
+                        log::info!("the client closed the input: stopping");
+                        closed.store(true, Ordering::SeqCst);
+                        engine_cancel.store(true, Ordering::SeqCst);
+                    }
+                })?;
         }
         while !self.shutdown {
-            match rx.recv() {
+            if self
+                .closed
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::SeqCst))
+            {
+                break;
+            }
+            let input = rx.recv();
+            if self
+                .closed
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::SeqCst))
+            {
+                break;
+            }
+            match input {
                 Ok(Ok(Input::Msg(msg))) => self.dispatch(msg, &cancels, &engine_cancel)?,
                 Ok(Ok(Input::Reply(reply))) => self.write_msg(&reply)?,
                 Ok(Err(e)) => return Err(e),
@@ -157,7 +195,7 @@ impl<R: BufRead + Send + 'static, W: Write, B: Backend> Server<R, W, B> {
 /// skipped: one bad line never ends the session.
 fn read_loop<R: BufRead>(
     mut reader: R,
-    tx: &SyncSender<std::io::Result<Input>>,
+    tx: &Sender<std::io::Result<Input>>,
     cancels: &Cancels,
     engine_cancel: &AtomicBool,
 ) {
@@ -894,6 +932,45 @@ mod tests {
         let msgs = converse(&input);
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert_eq!(msgs[0]["id"], 6);
+    }
+
+    #[test]
+    fn a_client_that_goes_away_stops_the_work() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let dir = std::env::temp_dir().join(format!("cu-gone-{}", std::process::id()));
+        let engine = engine_with_scripts(&dir);
+        let client = std::thread::spawn(move || {
+            let call = line(
+                "tools/call",
+                1,
+                json!({"name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"}}),
+            );
+            // A second call waits behind the first; then the client leaves.
+            let typing = line(
+                "tools/call",
+                2,
+                json!({"name":"type_text","arguments":{"app":"TextEdit","text":"hi"}}),
+            );
+            writer.write_all(call.as_bytes()).unwrap();
+            writer.write_all(typing.as_bytes()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(writer);
+        });
+        let started = std::time::Instant::now();
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut server = Server::new(engine, std::io::BufReader::new(reader), &mut out)
+                .stop_when_input_ends();
+            server.run().unwrap();
+        }
+        client.join().unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the script went on after the client left"
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains(r#""id":2"#), "the waiting call ran: {text}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

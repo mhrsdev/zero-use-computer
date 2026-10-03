@@ -1,6 +1,8 @@
-//! Desktop notifications on Linux: every app sends them to the notification
+//! Desktop notifications on Linux: apps send them to the notification
 //! server as an `org.freedesktop.Notifications.Notify` call on the session
-//! bus. A connection that has asked the bus to make it a monitor
+//! bus (GNOME apps as `org.gtk.Notifications.AddNotification`, sandboxed
+//! ones to the desktop portal as
+//! `org.freedesktop.portal.Notification.AddNotification`). A connection that has asked the bus to make it a monitor
 //! (`org.freedesktop.DBus.Monitoring.BecomeMonitor`, the documented way
 //! tools like `dbus-monitor` work) receives a copy of exactly those calls —
 //! nothing else — and keeps the most recent ones. It only listens while
@@ -17,7 +19,14 @@ use zbus::zvariant::OwnedValue;
 use crate::error::{Error, Result};
 use crate::types::Notification;
 
-const RULE: &str = "type='method_call',interface='org.freedesktop.Notifications',member='Notify'";
+const RULES: [&str; 3] = [
+    "type='method_call',interface='org.freedesktop.Notifications',member='Notify'",
+    "type='method_call',interface='org.gtk.Notifications',member='AddNotification'",
+    "type='method_call',interface='org.freedesktop.portal.Notification',member='AddNotification'",
+];
+/// The portal passes a notification on to the notification server: the
+/// same one seen again this soon (seconds) is that copy.
+const SAME_WITHIN: u64 = 2;
 /// How often the listening thread checks whether it was stopped while no
 /// notification arrives.
 const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -134,6 +143,57 @@ fn notify_texts(msg: &zbus::Message) -> Option<(String, String, String)> {
     Some((text(0)?, text(3)?, text(4)?))
 }
 
+/// App, title and body of a call that posts a notification, by which call
+/// it is (see [`RULES`]).
+fn texts(msg: &zbus::Message) -> Option<(String, String, String)> {
+    let h = msg.header();
+    let iface = h.interface().map(|i| i.as_str().to_string());
+    let member = h.member().map(|m| m.as_str().to_string());
+    // A dictionary's string, by key.
+    let get = |d: &HashMap<String, OwnedValue>, k: &str| {
+        d.get(k)
+            .and_then(|v| String::try_from(v.clone()).ok())
+            .unwrap_or_default()
+    };
+    match (iface.as_deref(), member.as_deref()) {
+        (Some("org.freedesktop.Notifications") | None, Some("Notify")) => notify_texts(msg),
+        (Some("org.gtk.Notifications"), Some("AddNotification")) => {
+            let (app, _id, n): (String, String, HashMap<String, OwnedValue>) =
+                msg.body().deserialize().ok()?;
+            Some((app, get(&n, "title"), get(&n, "body")))
+        }
+        (Some("org.freedesktop.portal.Notification"), Some("AddNotification")) => {
+            let (_id, n): (String, HashMap<String, OwnedValue>) = msg.body().deserialize().ok()?;
+            let mut body = get(&n, "body");
+            if body.is_empty() {
+                body = get(&n, "markup-body");
+            }
+            // The portal knows which app; the call doesn't say.
+            Some((String::new(), get(&n, "title"), body))
+        }
+        _ => None,
+    }
+}
+
+/// Keep a notification, at most `keep` of them: the copy the portal passes
+/// on (the same title and body just after) only names the app.
+fn record(q: &mut VecDeque<Notification>, n: Notification, keep: usize) {
+    if let Some(last) = q.back_mut()
+        && last.title == n.title
+        && last.body == n.body
+        && matches!((last.time, n.time), (Some(a), Some(b)) if b.saturating_sub(a) <= SAME_WITHIN)
+    {
+        if last.app.is_empty() {
+            last.app = n.app;
+        }
+        return;
+    }
+    q.push_back(n);
+    while q.len() > keep {
+        q.pop_front();
+    }
+}
+
 fn listen(
     seen: &Mutex<VecDeque<Notification>>,
     keep: &AtomicUsize,
@@ -145,7 +205,7 @@ fn listen(
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus.Monitoring"),
         "BecomeMonitor",
-        &(vec![RULE], 0u32),
+        &(RULES.to_vec(), 0u32),
     )?;
     let mut stream = zbus::MessageStream::from(conn.inner());
     loop {
@@ -163,10 +223,7 @@ fn listen(
             futures_util::future::Either::Left(_) => break,
             futures_util::future::Either::Right(_) => continue,
         };
-        if msg.header().member().map(|m| m.as_str()) != Some("Notify") {
-            continue;
-        }
-        let Some((app, summary, body)) = notify_texts(&msg) else {
+        let Some((app, summary, body)) = texts(&msg) else {
             continue;
         };
         let time = std::time::SystemTime::now()
@@ -174,15 +231,13 @@ fn listen(
             .ok()
             .map(|d| d.as_secs());
         let mut q = seen.lock().unwrap_or_else(|p| p.into_inner());
-        q.push_back(Notification {
+        let n = Notification {
             app,
             title: plain(&summary),
             body: plain(&body),
             time,
-        });
-        while q.len() > keep.load(Ordering::SeqCst) {
-            q.pop_front();
-        }
+        };
+        record(&mut q, n, keep.load(Ordering::SeqCst));
     }
     Ok(())
 }
@@ -195,6 +250,104 @@ impl Drop for Listener {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn call<B>(iface: &str, member: &str, body: &B) -> zbus::Message
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+    {
+        zbus::Message::method_call("/org/x", member)
+            .unwrap()
+            .interface(iface)
+            .unwrap()
+            .build(body)
+            .unwrap()
+    }
+
+    fn dict(pairs: &[(&str, &str)]) -> HashMap<String, zbus::zvariant::Value<'static>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), zbus::zvariant::Value::from(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn every_way_of_posting_a_notification_is_read() {
+        let hints: HashMap<String, zbus::zvariant::Value> = HashMap::new();
+        let fdo = call(
+            "org.freedesktop.Notifications",
+            "Notify",
+            &(
+                "Mail",
+                0u32,
+                "",
+                "New mail",
+                "From Ada",
+                Vec::<String>::new(),
+                hints,
+                -1i32,
+            ),
+        );
+        assert_eq!(
+            texts(&fdo),
+            Some(("Mail".into(), "New mail".into(), "From Ada".into()))
+        );
+        let gtk = call(
+            "org.gtk.Notifications",
+            "AddNotification",
+            &(
+                "org.gnome.Calendar",
+                "n1",
+                dict(&[("title", "Meeting"), ("body", "at 10")]),
+            ),
+        );
+        assert_eq!(
+            texts(&gtk),
+            Some((
+                "org.gnome.Calendar".into(),
+                "Meeting".into(),
+                "at 10".into()
+            ))
+        );
+        let portal = call(
+            "org.freedesktop.portal.Notification",
+            "AddNotification",
+            &(
+                "n2",
+                dict(&[("title", "Done"), ("body", "Export finished")]),
+            ),
+        );
+        assert_eq!(
+            texts(&portal),
+            Some((String::new(), "Done".into(), "Export finished".into()))
+        );
+        // Not a notification being posted.
+        let other = call("org.gtk.Notifications", "RemoveNotification", &("a", "n1"));
+        assert_eq!(texts(&other), None);
+    }
+
+    #[test]
+    fn the_portals_copy_is_kept_once_with_the_app_name() {
+        let n = |app: &str, title: &str, time| Notification {
+            app: app.into(),
+            title: title.into(),
+            body: "b".into(),
+            time: Some(time),
+        };
+        let mut q = VecDeque::new();
+        record(&mut q, n("", "Done", 100), 10);
+        record(&mut q, n("org.app", "Done", 101), 10);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].app, "org.app");
+        // The same again later is another notification.
+        record(&mut q, n("org.app", "Done", 110), 10);
+        record(&mut q, n("org.app", "Other", 110), 10);
+        assert_eq!(q.len(), 3);
+        record(&mut q, n("x", "Last", 111), 2);
+        assert_eq!(q.len(), 2);
+        assert_eq!(q[1].title, "Last");
+    }
+
     #[test]
     fn markup_is_removed() {
         assert_eq!(

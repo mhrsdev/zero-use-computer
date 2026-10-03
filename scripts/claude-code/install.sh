@@ -36,8 +36,16 @@ done
 bin_dir="${COMPUTER_USE_HOME:-$HOME/.computer-use}/bin"
 mkdir -p "$bin_dir"
 bin="$bin_dir/computer-use-mcp"
-cp -f "$source_bin" "$bin" && chmod +x "$bin"
+# A new file moved into place, never the old one written over: macOS kills a
+# signed program whose file changed under it ("Killed: 9"), and a running
+# server keeps its old copy until it restarts.
+tmp_bin="$bin.new.$$"
+cp -f "$source_bin" "$tmp_bin" && chmod +x "$tmp_bin" && mv -f "$tmp_bin" "$bin" \
+  || { rm -f "$tmp_bin"; echo "could not install $bin" >&2; exit 1; }
 echo "Installed: $bin"
+if [ -n "${COMPUTER_USE_HOME:-}" ] && [ "$bin_dir" != "$HOME/.computer-use/bin" ]; then
+  echo "Note: COMPUTER_USE_HOME is set, so the program is in $bin_dir; the plugin zip looks in ~/.computer-use/bin, so register it with this script instead (without --no-register)."
+fi
 if [ "$no_register" = 1 ]; then
   echo "Done (not registered with Claude Code). Upload the plugin zip, or run this again without --no-register."
   exit 0

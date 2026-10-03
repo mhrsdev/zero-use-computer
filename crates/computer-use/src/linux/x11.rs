@@ -3,6 +3,8 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection as _;
@@ -10,7 +12,7 @@ use x11rb::protocol::Event;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{self, ConnectionExt as _, ImageFormat, Mapping, ModMask};
 use x11rb::protocol::xtest::ConnectionExt as _;
-use x11rb::rust_connection::RustConnection;
+use x11rb::rust_connection::{DefaultStream, RustConnection};
 
 use crate::error::{Error, Result};
 use crate::keys::{Key, KeyCombo, Modifiers, NamedKey, Pad};
@@ -20,8 +22,15 @@ const KEY_PRESS: u8 = 2;
 const KEY_RELEASE: u8 = 3;
 const BUTTON_PRESS: u8 = 4;
 const BUTTON_RELEASE: u8 = 5;
-/// How many free keycodes are used for characters not on the keyboard.
-const SPARES: usize = 4;
+/// How many free keycodes (at most) are used for characters not on the
+/// keyboard: enough that one is rarely rebound in the middle of a text.
+const SPARES: usize = 16;
+/// How long connecting to the X server may take: a TCP display whose host
+/// doesn't answer (WSL2 with no X server running) would otherwise hang for
+/// minutes, and again on every retry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Connection attempts given up on that are still waiting for an answer.
+static UNANSWERED: AtomicIsize = AtomicIsize::new(0);
 
 /// A keycode with no keysyms, bound on the fly to a character that is not
 /// on the keyboard (another script, a symbol).
@@ -66,6 +75,8 @@ pub struct X11 {
     lost: Cell<bool>,
     /// The XKB extension is in use (keyboard groups and lock state).
     xkb: bool,
+    /// The XTEST extension is there: synthesized input works.
+    xtest: bool,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -86,13 +97,16 @@ impl Drop for X11 {
 
 impl X11 {
     pub fn connect() -> Result<Self> {
-        let (conn, screen_num) = x11rb::connect(None)
-            .map_err(|e| Error::Platform(format!("cannot connect to the X server: {e}")))?;
-        // XTest must be present for synthetic input.
-        conn.xtest_get_version(2, 2)
-            .map_err(|e| Error::Platform(format!("XTest query failed: {e}")))?
-            .reply()
-            .map_err(|e| Error::Platform(format!("XTest extension unavailable: {e}")))?;
+        let (conn, screen_num) = connect_display()?;
+        // Synthesized input needs XTest; screenshots and windows don't.
+        let xtest = conn
+            .xtest_get_version(2, 2)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some();
+        if !xtest {
+            log::warn!("the X server has no XTEST extension: no synthesized input");
+        }
         let screen = &conn.setup().roots[screen_num];
         let root = screen.root;
         let (root_w, root_h) = (screen.width_in_pixels, screen.height_in_pixels);
@@ -146,6 +160,7 @@ impl X11 {
             keymap_stale: Cell::new(false),
             lost: Cell::new(false),
             xkb,
+            xtest,
             red_mask,
             green_mask,
             blue_mask,
@@ -153,6 +168,21 @@ impl X11 {
         };
         x.load_keymap()?;
         Ok(x)
+    }
+
+    /// Whether synthesized input works (the server has XTEST).
+    pub fn can_input(&self) -> bool {
+        self.xtest
+    }
+
+    fn need_xtest(&self) -> Result<()> {
+        if self.xtest {
+            Ok(())
+        } else {
+            Err(Error::Unsupported(
+                "synthesized keyboard/mouse input: this X server has no XTEST extension (screenshots and element_index actions still work)".into(),
+            ))
+        }
     }
 
     /// Whether the connection to the X server broke (seen by `drain`).
@@ -286,50 +316,54 @@ impl X11 {
         Ok(())
     }
 
-    fn warp(&self, x: i32, y: i32) -> Result<()> {
+    fn warp(&self, x: i16, y: i16) -> Result<()> {
         self.conn
-            .warp_pointer(x11rb::NONE, self.root, 0, 0, 0, 0, x as i16, y as i16)
+            .warp_pointer(x11rb::NONE, self.root, 0, 0, 0, 0, x, y)
             .map_err(xe)?;
         Ok(())
     }
 
     /// Where the user's pointer is, when it should be put back afterwards.
-    fn pointer(&self) -> Option<(i32, i32)> {
+    fn pointer(&self) -> Option<(i16, i16)> {
         if !self.restore_pointer {
             return None;
         }
         let r = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
-        Some((i32::from(r.root_x), i32::from(r.root_y)))
+        Some((r.root_x, r.root_y))
     }
 
     /// Return the pointer to where the user left it.
-    fn put_back(&self, at: Option<(i32, i32)>) -> Result<()> {
+    fn put_back(&self, at: Option<(i16, i16)>) -> Result<()> {
         if let Some((x, y)) = at {
             self.warp(x, y)?;
-            self.fake(6, 0, x as i16, y as i16)?;
+            self.fake(6, 0, x, y)?;
         }
         Ok(())
     }
 
     pub fn click(&self, x: i32, y: i32, button: u8, count: u8) -> Result<()> {
+        self.need_xtest()?;
+        let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
         self.warp(x, y)?;
-        self.fake(6, 0, x as i16, y as i16)?; // MotionNotify absolute
+        self.fake(6, 0, x, y)?; // MotionNotify absolute
         for _ in 0..count.max(1) {
-            self.fake(BUTTON_PRESS, button, x as i16, y as i16)?;
-            self.fake(BUTTON_RELEASE, button, x as i16, y as i16)?;
+            self.fake(BUTTON_PRESS, button, x, y)?;
+            self.fake(BUTTON_RELEASE, button, x, y)?;
         }
         self.put_back(home)?;
         self.flush()
     }
 
     pub fn scroll(&self, x: i32, y: i32, dx: i32, dy: i32) -> Result<()> {
+        self.need_xtest()?;
+        let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
         self.warp(x, y)?;
         let tick = |button: u8, n: i32| -> Result<()> {
-            for _ in 0..n.abs() {
-                self.fake(BUTTON_PRESS, button, x as i16, y as i16)?;
-                self.fake(BUTTON_RELEASE, button, x as i16, y as i16)?;
+            for _ in 0..n.unsigned_abs() {
+                self.fake(BUTTON_PRESS, button, x, y)?;
+                self.fake(BUTTON_RELEASE, button, x, y)?;
             }
             Ok(())
         };
@@ -348,6 +382,8 @@ impl X11 {
     }
 
     pub fn drag(&self, from: (i32, i32), to: (i32, i32)) -> Result<()> {
+        self.need_xtest()?;
+        let (fx, fy, tx, ty) = (coord(from.0)?, coord(from.1)?, coord(to.0)?, coord(to.1)?);
         let home = self.pointer();
         // Paced like a real drag: toolkits that start a drag on a motion
         // threshold or a timer miss a single burst of events.
@@ -356,20 +392,20 @@ impl X11 {
             std::thread::sleep(DRAG_STEP);
             Ok(())
         };
-        self.warp(from.0, from.1)?;
-        self.fake(6, 0, from.0 as i16, from.1 as i16)?;
+        self.warp(fx, fy)?;
+        self.fake(6, 0, fx, fy)?;
         pause()?;
-        self.fake(BUTTON_PRESS, 1, from.0 as i16, from.1 as i16)?;
+        self.fake(BUTTON_PRESS, 1, fx, fy)?;
         pause()?;
         // A few intermediate motions so drag-aware widgets follow.
         for step in 1..=8 {
-            let x = from.0 + (to.0 - from.0) * step / 8;
-            let y = from.1 + (to.1 - from.1) * step / 8;
+            let x = clamp16(from.0 + (to.0 - from.0) * step / 8);
+            let y = clamp16(from.1 + (to.1 - from.1) * step / 8);
             self.warp(x, y)?;
-            self.fake(6, 0, x as i16, y as i16)?;
+            self.fake(6, 0, x, y)?;
             pause()?;
         }
-        self.fake(BUTTON_RELEASE, 1, to.0 as i16, to.1 as i16)?;
+        self.fake(BUTTON_RELEASE, 1, tx, ty)?;
         pause()?;
         self.put_back(home)?;
         self.flush()
@@ -377,11 +413,13 @@ impl X11 {
 
     /// Move the pointer to (x, y); where it was, if it should go back.
     pub fn move_pointer(&self, x: i32, y: i32) -> Result<Option<(i32, i32)>> {
+        self.need_xtest()?;
+        let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
         self.warp(x, y)?;
-        self.fake(6, 0, x as i16, y as i16)?;
+        self.fake(6, 0, x, y)?;
         self.flush()?;
-        Ok(home)
+        Ok(home.map(|(x, y)| (i32::from(x), i32::from(y))))
     }
 
     /// Draw `strokes` with `button` (1 left, 2 middle, 3 right) held (see
@@ -392,12 +430,22 @@ impl X11 {
         button: u8,
         pace: &mut dyn FnMut(f64) -> Result<()>,
     ) -> Result<()> {
+        self.need_xtest()?;
+        // Every point checked before anything is drawn.
+        let strokes = strokes
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|&(x, y)| Ok((coord(x)?, coord(y)?)))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         let home = self.pointer();
         let mut held = None;
-        let drawn = self.draw_strokes(strokes, button, pace, &mut held);
+        let drawn = self.draw_strokes(&strokes, button, pace, &mut held);
         if let Some((x, y)) = held {
             // Never leave the button held down.
-            let _ = self.fake(BUTTON_RELEASE, button, x as i16, y as i16);
+            let _ = self.fake(BUTTON_RELEASE, button, x, y);
         }
         let back = self.put_back(home);
         let flushed = self.flush();
@@ -406,10 +454,10 @@ impl X11 {
 
     fn draw_strokes(
         &self,
-        strokes: &[Vec<(i32, i32)>],
+        strokes: &[Vec<(i16, i16)>],
         button: u8,
         pace: &mut dyn FnMut(f64) -> Result<()>,
-        held: &mut Option<(i32, i32)>,
+        held: &mut Option<(i16, i16)>,
     ) -> Result<()> {
         for stroke in strokes {
             let Some(&(x, y)) = stroke.first() else {
@@ -417,27 +465,31 @@ impl X11 {
             };
             pace(0.0)?;
             self.warp(x, y)?;
-            self.fake(6, 0, x as i16, y as i16)?;
+            self.fake(6, 0, x, y)?;
             self.flush()?;
             std::thread::sleep(DRAG_STEP);
-            self.fake(BUTTON_PRESS, button, x as i16, y as i16)?;
+            self.fake(BUTTON_PRESS, button, x, y)?;
             *held = Some((x, y));
             self.flush()?;
             std::thread::sleep(DRAG_STEP);
             let mut last = (x, y);
             for &(px, py) in &stroke[1..] {
-                pace(f64::from(px - last.0).hypot(f64::from(py - last.1)))?;
+                let (dx, dy) = (
+                    i32::from(px) - i32::from(last.0),
+                    i32::from(py) - i32::from(last.1),
+                );
+                pace(f64::from(dx).hypot(f64::from(dy)))?;
                 if (px, py) == last {
                     continue;
                 }
                 self.warp(px, py)?;
-                self.fake(6, 0, px as i16, py as i16)?;
+                self.fake(6, 0, px, py)?;
                 self.flush()?;
                 last = (px, py);
                 *held = Some(last);
             }
             std::thread::sleep(DRAG_STEP);
-            self.fake(BUTTON_RELEASE, button, last.0 as i16, last.1 as i16)?;
+            self.fake(BUTTON_RELEASE, button, last.0, last.1)?;
             *held = None;
             self.flush()?;
         }
@@ -447,6 +499,7 @@ impl X11 {
     /// Type a run of text as key events, in the keymap's first layout
     /// whatever layout and Caps Lock the user has on (restored after).
     pub fn type_text(&mut self, text: &str) -> Result<()> {
+        self.need_xtest()?;
         self.ensure_keymap()?;
         let saved = self.plain_keyboard()?;
         let typed = self.type_chars(text);
@@ -474,6 +527,7 @@ impl X11 {
     /// means) what it says whatever layout and Caps Lock are on; other
     /// keys (Return, Caps Lock itself) leave the keyboard state alone.
     pub fn press(&mut self, combo: &KeyCombo) -> Result<()> {
+        self.need_xtest()?;
         self.ensure_keymap()?;
         let saved = match combo.key {
             Key::Char(_) => self.plain_keyboard()?,
@@ -700,16 +754,84 @@ impl X11 {
                 rect.x, rect.y, rect.width, rect.height
             )));
         }
-        let (x, y) = (x0 as i16, y0 as i16);
+        let (x, y) = (coord(x0 as i32)?, coord(y0 as i32)?);
         let w = (x1 - x0).round().max(1.0) as u16;
         let h = (y1 - y0).round().max(1.0) as u16;
+        let masks = [self.red_mask, self.green_mask, self.blue_mask];
+        let rgba = self.image(self.root, (x, y, w, h), masks)?;
+        Ok(Capture {
+            width: w as u32,
+            height: h as u32,
+            rgba,
+            bounds: Rect::new(f64::from(x), f64::from(y), f64::from(w), f64::from(h)),
+        })
+    }
+
+    /// Capture the part of a screen rectangle that X window `win` covers,
+    /// read from the window itself. Rootless XWayland (a GNOME or KDE
+    /// Wayland session) keeps no picture of the screen on its root window,
+    /// only each window's own; the window may have its own visual (32-bit
+    /// ARGB for a translucent one).
+    pub fn capture_window(&self, win: xproto::Window, rect: Rect) -> Result<Capture> {
+        let at = self
+            .wm()
+            .geometry(win)
+            .ok_or_else(|| Error::ActionFailed(format!("the X window {win:#x} is gone")))?;
+        let (x, y, w, h) = window_crop(rect, at).ok_or_else(|| {
+            Error::InvalidArgs(format!(
+                "the area ({:.0}, {:.0}) {:.0}x{:.0} is outside the window",
+                rect.x, rect.y, rect.width, rect.height
+            ))
+        })?;
+        let visual = self
+            .conn
+            .get_window_attributes(win)
+            .map_err(xe)?
+            .reply()
+            .map_err(xe)?
+            .visual;
+        let masks =
+            self.visual_masks(visual)
+                .unwrap_or([self.red_mask, self.green_mask, self.blue_mask]);
+        let rgba = self.image(win, (x, y, w, h), masks)?;
+        Ok(Capture {
+            width: w as u32,
+            height: h as u32,
+            rgba,
+            bounds: Rect::new(
+                at.x + f64::from(x),
+                at.y + f64::from(y),
+                f64::from(w),
+                f64::from(h),
+            ),
+        })
+    }
+
+    /// The red, green and blue masks of a visual.
+    fn visual_masks(&self, visual: xproto::Visualid) -> Option<[u32; 3]> {
+        self.conn
+            .setup()
+            .roots
+            .iter()
+            .flat_map(|s| &s.allowed_depths)
+            .flat_map(|d| &d.visuals)
+            .find(|v| v.visual_id == visual)
+            .map(|v| [v.red_mask, v.green_mask, v.blue_mask])
+    }
+
+    /// The pixels of an area (x, y, width, height) of a drawable, as RGBA.
+    fn image(
+        &self,
+        drawable: xproto::Drawable,
+        (x, y, w, h): (i16, i16, u16, u16),
+        masks: [u32; 3],
+    ) -> Result<Vec<u8>> {
         let img = self
             .conn
-            .get_image(ImageFormat::Z_PIXMAP, self.root, x, y, w, h, !0)
+            .get_image(ImageFormat::Z_PIXMAP, drawable, x, y, w, h, !0)
             .map_err(xe)?
             .reply()
             .map_err(|e| Error::Platform(format!("GetImage failed: {e}")))?;
-
         let setup = self.conn.setup();
         let format = setup
             .pixmap_formats
@@ -722,16 +844,163 @@ impl X11 {
             bits_per_pixel: format.bits_per_pixel,
             pad: format.scanline_pad,
             msb_first: setup.image_byte_order == xproto::ImageOrder::MSB_FIRST,
-            masks: [self.red_mask, self.green_mask, self.blue_mask],
+            masks,
         };
-        let rgba = to_rgba(img.data, w.into(), h.into(), &layout)?;
-        Ok(Capture {
-            width: w as u32,
-            height: h as u32,
-            rgba,
-            bounds: Rect::new(f64::from(x), f64::from(y), f64::from(w), f64::from(h)),
-        })
+        to_rgba(img.data, w.into(), h.into(), &layout)
     }
+}
+
+/// Connect to the X server `$DISPLAY` names (and the screen number), giving
+/// up after [`CONNECT_TIMEOUT`] instead of hanging on one that doesn't
+/// answer.
+pub(crate) fn connect_display() -> Result<(RustConnection, usize)> {
+    within(CONNECT_TIMEOUT, &UNANSWERED, open_display)
+}
+
+/// Connect to the X server `$DISPLAY` names, as `x11rb::connect` does but
+/// with a time limit on reaching a TCP display.
+fn open_display() -> Result<(RustConnection, usize)> {
+    use x11rb::reexports::x11rb_protocol::parse_display::{ConnectAddress, parse_display};
+    use x11rb::reexports::x11rb_protocol::xauth::get_auth;
+    let fail =
+        |e: &dyn std::fmt::Display| Error::Platform(format!("cannot connect to the X server: {e}"));
+    let display = parse_display(None).map_err(|e| fail(&e))?;
+    let screen = usize::from(display.screen);
+    let mut last: Option<std::io::Error> = None;
+    for addr in display.connect_instruction() {
+        let stream = match &addr {
+            ConnectAddress::Hostname(host, port) => {
+                tcp_connect(host, *port, CONNECT_TIMEOUT).and_then(DefaultStream::from_tcp_stream)
+            }
+            ConnectAddress::Socket(path) => std::os::unix::net::UnixStream::connect(path)
+                .and_then(DefaultStream::from_unix_stream),
+            _ => continue,
+        };
+        match stream {
+            Ok((stream, (family, address))) => {
+                // Without auth data when there is none (or it can't be read).
+                let (name, data) = get_auth(family, &address, display.display)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let conn =
+                    RustConnection::connect_to_stream_with_auth_info(stream, screen, name, data)
+                        .map_err(|e| fail(&e))?;
+                return Ok((conn, screen));
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(e) => fail(&e),
+        None => fail(&"no address to reach the display at"),
+    })
+}
+
+/// A TCP connection to `host`:`port`, giving up on each address after
+/// `timeout`.
+fn tcp_connect(host: &str, port: u16, timeout: Duration) -> std::io::Result<std::net::TcpStream> {
+    use std::net::ToSocketAddrs as _;
+    let mut last = None;
+    for addr in (host, port).to_socket_addrs()? {
+        match std::net::TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no address for {host}"),
+        )
+    }))
+}
+
+/// Run `f` (a connection attempt) on its own thread for at most `timeout`;
+/// an attempt given up on is counted in `unanswered` until it ends, and no
+/// new one starts meanwhile (a hung server would otherwise collect one
+/// stuck thread per retry).
+fn within<T: Send + 'static>(
+    timeout: Duration,
+    unanswered: &'static AtomicIsize,
+    f: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    const RUNNING: u8 = 0;
+    const DONE: u8 = 1;
+    const ABANDONED: u8 = 2;
+    if unanswered.load(Ordering::SeqCst) > 0 {
+        return Err(Error::Platform(
+            "the X server hasn't answered an earlier connection attempt".into(),
+        ));
+    }
+    let state = Arc::new(AtomicU8::new(RUNNING));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let st = state.clone();
+    std::thread::Builder::new()
+        .name("x11-connect".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+            if st.swap(DONE, Ordering::SeqCst) == ABANDONED {
+                unanswered.fetch_sub(1, Ordering::SeqCst);
+            }
+        })
+        .map_err(|e| Error::Platform(format!("cannot connect to the X server: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(r) => r,
+        Err(_) => {
+            unanswered.fetch_add(1, Ordering::SeqCst);
+            if state
+                .compare_exchange(RUNNING, ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                // It ended just now.
+                unanswered.fetch_sub(1, Ordering::SeqCst);
+                if let Ok(r) = rx.try_recv() {
+                    return r;
+                }
+            }
+            Err(Error::Platform(format!(
+                "cannot connect to the X server: no answer within {} s",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
+
+/// An X11 coordinate (16 bits signed): out of range is an error, never a
+/// position wrapped to the other side of the screen.
+fn coord(v: i32) -> Result<i16> {
+    i16::try_from(v).map_err(|_| {
+        Error::InvalidArgs(format!(
+            "coordinate {v} is outside what X11 can address ({}..={})",
+            i16::MIN,
+            i16::MAX
+        ))
+    })
+}
+
+/// An X11 coordinate for a point on the way (a drag's): the nearest one.
+fn clamp16(v: i32) -> i16 {
+    v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+/// The part of `rect` (screen coordinates) inside a window at `at`, in the
+/// window's coordinates: (x, y, width, height), or `None` when they don't
+/// overlap by a pixel.
+fn window_crop(rect: Rect, at: Rect) -> Option<(i16, i16, u16, u16)> {
+    let x0 = (rect.x - at.x).clamp(0.0, at.width).round();
+    let y0 = (rect.y - at.y).clamp(0.0, at.height).round();
+    let x1 = (rect.x + rect.width - at.x).clamp(0.0, at.width).round();
+    let y1 = (rect.y + rect.height - at.y).clamp(0.0, at.height).round();
+    if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+        return None;
+    }
+    Some((
+        i16::try_from(x0 as i64).ok()?,
+        i16::try_from(y0 as i64).ok()?,
+        u16::try_from((x1 - x0) as i64).ok()?,
+        u16::try_from((y1 - y0) as i64).ok()?,
+    ))
 }
 
 /// Pace of synthesized drag steps.
@@ -1158,6 +1427,86 @@ mod tests {
         assert_eq!(keysym_for(Key::Char('a')), Some(0x61));
         assert_eq!(keysym_for(Key::Char('é')), Some(0xe9));
         assert_eq!(keysym_for(Key::Char('€')), Some(0x0100_20ac));
+    }
+
+    #[test]
+    fn up_to_sixteen_spare_keycodes() {
+        let empty = [0; 4 * 40];
+        let spares = find_spares(&empty, 4, 8, SPARES);
+        assert_eq!(spares.len(), 16);
+        assert_eq!(spares[0], 8);
+        assert_eq!(spares[15], 23);
+        // Fewer when fewer are free.
+        assert_eq!(find_spares(&empty[..4 * 3], 4, 8, SPARES).len(), 3);
+    }
+
+    #[test]
+    fn coordinates_out_of_range_are_refused_not_wrapped() {
+        assert_eq!(coord(100).unwrap(), 100);
+        assert_eq!(coord(-32768).unwrap(), i16::MIN);
+        assert_eq!(coord(32767).unwrap(), i16::MAX);
+        // `as i16` made 40000 -25536 (the far left of the screen).
+        assert!(matches!(coord(40000), Err(Error::InvalidArgs(_))));
+        assert!(matches!(coord(-40000), Err(Error::InvalidArgs(_))));
+        assert_eq!(clamp16(40000), i16::MAX);
+        assert_eq!(clamp16(-40000), i16::MIN);
+        assert_eq!(clamp16(-5), -5);
+    }
+
+    #[test]
+    fn a_window_is_captured_in_its_own_coordinates() {
+        let at = Rect::new(100.0, 50.0, 400.0, 300.0);
+        // Inside: shifted by the window's corner.
+        assert_eq!(
+            window_crop(Rect::new(110.0, 60.0, 50.0, 40.0), at),
+            Some((10, 10, 50, 40))
+        );
+        // The frame around it (title bar, shadow): only the window.
+        assert_eq!(
+            window_crop(Rect::new(90.0, 20.0, 420.0, 340.0), at),
+            Some((0, 0, 400, 300))
+        );
+        // Past its right and bottom edges.
+        assert_eq!(
+            window_crop(Rect::new(450.0, 300.0, 100.0, 100.0), at),
+            Some((350, 250, 50, 50))
+        );
+        assert_eq!(window_crop(Rect::new(0.0, 0.0, 50.0, 50.0), at), None);
+    }
+
+    #[test]
+    fn a_connection_attempt_that_hangs_is_given_up_on() {
+        static PENDING: AtomicIsize = AtomicIsize::new(0);
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let t = Instant::now();
+        let r = within(Duration::from_millis(100), &PENDING, move || {
+            let _ = wait.recv();
+            Ok(1)
+        });
+        assert!(r.is_err());
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // No second attempt while that one is still waiting.
+        let t = Instant::now();
+        assert!(within(Duration::from_secs(5), &PENDING, || Ok(2)).is_err());
+        assert!(t.elapsed() < Duration::from_secs(1));
+        // Once it ends, connecting works again.
+        go.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while PENDING.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            within(Duration::from_secs(5), &PENDING, || Ok(3)).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_tcp_display_that_doesnt_answer_times_out() {
+        // A non-routable address: either refused at once, or no answer.
+        let t = Instant::now();
+        assert!(tcp_connect("10.255.255.1", 6000, Duration::from_millis(300)).is_err());
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
     }
 
     #[test]
