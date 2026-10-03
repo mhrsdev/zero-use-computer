@@ -7,8 +7,12 @@
 //! as the engine so both use the same coordinates. Windows destroys the
 //! windows if the helper process dies. Each window gets its image before it
 //! is first shown, and DWM is told not to animate it or round its corners.
+//! Topmost windows share one band, and the taskbar (or any topmost window
+//! the user brings forward) can come above them: the overlay puts itself
+//! back on top when the foreground window changes, and every second.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{
@@ -32,13 +36,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetSystemMetrics,
-    HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
-    SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA,
-    UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+    GetSystemMetrics, HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+    SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
+    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_NCHITTEST, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -51,6 +55,9 @@ const CLASS: PCWSTR = w!("ComputerUseOverlay");
 /// Ids of the global keys' registrations (thread-wide, no window): the
 /// stop key's, then the settings key's.
 const HOTKEY_IDS: [i32; 2] = [0x5A01, 0x5A02];
+/// Back on top at least this often while shown (the taskbar can come above
+/// without the foreground window changing, e.g. one that hides itself).
+const RAISE_EVERY: Duration = Duration::from_secs(1);
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_NCHITTEST {
@@ -75,6 +82,9 @@ pub struct WinSurface {
     opacity: f32,
     /// Which global keys are registered.
     hotkeys: [bool; 2],
+    /// The foreground window when the overlay last went back on top, and when.
+    foreground: isize,
+    raised: Instant,
 }
 
 impl WinSurface {
@@ -101,6 +111,8 @@ impl WinSurface {
             hidden: false,
             opacity: 1.0,
             hotkeys: [false; 2],
+            foreground: 0,
+            raised: Instant::now(),
         };
         // Find out now whether captures can leave us out, before telling the
         // engine: a never-shown test window.
@@ -229,6 +241,25 @@ impl WinSurface {
             }
             let _ = DeleteDC(mem);
             ReleaseDC(None, screen);
+        }
+    }
+
+    /// Back on top of the topmost band, when the foreground window changed
+    /// (the user clicked the taskbar or another topmost window, which then
+    /// comes above the overlay) or a while has passed.
+    fn keep_on_top(&mut self) {
+        if self.hidden {
+            return;
+        }
+        // SAFETY: a plain query.
+        let fg = unsafe { GetForegroundWindow() }.0 as isize;
+        if fg == self.foreground && self.raised.elapsed() < RAISE_EVERY {
+            return;
+        }
+        self.foreground = fg;
+        self.raised = Instant::now();
+        for w in self.layers.values().filter(|w| w.visible) {
+            Self::raise(w.hwnd);
         }
     }
 
@@ -448,6 +479,7 @@ impl Surface for WinSurface {
                 DispatchMessageW(&msg);
             }
         }
+        self.keep_on_top();
         events
     }
 
