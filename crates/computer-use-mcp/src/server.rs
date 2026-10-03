@@ -97,7 +97,9 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
                     if let Some(closed) = closed {
                         log::info!("the client closed the input: stopping");
                         closed.store(true, Ordering::SeqCst);
-                        engine_cancel.store(true, Ordering::SeqCst);
+                        // Through the cancels too, so a call that was just
+                        // about to start doesn't clear it and run.
+                        cancels.close(&engine_cancel);
                     }
                 })?;
         }

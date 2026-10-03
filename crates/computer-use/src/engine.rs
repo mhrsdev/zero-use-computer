@@ -138,6 +138,9 @@ struct ResultNote {
 /// [`ResultNote`].
 #[derive(Default)]
 struct Results {
+    /// Results that brought other agents' messages: never superseded (a
+    /// later look doesn't repeat them).
+    kept: HashSet<u64>,
     looks: HashMap<u32, Vec<u64>>,
     pictures: HashMap<u32, Vec<u64>>,
     drafts: HashMap<String, Vec<u64>>,
@@ -220,6 +223,8 @@ const MAX_DEPTH: u32 = 8;
 /// Failed starts or crashes of the overlay helper before the engine stops
 /// trying (until the server restarts).
 const MAX_OVERLAY_FAILURES: u32 = 5;
+/// Hubs that went away and were joined again at once, at most.
+const MAX_HUB_LOSSES: u32 = 3;
 
 /// `draw`: the farthest the pointer moves in one step (screen units), so
 /// apps see a continuous line.
@@ -389,6 +394,8 @@ pub struct Engine<B: Backend> {
     client: String,
     /// This engine's number on the desktop, kept for a hub started again.
     hub_agent: Option<u32>,
+    /// Hubs lost and joined again at once (a few, then the usual waits).
+    hub_losses: u32,
     /// Where the hub's token is, instead of the server's folder (tests).
     hub_home: Option<std::path::PathBuf>,
     /// Windows put in this agent's part of the screen, and the part.
@@ -397,6 +404,8 @@ pub struct Engine<B: Backend> {
     doing: Option<String>,
     /// How many agents the model was last told share the desktop.
     agents_told: usize,
+    /// Messages sent to other agents in the last minute.
+    sent: Vec<Instant>,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -525,10 +534,12 @@ impl<B: Backend> Engine<B> {
             progress: None,
             client: String::new(),
             hub_agent: None,
+            hub_losses: 0,
             hub_home: None,
             arranged: HashMap::new(),
             doing: None,
             agents_told: 0,
+            sent: Vec::new(),
             ocr_note: None,
             ocr_note_shown: false,
             partial_report: None,
@@ -570,6 +581,15 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.settings_problem = None;
                 self.backend.configure(&store.config);
+                // Another hub (or none): leave this one, the next call joins.
+                let hub_changed = {
+                    let (old, new) = (&self.store.config.hub, &store.config.hub);
+                    old.enabled != new.enabled || old.port != new.port
+                };
+                if hub_changed && self.overlay.take().is_some() {
+                    self.hub_losses = 0;
+                    self.agents_told = 0;
+                }
                 self.store = store;
                 self.scripts.set_dir(self.store.config.script.library());
                 self.epoch += 1;
@@ -1363,16 +1383,12 @@ impl<B: Backend> Engine<B> {
             || matches!(call, ToolCall::LaunchApp(_))
             || matches!(&call, ToolCall::Window(w) if w.action.mutating());
         if mutating {
-            // Other agents on the desktop: one at a time at the keyboard
-            // and mouse.
-            self.take_turn()?;
             // Anything read before this action is stale now.
             self.epoch += 1;
-            // Don't act while the user is using the mouse or keyboard.
-            if let Err(e) = self.wait_for_user() {
-                self.end_turn();
-                return Err(e);
-            }
+            // Don't act while the user is using the mouse or keyboard…
+            self.wait_for_user()?;
+            // …nor while another agent on the desktop is: one at a time.
+            self.take_turn()?;
         }
         let report_app = acting.filter(|_| {
             self.store.config.tree.report_changes && self.ctx.quiet_depth != Some(self.ctx.depth)
@@ -1421,7 +1437,7 @@ impl<B: Backend> Engine<B> {
         };
         if mutating {
             self.last_input = Some((self.clock)());
-            self.end_turn();
+            self.end_turn(true);
         }
         let out = out?;
         if let Some(query) = pixels_of_app
@@ -1616,7 +1632,7 @@ impl<B: Backend> Engine<B> {
                 // its state (a batch step's quiet reports, the element it
                 // aimed at, what its `expect` found…), and the tree start
                 // a result may have shown only in part.
-                self.end_turn();
+                self.end_turn(true);
                 self.ctx = CallState::default();
                 self.partial_report = None;
                 self.cancel.store(false, Ordering::SeqCst);
@@ -1631,7 +1647,10 @@ impl<B: Backend> Engine<B> {
             self.structured = None;
         }
         // The other agents on the desktop: how many, and what they said.
-        if let Some(note) = self.hub_notes() {
+        if let Some(note) = self.hub_notes(name == "agents") {
+            if let Some(data) = self.structured.as_mut() {
+                data["notes"] = serde_json::json!(note.trim());
+            }
             out.text.push_str(&note);
         }
         // The user is counting on the stop key: if it doesn't work, say so
@@ -1712,7 +1731,7 @@ impl<B: Backend> Engine<B> {
         for k in note.drafts_picture {
             images.extend(r.draft_pictures.insert(k, vec![id]).unwrap_or_default());
         }
-        sup.retain(|x| *x != id);
+        sup.retain(|x| *x != id && !r.kept.contains(x));
         sup.sort_unstable();
         sup.dedup();
         images.retain(|x| *x != id && !sup.contains(x));

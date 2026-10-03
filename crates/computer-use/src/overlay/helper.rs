@@ -533,7 +533,8 @@ impl Machine {
             | Cmd::Doing { .. }
             | Cmd::Area { .. }
             | Cmd::Lock { .. }
-            | Cmd::Unlock
+            | Cmd::Unlock { .. }
+            | Cmd::Hold
             | Cmd::Send { .. } => {}
         }
     }

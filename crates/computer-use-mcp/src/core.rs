@@ -62,6 +62,18 @@ impl<B: Backend> Core<B> {
         &self.engine
     }
 
+    /// The version `initialize` agreed on (HTTP keeps it per session and
+    /// gives it back before each request with [`Core::set_protocol`]).
+    #[cfg(feature = "http")]
+    pub fn protocol(&self) -> Option<&'static str> {
+        self.protocol
+    }
+
+    #[cfg(feature = "http")]
+    pub fn set_protocol(&mut self, protocol: Option<&'static str>) {
+        self.protocol = protocol;
+    }
+
     /// The client asked the server to end (`shutdown`).
     pub fn is_shut_down(&self) -> bool {
         self.shutdown
@@ -287,9 +299,16 @@ struct CancelState {
     running: Option<Value>,
     /// The client cancelled it.
     running_cancelled: bool,
-    /// Cancelled before they started (most recent last).
-    early: Vec<Value>,
+    /// Cancelled before they started (most recent last), and when: a
+    /// cancel for a request that had already ended would otherwise skip a
+    /// later one that reuses its id (another client without a session).
+    early: Vec<(Value, std::time::Instant)>,
+    /// The client went away: nothing more runs.
+    closed: bool,
 }
+
+/// An early cancel waits this long, at most, for its request.
+const EARLY_CANCEL_KEPT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Cancels {
     /// The client cancelled `key`: end it if it runs, else skip it later.
@@ -299,17 +318,34 @@ impl Cancels {
             st.running_cancelled = true;
             engine_cancel.store(true, Ordering::SeqCst);
         } else {
-            st.early.push(key);
+            let now = std::time::Instant::now();
+            st.early
+                .retain(|(_, at)| now.saturating_duration_since(*at) < EARLY_CANCEL_KEPT);
+            st.early.push((key, now));
             if st.early.len() > 64 {
                 st.early.remove(0);
             }
         }
     }
 
+    /// The client has gone (its input ended): the call that runs is ended
+    /// and no other starts, even one about to.
+    pub fn close(&self, engine_cancel: &AtomicBool) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.closed = true;
+        engine_cancel.store(true, Ordering::SeqCst);
+    }
+
     /// Start answering `key`; false when it was cancelled already.
     fn begin(&self, key: &Value, engine_cancel: &AtomicBool) -> bool {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(i) = st.early.iter().position(|c| c == key) {
+        if st.closed {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        st.early
+            .retain(|(_, at)| now.saturating_duration_since(*at) < EARLY_CANCEL_KEPT);
+        if let Some(i) = st.early.iter().position(|(c, _)| c == key) {
             st.early.remove(i);
             return false;
         }

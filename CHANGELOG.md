@@ -7,7 +7,10 @@ beside Codex, each with a numbered cursor, its own part of the screen and
 turns at the keyboard and mouse, and one stop key for all of them
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.5...v3.9.0);
 [how it works](docs/GUIDE.md#several-agents-on-one-desktop-v39);
-[upgrading](docs/MIGRATING.md#upgrading-to-v390)).
+[upgrading](docs/MIGRATING.md#upgrading-to-v390)). It includes
+[v3.8.5](#v385), never released on its own: one MCP core for stdio and
+HTTP, batches, progress, Streamable HTTP, per-tool annotations, and
+`engine.rs` in parts.
 
 ![Four agents on one desktop](docs/images/hub-four-agents.png)
 
@@ -60,12 +63,54 @@ Checked in their documentation and source code (October 2026):
 - VS Code, Zed, Gemini CLI and OpenCode share one server between their
   subagents: one agent, whose calls take turns.
 
+### Debugged before release
+
+Three reviews (the hub, the engine's side, the MCP and HTTP side) and
+stress runs found these; each is fixed, most with a test:
+
+- **The stop key could be lost for the hub's life:** the first key asked
+  for was kept even when the system refused it, so a later agent's
+  working key was never tried, and a key changed in the settings never
+  took. Now a key that failed, or another, is registered anew.
+- **Two agents could type at once:** a turn held over 30 s (a long
+  typing, a drawing, a wait for the user) was given to the next agent
+  without a word. Now an agent says every few seconds that it still acts;
+  only one gone quiet (stuck) loses the turn, and it is told. The pause
+  while the user works comes before the turn, not inside it.
+- **A hub that went away** (killed, or ended between agents) left its
+  agents alone for 10 s or more, without a stop key, and counted against
+  the overlay's five tries: now they join a new one at once, keeping
+  their numbers (seen with two real servers: back within a second).
+- An agent that was stopped stops the others when a new hub starts under
+  them; a turn given up, or an action that sent nothing, no longer makes
+  the others take the user's input for an agent's.
+- A window is moved into its part only in a turn, and its real size is
+  read back (a window may keep a minimum size); the first actions after
+  joining wait for the list of agents; asking for the same part again
+  doesn't wait 1.5 s; a change to `[hub]` in the settings joins (or
+  leaves) at once; the hub is joined for its turns even with the
+  indicator off; a message over the limit is refused instead of lost;
+  results that bring messages are never marked as superseded.
+- The token file is per port (`hub-<port>.token`) and a hub removes only
+  its own; the hub reads at most 64 KB before the token; its log is
+  appended to, not cut, by a second hub that lost the race.
+- HTTP: each session keeps the protocol version it agreed on (a second
+  client on an older one took `structuredContent` from the first); a
+  request body is read on a thread of its own, so a slow upload holds no
+  one up; sessions are dropped least recently used first, with their
+  event streams; HTTP/1.0 gets 505 for a stream; a cancel for a request
+  that had already ended no longer skips a later one with the same id.
+- stdio: a client that goes away just as a call starts no longer gets it
+  run.
+
 ### Checked
 
-- The hub's bookkeeping on its own (numbers, layouts, turns, the message
-  limit), and agents over its socket: numbers, turns, messages, parts of
-  the screen, a wrong token, the token file's mode (11 new tests; 405 in
-  the library, 40 in the server).
+- The hub's bookkeeping on its own (numbers, layouts, turns, keeping and
+  losing a turn, the message limit), a stop key registered again, agents
+  over its socket (numbers, turns, messages, parts of the screen, a wrong
+  token, the token file's mode), and eight agents coming, going and
+  taking 144 turns, never two at once (14 new tests; 407 in the library,
+  41 in the server, all passing three runs in a row).
 - Two engines on one hub: told of each other, each window moved into its
   half, an action waiting for the other's turn, messages when allowed and
   refused when not.
@@ -74,8 +119,12 @@ Checked in their documentation and source code (October 2026):
   the hub, both were numbered and given their half, and the hub ended
   after them.
 - Clippy on Linux, Windows and macOS; Rust 1.88.
-- Cost: the new tool's category adds 26 tokens to every request
-  (2,163 → 2,189).
+- The hub killed under two real servers: both back on a new hub within a
+  second, with their numbers.
+- Cost: nothing per request. The new category's words were cut to the
+  bone, and two categories whose names say it all lost theirs: 2,163 →
+  2,160 tokens of tool definitions. What results say about the other
+  agents is a short line, once per change, and none on `agents`' own.
 
 ### Not done
 

@@ -96,9 +96,8 @@ one, a task with many such judgments: tell the user once that Ctrl+Alt+J
   scripts as new tools.
 - [reference/drawing.md](reference/drawing.md): `draw`, `design`, `scene`
   and `trace_image`.
-- [reference/agents.md](reference/agents.md): several agents on one
-  desktop (your subagents, another client's): numbers, parts of the
-  screen, turns at the keyboard, messages.
+- [reference/agents.md](reference/agents.md): other agents on the
+  desktop (subagents, other clients).
 - Shortcuts and quirks of common apps:
   [browsers](reference/apps/browsers.md), [office](reference/apps/office.md),
   [mail and chat](reference/apps/mail-and-chat.md),

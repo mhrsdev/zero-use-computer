@@ -30,11 +30,15 @@ use super::{AreaWant, Cmd, HUB_PROTO, Launcher, Message, Peer, Reply};
 use crate::config::OverlayConfig;
 use crate::types::Rect;
 
-/// The hub's token, in the server's folder.
-pub const TOKEN_FILE: &str = "hub.token";
-/// How long an agent may keep the keyboard and mouse at most, should it
-/// never give them back.
+/// The hub's token, in the server's folder (`hub-<port>.token`: hubs on
+/// two ports, after the port was changed, never share one).
+const TOKEN_FILE: &str = "hub";
+/// How long an agent may keep the keyboard and mouse without a word
+/// (engines say they still act every few seconds): one that went quiet is
+/// stuck, and the turn goes on.
 const MAX_HOLD: Duration = Duration::from_secs(30);
+/// …and at most this long in all, however it keeps saying so.
+const MAX_HOLD_IN_ALL: Duration = Duration::from_secs(600);
 /// The hub ends this long after the last agent left…
 const LINGER: Duration = Duration::from_secs(3);
 /// …or when nobody came this long after it started.
@@ -45,11 +49,11 @@ const MAX_HIDE: Duration = Duration::from_secs(3);
 /// Longest message passed on (characters).
 pub const MAX_MESSAGE: usize = 1000;
 /// Messages one agent may send a minute.
-const MESSAGES_A_MINUTE: usize = 20;
+pub const MESSAGES_A_MINUTE: usize = 20;
 
-/// Where the token is.
-pub fn token_path(home: &Path) -> PathBuf {
-    home.join(TOKEN_FILE)
+/// Where the token of the hub on `port` is.
+pub fn token_path(home: &Path, port: u16) -> PathBuf {
+    home.join(format!("{TOKEN_FILE}-{port}.token"))
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +109,7 @@ fn handshake(
     stream: TcpStream,
     opts: &JoinOptions,
 ) -> std::io::Result<(TcpStream, BufReader<TcpStream>, u32)> {
-    let token = std::fs::read_to_string(token_path(&opts.home))?;
+    let token = std::fs::read_to_string(token_path(&opts.home, opts.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_nodelay(true)?;
     let hello = Cmd::Hello {
@@ -150,8 +154,12 @@ fn start_hub(launcher: &Launcher, opts: &JoinOptions) -> std::io::Result<()> {
         .stdout(std::process::Stdio::null())
         // What it says (no display, a port taken) goes to a file beside
         // its token, for `doctor` and for whoever wonders.
+        .current_dir(&opts.home)
         .stderr(
-            std::fs::File::create(opts.home.join("hub.log"))
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(opts.home.join("hub.log"))
                 .map(std::process::Stdio::from)
                 .unwrap_or_else(|_| std::process::Stdio::null()),
         );
@@ -193,7 +201,9 @@ struct Agent {
 /// Who has the keyboard and mouse, and who waits for them.
 #[derive(Debug, Default)]
 struct Turns {
-    holder: Option<(u32, u64, Instant)>,
+    /// The agent, its request, since when it has the turn, and when it
+    /// last said it still acts.
+    holder: Option<(u32, u64, Instant, Instant)>,
     waiting: VecDeque<(u32, u64)>,
 }
 
@@ -255,12 +265,12 @@ impl HubState {
         }
         match self.turns.holder {
             None => {
-                self.turns.holder = Some((agent, id, now));
+                self.turns.holder = Some((agent, id, now, now));
                 Some((agent, id))
             }
             // Its own again (an engine that gave up waiting and asked anew).
-            Some((h, _, _)) if h == agent => {
-                self.turns.holder = Some((agent, id, now));
+            Some((h, _, _, _)) if h == agent => {
+                self.turns.holder = Some((agent, id, now, now));
                 Some((agent, id))
             }
             Some(_) => {
@@ -274,19 +284,37 @@ impl HubState {
     /// Done with them (or no longer waiting): the next in line gets them.
     pub fn unlock(&mut self, agent: u32) -> Option<Grant> {
         self.turns.waiting.retain(|(a, _)| *a != agent);
-        if self.turns.holder.is_some_and(|(h, _, _)| h == agent) {
+        if self.turns.holder.is_some_and(|(h, _, _, _)| h == agent) {
             self.turns.holder = None;
             return self.next_turn(Instant::now());
         }
         None
     }
 
-    /// A turn held too long ends (its agent may be stuck).
-    pub fn expire(&mut self, now: Instant) -> Option<Grant> {
+    /// The agent that has the keyboard and mouse.
+    pub fn holder(&self) -> Option<u32> {
+        self.turns.holder.map(|(a, ..)| a)
+    }
+
+    /// The holder says it still acts (a long typing, a drawing).
+    pub fn hold(&mut self, agent: u32, now: Instant) {
+        if let Some((a, _, _, heard)) = self.turns.holder.as_mut()
+            && *a == agent
+        {
+            *heard = now;
+        }
+    }
+
+    /// A turn whose agent went quiet (or kept it far too long) ends: the
+    /// agent may be stuck. It is told, so it never acts on a turn it lost.
+    pub fn expire(&mut self, now: Instant) -> Option<(u32, Option<Grant>)> {
         match self.turns.holder {
-            Some((_, _, since)) if now.saturating_duration_since(since) >= MAX_HOLD => {
+            Some((a, _, since, heard))
+                if now.saturating_duration_since(heard) >= MAX_HOLD
+                    || now.saturating_duration_since(since) >= MAX_HOLD_IN_ALL =>
+            {
                 self.turns.holder = None;
-                self.next_turn(now)
+                Some((a, self.next_turn(now)))
             }
             _ => None,
         }
@@ -295,7 +323,7 @@ impl HubState {
     fn next_turn(&mut self, now: Instant) -> Option<Grant> {
         while let Some((a, id)) = self.turns.waiting.pop_front() {
             if self.agents.contains_key(&a) {
-                self.turns.holder = Some((a, id, now));
+                self.turns.holder = Some((a, id, now, now));
                 return Some((a, id));
             }
         }
@@ -527,7 +555,7 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let token = new_token();
-    if let Err(e) = write_token(&home, &token) {
+    if let Err(e) = write_token(&home, port, &token) {
         eprintln!("hub: cannot write the token: {e}");
         return 1;
     }
@@ -541,8 +569,13 @@ pub fn run(args: &[String]) -> i32 {
             None
         }
     };
-    serve(listener, token, surface);
-    let _ = std::fs::remove_file(token_path(&home));
+    serve(listener, token.clone(), surface);
+    // Only its own: a hub started since (after this one let the port go)
+    // may have written another.
+    let path = token_path(&home, port);
+    if std::fs::read_to_string(&path).is_ok_and(|t| t.trim() == token) {
+        let _ = std::fs::remove_file(path);
+    }
     #[cfg(target_os = "macos")]
     super::macos::input_closed();
     0
@@ -567,10 +600,10 @@ fn new_token() -> String {
 }
 
 /// Write the token where only this user can read it.
-pub fn write_token(home: &Path, token: &str) -> std::io::Result<()> {
+pub fn write_token(home: &Path, port: u16, token: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
-    let path = token_path(home);
-    let tmp = home.join(format!("{TOKEN_FILE}.{}", std::process::id()));
+    let path = token_path(home, port);
+    let tmp = home.join(format!("{TOKEN_FILE}-{port}.{}", std::process::id()));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -631,8 +664,12 @@ fn connection(stream: TcpStream, conn: u64, token: &str, tx: &mpsc::Sender<Event
             let _ = writeln!(w, "{line}");
         }
     };
+    // Read before the token is checked: at most a hello's worth.
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
+    if std::io::Read::take(&mut reader, 64 * 1024)
+        .read_line(&mut line)
+        .is_err()
+    {
         return;
     }
     let hello = match serde_json::from_str::<Cmd>(&line) {
@@ -817,8 +854,11 @@ impl Hub {
                 }
             }
             let now = Instant::now();
-            if let Some((agent, id)) = self.state.expire(now) {
-                self.reply(agent, &Reply::Granted { id });
+            if let Some((lost, next)) = self.state.expire(now) {
+                self.reply(lost, &Reply::Revoked);
+                if let Some((agent, id)) = next {
+                    self.reply(agent, &Reply::Granted { id });
+                }
             }
             self.hiders
                 .retain(|_, since| now.saturating_duration_since(*since) < MAX_HIDE);
@@ -932,15 +972,28 @@ impl Hub {
             Cmd::Area { want } => {
                 self.state.want(agent, want);
                 self.areas_changed();
+                // Answered even when nothing changed, so it isn't waited on.
+                if let Some(area) = self.told.get(&agent).copied() {
+                    self.reply(
+                        agent,
+                        &Reply::Region {
+                            rect: area.0.map(|r| [r.x, r.y, r.width, r.height]),
+                            granted: area.1,
+                        },
+                    );
+                }
             }
+            Cmd::Hold => self.state.hold(agent, now),
             Cmd::Lock { id } => {
                 if let Some((a, id)) = self.state.lock(agent, id, now) {
                     self.reply(a, &Reply::Granted { id });
                 }
             }
-            Cmd::Unlock => {
+            Cmd::Unlock { acted } => {
                 // Its input is done: not the user's, for the others.
-                self.broadcast(&Reply::Input { agent }, Some(agent));
+                if acted && self.state.holder() == Some(agent) {
+                    self.broadcast(&Reply::Input { agent }, Some(agent));
+                }
                 if let Some((next, id)) = self.state.unlock(agent) {
                     self.reply(next, &Reply::Granted { id });
                 }
@@ -977,6 +1030,11 @@ impl Hub {
                 settings_key,
                 stopped,
             } => {
+                // An agent that is stopped (a hub started again under it)
+                // stops the others too: the stop key is everyone's.
+                if stopped && !self.stopped {
+                    self.stop(true);
+                }
                 if self.font_path.as_deref() != Some(&config.font) {
                     self.font_path = Some(config.font.clone());
                     self.fonts = Fonts::load(&config.font);
@@ -1027,8 +1085,13 @@ impl Hub {
         if key.is_empty() {
             return false;
         }
-        if let Some((k, ok)) = slot {
-            return *ok && k.eq_ignore_ascii_case(key);
+        // The same key, registered: nothing to do. A key that failed, or
+        // another (the user changed it), is registered anew: the last
+        // asked for wins.
+        if let Some((k, true)) = slot
+            && k.eq_ignore_ascii_case(key)
+        {
+            return true;
         }
         let combo = crate::keys::parse_combo(key).ok();
         let ok = self
@@ -1200,12 +1263,24 @@ mod tests {
         // An agent that leaves gives its turn on.
         assert_eq!(s.lock(1, 11, now), None);
         assert_eq!(s.leave(2), Some((1, 11)));
-        // One that keeps it too long loses it.
+        // One that says it still acts keeps it…
         assert_eq!(s.lock(3, 31, now), None);
+        let later = Instant::now() + MAX_HOLD - Duration::from_secs(1);
+        s.hold(1, later);
+        assert_eq!(s.expire(later + Duration::from_secs(2)), None);
+        // …but not once it goes quiet (it is told), nor past the limit in all.
         assert_eq!(
-            s.expire(now + MAX_HOLD + Duration::from_secs(1)),
-            Some((3, 31))
+            s.expire(later + MAX_HOLD + Duration::from_secs(1)),
+            Some((1, Some((3, 31))))
         );
+        // (given when the first lost it, at that moment)
+        let start = later + MAX_HOLD + Duration::from_secs(1);
+        let mut held = start;
+        while held < start + MAX_HOLD_IN_ALL {
+            held += Duration::from_secs(20);
+            s.hold(3, held);
+        }
+        assert_eq!(s.expire(held), Some((3, None)));
     }
 
     #[test]
@@ -1217,6 +1292,85 @@ mod tests {
         }
         assert!(!s.may_send(1, now));
         assert!(s.may_send(1, now + Duration::from_secs(61)));
+    }
+
+    /// A display that refuses the stop key `taken` (another program has
+    /// it) and takes any other.
+    struct Display {
+        taken: &'static str,
+        keys: Vec<String>,
+    }
+
+    impl Surface for Display {
+        fn excluded_from_capture(&self) -> bool {
+            true
+        }
+        fn screen(&self) -> Rect {
+            screen()
+        }
+        fn render_scale(&self) -> f32 {
+            1.0
+        }
+        fn px_per_unit(&self) -> f32 {
+            1.0
+        }
+        fn show(&mut self, _: super::super::helper::Layer, _: &tiny_skia::Pixmap, _: f64, _: f64) {}
+        fn move_to(&mut self, _: super::super::helper::Layer, _: f64, _: f64) {}
+        fn hide(&mut self, _: super::super::helper::Layer) {}
+        fn set_hidden(&mut self, _: bool) {}
+        fn set_hotkey(&mut self, _: Hotkey, combo: Option<crate::keys::KeyCombo>) -> bool {
+            let Some(c) = combo else { return false };
+            let ok = crate::keys::parse_combo(self.taken).ok().as_ref() != Some(&c);
+            if ok {
+                self.keys.push(c.to_string());
+            }
+            ok
+        }
+        fn pump(&mut self) -> Vec<SurfaceEvent> {
+            Vec::new()
+        }
+        fn close(&mut self) {}
+    }
+
+    /// A stop key that failed is tried again when another is asked for
+    /// (it used to stay failed for the hub's life, leaving no stop key),
+    /// and an agent that comes stopped stops the others.
+    #[test]
+    fn the_stop_key_is_registered_again_and_stopping_is_shared() {
+        let display = Display {
+            taken: "ctrl+alt+escape",
+            keys: Vec::new(),
+        };
+        let mut hub = Hub::new(Some(Box::new(display)));
+        assert!(!hub.register(Hotkey::Stop, "ctrl+alt+escape"));
+        assert!(hub.register(Hotkey::Stop, "ctrl+alt+f12"));
+        assert!(hub.register(Hotkey::Stop, "ctrl+alt+f12"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+f12".into(), true)));
+
+        let (tx, _rx) = mpsc::channel();
+        hub.event(Event::Joined {
+            conn: 1,
+            hello: Cmd::Hello {
+                token: String::new(),
+                client: "codex".into(),
+                pid: 1,
+                want: None,
+                screen: None,
+                proto: HUB_PROTO,
+            },
+            out: tx,
+        });
+        assert!(!hub.stopped);
+        hub.command(
+            1,
+            Cmd::Config {
+                config: Box::default(),
+                hotkey: "ctrl+alt+f12".into(),
+                settings_key: String::new(),
+                stopped: true,
+            },
+        );
+        assert!(hub.stopped);
     }
 
     // -- the hub over its socket, without a display --------------------
@@ -1235,7 +1389,7 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let token = new_token();
-        write_token(&home, &token).unwrap();
+        write_token(&home, port, &token).unwrap();
         std::thread::spawn(move || serve(listener, token, None));
         Running { port, home }
     }
@@ -1294,12 +1448,12 @@ mod tests {
             (got, two)
         });
         std::thread::sleep(Duration::from_millis(200));
-        one.unlock_input();
+        one.unlock_input(true);
         let (got, two) = waiting.join().unwrap();
         assert!(got);
         // One's input isn't taken for the user's by two.
         until("input noted", || l2.others_input().is_some());
-        two.unlock_input();
+        two.unlock_input(true);
 
         // Messages, to one agent and to all.
         two.send(&Cmd::Send {
@@ -1328,10 +1482,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&h.home);
     }
 
+    /// Eight agents come and go and take turns, over and over: never two
+    /// at the keyboard at once, and the hub keeps answering.
+    #[test]
+    fn many_agents_come_go_and_take_turns() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let h = hub("churn");
+        let busy = Arc::new(AtomicBool::new(false));
+        let turns = Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let (port, home) = (h.port, h.home.clone());
+                let (busy, turns) = (busy.clone(), turns.clone());
+                std::thread::spawn(move || {
+                    for round in 0..6 {
+                        let opts = JoinOptions {
+                            port,
+                            home: home.clone(),
+                            client: format!("worker-{i}"),
+                            want: None,
+                            screen: Some(screen()),
+                        };
+                        let mut o = super::super::Overlay::join_hub(
+                            &Launcher::helper("/nonexistent/computer-use-mcp"),
+                            &opts,
+                            &OverlayConfig::default(),
+                            &super::super::Keys::default(),
+                            Arc::new(AtomicBool::new(false)),
+                            None,
+                        )
+                        .unwrap_or_else(|e| panic!("worker {i} round {round}: {e}"));
+                        for _ in 0..3 {
+                            if !o.lock_input(Duration::from_secs(10), || false) {
+                                continue;
+                            }
+                            // Alone with the keyboard and mouse, or the test fails.
+                            assert!(!busy.swap(true, Ordering::SeqCst), "two at once");
+                            std::thread::sleep(Duration::from_millis(2));
+                            busy.store(false, Ordering::SeqCst);
+                            turns.fetch_add(1, Ordering::SeqCst);
+                            o.unlock_input(true);
+                        }
+                        // Some leave while others still wait.
+                        drop(o);
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        assert_eq!(turns.load(Ordering::SeqCst), 8 * 6 * 3);
+        let _ = std::fs::remove_dir_all(&h.home);
+    }
+
     #[test]
     fn a_wrong_token_is_refused() {
         let h = hub("token");
-        std::fs::write(token_path(&h.home), "not it").unwrap();
+        std::fs::write(token_path(&h.home, h.port), "not it").unwrap();
         let opts = JoinOptions {
             port: h.port,
             home: h.home.clone(),
@@ -1350,8 +1558,8 @@ mod tests {
     fn only_this_user_reads_the_token() {
         use std::os::unix::fs::PermissionsExt as _;
         let home = std::env::temp_dir().join(format!("cu-hub-perm-{}", std::process::id()));
-        write_token(&home, "t").unwrap();
-        let mode = std::fs::metadata(token_path(&home))
+        write_token(&home, 1, "t").unwrap();
+        let mode = std::fs::metadata(token_path(&home, 1))
             .unwrap()
             .permissions()
             .mode();

@@ -9,17 +9,28 @@ impl<B: Backend> Engine<B> {
         let keys = self.global_keys();
         let cfg = &self.store.config.overlay;
         // The helper also listens for the global keys, so it runs when any
-        // is wanted (with the overlay off it draws nothing).
-        if !cfg.enabled && keys == crate::overlay::Keys::default() {
+        // is wanted (with the overlay off it draws nothing); so does the
+        // hub, which also gives the turns.
+        if !cfg.enabled && keys == crate::overlay::Keys::default() && !self.store.config.hub.enabled
+        {
             self.overlay = None;
             return None;
         }
-        if self.overlay.as_ref().is_some_and(|o| !o.alive()) {
-            // It died: try again a little later, a few times at most.
+        if let Some(o) = self.overlay.as_ref().filter(|o| !o.alive()) {
+            let was_hub = o.hub().is_some();
             self.overlay = None;
-            self.overlay_failures += 1;
-            self.overlay_error = Some("it stopped unexpectedly".into());
-            self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(10));
+            if was_hub && self.hub_losses < MAX_HUB_LOSSES {
+                // The hub went (killed, or ended between two agents): join
+                // it again at once, so the stop key works again and this
+                // agent keeps its number. Joining starts a new hub.
+                self.hub_losses += 1;
+                log::info!("the hub went away; joining it again");
+            } else {
+                // It died: try again a little later, a few times at most.
+                self.overlay_failures += 1;
+                self.overlay_error = Some("it stopped unexpectedly".into());
+                self.overlay_retry_at = Some((self.clock)() + Duration::from_secs(10));
+            }
         }
         if self.overlay.is_none() {
             let launcher = self.overlay_launcher.clone().or_else(|| {

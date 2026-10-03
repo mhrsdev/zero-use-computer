@@ -522,7 +522,7 @@ says how to split a task between subagents.
 
 **Security.** The hub listens on a port of this computer only
 (`hub.port`, 47381), and answers only those that show its token, a file in
-the server's folder that only this user can read (`hub.token`). It logs to
+the server's folder that only this user can read (`hub-<port>.token`). It logs to
 `hub.log` there. `hub.enabled = false` gives each server an overlay of its
 own, as before.
 

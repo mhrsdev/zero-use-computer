@@ -163,8 +163,14 @@ pub enum Cmd {
     Lock {
         id: u64,
     },
-    /// Done with the keyboard and mouse.
-    Unlock,
+    /// Done with the keyboard and mouse (`acted`: it used them, so the
+    /// input of the moment wasn't the user's).
+    Unlock {
+        #[serde(default)]
+        acted: bool,
+    },
+    /// Still acting with them (a long typing, a drawing): the turn stays.
+    Hold,
     /// A message for one agent, or all (`to` None).
     Send {
         #[serde(default)]
@@ -299,6 +305,8 @@ pub enum Reply {
     Granted {
         id: u64,
     },
+    /// The turn was taken back (this agent was quiet too long).
+    Revoked,
     /// Another agent has just used the keyboard or mouse (so the input
     /// isn't taken for the user's).
     Input {
@@ -378,9 +386,16 @@ pub struct HubLink {
     /// Its part of the screen and whether it was what it asked for; None
     /// until the hub says.
     region: Mutex<Option<(Option<crate::types::Rect>, bool)>>,
+    /// How many times the hub has said it.
+    regions: std::sync::atomic::AtomicU64,
     inbox: Mutex<std::collections::VecDeque<Message>>,
     /// When another agent last used the keyboard or mouse.
     others_input: Mutex<Option<Instant>>,
+    /// Which turn the engine holds now (each turn, and each end of one,
+    /// counts on): the thread that says it still acts stops when it changes.
+    turn: std::sync::atomic::AtomicU64,
+    /// The hub took the turn back (this engine was quiet too long).
+    revoked: AtomicBool,
 }
 
 /// Messages kept for the engine at most (the oldest go first).
@@ -394,8 +409,16 @@ impl HubLink {
             Reply::Region { rect, granted } => {
                 let rect = rect.map(|r| crate::types::Rect::new(r[0], r[1], r[2], r[3]));
                 *lock(&self.region) = Some((rect, granted));
+                self.regions.fetch_add(1, Ordering::SeqCst);
             }
             Reply::Input { .. } => *lock(&self.others_input) = Some(Instant::now()),
+            Reply::Revoked => {
+                self.turn.fetch_add(1, Ordering::SeqCst);
+                self.revoked.store(true, Ordering::SeqCst);
+                log::warn!(
+                    "the hub took the keyboard and mouse back (this agent was quiet too long)"
+                );
+            }
             Reply::Message(m) => {
                 let mut inbox = lock(&self.inbox);
                 if inbox.len() >= MAX_INBOX {
@@ -423,6 +446,11 @@ impl HubLink {
         lock(&self.region).unwrap_or((None, true))
     }
 
+    /// How many times the hub has said this engine's part of the screen.
+    pub fn regions_told(&self) -> u64 {
+        self.regions.load(Ordering::SeqCst)
+    }
+
     /// The oldest `max` messages that came, and how many are left.
     pub fn take_messages(&self, max: usize) -> (Vec<Message>, usize) {
         let mut inbox = lock(&self.inbox);
@@ -439,6 +467,11 @@ impl HubLink {
     /// When another agent last used the keyboard or mouse.
     pub fn others_input(&self) -> Option<Instant> {
         *lock(&self.others_input)
+    }
+
+    /// The hub took this engine's turn back since it was given.
+    pub fn revoked(&self) -> bool {
+        self.revoked.load(Ordering::SeqCst)
     }
 }
 
@@ -501,7 +534,7 @@ impl Overlay {
         let (stream, reader, agent) = hub::connect(launcher, opts)?;
         let link = Arc::new(HubLink::default());
         link.agent.store(agent, Ordering::SeqCst);
-        Self::start(
+        let o = Self::start(
             None,
             Box::new(stream),
             Box::new(reader),
@@ -509,8 +542,15 @@ impl Overlay {
             keys,
             stop,
             on_settings,
-            Some(link),
-        )
+            Some(link.clone()),
+        )?;
+        // The hub tells who is there right after the welcome: until then
+        // this engine can't know it must take turns.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while link.peers().is_empty() && o.alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(o)
     }
 
     /// Talk to a helper (or the hub) over `writer` and `reader`.
@@ -603,6 +643,7 @@ impl Overlay {
                         | Reply::Agents { .. }
                         | Reply::Region { .. }
                         | Reply::Input { .. }
+                        | Reply::Revoked
                         | Reply::Message(_)) => {
                             if let Some(link) = &link {
                                 link.take(r);
@@ -786,6 +827,7 @@ impl Overlay {
                 )
                 .is_some()
             {
+                self.keep_turn();
                 return true;
             }
             // A hub that went away gives no turns: the engine goes on alone.
@@ -794,16 +836,49 @@ impl Overlay {
             }
             if give_up() || Instant::now() >= deadline {
                 // Not waiting any longer: the turn, if it comes, goes back.
-                self.send(&Cmd::Unlock);
+                self.send(&Cmd::Unlock { acted: false });
                 return false;
             }
         }
     }
 
-    /// Done with the keyboard and mouse.
-    pub fn unlock_input(&self) {
-        if self.hub.is_some() {
-            self.send(&Cmd::Unlock);
+    /// While the turn is this engine's, tell the hub every few seconds that
+    /// it still acts (a long typing, a drawing, a wait for the user), so
+    /// the turn isn't taken back from an agent that is only slow.
+    fn keep_turn(&self) {
+        let (Some(link), Some(tx)) = (&self.hub, &self.tx) else {
+            return;
+        };
+        let turn = link.turn.fetch_add(1, Ordering::SeqCst) + 1;
+        link.revoked.store(false, Ordering::SeqCst);
+        let (link, tx, alive) = (link.clone(), tx.clone(), self.alive.clone());
+        let Ok(line) = serde_json::to_string(&Cmd::Hold) else {
+            return;
+        };
+        let _ = std::thread::Builder::new()
+            .name("hub-hold".into())
+            .spawn(move || {
+                const EVERY: Duration = Duration::from_secs(5);
+                const STEP: Duration = Duration::from_millis(100);
+                let mut since = Instant::now();
+                while link.turn.load(Ordering::SeqCst) == turn && alive.load(Ordering::Relaxed) {
+                    std::thread::sleep(STEP);
+                    if since.elapsed() >= EVERY {
+                        since = Instant::now();
+                        if tx.try_send(line.clone()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+    }
+
+    /// Done with the keyboard and mouse (`acted`: they were used, so the
+    /// input just now was this agent's, not the user's).
+    pub fn unlock_input(&self, acted: bool) {
+        if let Some(link) = &self.hub {
+            link.turn.fetch_add(1, Ordering::SeqCst);
+            self.send(&Cmd::Unlock { acted });
         }
     }
 

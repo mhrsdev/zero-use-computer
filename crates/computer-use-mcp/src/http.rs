@@ -44,6 +44,9 @@ const MAX_BODY: u64 = 4 * 1024 * 1024;
 const MAX_REFUSING: usize = 16;
 /// Sessions remembered (the oldest is forgotten first).
 const MAX_SESSIONS: usize = 64;
+/// Requests read at once, at most (each on a thread of its own, so one
+/// sent slowly holds up no other).
+const MAX_READING: usize = 64;
 /// Event streams open at once (GET), at most.
 const MAX_STREAMS: usize = 16;
 /// A comment on every open stream this often, so one whose client left is
@@ -79,7 +82,11 @@ struct Shared {
     local: bool,
     cancels: Cancels,
     engine_cancel: Arc<AtomicBool>,
-    sessions: Mutex<VecDeque<String>>,
+    /// Sessions, least recently used first, with the protocol version each
+    /// agreed on (clients on different versions get what theirs has).
+    sessions: Mutex<VecDeque<(String, Option<&'static str>)>>,
+    /// Requests being read on threads of their own.
+    reading: AtomicUsize,
     /// Open GET streams, by session.
     streams: Mutex<Vec<(Option<String>, Sse)>>,
 }
@@ -112,6 +119,7 @@ fn run<B: Backend>(
         cancels: Cancels::default(),
         engine_cancel: engine.cancel_handle(),
         sessions: Mutex::new(VecDeque::new()),
+        reading: AtomicUsize::new(0),
         streams: Mutex::new(Vec::new()),
     });
     let mut core = Core::new(engine, true);
@@ -132,7 +140,7 @@ fn run<B: Backend>(
     }
 }
 
-fn accept_loop(server: &Server, shared: &Shared, tx: &Sender<Job>, stop: Option<&AtomicBool>) {
+fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Option<&AtomicBool>) {
     let mut kept_alive = Instant::now();
     loop {
         if stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
@@ -150,10 +158,22 @@ fn accept_loop(server: &Server, shared: &Shared, tx: &Sender<Job>, stop: Option<
                 continue;
             }
         };
-        if let Some(job) = triage(request, shared)
-            && tx.send(job).is_err()
-        {
-            return;
+        if shared.reading.fetch_add(1, Ordering::SeqCst) >= MAX_READING {
+            shared.reading.fetch_sub(1, Ordering::SeqCst);
+            refuse(request, 503, "too many requests at once");
+            continue;
+        }
+        let (shared, tx) = (shared.clone(), tx.clone());
+        let spawned = std::thread::Builder::new()
+            .name("http-request".into())
+            .spawn(move || {
+                if let Some(job) = triage(request, &shared) {
+                    let _ = tx.send(job);
+                }
+                shared.reading.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            log::warn!("no thread for a request");
         }
     }
 }
@@ -184,13 +204,17 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
     }
     let session = header(&request, "Mcp-Session-Id").map(str::to_string);
     if let Some(s) = &session
-        && !lock(&shared.sessions).contains(s)
+        && !shared.session_known(s)
     {
         refuse(request, 404, "unknown session: initialize again");
         return None;
     }
     match request.method() {
         Method::Get => {
+            if *request.http_version() < tiny_http::HTTPVersion(1, 1) {
+                refuse(request, 505, "event streams need HTTP/1.1");
+                return None;
+            }
             if !accepts(&request, "text/event-stream") {
                 refuse(
                     request,
@@ -214,10 +238,7 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
                 refuse(request, 400, "DELETE needs an Mcp-Session-Id");
                 return None;
             };
-            lock(&shared.sessions).retain(|x| *x != s);
-            for (_, sse) in extract(&shared.streams, |(o, _)| o.as_deref() == Some(&s)) {
-                sse.end();
-            }
+            shared.end_session(&s);
             let _ = request.respond(Response::empty(200));
             return None;
         }
@@ -294,15 +315,7 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
         .iter()
         .flatten()
         .any(|m| m.method.as_deref() == Some("initialize"));
-    let new_session = initializes.then(|| {
-        let id = new_session_id();
-        let mut sessions = lock(&shared.sessions);
-        if sessions.len() >= MAX_SESSIONS {
-            sessions.pop_front();
-        }
-        sessions.push_back(id.clone());
-        id
-    });
+    let new_session = initializes.then(|| shared.new_session());
     let wants_progress = items.iter().flatten().any(|m| {
         m.method.as_deref() == Some("tools/call")
             && m.params
@@ -325,6 +338,17 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
 
 /// Answer a job's requests with the engine, in order.
 fn answer<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
+    // This session's protocol version, not the last client's.
+    core.set_protocol(job.session.as_deref().and_then(|s| shared.protocol_of(s)));
+    let session = job.session.clone();
+    let new_session = job.new_session.is_some();
+    answer_job(core, shared, job);
+    if new_session && let Some(s) = &session {
+        shared.set_protocol(s, core.protocol());
+    }
+}
+
+fn answer_job<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
     let session_header: Vec<(&str, String)> = job
         .new_session
         .iter()
@@ -417,6 +441,60 @@ fn announce<B: Backend>(core: &mut Core<B>, shared: &Shared) {
 /// back).
 struct Sse {
     w: Box<dyn Write + Send>,
+}
+
+impl Shared {
+    /// Whether `id` is a session this hub knows (and mark it used now).
+    fn session_known(&self, id: &str) -> bool {
+        let mut sessions = lock(&self.sessions);
+        match sessions.iter().position(|(s, _)| s == id) {
+            Some(i) => {
+                if let Some(s) = sessions.remove(i) {
+                    sessions.push_back(s);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A new session; the one used longest ago goes when there are too
+    /// many, with its event streams.
+    fn new_session(&self) -> String {
+        let id = new_session_id();
+        let gone = {
+            let mut sessions = lock(&self.sessions);
+            let gone = (sessions.len() >= MAX_SESSIONS)
+                .then(|| sessions.pop_front())
+                .flatten();
+            sessions.push_back((id.clone(), None));
+            gone
+        };
+        if let Some((old, _)) = gone {
+            self.end_session(&old);
+        }
+        id
+    }
+
+    fn end_session(&self, id: &str) {
+        lock(&self.sessions).retain(|(s, _)| s != id);
+        for (_, sse) in extract(&self.streams, |(o, _)| o.as_deref() == Some(id)) {
+            sse.end();
+        }
+    }
+
+    fn protocol_of(&self, id: &str) -> Option<&'static str> {
+        lock(&self.sessions)
+            .iter()
+            .find(|(s, _)| s == id)
+            .and_then(|(_, p)| *p)
+    }
+
+    fn set_protocol(&self, id: &str, protocol: Option<&'static str>) {
+        if let Some(entry) = lock(&self.sessions).iter_mut().find(|(s, _)| s == id) {
+            entry.1 = protocol;
+        }
+    }
 }
 
 impl Sse {
@@ -711,6 +789,8 @@ mod tests {
         let mut config = Config::default();
         config.script.dir = Some(scripts.to_path_buf());
         config.tools.manager = ToolManager::Off;
+        // Results as data: given only to sessions whose version has them.
+        config.server.structured_output = true;
         Engine::new(backend, ConfigStore::in_memory(config)).with_time(Instant::now, |_| {})
     }
 
@@ -1017,6 +1097,43 @@ mod tests {
                 event.contains("notifications/tools/list_changed"),
                 "{event}"
             );
+        });
+    }
+
+    /// Each session keeps the version it agreed on: a client on an older
+    /// one joining later doesn't take results as data away from the first
+    /// (whose tool list promised them).
+    #[test]
+    fn each_session_keeps_its_protocol_version() {
+        serving("versions", |addr| {
+            let init = |version: &str| {
+                let r = post(
+                    addr,
+                    None,
+                    json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":version,"capabilities":{}}}),
+                );
+                r.header("Mcp-Session-Id").unwrap().to_string()
+            };
+            let new = init("2025-06-18");
+            let old = init("2024-11-05");
+            let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_apps","arguments":{}}});
+            let r = post(addr, Some(&new), call.clone()).json();
+            assert_eq!(
+                r["result"]["structuredContent"]["apps"][0]["name"], "TextEdit",
+                "{r}"
+            );
+            let r = post(addr, Some(&old), call).json();
+            assert!(r["result"].get("structuredContent").is_none(), "{r}");
+            // HTTP/1.0 can't take an event stream.
+            let mut s = TcpStream::connect(addr).unwrap();
+            write!(
+                s,
+                "GET /mcp HTTP/1.0\r\nAuthorization: Bearer {TOKEN}\r\nAccept: text/event-stream\r\n\r\n"
+            )
+            .unwrap();
+            let mut head = String::new();
+            BufReader::new(s).read_line(&mut head).unwrap();
+            assert!(head.contains(" 505 "), "{head}");
         });
     }
 }
