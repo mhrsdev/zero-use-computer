@@ -2,6 +2,7 @@
 //! MCP-capable agent the Codex-style computer-use tools.
 
 mod catalog;
+mod core;
 #[cfg(feature = "http")]
 mod http;
 mod jsonrpc;
@@ -118,6 +119,16 @@ enum Command {
         #[arg(long)]
         demo: bool,
     },
+    /// (internal) The hub every server on this desktop shares: one overlay
+    /// with a cursor per agent, one stop key, turns at the keyboard and
+    /// mouse. The first server to start runs it.
+    #[command(hide = true)]
+    Hub {
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,8 +197,9 @@ fn apply_overrides(common: &Common) -> impl Fn(&mut Config) + Send + 'static {
         if text_only {
             c.text_only = true;
         }
-        // Over HTTP the server can't tell the client its tool list changed:
-        // found tools are run through use_tool instead.
+        // Over HTTP the server tells only the clients that keep an event
+        // stream open (GET) that its tool list changed, and not every
+        // client does: found tools are run through use_tool instead.
         if !c.server.http_addr.is_empty()
             && c.tools.manager == computer_use::config::ToolManager::ListChanged
         {
@@ -244,6 +256,14 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    // The hub runs on its own: no logging, no config.
+    if let Some(Command::Hub { port, home }) = &cli.command {
+        let mut args = vec!["--port".to_string(), port.to_string()];
+        if let Some(h) = home {
+            args.extend(["--home".to_string(), h.display().to_string()]);
+        }
+        std::process::exit(computer_use::overlay::hub::run(&args));
+    }
     // The overlay helper talks JSON on stdout: no logging, no config.
     if let Some(Command::Overlay { parent, demo }) = &cli.command {
         let mut args = Vec::new();
@@ -322,7 +342,9 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Command::Config { .. } | Command::Overlay { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Overlay { .. } | Command::Hub { .. } => {
+            unreachable!("handled above")
+        }
         Command::Doctor => doctor(&cli.common, store),
         Command::Settings { no_browser } => {
             let path = config_path(&cli.common);
@@ -473,8 +495,9 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     // Read on a thread of the server's own (so the client can cancel a
     // call while it runs).
     let stdin = std::io::BufReader::new(std::io::stdin());
-    let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin, stdout.lock()).stop_when_input_ends();
+    // The server writes whole lines under a lock of its own (answers,
+    // pings and a call's progress come from different threads).
+    let mut server = Server::new(engine, stdin, std::io::stdout()).stop_when_input_ends();
     server.run().context("serving MCP over stdio")
 }
 
@@ -572,6 +595,26 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         c.screenshot.attach,
         c.screenshot.max_dimension
     );
+
+    // Several agents on this desktop share one hub.
+    if c.hub.enabled {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], c.hub.port));
+        let running =
+            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
+                .is_ok();
+        println!(
+            "agents:   hub on port {} {}; messages between agents {}",
+            c.hub.port,
+            if running {
+                "running (another server uses it)"
+            } else {
+                "not running (the first server starts it)"
+            },
+            if c.hub.chat { "on" } else { "off" }
+        );
+    } else {
+        println!("agents:   no hub (hub.enabled = false): an overlay of each server's own");
+    }
 
     let stop_key = c.control.stop_hotkey.trim().to_string();
     let settings_key = c.control.settings_hotkey.trim().to_string();

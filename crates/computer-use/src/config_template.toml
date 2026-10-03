@@ -332,6 +332,22 @@ instructions = "full"
 # and the earlier results it repeats whole ("zero-use-computer/supersedes")
 # or whose pictures it replaces ("zero-use-computer/supersedes-images").
 result_meta = true
+# Also return list_apps, find_element and get_clipboard results as data
+# (MCP structuredContent, with an outputSchema in the tool list), for
+# clients that use it. Off by default: models read the text, and some
+# clients would send both.
+structured_output = false
+
+[hub]
+# Several agents on one desktop (a client's subagents, Claude Code and
+# Codex side by side): every server joins one hub that draws a cursor for
+# each (numbered once there are two), has one stop key for all, shares the
+# screen out and gives the keyboard and mouse to one at a time.
+enabled = true
+port = 47381                # this computer only, with a token only you can read
+arrange = true              # move each agent's window into its part of the screen
+chat = false                # let the agents send each other short messages
+turn_wait_secs = 60         # longest wait for the keyboard and mouse
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

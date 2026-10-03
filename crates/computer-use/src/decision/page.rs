@@ -273,6 +273,7 @@ impl Page {
             "test" => (self.test(&body), false),
             "save" => (self.save(&body), false),
             "remove" => (self.remove(), false),
+            "chat" => (self.chat(&body), false),
             "close" => (json!({"ok": true}), true),
             _ => {
                 respond(&mut stream, 404, "text/plain", b"not found");
@@ -391,8 +392,33 @@ impl Page {
         }
     }
 
+    /// Let the agents on this desktop message each other, or not ([hub]
+    /// chat): the user's choice, made here, never through the chat.
+    fn chat(&self, body: &Value) -> Value {
+        let Some(on) = body.get("on").and_then(Value::as_bool) else {
+            return json!({"ok": false, "error": "say on: true or false"});
+        };
+        let Some(path) = &self.path else {
+            return json!({"ok": false, "error": "this server has no settings file"});
+        };
+        match config::edit_file_many(path, &[("hub.chat", Edit::Set(on.to_string()))]) {
+            Ok(()) => json!({"ok": true, "message": if on {
+                "Agents on this desktop may now send each other short messages."
+            } else {
+                "Agents can no longer send each other messages."
+            }}),
+            Err(e) => json!({"ok": false, "error": e.to_string()}),
+        }
+    }
+
     fn page(&self) -> String {
         let d = self.current();
+        let chat = match &self.path {
+            Some(p) => ConfigStore::load(Some(p))
+                .map(|s| s.config.hub.chat)
+                .unwrap_or_default(),
+            None => false,
+        };
         let settings = json!({
             "provider": d.provider,
             "base_url": d.base_url,
@@ -400,6 +426,7 @@ impl Page {
             "key_hint": config::masked_key(&d.api_key),
             "key_env": d.api_key_env,
             "path": self.path.as_ref().map(|p| p.display().to_string()),
+            "chat": chat,
         });
         // In a <script>: nothing in it may end the script element.
         let settings = settings.to_string().replace('<', "\\u003c");
@@ -643,6 +670,25 @@ mod tests {
         );
         let cfg = ConfigStore::load(Some(&path)).unwrap().config.decision;
         assert_eq!((cfg.provider.as_str(), cfg.api_key.as_str()), ("jev", ""));
+
+        // The agents' messages: switched on and off here, by the user.
+        let page = request(
+            &host,
+            &format!("GET /{token}/ HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        );
+        assert!(page.contains("\"chat\":false"), "{page}");
+        for on in [true, false] {
+            let body = format!(r#"{{"on":{on}}}"#);
+            let r = request(
+                &host,
+                &format!(
+                    "POST /{token}/chat HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                ),
+            );
+            assert!(r.contains("\"ok\":true"), "{r}");
+            assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.hub.chat, on);
+        }
 
         // Remove, then close.
         let body = "{}";

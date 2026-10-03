@@ -348,7 +348,8 @@ impl<B: Backend> Engine<B> {
         .map_err(|e| Error::Internal(format!("can't start the script: {e}")))?;
         let halt = running.halt.clone();
         let seen_before = self.known_screens();
-        self.in_script = true;
+        self.ctx.in_script = true;
+        self.ctx.script_calls = 0;
         let mut images: Vec<Option<ScriptImage>> = Vec::new();
         let mut shown: Option<usize> = None;
         let mut limit = running.deadline + GRACE;
@@ -393,16 +394,16 @@ impl<B: Backend> Engine<B> {
                 }
             }
         };
-        self.in_script = false;
+        self.ctx.in_script = false;
         self.restore_known(seen_before);
         // Only the picture the script shows reaches the model.
-        self.pending_images.clear();
-        self.pending_screen_shot = None;
+        self.ctx.pending_images.clear();
+        self.ctx.pending_screen_shot = None;
         let image = shown
             .and_then(|i| images.get_mut(i).and_then(Option::take))
             .map(|img| {
-                self.pending_images = img.pending;
-                self.pending_screen_shot = img.shot;
+                self.ctx.pending_images = img.pending;
+                self.ctx.pending_screen_shot = img.shot;
                 img.image
             });
 
@@ -475,8 +476,11 @@ impl<B: Backend> Engine<B> {
             };
         match req {
             Request::Tool { name, args } => {
-                let before = self.pending_images.len();
-                let shot_before = self.pending_screen_shot.take();
+                self.ctx.script_calls += 1;
+                let n = self.ctx.script_calls;
+                self.report_progress(n as f64, None, || format!("script: call {n}, {name}"));
+                let before = self.ctx.pending_images.len();
+                let shot_before = self.ctx.pending_screen_shot.take();
                 let result = match ToolCall::parse(&name, args) {
                     Ok(ToolCall::Script(_)) => Err(Error::InvalidArgs(
                         "a script can't call the script tool: run(name, args) runs a saved script"
@@ -490,9 +494,9 @@ impl<B: Backend> Engine<B> {
                     Ok(call) => self.call(call),
                     Err(e) => Err(e),
                 };
-                let from = before.min(self.pending_images.len());
-                let pending: Vec<PendingImage> = self.pending_images.drain(from..).collect();
-                let shot = std::mem::replace(&mut self.pending_screen_shot, shot_before);
+                let from = before.min(self.ctx.pending_images.len());
+                let pending: Vec<PendingImage> = self.ctx.pending_images.drain(from..).collect();
+                let shot = std::mem::replace(&mut self.ctx.pending_screen_shot, shot_before);
                 Ok(match result {
                     Ok(out) => {
                         let id = out.image.map(|image| {

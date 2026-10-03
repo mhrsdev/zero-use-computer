@@ -280,17 +280,7 @@ impl Surface for WinSurface {
         // Draw at the scale (1.5 at 150%) of the monitor the overlay is on,
         // so it isn't tiny there; before it is shown anywhere, the
         // system's.
-        let shown = [
-            Layer::Top,
-            Layer::Left,
-            Layer::Right,
-            Layer::Bottom,
-            Layer::Label,
-            Layer::Cursor,
-        ]
-        .iter()
-        .filter_map(|l| self.layers.get(l))
-        .find(|w| w.visible);
+        let shown = self.layers.values().find(|w| w.visible);
         let dpi = shown
             .and_then(|w| monitor_dpi(w.hwnd))
             // SAFETY: a plain query.

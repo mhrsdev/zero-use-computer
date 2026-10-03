@@ -1,3 +1,39 @@
+# Upgrading to v3.9.0
+
+Nothing to change. With one agent, nothing looks or acts differently,
+except that the overlay is drawn by the hub process. With two or more:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| Two servers on one desktop | an overlay each, the stop key working for the first only | one overlay, numbered cursors, one stop key for all | `hub.enabled = false` |
+| The window an agent works with, beside others | left where it was | moved into the agent's part of the screen | `hub.arrange = false` |
+| Two agents acting at once | their input mixed | one at a time at the keyboard and mouse | `hub.enabled = false` |
+| Another agent's typing | taken for the user's (a pause) | not the user's | none |
+
+New settings: `[hub]` `enabled` (true), `port` (47381), `arrange` (true),
+`chat` (false), `turn_wait_secs` (60). A new tool, `agents`, in
+`find_tools`.
+
+# Upgrading to v3.8.5
+
+Nothing to change over stdio. Over HTTP, and for hosts that read the
+annotations:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| A JSON-RPC batch (an array) | an error | one array of answers | none |
+| HTTP: a body that isn't JSON | 200 with the error | 400 with the error | none |
+| HTTP: refusals (no token, another origin…) | `{"error": "…"}` | a JSON-RPC error; 401 also has `WWW-Authenticate: Bearer` | none |
+| HTTP: `initialize` | no session | `Mcp-Session-Id`; an unknown one later gets 404 | send none: served as before |
+| HTTP: GET | 405 | an event stream, with `Accept: text/event-stream` (405 without) | none |
+| HTTP: a `Host` naming another machine, bound to localhost | served | 403 | bind to the address you use |
+| HTTP: a cancel for a running call | waited behind it | ends it | none |
+| Tool annotations | acting tools all destructive and open-world, the others read-only | per tool (`scroll`, `select_text` not destructive; `set_value` idempotent; `decide` open-world…) | none |
+| A `tools/call` with `_meta.progressToken` | no progress | `notifications/progress` | send no token |
+
+New setting: `server.structured_output` (`false`): `list_apps`,
+`find_element` and `get_clipboard` also return `structuredContent`.
+
 # Upgrading to v3.8.3
 
 Nothing to change: the same results, sooner. One timing differs:

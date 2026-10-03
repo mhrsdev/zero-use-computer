@@ -470,6 +470,62 @@ task is complete) can say so with a JSON-RPC notification:
 `Engine::set_status`). Every text, colour, size and timing is in `[overlay]`;
 `computer-use-mcp overlay --demo` shows each state once on your screen.
 
+## Several agents on one desktop (v3.9)
+
+More than one agent can use the computer at once: a client's subagents,
+or Claude Code beside Codex. Every server on the desktop joins one **hub**,
+whichever client started it:
+
+![Four agents sharing a desktop](images/hub-four-agents.png)
+
+- **Numbers in turn.** The first server to start runs the hub
+  (`computer-use-mcp hub`, a small process of its own) and is agent 1; the
+  next ones are 2, 3… in the order they join. A number freed by an agent
+  that left goes to the next one. The hub ends a few seconds after the
+  last agent leaves.
+- **A cursor each.** One overlay draws every agent's purple cursor, tagged
+  with its number once there are two or more ("Zero" when alone), and its
+  glow and label ("2 · Zero is thinking…") in its own part of the screen.
+- **One stop key** stops them all. (Before v3.9 a second server couldn't
+  even register it: the system gives a key to one program.)
+- **The screen shared out:** halves for two, thirds for three, a 2×2 grid
+  for four. An agent may ask for a full, half, third or quarter screen
+  (`agents` area): given when it fits beside the others, otherwise the
+  screen is shared evenly and it is told so. With `hub.arrange`, the
+  window an agent works with is moved into its part when it first looks
+  at it.
+- **Turns at the keyboard and mouse.** An action waits until no other
+  agent is typing or clicking (at most `hub.turn_wait_secs`); a turn kept
+  over 30 s ends by itself. Looking (trees, screenshots, `find_element`)
+  never waits, so the agents think and read at once. Another agent's input
+  is never taken for the user's (no pause for it).
+- **Messages** (`hub.chat`, off): agents send each other short notes
+  (`agents` send, at most 20 a minute and 1,000 characters each); they come
+  with the recipient's next result, marked as another agent's words,
+  never instructions. The user switches them on and off on the settings
+  page (Ctrl+Alt+J) or with `computer-use-mcp config set hub.chat true`.
+
+The model hears of it in its results ("2 agents share this desktop: you
+are agent 1, your part of the screen: x 0–960, y 0–1080") and through the
+`agents` tool (category `agents` in `find_tools`): `list`, `area`, `send`,
+`read`, `wait`. [skills/computer-use/reference/agents.md](../skills/computer-use/reference/agents.md)
+says how to split a task between subagents.
+
+**Which clients give each subagent its own number.** A server is an agent:
+
+| Client | Subagents | What to do |
+|---|---|---|
+| Codex | each starts its own servers | nothing: each subagent is an agent of its own |
+| Claude Code | share the main agent's server by default (one agent) | define the subagent with a server of its own: [examples/claude-code-agents/desktop-worker.md](../examples/claude-code-agents/desktop-worker.md), copied to `~/.claude/agents/` with your path |
+| Claude Code beside Codex (or any two clients) | | nothing: each client's server is an agent |
+| VS Code, Zed, Gemini CLI, OpenCode | share one server | one agent between them (their calls take turns) |
+
+**Security.** The hub listens on a port of this computer only
+(`hub.port`, 47381), and answers only those that show its token, a file in
+the server's folder that only this user can read (`hub-<port>.token`). It logs to
+`hub.log` there. `hub.enabled = false` gives each server an overlay of its
+own, as before.
+
 ## You stay in control
 
 - **Emergency stop key** — `Ctrl+Alt+Esc` by default (`Ctrl+Option+Esc` on a
@@ -648,8 +704,26 @@ Then point any MCP client at `computer-use-mcp serve`, e.g. Claude Code's
 Desktop, Codex, Cursor, VS Code and HTTP, with configs in
 [`examples/`](../examples).
 
-The server speaks JSON-RPC 2.0 over stdio (or HTTP) and implements
-`initialize`, `tools/*`, and `prompts/*` / `resources/*` for the skills: for
+The server speaks JSON-RPC 2.0 over stdio (or HTTP), batches included
+(MCP 2025-06-18, 2025-03-26 and 2024-11-05), and implements
+`initialize`, `ping`, `tools/*`, and `prompts/*` / `resources/*` for the skills.
+Both transports answer through one core (`computer-use-mcp/src/core.rs`):
+
+- **Progress:** a `tools/call` with `_meta.progressToken` gets
+  `notifications/progress` while it runs: `batch` per step, `draw` by how
+  far the pen has gone, `wait_for` by the time waited, `script` per tool it
+  calls (at most every 100 ms, the last always).
+- **Cancel and ping:** `notifications/cancelled` ends the call that is
+  running, as the stop key would; a `ping` is answered at once, even
+  during a long call.
+- **Annotations:** each tool says whether it only reads, may destroy,
+  can be repeated safely and reaches beyond the desktop (hints for a host,
+  never a permission).
+- **Results as data** (`server.structured_output`, off): `list_apps`,
+  `find_element` and `get_clipboard` also return `structuredContent`, with
+  an `outputSchema` in the tool list, for clients on MCP 2025-06-18.
+
+For
 clients without skill files, the `computer-use`, `computer-use-design` and
 `computer-use-security` skills are MCP prompts (each comes with the safety
 rules), and every skill file is a resource
@@ -730,7 +804,8 @@ applying after a reload. The agent has no tool to change settings.
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window, `rebase_after_tokens` |
 | `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
-| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta` |
+| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
+| `[hub]` | several agents on one desktop: `enabled`, `port`, `arrange`, `chat`, `turn_wait_secs` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 
@@ -777,13 +852,36 @@ computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN"
 # or put it in settings: server.http_addr / server.http_token
 ```
 
-Each POST body is one JSON-RPC message (`Content-Type: application/json`, at
-most 4 MiB). Whoever can reach the endpoint can control the desktop, so:
+It is MCP's Streamable HTTP transport, on one endpoint (`/mcp`, or any
+path):
+
+- **POST** a JSON-RPC message or a batch (`Content-Type: application/json`,
+  at most 4 MiB). Requests are answered with JSON; a call that asks for
+  progress, from a client that accepts `text/event-stream`, is answered
+  with events: its progress, then the result. Notifications alone get
+  202. A body that isn't JSON gets 400 with a JSON-RPC error.
+- **Sessions:** `initialize` is answered with an `Mcp-Session-Id`. A
+  request naming a session the server doesn't know (it ended, or the
+  server restarted) gets 404, and the client starts again; a request
+  naming none is served. **DELETE** with the header ends a session.
+- **GET** with `Accept: text/event-stream` opens a stream on which the
+  server announces a changed tool list (a settings change, a saved
+  script). Not every client keeps one, so `tools.manager = "list_changed"`
+  still works as `"dispatch"` over HTTP.
+- Requests are read on a thread of their own: a cancel reaches the call
+  that is running, and a ping is answered at once. The engine answers the
+  rest in order.
+- `MCP-Protocol-Version`, when sent, must be one the server speaks (400).
+
+Whoever can reach the endpoint can control the desktop, so:
 
 - a bearer token is **required**: without one the server refuses to start;
   it is compared in constant time;
 - requests carrying a browser `Origin` other than `localhost` / `127.0.0.1` /
-  `[::1]` are refused, so a web page can't drive the desktop;
+  `[::1]` are refused, so a web page can't drive the desktop; bound to this
+  machine, so are those whose `Host` names another (DNS rebinding);
+- a refused request says why as a JSON-RPC error; a missing or wrong token
+  gets 401 with `WWW-Authenticate: Bearer`;
 - bind it to localhost or a trusted network (a warning is logged otherwise).
 
 ## Performance
