@@ -248,14 +248,60 @@ fn counts_paths(toolkit: &str) -> bool {
     toolkit.trim().eq_ignore_ascii_case("gtk")
 }
 
+/// A connection made on a thread of its own, given up after a while: the
+/// method timeout covers calls, not connecting (the handshake and Hello),
+/// and a bus daemon that hangs with its socket still there would hang the
+/// server. While an earlier attempt is still unanswered, none is started.
+fn connect_within(
+    what: &'static str,
+    make: impl FnOnce() -> Result<Connection> + Send + 'static,
+) -> Result<Connection> {
+    static UNANSWERED: AtomicBool = AtomicBool::new(false);
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    if UNANSWERED.load(Ordering::SeqCst) {
+        return Err(Error::Platform(format!(
+            "the {what} hasn't answered an earlier connection attempt"
+        )));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("a11y-connect".into())
+        .spawn(move || {
+            let r = make();
+            // Only one attempt is ever left waiting: it clears the flag
+            // when it ends, however late.
+            if tx.send(r).is_err() {
+                UNANSWERED.store(false, Ordering::SeqCst);
+            }
+        });
+    if let Err(e) = spawned {
+        return Err(Error::Platform(format!(
+            "cannot connect to the {what}: {e}"
+        )));
+    }
+    match rx.recv_timeout(CONNECT_TIMEOUT) {
+        Ok(r) => r,
+        Err(_) => {
+            UNANSWERED.store(true, Ordering::SeqCst);
+            drop(rx);
+            Err(Error::Platform(format!(
+                "the {what} didn't answer in {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )))
+        }
+    }
+}
+
 /// The session bus, with a timeout on calls: a hung bus launcher must not
 /// hang the server.
 fn session() -> Result<Connection> {
-    zbus::blocking::connection::Builder::session()
-        .map_err(bus_err)?
-        .method_timeout(METHOD_TIMEOUT)
-        .build()
-        .map_err(bus_err)
+    connect_within("session bus", || {
+        zbus::blocking::connection::Builder::session()
+            .map_err(bus_err)?
+            .method_timeout(METHOD_TIMEOUT)
+            .build()
+            .map_err(bus_err)
+    })
 }
 
 /// Where the accessibility bus is, in the order AT-SPI's own library looks:
@@ -375,12 +421,16 @@ impl AtspiConnection {
 
     fn open(addr: &str) -> Result<Connection> {
         // The timeout covers every call on this connection, blocking and
-        // async (`fetch_many`, `walk`, `pids_of`) alike.
-        zbus::blocking::connection::Builder::address(addr)
-            .map_err(bus_err)?
-            .method_timeout(METHOD_TIMEOUT)
-            .build()
-            .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))
+        // async (`fetch_many`, `walk`, `pids_of`) alike; connecting has a
+        // limit of its own.
+        let addr = addr.to_string();
+        connect_within("accessibility bus", move || {
+            zbus::blocking::connection::Builder::address(addr.as_str())
+                .map_err(bus_err)?
+                .method_timeout(METHOD_TIMEOUT)
+                .build()
+                .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))
+        })
     }
 
     /// Whether the connection broke (the bus went away): reconnect.

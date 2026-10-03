@@ -71,15 +71,21 @@ impl<'a> Wm<'a> {
     fn text(&self, win: Window) -> Option<String> {
         let utf8 = self.atom("UTF8_STRING")?;
         let name = self.atom("_NET_WM_NAME")?;
-        for (prop, kind) in [
-            (name, utf8),
-            (AtomEnum::WM_NAME.into(), AtomEnum::STRING.into()),
+        for (prop, kind, latin1) in [
+            (name, utf8, false),
+            (AtomEnum::WM_NAME.into(), AtomEnum::STRING.into(), true),
         ] {
             if let Ok(c) = self.conn.get_property(false, win, prop, kind, 0, 1024)
                 && let Ok(r) = c.reply()
                 && !r.value.is_empty()
             {
-                return Some(String::from_utf8_lossy(&r.value).into_owned());
+                // WM_NAME as STRING is Latin-1 (each byte one character),
+                // not UTF-8: "Café" would come out mangled.
+                return Some(if latin1 {
+                    r.value.iter().map(|&b| char::from(b)).collect()
+                } else {
+                    String::from_utf8_lossy(&r.value).into_owned()
+                });
             }
         }
         None

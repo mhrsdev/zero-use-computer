@@ -817,7 +817,16 @@ impl Backend for MacBackend {
     ) -> Result<()> {
         let (pid, el) = self.resolve(element)?;
         let r = el.as_ref();
-        let content = ffi::copy_string(r, "AXValue").unwrap_or_default();
+        // A value that can't be read is not an empty one (selecting 0..0
+        // reported success with nothing selected).
+        let content = ffi::copy_string(r, "AXValue").ok_or_else(|| {
+            Error::ActionFailed("couldn't read this element's text to select it".into())
+        })?;
+        if content.is_empty() && text.is_none() {
+            return Err(Error::ActionFailed(
+                "there is no text here to select".into(),
+            ));
+        }
         // AXSelectedTextRange counts UTF-16 code units, like NSString.
         let (loc, len) = match text {
             None => (0isize, content.encode_utf16().count() as isize),

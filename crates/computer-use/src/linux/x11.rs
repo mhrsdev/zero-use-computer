@@ -24,7 +24,10 @@ const BUTTON_PRESS: u8 = 4;
 const BUTTON_RELEASE: u8 = 5;
 /// How many free keycodes (at most) are used for characters not on the
 /// keyboard: enough that one is rarely rebound in the middle of a text.
-const SPARES: usize = 16;
+// Enough for a sentence of another script (Persian has 32 letters) to be
+// typed with few rebinds: each rebind waits for the app to have read the
+// last press on that keycode.
+const SPARES: usize = 32;
 /// How long connecting to the X server may take: a TCP display whose host
 /// doesn't answer (WSL2 with no X server running) would otherwise hang for
 /// minutes, and again on every retry.
@@ -396,14 +399,23 @@ impl X11 {
         self.fake(6, 0, fx, fy)?;
         pause()?;
         self.fake(BUTTON_PRESS, 1, fx, fy)?;
-        pause()?;
-        // A few intermediate motions so drag-aware widgets follow.
-        for step in 1..=8 {
-            let x = clamp16(from.0 + (to.0 - from.0) * step / 8);
-            let y = clamp16(from.1 + (to.1 - from.1) * step / 8);
-            self.warp(x, y)?;
-            self.fake(6, 0, x, y)?;
+        // A few intermediate motions so drag-aware widgets follow. Whatever
+        // goes wrong on the way, the button is let go (never left held).
+        let moved = (|| -> Result<()> {
             pause()?;
+            for step in 1..=8 {
+                let x = clamp16(from.0 + (to.0 - from.0) * step / 8);
+                let y = clamp16(from.1 + (to.1 - from.1) * step / 8);
+                self.warp(x, y)?;
+                self.fake(6, 0, x, y)?;
+                pause()?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = moved {
+            let _ = self.fake(BUTTON_RELEASE, 1, fx, fy);
+            let _ = self.flush();
+            return Err(e);
         }
         self.fake(BUTTON_RELEASE, 1, tx, ty)?;
         pause()?;
@@ -777,6 +789,17 @@ impl X11 {
             .wm()
             .geometry(win)
             .ok_or_else(|| Error::ActionFailed(format!("the X window {win:#x} is gone")))?;
+        // Only what is on the screen: GetImage on a window fails for an
+        // area past the screen's edge (a window dragged partly off it).
+        let rect = match self.wm().geometry(self.root) {
+            Some(screen) => {
+                let (x0, y0) = (rect.x.max(screen.x), rect.y.max(screen.y));
+                let x1 = (rect.x + rect.width).min(screen.x + screen.width);
+                let y1 = (rect.y + rect.height).min(screen.y + screen.height);
+                Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+            }
+            None => rect,
+        };
         let (x, y, w, h) = window_crop(rect, at).ok_or_else(|| {
             Error::InvalidArgs(format!(
                 "the area ({:.0}, {:.0}) {:.0}x{:.0} is outside the window",
@@ -1007,8 +1030,10 @@ fn window_crop(rect: Rect, at: Rect) -> Option<(i16, i16, u16, u16)> {
 const DRAG_STEP: Duration = Duration::from_millis(12);
 /// Time for the focused app to translate a press on a spare keycode before
 /// the keycode is rebound or unbound. Apps read the new mapping when they
-/// get the key event, which no request to the server can confirm.
-const REMAP_SETTLE: Duration = Duration::from_millis(30);
+/// get the key event, which no request to the server can confirm; a busy
+/// app (Electron, an office suite) reads it late, and 30 ms lost or changed
+/// characters there.
+const REMAP_SETTLE: Duration = Duration::from_millis(150);
 
 /// Wait until `REMAP_SETTLE` has passed since `pressed`.
 fn settle(pressed: Option<Instant>) {
@@ -1430,12 +1455,12 @@ mod tests {
     }
 
     #[test]
-    fn up_to_sixteen_spare_keycodes() {
+    fn up_to_thirty_two_spare_keycodes() {
         let empty = [0; 4 * 40];
         let spares = find_spares(&empty, 4, 8, SPARES);
-        assert_eq!(spares.len(), 16);
+        assert_eq!(spares.len(), 32);
         assert_eq!(spares[0], 8);
-        assert_eq!(spares[15], 23);
+        assert_eq!(spares[31], 39);
         // Fewer when fewer are free.
         assert_eq!(find_spares(&empty[..4 * 3], 4, 8, SPARES).len(), 3);
     }
