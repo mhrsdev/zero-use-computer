@@ -90,11 +90,12 @@ characters a token, an image width × height / 750, no prompt cache).
 |---|---|---|---|
 | Sent with every request (instructions, skills, tools) | 6,718 | 7,783 | **4,972** |
 | Tool definitions | 4,363 | 4,990 | **2,165** |
-| Input to finish all six tasks | 422,833 | 438,849 | **294,840** |
+| Input to finish all six tasks | 423,650 | 438,848 | **294,840** |
 
 v3.9 sends **36% less per request and 33% less per task** than v3.6
-(all of it from v3.7; v3.8 and v3.9 added features at no cost). With
-`batch`, all six tasks: 325,491 → 216,995 (−33%).
+(all of it from v3.7; v3.8 and v3.9 added features at almost no cost: +34
+tokens per request). With
+`batch`, all six tasks: 323,982 → 216,991 (−33%).
 
 ### Against Codex-style computer use
 
@@ -199,6 +200,9 @@ Read the numbers with these limits:
   number here was measured with each task alone. The earlier report gave
   v3.7.0 250,701 over the four tasks and 24,769 on the canvas task;
   v3.7.5 alone takes 249,895 and 16,995.
+- **Run to run:** v3.7 to v3.9 give the same figures every run (within
+  0.1%); v2.5 to v3.6 vary by up to 5% on the canvas tasks (how much OCR
+  reads). The tables give the medians.
 
 ### Token use, version by version
 
@@ -206,15 +210,15 @@ Read the numbers with these limits:
 |---|---:|---:|---:|---:|---:|
 | v0.1 | 4,236 | 1,929 (23) | 254,975 | can't (canvas) | |
 | v2.0 | 3,938 | 1,950 (23) | 245,135 | can't (canvas) | |
-| v2.5 | 6,637 | 4,511 (23) | 351,112 | 422,435 | |
-| v2.6 | 7,164 | 4,809 (24) | 371,665 | 448,540 | |
-| v3.0 | 6,718 | 4,363 (24) | 349,719 | 422,833 | |
-| v3.1 | 6,718 | 4,363 (24) | 349,515 | 423,297 | |
-| v3.2 | 7,415 | 4,607 (25) | 376,488 | 455,445 | |
-| v3.6 (with v3.5) | 7,783 | 4,990 (25) | 367,006 | 438,849 | 325,491 |
+| v2.5 | 6,637 | 4,511 (23) | 351,112 | 422,773 | |
+| v2.6 | 7,164 | 4,809 (24) | 371,665 | 449,400 | |
+| v3.0 | 6,718 | 4,363 (24) | 349,868 | 423,650 | |
+| v3.1 | 6,718 | 4,363 (24) | 349,868 | 423,650 | |
+| v3.2 | 7,415 | 4,607 (25) | 376,841 | 455,557 | |
+| v3.6 (with v3.5) | 7,783 | 4,990 (25) | 367,006 | 438,848 | 323,982 |
 | v3.7 | 4,938 | 2,167 (17) | 249,895 | 296,221 | 217,854 |
 | v3.8 | 4,938 | 2,167 (17) | 249,895 | 296,221 | 217,854 |
-| **v3.9** | **4,972** | **2,165 (17)** | **248,656** | **294,840** | **216,995** |
+| **v3.9** | **4,972** | **2,165 (17)** | **248,656** | **294,840** | **216,991** |
 
 ### The major versions
 
@@ -227,7 +231,7 @@ Read the numbers with these limits:
   canvas tasks v2.0 couldn't do at all). v3.0 itself was a stability
   release that took back 6% of v2.6's cost.
 - **v3.0 → v3.9:** −26% per request (6,718 → 4,972), −29% over the four
-  tasks, −30% over all six (422,833 → 294,840); tool results −38%,
+  tasks, −30% over all six (423,650 → 294,840); tool results −39%,
   pictures 10 → 6, calls 42 → 40. Almost all of it came in one step, v3.7.
 - **v4.0:** not released. The [roadmap](docs/ROADMAP.md#left-before-v40)
   keeps it for defaults chosen from real-model runs, tests on real
@@ -292,12 +296,12 @@ possible, and far more tools behind `find_tools`.
 | all six tasks | v3.0 | v3.6 | v3.9 | v3.9 against v3.6 | against v3.0 |
 |---|---:|---:|---:|---:|---:|
 | sent with every request | 6,718 | 7,783 | 4,972 | −36% | −26% |
-| input, one action a call | 422,833 | 438,849 | 294,840 | −33% | −30% |
-| input, with `batch` | | 325,491 | 216,995 | −33% | |
-| tool results | 13,009 | 10,266 | 8,068 | −21% | −38% |
+| input, one action a call | 423,650 | 438,848 | 294,840 | −33% | −30% |
+| input, with `batch` | | 323,982 | 216,991 | −33% | |
+| tool results | 13,269 | 10,266 | 8,068 | −21% | −39% |
 | pictures sent | 10 | 9 | 6 | −3 | −4 |
 | tool calls | 42 | 41 | 40 | −1 | −2 |
-| seconds on the server, four tasks | 11.2 | 11.9 | 13.8 | +16% | +23% |
+| seconds on the server, four tasks | 11.2 | 11.9 | 14.0 | +18% | +25% |
 
 What did it, and what didn't:
 
@@ -310,7 +314,7 @@ What did it, and what didn't:
   no accessibility information) and v3.9's didn't. Whether v3.8's notes
   were false alarms there was not settled, so this is not counted as a
   v3.9 gain.
-- **Slower on the server**: the four tasks take 13.8 s of tool time
+- **Slower on the server**: the four tasks take 14.0 s of tool time
   against v3.0's 11.2 s, mostly OCR of areas without accessibility
   information (on by default since v3.7). A model's own time is far
   longer than either.
