@@ -246,7 +246,7 @@ impl<B: Backend> Engine<B> {
             shot: None,
             marks: None,
         };
-        if self.depth == 1 {
+        if self.ctx.depth == 1 {
             if prev.is_none() {
                 self.note.drafts_full.push(seen_key.clone());
             } else {
@@ -265,7 +265,7 @@ impl<B: Backend> Engine<B> {
             return Ok(ToolOutput::text(text));
         }
         seen.picture = hash;
-        if self.depth == 1 {
+        if self.ctx.depth == 1 {
             self.note.drafts_picture.push(seen_key.clone());
         }
         self.drafts_seen.insert(seen_key, seen);
@@ -435,7 +435,7 @@ impl<B: Backend> Engine<B> {
             shot: stored.as_ref().and_then(|p| p.shot.clone()),
             marks: stored.as_ref().and_then(|p| p.marks),
         };
-        if self.depth == 1 {
+        if self.ctx.depth == 1 {
             if prev.is_none() {
                 self.note.drafts_full.push(seen_key.clone());
             } else {
@@ -602,7 +602,7 @@ impl<B: Backend> Engine<B> {
         }
         seen.picture = hash;
         seen.marks = Some(extras);
-        if self.depth == 1 {
+        if self.ctx.depth == 1 {
             self.note.drafts_picture.push(seen_key.clone());
         }
         let (img, _) = imaging::encode(picture.clone(), &cfg)?;

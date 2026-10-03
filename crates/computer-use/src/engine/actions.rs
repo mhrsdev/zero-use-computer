@@ -679,7 +679,7 @@ impl<B: Backend> Engine<B> {
             // reports against what it had seen before, and sends only the
             // rest if nothing changed (when the model reads this result
             // itself, not a script).
-            if self.depth == 1 && !self.in_script {
+            if self.ctx.depth == 1 && !self.ctx.in_script {
                 self.partial_report = Some((app.pid, r.screen, text_hash(&r.text), max));
             }
         } else {
@@ -703,7 +703,7 @@ impl<B: Backend> Engine<B> {
             .filter(|n| n.states.focused)
             .map(|n| n.index)
             .collect();
-        if let Some((_, t)) = self.target.filter(|(p, _)| *p == pid)
+        if let Some((_, t)) = self.ctx.target.filter(|(p, _)| *p == pid)
             && let Some(pos) = nodes.iter().position(|n| n.index == t)
         {
             let size = |p: usize| {

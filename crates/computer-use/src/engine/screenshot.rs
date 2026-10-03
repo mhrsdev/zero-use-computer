@@ -125,7 +125,7 @@ impl<B: Backend> Engine<B> {
                     label = format!("{} in {}", node.label(), app.name);
                 }
                 // The picture this call's look just took, if any.
-                let cap = match self.last_capture.take() {
+                let cap = match self.ctx.last_capture.take() {
                     Some((pid, wid, epoch, cap))
                         if pid == app.pid && wid == window.id && epoch == self.epoch =>
                     {
@@ -369,7 +369,7 @@ impl<B: Backend> Engine<B> {
                             "Screenshot #{id}: changed part only, the area x {ox}–{x1}, y {oy}–{y1} of #{base} (x/y still refer to that whole screenshot).{note}"
                         )
                     };
-                    self.pending_screen_shot = Some(ScreenShot {
+                    self.ctx.pending_screen_shot = Some(ScreenShot {
                         pixels: sig,
                         coord: map,
                         id: base,
@@ -379,7 +379,7 @@ impl<B: Backend> Engine<B> {
             }
             let (img, map) = imaging::encode(capture, &cfg)?;
             let id = self.next_shot();
-            self.pending_screen_shot = Some(ScreenShot {
+            self.ctx.pending_screen_shot = Some(ScreenShot {
                 pixels: sig,
                 coord: map,
                 id,
@@ -408,7 +408,7 @@ impl<B: Backend> Engine<B> {
                     Picture::Part {
                         img, id, base, at, ..
                     } => {
-                        if self.depth == 1 {
+                        if self.ctx.depth == 1 {
                             self.note.pictures_part.push(pid);
                         }
                         let (ox, oy) = at;
@@ -423,7 +423,7 @@ impl<B: Backend> Engine<B> {
                         image(img, text)
                     }
                     Picture::Whole { img, id, .. } => {
-                        if self.depth == 1 {
+                        if self.ctx.depth == 1 {
                             self.note.pictures_whole.push(pid);
                         }
                         let text = format!(

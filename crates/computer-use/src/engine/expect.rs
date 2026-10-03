@@ -113,7 +113,7 @@ impl<B: Backend> Engine<B> {
         if self.observe(&app, &window, fresh).is_err() {
             return (Uncertain, "the app couldn't be read after it".into(), false);
         }
-        let target = index.or_else(|| self.target.filter(|(p, _)| *p == app.pid).map(|t| t.1));
+        let target = index.or_else(|| self.ctx.target.filter(|(p, _)| *p == app.pid).map(|t| t.1));
         let fingerprint = self.tree_fingerprint(app.pid);
         let Some(st) = self.states.get(&app.pid).filter(|s| s.stamped) else {
             return (Uncertain, "the app couldn't be read after it".into(), false);

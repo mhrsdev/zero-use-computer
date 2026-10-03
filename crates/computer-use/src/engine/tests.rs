@@ -614,6 +614,40 @@ fn batch_runs_steps_and_stops_on_error() {
     );
 }
 
+/// A step that panics ends the batch with an error, and leaves nothing of
+/// it behind: before, the steps' quiet reports (and the element they aimed
+/// at) outlived it, so later calls inside a call reported no changes.
+#[test]
+fn a_batch_step_that_panics_leaves_no_state_behind() {
+    let mut e = engine();
+    e.backend_mut().panic_on_key = Some("ctrl+p".into());
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({
+            "app": "TextEdit",
+            "steps": [
+                {"tool": "get_app_state", "arguments": {}},
+                {"tool": "click", "arguments": {"element_index": 4}},
+                {"tool": "press_key", "arguments": {"key": "ctrl+p"}},
+                {"tool": "press_key", "arguments": {"key": "a"}}
+            ]
+        }),
+    );
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.contains("failed unexpectedly"), "{}", out.text);
+    assert_eq!(e.ctx.depth, 0);
+    assert_eq!(e.ctx.quiet_depth, None);
+    assert_eq!(e.ctx.target, None);
+    assert!(e.ctx.last_expect.is_none() && !e.ctx.in_script);
+    // The engine goes on as before.
+    e.backend_mut().panic_on_key = None;
+    let out = e.call_tool(
+        "press_key",
+        serde_json::json!({"app": "TextEdit", "key": "a"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+}
+
 #[test]
 fn change_report_appended_after_action() {
     let mut e = engine();
@@ -4807,7 +4841,7 @@ fn the_restless_note_is_no_change_elsewhere() {
     // after the one relevant change.
     let text = "Changes:\n~ 4 text area \"Document\" value=\"x\"  (was: …)\n~ 12 element(s) that keep changing on their own left out: 7–8\n";
     let doc = index_named(&e, 4242, "Document");
-    e.target = Some((4242, doc));
+    e.ctx.target = Some((4242, doc));
     let (shown, others) = e.relevant_changes(4242, text);
     assert_eq!(others, 0, "the note is not a change elsewhere:\n{shown}");
 }

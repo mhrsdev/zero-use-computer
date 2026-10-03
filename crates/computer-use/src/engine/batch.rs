@@ -55,11 +55,11 @@ impl<B: Backend> Engine<B> {
             };
             let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
             let acting = parsed.as_ref().ok().and_then(mutating_app);
-            let before = self.pending_images.len();
-            let shot_before = self.pending_screen_shot.take();
-            let quiet = self.quiet_depth.replace(self.depth + 1);
+            let before = self.ctx.pending_images.len();
+            let shot_before = self.ctx.pending_screen_shot.take();
+            let quiet = self.ctx.quiet_depth.replace(self.ctx.depth + 1);
             let result = parsed.and_then(|c| self.call(c));
-            self.quiet_depth = quiet;
+            self.ctx.quiet_depth = quiet;
             ran += 1;
             if acting.is_some() {
                 acted_on = acting;
@@ -68,7 +68,7 @@ impl<B: Backend> Engine<B> {
             if !imaged {
                 // No image from this step: an earlier step's stays the one
                 // the batch returns.
-                self.pending_screen_shot = shot_before;
+                self.ctx.pending_screen_shot = shot_before;
             }
             match result {
                 Ok(out) => {
@@ -76,7 +76,7 @@ impl<B: Backend> Engine<B> {
                     report.push_str(&format!("{}. {} — {first}\n", i + 1, step.tool));
                     if out.image.is_some() {
                         // Earlier images are replaced by this one.
-                        self.pending_images.drain(..before);
+                        self.ctx.pending_images.drain(..before);
                         last_image = out.image;
                     }
                     if out.is_error {
@@ -91,7 +91,7 @@ impl<B: Backend> Engine<B> {
                     }
                     // The steps after this one were planned on what it
                     // expected.
-                    if expects && self.last_expect != Some(Outcome::Confirmed) {
+                    if expects && self.ctx.last_expect != Some(Outcome::Confirmed) {
                         stopped = format!(
                             "Stopped after step {}: what it expected wasn't confirmed; the {} step(s) after it were not run.",
                             i + 1,

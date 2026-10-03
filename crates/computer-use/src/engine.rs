@@ -240,7 +240,41 @@ const MAX_KEY_PRESSES: usize = 500;
 /// `get_clipboard`: most characters returned.
 const MAX_CLIPBOARD_CHARS: usize = 30_000;
 
+/// What one tool call (with the calls it runs: batch steps, a script's
+/// tools) is doing. Nothing in it outlives the call, so a call that fails
+/// unexpectedly is undone by starting it afresh.
+#[derive(Default)]
+struct CallState {
+    pending_images: Vec<PendingImage>,
+    /// Nesting of `call` (batch steps run inside a call).
+    depth: u32,
+    /// The call depth of a batch's steps: their reports are never shown
+    /// (the batch reports once, at the end), so they aren't made.
+    quiet_depth: Option<u32>,
+    /// The element the current action acts on (app pid, index), for a
+    /// report of the changes around it ([tree] report = "relevant").
+    target: Option<(u32, u32)>,
+    /// What the last action's `expect` found (a batch stops on anything
+    /// but confirmed).
+    last_expect: Option<Outcome>,
+    /// Read text off the screen in the next observe (get_app_state ocr=true).
+    force_ocr: bool,
+    /// Reuse the last OCR result instead of reading again (while settling).
+    ocr_reuse: bool,
+    /// A window capture taken for OCR at this epoch, reused as the screenshot.
+    last_capture: Option<(u32, u64, u64, Capture)>,
+    /// A script is running: its calls can't start another (by any route,
+    /// `batch` included), or scripts could nest until the stack runs out.
+    in_script: bool,
+    /// One taken during this call: it becomes `screen_shot` only if it is
+    /// the image the call returns (a batch returns only its last image).
+    pending_screen_shot: Option<ScreenShot>,
+}
+
 pub struct Engine<B: Backend> {
+    /// What the call in progress is doing, reset as a whole when one
+    /// fails unexpectedly.
+    ctx: CallState,
     backend: B,
     store: ConfigStore,
     states: HashMap<u32, AppState>,
@@ -252,12 +286,6 @@ pub struct Engine<B: Backend> {
     window_cache: HashMap<u32, (Instant, u64, Vec<WindowInfo>)>,
     /// Bumped by every action; snapshots from an older epoch are stale.
     epoch: u64,
-    pending_images: Vec<PendingImage>,
-    /// Nesting of `call` (batch steps run inside a call).
-    depth: u32,
-    /// The call depth of a batch's steps: their reports are never shown
-    /// (the batch reports once, at the end), so they aren't made.
-    quiet_depth: Option<u32>,
     /// The on-screen indicator (a separate helper process), if running.
     overlay: Option<Overlay>,
     /// How to start it; set by the host (`with_overlay`).
@@ -293,15 +321,9 @@ pub struct Engine<B: Backend> {
     promptness: HashMap<u32, Promptness>,
     /// The last full-screen screenshot sent.
     screen_shot: Option<ScreenShot>,
-    /// One taken during this call: it becomes `screen_shot` only if it is
-    /// the image the call returns (a batch returns only its last image).
-    pending_screen_shot: Option<ScreenShot>,
     /// Screenshots handed out so far: each gets the next number, so a
     /// changed part can name the picture it patches.
     shots: u32,
-    /// The element the current action acts on (app pid, index), for a
-    /// report of the changes around it ([tree] report = "relevant").
-    target: Option<(u32, u32)>,
     /// Tool categories `find_tools` has added to the tool list ([tools]
     /// manager = "list_changed"); they stay.
     active_tools: HashSet<&'static str>,
@@ -312,9 +334,6 @@ pub struct Engine<B: Backend> {
     schemas_shown: HashMap<String, u64>,
     /// The app the last call named ([tools] default_app).
     last_app: Option<String>,
-    /// What the last action's `expect` found (a batch stops on anything
-    /// but confirmed).
-    last_expect: Option<Outcome>,
     /// Estimated tokens of every result handed out so far ([cache]
     /// rebase_after_tokens).
     sent_tokens: usize,
@@ -327,10 +346,6 @@ pub struct Engine<B: Backend> {
     note: ResultNote,
     results: Results,
     result_meta: Option<serde_json::Value>,
-    /// Read text off the screen in the next observe (get_app_state ocr=true).
-    force_ocr: bool,
-    /// Reuse the last OCR result instead of reading again (while settling).
-    ocr_reuse: bool,
     /// Why OCR isn't available, once found out (told to the model once).
     ocr_note: Option<String>,
     ocr_note_shown: bool,
@@ -338,8 +353,6 @@ pub struct Engine<B: Backend> {
     /// screen, a hash of the whole text and the lines shown. If the next
     /// get_app_state renders the same text, those lines aren't sent again.
     partial_report: Option<(u32, u32, u64, usize)>,
-    /// A window capture taken for OCR at this epoch, reused as the screenshot.
-    last_capture: Option<(u32, u64, u64, Capture)>,
     /// Config file modification time, for hot reload.
     config_mtime: Option<std::time::SystemTime>,
     /// The file changed but didn't load: read it once more on the next call.
@@ -360,9 +373,6 @@ pub struct Engine<B: Backend> {
     /// The decision layer: the model's answers kept, its failures, what
     /// it cost (see [`crate::decision::judge`]).
     judge: crate::decision::judge::Judge,
-    /// A script is running: its calls can't start another (by any route,
-    /// `batch` included), or scripts could nest until the stack runs out.
-    in_script: bool,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -446,6 +456,7 @@ impl<B: Backend> Engine<B> {
         let config_mtime = store.path.as_deref().and_then(file_mtime);
         let scripts = crate::script::Library::new(store.config.script.library());
         Self {
+            ctx: CallState::default(),
             backend,
             store,
             states: HashMap::new(),
@@ -453,9 +464,6 @@ impl<B: Backend> Engine<B> {
             app_cache: None,
             window_cache: HashMap::new(),
             epoch: 0,
-            pending_images: Vec::new(),
-            depth: 0,
-            quiet_depth: None,
             overlay: None,
             overlay_launcher: None,
             overlay_failures: 0,
@@ -471,22 +479,17 @@ impl<B: Backend> Engine<B> {
             settled: None,
             promptness: HashMap::new(),
             screen_shot: None,
-            pending_screen_shot: None,
             shots: 0,
-            target: None,
             active_tools: HashSet::new(),
             tools_cache: None,
             schemas_shown: HashMap::new(),
             last_app: None,
-            last_expect: None,
             sent_tokens: 0,
             drafts_seen: HashMap::new(),
             result_id: 0,
             note: ResultNote::default(),
             results: Results::default(),
             result_meta: None,
-            force_ocr: false,
-            ocr_reuse: false,
             traces: Vec::new(),
             designs: Vec::new(),
             scenes: Vec::new(),
@@ -494,11 +497,9 @@ impl<B: Backend> Engine<B> {
             exports: crate::design::TempFiles::default(),
             scripts,
             judge: Default::default(),
-            in_script: false,
             ocr_note: None,
             ocr_note_shown: false,
             partial_report: None,
-            last_capture: None,
             config_mtime,
             config_retry: false,
             overrides: None,
@@ -981,7 +982,7 @@ impl<B: Backend> Engine<B> {
 
     /// Look up an element handle by index in the app's latest state.
     fn element_by_index(&mut self, app: &AppInfo, index: u32) -> Result<ElementHandle> {
-        self.target = Some((app.pid, index));
+        self.ctx.target = Some((app.pid, index));
         self.handle_of(app, index)
     }
 
@@ -1172,7 +1173,7 @@ impl<B: Backend> Engine<B> {
         // Time waited, counted in poll intervals (independent of the clock).
         let mut waited = Duration::from_millis(cfg.timing.settle_ms);
         // Text read off the screen isn't read again for every look.
-        let reuse = std::mem::replace(&mut self.ocr_reuse, true);
+        let reuse = std::mem::replace(&mut self.ctx.ocr_reuse, true);
         // While reads still show the state from before, they come further
         // apart (up to 2 polls): a change is still seen within one of them,
         // and an action that changed nothing costs half the reads.
@@ -1210,7 +1211,7 @@ impl<B: Backend> Engine<B> {
                 poll
             };
         }
-        self.ocr_reuse = reuse;
+        self.ctx.ocr_reuse = reuse;
     }
 
     /// Whether the current action's result was read back (verification on).
@@ -1246,35 +1247,35 @@ impl<B: Backend> Engine<B> {
     pub fn call(&mut self, call: ToolCall) -> Result<ToolOutput> {
         if self.halted() {
             // Show it again so the user sees why nothing happens.
-            if self.depth == 0 && self.is_stopped() && self.overlay.is_some() {
+            if self.ctx.depth == 0 && self.is_stopped() && self.overlay.is_some() {
                 self.overlay_send(OverlayCmd::Stopped { on: true });
             }
             let err = self.stopped_error();
-            if self.depth == 0 {
+            if self.ctx.depth == 0 {
                 // A cancel is for this call only.
                 self.cancel.store(false, Ordering::SeqCst);
             }
             return Err(err);
         }
         // Calls inside calls (batch steps, a script's tools) stay shallow.
-        if self.depth >= MAX_DEPTH {
+        if self.ctx.depth >= MAX_DEPTH {
             return Err(Error::InvalidArgs(format!(
                 "calls nest at most {MAX_DEPTH} deep (batch steps and scripts run tools inside a call)"
             )));
         }
-        if self.in_script && matches!(call, ToolCall::Script(_)) {
+        if self.ctx.in_script && matches!(call, ToolCall::Script(_)) {
             return Err(Error::InvalidArgs(
                 "a script can't start another script, through batch or otherwise: run(name, args) runs a saved script inside it".into(),
             ));
         }
-        if self.depth == 0 {
-            self.target = None;
+        if self.ctx.depth == 0 {
+            self.ctx.target = None;
             // A picture is reused within the call that took it, never by a
             // later one (the screen may have moved on by itself).
-            self.last_capture = None;
+            self.ctx.last_capture = None;
         }
-        self.depth += 1;
-        if self.depth == 1 {
+        self.ctx.depth += 1;
+        if self.ctx.depth == 1 {
             self.overlay_send(OverlayCmd::Begin);
         }
         // Calls that make big pictures or run on a thread of their own.
@@ -1289,20 +1290,20 @@ impl<B: Backend> Engine<B> {
                 | ToolCall::Locate(_)
         );
         let out = self.dispatch(call);
-        if self.depth == 1 && self.overlay.is_some() {
+        if self.ctx.depth == 1 && self.overlay.is_some() {
             let ok = out.as_ref().is_ok_and(|o| !o.is_error);
             self.overlay_send(OverlayCmd::End { ok });
         }
-        self.depth -= 1;
-        if self.depth == 0 {
+        self.ctx.depth -= 1;
+        if self.ctx.depth == 0 {
             self.cancel.store(false, Ordering::SeqCst);
             // Only the image in the final result reaches the model.
             let imaged = out.as_ref().is_ok_and(|o| o.image.is_some());
             if imaged {
                 self.commit_images();
             } else {
-                self.pending_images.clear();
-                self.pending_screen_shot = None;
+                self.ctx.pending_images.clear();
+                self.ctx.pending_screen_shot = None;
             }
             if imaged || heavy {
                 trim_heap();
@@ -1330,7 +1331,7 @@ impl<B: Backend> Engine<B> {
             self.wait_for_user()?;
         }
         let report_app = acting.filter(|_| {
-            self.store.config.tree.report_changes && self.quiet_depth != Some(self.depth)
+            self.store.config.tree.report_changes && self.ctx.quiet_depth != Some(self.ctx.depth)
         });
         let pixels_of_app = pixel_use(&call).map(str::to_string);
         // `expect`: the app as it was, to tell what the action did.
@@ -1383,11 +1384,11 @@ impl<B: Backend> Engine<B> {
             let st = self.states.entry(app.pid).or_default();
             st.pixel_uses = st.pixel_uses.saturating_add(1);
         }
-        self.last_expect = None;
+        self.ctx.last_expect = None;
         let checked = match expecting {
             Some((query, what, index)) if !out.is_error => {
                 let (outcome, note) = self.check_expect(&query, &what, index, before.as_ref());
-                self.last_expect = Some(outcome);
+                self.ctx.last_expect = Some(outcome);
                 Some(note)
             }
             _ => None,
@@ -1564,13 +1565,11 @@ impl<B: Backend> Engine<B> {
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_default();
                 log::error!("{name} panicked: {what}");
-                // Undo what the interrupted call left half-done.
-                self.depth = 0;
-                self.in_script = false;
-                self.force_ocr = false;
-                self.ocr_reuse = false;
-                self.pending_images.clear();
-                self.pending_screen_shot = None;
+                // Undo what the interrupted call left half-done: all of
+                // its state (a batch step's quiet reports, the element it
+                // aimed at, what its `expect` found…), and the tree start
+                // a result may have shown only in part.
+                self.ctx = CallState::default();
                 self.partial_report = None;
                 self.cancel.store(false, Ordering::SeqCst);
                 self.epoch += 1;

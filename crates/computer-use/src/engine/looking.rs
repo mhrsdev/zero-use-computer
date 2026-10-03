@@ -142,9 +142,9 @@ impl<B: Backend> Engine<B> {
             args.screenshot.get_or_insert(true);
         }
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
-        self.force_ocr = args.ocr;
+        self.ctx.force_ocr = args.ocr;
         let observed = self.observe(&app, &window, args.ocr);
-        self.force_ocr = false;
+        self.ctx.force_ocr = false;
         observed?;
         if let Some(index) = args.within {
             return self.part_of_tree(&app, &window, index, args.max_tokens);
@@ -153,7 +153,7 @@ impl<B: Backend> Engine<B> {
             return self.about_parts(&app, &window, about, args.max_tokens);
         }
         let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
-        if self.depth == 1 {
+        if self.ctx.depth == 1 {
             if r.full {
                 self.note.looks_full.push(app.pid);
             } else {
@@ -170,7 +170,7 @@ impl<B: Backend> Engine<B> {
         // only the rest is sent.
         if let Some((pid, screen, hash, shown)) = self.partial_report.take()
             && !args.disable_diff
-            && self.depth == 1
+            && self.ctx.depth == 1
             && pid == app.pid
             && screen == r.screen
             && hash == text_hash(&r.text)
@@ -312,7 +312,7 @@ impl<B: Backend> Engine<B> {
         let mut stale: Option<Changed> = None;
         if want {
             // The picture just read for OCR, if any, is the screenshot.
-            let reuse = match self.last_capture.take() {
+            let reuse = match self.ctx.last_capture.take() {
                 Some((pid, wid, epoch, cap))
                     if pid == app.pid && wid == window.id && epoch == self.epoch =>
                 {
@@ -365,7 +365,7 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
-                            if self.depth == 1 {
+                            if self.ctx.depth == 1 {
                                 self.note.pictures_part.push(app.pid);
                             }
                             let (w, h, (ox, oy)) = (img.width, img.height, at);
@@ -390,7 +390,7 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
-                            if self.depth == 1 {
+                            if self.ctx.depth == 1 {
                                 self.note.pictures_whole.push(app.pid);
                             }
                             header.push_str(&format!(
@@ -516,7 +516,7 @@ impl<B: Backend> Engine<B> {
         if icons.is_empty() {
             return None;
         }
-        let reuse = match self.last_capture.take() {
+        let reuse = match self.ctx.last_capture.take() {
             Some((pid, wid, epoch, cap))
                 if pid == app.pid && wid == window.id && epoch == self.epoch =>
             {
@@ -673,7 +673,7 @@ impl<B: Backend> Engine<B> {
             // Only the part that changed, placed in the picture the model
             // already has.
             let id = self.next_shot();
-            self.pending_images.push(PendingImage {
+            self.ctx.pending_images.push(PendingImage {
                 pid,
                 screen,
                 coord: full,
@@ -693,7 +693,7 @@ impl<B: Backend> Engine<B> {
         }
         let (img, map) = imaging::encode(cap, &shot_cfg)?;
         let id = self.next_shot();
-        self.pending_images.push(PendingImage {
+        self.ctx.pending_images.push(PendingImage {
             pid,
             screen,
             coord: map,

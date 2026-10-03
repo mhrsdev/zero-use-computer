@@ -138,6 +138,9 @@ pub struct MockBackend {
     pub fail_actions: std::collections::HashSet<ElementHandle>,
     /// Elements whose action happens but the app doesn't answer in time.
     pub unanswered_actions: std::collections::HashSet<ElementHandle>,
+    /// A key whose press panics (a bug in a backend, for the engine's
+    /// recovery).
+    pub panic_on_key: Option<String>,
     /// Elements that accept set_value but keep their old value.
     pub ignore_set_value: std::collections::HashSet<ElementHandle>,
     /// Elements whose focus() reports success without focusing.
@@ -664,6 +667,9 @@ impl Backend for MockBackend {
     }
 
     fn press_key(&mut self, target: &InputTarget, combo: &KeyCombo) -> Result<()> {
+        if self.panic_on_key.as_deref() == Some(combo.to_string().as_str()) {
+            panic!("the backend failed on {combo}");
+        }
         self.events.push(Event::Key(target.pid, combo.to_string()));
         Ok(())
     }

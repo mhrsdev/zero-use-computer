@@ -15,7 +15,7 @@ impl<B: Backend> Engine<B> {
         if !cfg.screenshot.enabled {
             return false;
         }
-        if self.force_ocr {
+        if self.ctx.force_ocr {
             return true;
         }
         match cfg.ocr.mode {
@@ -34,7 +34,7 @@ impl<B: Backend> Engine<B> {
     /// hasn't changed (or, while settling, without looking again).
     fn read_screen_text(&mut self, app: &AppInfo, window: &WindowInfo) -> Vec<OcrLine> {
         let cached = self.states.get(&app.pid).and_then(|s| s.ocr_cache.clone());
-        if self.ocr_reuse
+        if self.ctx.ocr_reuse
             && let Some((_, lines)) = &cached
         {
             return lines.clone();
@@ -57,7 +57,7 @@ impl<B: Backend> Engine<B> {
             }
         };
         self.states.entry(app.pid).or_default().ocr_cache = Some((sig, lines.clone()));
-        self.last_capture = Some((app.pid, window.id, self.epoch, cap));
+        self.ctx.last_capture = Some((app.pid, window.id, self.epoch, cap));
         lines
     }
 
@@ -315,7 +315,7 @@ impl<B: Backend> Engine<B> {
             .states
             .get(&app.pid)
             .and_then(|s| s.blind_cache.clone());
-        if self.ocr_reuse
+        if self.ctx.ocr_reuse
             && let Some((_, areas, lines)) = &cached
         {
             return (areas.clone(), lines.clone());
@@ -381,7 +381,7 @@ impl<B: Backend> Engine<B> {
         };
         self.states.entry(app.pid).or_default().blind_cache =
             Some((sig, areas.clone(), lines.clone()));
-        self.last_capture = Some((app.pid, window.id, self.epoch, cap));
+        self.ctx.last_capture = Some((app.pid, window.id, self.epoch, cap));
         (areas, lines)
     }
 
@@ -555,6 +555,7 @@ impl<B: Backend> Engine<B> {
         let cache = self.store.config.cache.clone();
         let view = View::from_nodes(&st.nodes);
         let target_key = self
+            .ctx
             .target
             .filter(|(p, _)| *p == pid)
             .and_then(|(_, i)| st.nodes.iter().find(|n| n.index == i))
@@ -698,10 +699,10 @@ impl<B: Backend> Engine<B> {
     /// Record that the images handed out by the finished top-level call
     /// reached the model: their screens now have that screenshot.
     pub(super) fn commit_images(&mut self) {
-        if let Some(shot) = self.pending_screen_shot.take() {
+        if let Some(shot) = self.ctx.pending_screen_shot.take() {
             self.screen_shot = Some(shot);
         }
-        for p in std::mem::take(&mut self.pending_images) {
+        for p in std::mem::take(&mut self.ctx.pending_images) {
             let Some(st) = self.states.get_mut(&p.pid) else {
                 continue;
             };
