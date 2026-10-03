@@ -1943,12 +1943,92 @@ fn hover_prop(axis: &str) -> Value {
     json!({"type": "number", "description": format!("{axis} in screenshot pixels: point the mouse there first, for apps that send keys to what is under the pointer (Blender, some CAD apps).")})
 }
 
+/// MCP tool annotations: hints for a host deciding what to confirm or run
+/// at once (never a permission: see the security skill).
+fn hints(title: &str, h: Hints) -> Value {
+    let mut v = json!({"title": title, "readOnlyHint": h.read_only, "openWorldHint": h.open_world});
+    // Meaningful only for a tool that changes something.
+    if !h.read_only {
+        v["destructiveHint"] = json!(h.destructive);
+        v["idempotentHint"] = json!(h.idempotent);
+    }
+    v
+}
+
+#[derive(Clone, Copy)]
+struct Hints {
+    read_only: bool,
+    /// It may overwrite or delete (a click can press Delete, typing can
+    /// replace a selection).
+    destructive: bool,
+    /// The same call twice does no more than once.
+    idempotent: bool,
+    /// It reaches beyond this desktop (a web page, a model, the network).
+    open_world: bool,
+}
+
+/// Reads this desktop, changes nothing.
+const LOOKS: Hints = Hints {
+    read_only: true,
+    destructive: false,
+    idempotent: true,
+    open_world: false,
+};
+/// Works on the server's own boards and pictures, not the desktop.
+const PLANS: Hints = LOOKS;
+/// Input to an app: anything the app does with it (send, delete, buy).
+const ACTS: Hints = Hints {
+    read_only: false,
+    destructive: true,
+    idempotent: false,
+    open_world: true,
+};
+
 fn read_only(title: &str) -> Value {
-    json!({"title": title, "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false})
+    hints(title, LOOKS)
 }
 
 fn acting(title: &str) -> Value {
-    json!({"title": title, "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true})
+    hints(title, ACTS)
+}
+
+/// The `outputSchema` of the tools whose results also come as data
+/// ([server] structured_output): what their `structuredContent` holds.
+pub fn output_schema(name: &str) -> Option<Value> {
+    let string = json!({"type": "string"});
+    let integer = json!({"type": "integer", "minimum": 0});
+    let boolean = json!({"type": "boolean"});
+    Some(match name {
+        "list_apps" => json!({
+            "type": "object",
+            "properties": {"apps": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"name": string, "id": string, "pid": integer, "frontmost": boolean, "hidden": boolean},
+                "required": ["name", "id", "pid", "frontmost", "hidden"]
+            }}},
+            "required": ["apps"]
+        }),
+        "find_element" => json!({
+            "type": "object",
+            "properties": {
+                "app": string,
+                "total": integer,
+                "offset": integer,
+                "elements": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"index": integer, "role": string, "name": string, "value": string, "line": string},
+                    "required": ["index", "role", "line"]
+                }}
+            },
+            "required": ["app", "total", "offset", "elements"]
+        }),
+        "get_clipboard" => json!({
+            "type": "object",
+            "properties": {"text": string, "characters": integer, "truncated": boolean},
+            "required": ["text", "characters", "truncated"]
+        }),
+        _ => return None,
+    })
 }
 
 /// Tool definitions, ready to hand to an LLM or list over MCP. Built once.
@@ -1976,7 +2056,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 "required": ["app"],
                 "additionalProperties": false
             }),
-            annotations: acting("Launch app"),
+            annotations: hints("Launch app", Hints { destructive: false, ..ACTS }),
         },
         ToolDefinition {
             name: "get_app_state".into(),
@@ -2046,7 +2126,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 }),
                 &["element_index", "value"],
             ),
-            annotations: acting("Set value"),
+            annotations: hints("Set value", Hints { idempotent: true, ..ACTS }),
         },
         ToolDefinition {
             name: "select_text".into(),
@@ -2061,7 +2141,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 }),
                 &["element_index"],
             ),
-            annotations: acting("Select text"),
+            annotations: hints("Select text", Hints { read_only: false, idempotent: true, ..LOOKS }),
         },
         ToolDefinition {
             name: "scroll".into(),
@@ -2078,7 +2158,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 }),
                 &["direction"],
             ),
-            annotations: acting("Scroll"),
+            annotations: hints("Scroll", Hints { read_only: false, idempotent: false, ..LOOKS }),
         },
         ToolDefinition {
             name: "drag".into(),
@@ -2147,7 +2227,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 },
                 "additionalProperties": false
             }),
-            annotations: read_only("Trace a picture"),
+            annotations: hints("Trace a picture", PLANS),
         },
         ToolDefinition {
             name: "locate".into(),
@@ -2194,7 +2274,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 "required": ["name"],
                 "additionalProperties": false
             }),
-            annotations: read_only("Design board"),
+            annotations: hints("Design board", PLANS),
         },
         ToolDefinition {
             name: "scene".into(),
@@ -2218,7 +2298,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 "required": ["name"],
                 "additionalProperties": false
             }),
-            annotations: read_only("3D scene"),
+            annotations: hints("3D scene", PLANS),
         },
         ToolDefinition {
             name: "press_key".into(),
@@ -2366,7 +2446,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 "required": ["action"],
                 "additionalProperties": false
             }),
-            annotations: acting("Manage windows"),
+            annotations: hints("Manage windows", Hints { open_world: false, ..ACTS }),
         },
         ToolDefinition {
             name: "get_notifications".into(),
@@ -2427,7 +2507,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 },
                 "additionalProperties": false
             }),
-            annotations: read_only("Decide fast"),
+            annotations: hints("Decide fast", Hints { open_world: true, ..LOOKS }),
         },
         ToolDefinition {
             name: "get_clipboard".into(),
@@ -2446,7 +2526,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 "required": ["text"],
                 "additionalProperties": false
             }),
-            annotations: acting("Set clipboard"),
+            annotations: hints("Set clipboard", Hints { idempotent: true, open_world: false, ..ACTS }),
         },
     ]
 }
@@ -3378,5 +3458,38 @@ mod tests {
             ToolCall::parse("nope", json!({})),
             Err(Error::UnknownTool(_))
         ));
+    }
+
+    /// Annotations say what each tool may do: looking never changes
+    /// anything, scrolling and selecting never destroy, asking the decision
+    /// model leaves the desktop.
+    #[test]
+    fn annotations_are_per_tool() {
+        let defs = definitions();
+        let a = |name: &str| {
+            defs.iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .annotations
+                .clone()
+        };
+        for name in ["list_apps", "get_app_state", "find_element", "screenshot"] {
+            assert_eq!(a(name)["readOnlyHint"], true, "{name}");
+            assert!(a(name).get("destructiveHint").is_none(), "{name}");
+        }
+        for name in ["scroll", "select_text"] {
+            assert_eq!(a(name)["readOnlyHint"], false, "{name}");
+            assert_eq!(a(name)["destructiveHint"], false, "{name}");
+        }
+        assert_eq!(a("click")["destructiveHint"], true);
+        assert_eq!(a("set_value")["idempotentHint"], true);
+        assert_eq!(a("type_text")["idempotentHint"], false);
+        assert_eq!(a("decide")["openWorldHint"], true);
+        assert_eq!(a("launch_app")["destructiveHint"], false);
+        // Every tool with an output schema exists.
+        for name in ["list_apps", "find_element", "get_clipboard"] {
+            assert!(output_schema(name).is_some() && defs.iter().any(|d| d.name == name));
+        }
+        assert!(output_schema("click").is_none());
     }
 }

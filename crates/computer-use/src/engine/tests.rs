@@ -4932,3 +4932,56 @@ fn a_batch_reports_its_steps_as_progress() {
     let out = e.call_tool("list_apps", serde_json::json!({}));
     assert!(!out.is_error);
 }
+
+/// [server] structured_output: list_apps, find_element and get_clipboard
+/// also give their result as data matching their output schema; off (the
+/// default), or for a call that failed, none.
+#[test]
+fn results_as_data_when_asked_for() {
+    let mut e = engine();
+    e.call_tool("list_apps", serde_json::json!({}));
+    assert!(e.take_structured().is_none());
+    let mut cfg = e.store().config.clone();
+    cfg.server.structured_output = true;
+    e.set_config(ConfigStore::in_memory(cfg));
+
+    e.call_tool("list_apps", serde_json::json!({}));
+    let apps = e.take_structured().expect("data");
+    assert_eq!(apps["apps"][0]["name"], "TextEdit");
+    assert_eq!(apps["apps"][0]["pid"], 4242);
+
+    let out = e.call_tool(
+        "find_element",
+        serde_json::json!({"app": "TextEdit", "role": "button"}),
+    );
+    let found = e.take_structured().expect("data");
+    assert_eq!(found["app"], "TextEdit");
+    let first = &found["elements"][0];
+    assert_eq!(first["role"], "button");
+    assert!(out.text.contains(&format!(
+        "{} {}",
+        first["index"],
+        first["line"].as_str().unwrap()
+    )));
+    for key in ["app", "total", "offset", "elements"] {
+        assert!(found.get(key).is_some(), "{key}");
+    }
+
+    e.backend_mut().clipboard = "copied".into();
+    e.call_tool("get_clipboard", serde_json::json!({}));
+    let clip = e.take_structured().expect("data");
+    assert_eq!(
+        clip,
+        serde_json::json!({"text": "copied", "characters": 6, "truncated": false})
+    );
+
+    let out = e.call_tool("find_element", serde_json::json!({"app": "Nope"}));
+    assert!(out.is_error);
+    assert!(e.take_structured().is_none());
+    // Inside a batch, steps give no data of their own.
+    e.call_tool(
+        "batch",
+        serde_json::json!({"steps": [{"tool": "list_apps", "arguments": {}}]}),
+    );
+    assert!(e.take_structured().is_none());
+}

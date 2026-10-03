@@ -5,6 +5,16 @@ use super::*;
 impl<B: Backend> Engine<B> {
     pub(super) fn list_apps(&mut self) -> Result<ToolOutput> {
         let apps = self.find_apps()?;
+        self.set_structured(|| {
+            let apps: Vec<serde_json::Value> = apps
+                .iter()
+                .map(|a| {
+                    serde_json::json!({"name": a.name, "id": a.id, "pid": a.pid,
+                        "frontmost": a.frontmost, "hidden": a.hidden})
+                })
+                .collect();
+            serde_json::json!({ "apps": apps })
+        });
         if apps.is_empty() {
             return Ok(ToolOutput::text("No GUI apps are currently running."));
         }

@@ -6,6 +6,18 @@ impl<B: Backend> Engine<B> {
     // -- new tools ---------------------------------------------------------
 
     pub(super) fn find_element(&mut self, args: FindElementArgs) -> Result<ToolOutput> {
+        let (out, data) = self.find_matches(args)?;
+        if let Some(data) = data {
+            self.set_structured(|| data);
+        }
+        Ok(out)
+    }
+
+    /// find_element's answer, and the same as data when that is wanted.
+    fn find_matches(
+        &mut self,
+        args: FindElementArgs,
+    ) -> Result<(ToolOutput, Option<serde_json::Value>)> {
         let app = self.resolve_app(&args.app)?;
         let window = self.resolve_window(&app, args.window.as_deref(), false)?;
         self.observe(&app, &window, false)?;
@@ -34,18 +46,37 @@ impl<B: Backend> Engine<B> {
             .skip(offset)
             .take(args.max_results.max(1))
             .collect();
+        let data = self.store.config.server.structured_output.then(|| {
+            let elements: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|n| {
+                    let mut e = serde_json::json!({"index": n.index, "role": n.role, "line": n.line});
+                    if let Some(name) = &n.name {
+                        e["name"] = serde_json::json!(name);
+                    }
+                    if let Some(value) = &n.value {
+                        e["value"] = serde_json::json!(value);
+                    }
+                    e
+                })
+                .collect();
+            serde_json::json!({"app": app.name, "total": total, "offset": offset, "elements": elements})
+        });
         if hits.is_empty() {
-            return Ok(ToolOutput::text(if total > 0 {
-                format!(
-                    "{total} element(s) in {} match; none after offset {offset}.",
-                    app.name
-                )
-            } else {
-                format!(
-                    "No elements in {} match. Try get_app_state to see the whole tree.",
-                    app.name
-                )
-            }));
+            return Ok((
+                ToolOutput::text(if total > 0 {
+                    format!(
+                        "{total} element(s) in {} match; none after offset {offset}.",
+                        app.name
+                    )
+                } else {
+                    format!(
+                        "No elements in {} match. Try get_app_state to see the whole tree.",
+                        app.name
+                    )
+                }),
+                data,
+            ));
         }
         let next = offset + hits.len();
         let mut out = if offset == 0 && next == total {
@@ -65,7 +96,7 @@ impl<B: Backend> Engine<B> {
         for n in hits {
             out.push_str(&format!("{} {}\n", n.index, n.line));
         }
-        Ok(ToolOutput::text(out))
+        Ok((ToolOutput::text(out), data))
     }
 
     pub(super) fn wait_for(&mut self, args: WaitForArgs) -> Result<ToolOutput> {

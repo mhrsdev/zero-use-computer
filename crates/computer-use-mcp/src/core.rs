@@ -187,7 +187,18 @@ impl<B: Backend> Core<B> {
     fn tools_list(&mut self) -> Value {
         self.engine.reload_if_changed();
         self.tools_sig = Some(self.engine.tools_signature());
-        json!({ "tools": self.engine.tool_definitions() })
+        let mut tools = json!(self.engine.tool_definitions());
+        if self.structured() {
+            for tool in tools.as_array_mut().into_iter().flatten() {
+                let schema = tool["name"]
+                    .as_str()
+                    .and_then(computer_use::tools::output_schema);
+                if let Some(schema) = schema {
+                    tool["outputSchema"] = schema;
+                }
+            }
+        }
+        json!({ "tools": tools })
     }
 
     fn tools_call(&mut self, params: Value, id: Value, notify: Option<&Notifier>) -> Response {
@@ -216,7 +227,20 @@ impl<B: Backend> Core<B> {
         if let Some(meta) = self.engine.take_result_meta() {
             result["_meta"] = meta;
         }
+        let data = self.engine.take_structured();
+        if self.structured()
+            && let Some(data) = data
+        {
+            result["structuredContent"] = data;
+        }
         Response::ok(id, result)
+    }
+
+    /// Results as data too: asked for in the settings, and the client
+    /// speaks MCP 2025-06-18 or later (which has them).
+    fn structured(&self) -> bool {
+        self.engine.store().config.server.structured_output
+            && self.protocol.is_none_or(|p| p >= "2025-06-18")
     }
 
     /// `notifications/progress` carries a `message` from MCP 2025-03-26 on.

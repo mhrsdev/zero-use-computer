@@ -976,6 +976,11 @@ pub struct ServerConfig {
     /// (`zero-use-computer/supersedes`) or whose pictures it replaces
     /// (`zero-use-computer/supersedes-images`).
     pub result_meta: bool,
+    /// Also return the results of list_apps, find_element and
+    /// get_clipboard as data (MCP `structuredContent`, with an
+    /// `outputSchema` in the tool list), for clients that use it. Off: the
+    /// text is what models read, and some clients would send both.
+    pub structured_output: bool,
 }
 
 /// How much the MCP `instructions` say ([server] instructions).
@@ -996,6 +1001,7 @@ impl Default for ServerConfig {
             http_token: String::new(),
             instructions: Instructions::Full,
             result_meta: true,
+            structured_output: false,
         }
     }
 }

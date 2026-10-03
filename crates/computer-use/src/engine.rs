@@ -350,6 +350,9 @@ pub struct Engine<B: Backend> {
     note: ResultNote,
     results: Results,
     result_meta: Option<serde_json::Value>,
+    /// The last result as data, for its `structuredContent` ([server]
+    /// structured_output).
+    structured: Option<serde_json::Value>,
     /// Why OCR isn't available, once found out (told to the model once).
     ocr_note: Option<String>,
     ocr_note_shown: bool,
@@ -496,6 +499,7 @@ impl<B: Backend> Engine<B> {
             note: ResultNote::default(),
             results: Results::default(),
             result_meta: None,
+            structured: None,
             traces: Vec::new(),
             designs: Vec::new(),
             scenes: Vec::new(),
@@ -1493,6 +1497,7 @@ impl<B: Backend> Engine<B> {
         self.result_id += 1;
         self.note = ResultNote::default();
         self.result_meta = None;
+        self.structured = None;
         let manager = self.store.config.tools.manager != crate::config::ToolManager::Off;
         // use_tool runs the tool it names, as if called directly.
         let (name, mut args) = if manager && name == "use_tool" {
@@ -1586,6 +1591,9 @@ impl<B: Backend> Engine<B> {
                 )))
             }
         };
+        if out.is_error {
+            self.structured = None;
+        }
         // The user is counting on the stop key: if it doesn't work, say so
         // (once), so the agent can tell them.
         if !self.stop_note_shown
@@ -1622,6 +1630,19 @@ impl<B: Backend> Engine<B> {
     /// replaces). A host may drop those from its context.
     pub fn take_result_meta(&mut self) -> Option<serde_json::Value> {
         self.result_meta.take()
+    }
+
+    /// The last call's result as data ([`crate::tools::output_schema`]),
+    /// when [server] structured_output is on and the call succeeded.
+    pub fn take_structured(&mut self) -> Option<serde_json::Value> {
+        self.structured.take()
+    }
+
+    /// Keep the top-level call's result as data (made only when asked for).
+    fn set_structured(&mut self, data: impl FnOnce() -> serde_json::Value) {
+        if self.ctx.depth == 1 && self.store.config.server.structured_output {
+            self.structured = Some(data());
+        }
     }
 
     fn note_result(&mut self) {

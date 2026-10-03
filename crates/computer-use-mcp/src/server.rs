@@ -915,4 +915,60 @@ mod tests {
         assert_eq!(msgs[0]["id"], 2);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// With [server] structured_output, list_apps declares an output schema
+    /// and its result carries structuredContent (MCP 2025-06-18); a client
+    /// on an earlier version gets neither.
+    #[test]
+    fn results_as_data_for_clients_that_take_them() {
+        let talk = |version: &str| {
+            let input = format!(
+                "{}{}{}",
+                line(
+                    "initialize",
+                    1,
+                    json!({"protocolVersion": version, "capabilities":{}})
+                ),
+                line("tools/list", 2, json!({})),
+                line("tools/call", 3, json!({"name":"list_apps","arguments":{}})),
+            );
+            converse_with(&input, |c| c.server.structured_output = true)
+        };
+        let out = talk("2025-06-18");
+        let tools = out[1]["result"]["tools"].as_array().unwrap();
+        let list_apps = tools.iter().find(|t| t["name"] == "list_apps").unwrap();
+        assert_eq!(list_apps["outputSchema"]["required"][0], "apps");
+        assert!(
+            tools
+                .iter()
+                .find(|t| t["name"] == "click")
+                .unwrap()
+                .get("outputSchema")
+                .is_none()
+        );
+        assert_eq!(
+            out[2]["result"]["structuredContent"]["apps"][0]["name"],
+            "TextEdit"
+        );
+        let out = talk("2025-03-26");
+        assert!(
+            out[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t.get("outputSchema").is_none())
+        );
+        assert!(out[2]["result"].get("structuredContent").is_none());
+        // Off by default.
+        let out = converse(&format!(
+            "{}{}",
+            line(
+                "initialize",
+                1,
+                json!({"protocolVersion":"2025-06-18","capabilities":{}})
+            ),
+            line("tools/call", 2, json!({"name":"list_apps","arguments":{}}))
+        ));
+        assert!(out[1]["result"].get("structuredContent").is_none());
+    }
 }

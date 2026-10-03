@@ -293,6 +293,14 @@ impl<B: Backend> Engine<B> {
             ));
         }
         let text = self.backend.clipboard_get()?;
+        self.set_structured(|| {
+            let count = text.chars().count();
+            serde_json::json!({
+                "text": text.chars().take(MAX_CLIPBOARD_CHARS).collect::<String>(),
+                "characters": count,
+                "truncated": count > MAX_CLIPBOARD_CHARS,
+            })
+        });
         if text.is_empty() {
             return Ok(ToolOutput::text("The clipboard is empty."));
         }
