@@ -377,44 +377,10 @@ pub fn open_url(url: &str) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        // The shell may hand the address to COM objects: on a thread of
-        // its own, with COM set up there.
-        let target = url.to_string();
-        let code = std::thread::spawn(move || {
-            use windows::Win32::System::Com::{
-                COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
-            };
-            use windows::Win32::UI::Shell::ShellExecuteW;
-            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-            use windows::core::{HSTRING, PCWSTR, w};
-            let file = HSTRING::from(target.as_str());
-            // SAFETY: COM set up and torn down on this thread; plain
-            // strings for the shell to open, no window handle.
-            unsafe {
-                let init = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-                let r = ShellExecuteW(
-                    None,
-                    w!("open"),
-                    &file,
-                    PCWSTR::null(),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                );
-                if init.is_ok() {
-                    CoUninitialize();
-                }
-                r.0 as usize
-            }
-        })
-        .join()
-        .unwrap_or(0);
-        // ShellExecute reports success with a value above 32.
-        if code <= 32 {
-            return Err(Error::Platform(format!(
-                "couldn't open the browser (error {code}); open {url} yourself"
-            )));
-        }
-        Ok(())
+        // The shell may hand the address to COM objects and DDE: on a
+        // thread of its own, with COM set up there, and not waited on
+        // forever (a hung shell extension or browser can't block).
+        crate::windows::open_url(url)
     }
     #[cfg(target_os = "macos")]
     {

@@ -3,6 +3,7 @@
 //! region.
 
 use std::ffi::c_void;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
@@ -19,12 +20,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WindowFromPoint,
 };
 
-use super::wm::hung;
+use super::wm::{answers, hung};
 
 use crate::error::{Error, Result};
 use crate::types::{Capture, Rect};
 
 const PW_RENDERFULLCONTENT: u32 = 0x0000_0002;
+/// How long a window may take to answer before it counts as busy.
+const BUSY_PROBE: Duration = Duration::from_millis(300);
+/// Why the screen can't be read, as far as this process can tell.
+const SCREEN_UNAVAILABLE: &str = "Windows didn't let this server read the screen: it may be locked, on the secure desktop (a UAC prompt), or in a disconnected remote session. Try again once the desktop is back.";
 
 /// Render into an off-screen 32-bit top-down DIB, then read it out as RGBA.
 /// `render` is given the memory DC and returns whether it succeeded.
@@ -118,27 +123,28 @@ fn with_dib(
 /// instead.
 ///
 /// `PrintWindow` waits for the window's thread to draw, forever if the app
-/// hangs: a window Windows reports as hung is captured off the screen
-/// (where Windows shows a frozen copy of it).
+/// hangs, and for as long as it is busy: a window Windows reports as hung,
+/// or that doesn't take a message within [`BUSY_PROBE`], is captured off
+/// the screen (where Windows shows it, or a frozen copy of it).
 pub fn capture_window(hwnd: HWND, app: &str) -> Result<Capture> {
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
         .map_err(|e| Error::Platform(format!("GetWindowRect: {e}")))?;
     let frame = visible_frame(hwnd).unwrap_or(rect);
-    if hung(hwnd) {
+    if hung(hwnd) || !answers(hwnd, BUSY_PROBE) {
         // SAFETY: a read-only query.
         if unsafe { IsIconic(hwnd) }.as_bool() {
             return Err(Error::ActionFailed(format!(
-                "{app} is not responding and its window is minimized, so it can't be captured; wait a moment and try again"
+                "{app} is busy or not responding and its window is minimized, so it can't be captured; wait a moment and try again"
             )));
         }
         // Off the screen, a window over it would be taken for it.
         if covered(hwnd, &frame) {
             return Err(Error::ActionFailed(format!(
-                "{app} is not responding and other windows cover it, so it can't be captured; wait a moment and try again"
+                "{app} is busy or not responding and other windows cover it, so it can't be captured; wait a moment and try again"
             )));
         }
-        log::info!("{app} is not responding; capturing its window off the screen");
+        log::info!("{app} is busy or not responding; capturing its window off the screen");
         return capture_screen(Some(frame_rect(&frame)));
     }
     let width = rect.right - rect.left;
@@ -149,9 +155,23 @@ pub fn capture_window(hwnd: HWND, app: &str) -> Result<Capture> {
         f64::from(width.max(1)),
         f64::from(height.max(1)),
     );
-    let full = with_dib(width, height, bounds, |dc| unsafe {
+    let printed = with_dib(width, height, bounds, |dc| unsafe {
         PrintWindow(hwnd, dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool()
-    })?;
+    });
+    let full = match printed {
+        Ok(full) => full,
+        // The window couldn't draw itself (PrintWindow failed): the screen
+        // shows it, if it is on top there.
+        Err(e) => {
+            if on_top(hwnd, &frame) {
+                return capture_screen(Some(frame_rect(&frame)));
+            }
+            log::debug!("PrintWindow of {app} failed: {e}");
+            return Err(Error::ActionFailed(format!(
+                "Windows couldn't draw {app}'s window off the screen, and it isn't in front where the screen shows it; bring it to the front and try again"
+            )));
+        }
+    };
     // Cut off the invisible borders.
     let (dx, dy) = (
         (frame.left - rect.left).max(0),
@@ -183,7 +203,7 @@ fn frame_rect(frame: &RECT) -> Rect {
 }
 
 /// The window's frame without its invisible resize borders.
-fn visible_frame(hwnd: HWND) -> Option<RECT> {
+pub(super) fn visible_frame(hwnd: HWND) -> Option<RECT> {
     let mut r = RECT::default();
     // SAFETY: DWM writes a RECT of exactly this size.
     unsafe {
@@ -265,15 +285,19 @@ pub fn capture_screen(region: Option<Rect>) -> Result<Capture> {
     });
     let (sx, sy) = (rect.x as i32, rect.y as i32);
     let (w, h) = (rect.width as i32, rect.height as i32);
+    let unavailable = |e: Error| {
+        log::debug!("screen capture failed: {e}");
+        Error::ActionFailed(SCREEN_UNAVAILABLE.into())
+    };
     unsafe {
         let screen_dc = GetDC(None);
         if screen_dc.is_invalid() {
-            return Err(Error::Platform("GetDC failed".into()));
+            return Err(unavailable(Error::Platform("GetDC failed".into())));
         }
         let result = with_dib(w, h, rect, |dc| {
             BitBlt(dc, 0, 0, w, h, Some(screen_dc), sx, sy, SRCCOPY).is_ok()
         });
         ReleaseDC(None, screen_dc);
-        result
+        result.map_err(unavailable)
     }
 }

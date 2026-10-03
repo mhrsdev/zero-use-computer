@@ -19,6 +19,14 @@ use crate::types::{
 /// background when it exits.
 pub fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
     use std::process::Stdio;
+    // A process group of its own: Ctrl+C in the terminal the client runs
+    // in, or a host ending the server's group, must not take the user's
+    // apps (and their unsaved work) with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -30,6 +38,37 @@ pub fn spawn_detached(mut cmd: std::process::Command) -> std::io::Result<()> {
             let _ = child.wait();
         })?;
     Ok(())
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    #[test]
+    fn launched_apps_leave_our_process_group() {
+        let dir = std::env::temp_dir().join(format!("cu-pgid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("pgid");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", &format!("ps -o pgid= -p $$ > '{}'", out.display())]);
+        super::spawn_detached(cmd).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let theirs = loop {
+            if let Some(p) = std::fs::read_to_string(&out)
+                .ok()
+                .and_then(|t| t.trim().parse::<i32>().ok())
+            {
+                break p;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never wrote"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        // SAFETY: a read-only query.
+        let ours = unsafe { libc::getpgrp() };
+        assert_ne!(theirs, ours);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// Keep this process's stdin, stdout and stderr to itself. On Windows every

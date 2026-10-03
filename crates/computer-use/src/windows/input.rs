@@ -7,8 +7,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN,
+    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SWAPBUTTON,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 use crate::error::{Error, Result};
@@ -122,12 +122,26 @@ fn home() -> Option<INPUT> {
     Some(move_to(Point::new(f64::from(p.x), f64::from(p.y))))
 }
 
-fn button_flags(button: MouseButton) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
-    match button {
-        MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-        MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-        MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+/// The down and up flags for `button`. SendInput's left and right are the
+/// physical buttons: with the buttons swapped (a left-handed mouse), the
+/// left button the user means is the physical right one.
+fn flags_for(button: MouseButton, swapped: bool) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
+    match (button, swapped) {
+        (MouseButton::Left, false) | (MouseButton::Right, true) => {
+            (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
+        }
+        (MouseButton::Right, false) | (MouseButton::Left, true) => {
+            (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        }
+        (MouseButton::Middle, _) => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     }
+}
+
+/// The flags for `button` with the user's current button setting.
+fn button_flags(button: MouseButton) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
+    // SAFETY: a plain metric query.
+    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
+    flags_for(button, swapped)
 }
 
 pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
@@ -152,11 +166,12 @@ pub fn drag(from: Point, to: Point) -> Result<()> {
     on_screen(from)?;
     on_screen(to)?;
     let back = home();
+    let (down, up) = button_flags(MouseButton::Left);
     let mut pressed = false;
-    let dragged = drag_steps(from, to, &mut pressed);
+    let dragged = drag_steps(from, to, (down, up), &mut pressed);
     if dragged.is_err() && pressed {
         // Never leave the button held down.
-        let _ = send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
+        let _ = send(&[mouse_input(up, 0, 0, 0)]);
     }
     restore(back);
     dragged
@@ -164,14 +179,19 @@ pub fn drag(from: Point, to: Point) -> Result<()> {
 
 /// The drag itself, one event at a time; `pressed` tells whether the
 /// button went down (and so must come up if a later step fails).
-fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
+fn drag_steps(
+    from: Point,
+    to: Point,
+    (down, up): (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS),
+    pressed: &mut bool,
+) -> Result<()> {
     let step = |input: INPUT| -> Result<()> {
         send(&[input])?;
         std::thread::sleep(DRAG_STEP);
         Ok(())
     };
     step(move_to(from))?;
-    step(mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0))?;
+    step(mouse_input(down, 0, 0, 0))?;
     *pressed = true;
     for n in 1..=8 {
         step(move_to(Point::new(
@@ -179,7 +199,7 @@ fn drag_steps(from: Point, to: Point, pressed: &mut bool) -> Result<()> {
             from.y + (to.y - from.y) * f64::from(n) / 8.0,
         )))?;
     }
-    send(&[mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0)])
+    send(&[mouse_input(up, 0, 0, 0)])
 }
 
 /// Move the pointer to `at`; where it was, if it should go back.
@@ -204,10 +224,11 @@ pub fn draw(
     button: MouseButton,
     pace: &mut dyn FnMut(f64) -> Result<()>,
 ) -> Result<()> {
-    let (_, up) = button_flags(button);
+    let flags = button_flags(button);
     let back = home();
     let mut held = false;
-    let drawn = draw_strokes(strokes, button, pace, &mut held);
+    let drawn = draw_strokes(strokes, flags, pace, &mut held);
+    let (_, up) = flags;
     if held {
         // Never leave the button held down.
         let _ = send(&[mouse_input(up, 0, 0, 0)]);
@@ -218,11 +239,10 @@ pub fn draw(
 
 fn draw_strokes(
     strokes: &[Vec<Point>],
-    button: MouseButton,
+    (down, up): (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS),
     pace: &mut dyn FnMut(f64) -> Result<()>,
     held: &mut bool,
 ) -> Result<()> {
-    let (down, up) = button_flags(button);
     for stroke in strokes {
         let Some(&first) = stroke.first() else {
             continue;
@@ -283,6 +303,9 @@ fn target_layout() -> HKL {
     // SAFETY: plain queries; a null window gives thread 0 (this thread).
     unsafe {
         let fg = GetForegroundWindow();
+        // A store app's keys go to its own window inside the frame that
+        // ApplicationFrameHost draws around it.
+        let fg = super::uwp_core_window(fg).unwrap_or(fg);
         let thread = if fg.0.is_null() {
             0
         } else {
@@ -448,9 +471,82 @@ pub fn type_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// How a plain character (no modifiers) is typed in a keyboard layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharKey {
+    /// The layout's key for it, with the modifiers the layout needs.
+    Key(VIRTUAL_KEY, crate::keys::Modifiers),
+    /// As a character (`VK_PACKET`): the layout has no key for it, or only
+    /// a dead key, which would leave an accent waiting for the next key.
+    Unicode,
+}
+
+/// Decide from `VkKeyScanExW`'s answer (`scan`: the key in the low byte,
+/// Shift (1), Ctrl (2), Alt (4) in the high; -1 for none) and whether that
+/// key is a dead key in the layout.
+fn char_key(scan: i16, dead: bool) -> CharKey {
+    if scan == -1 || dead {
+        return CharKey::Unicode;
+    }
+    let state = (scan >> 8) & 0xff;
+    // Other shift states (Kana, layout-specific ones) can't be pressed.
+    if state & !0b111 != 0 {
+        return CharKey::Unicode;
+    }
+    CharKey::Key(
+        VIRTUAL_KEY((scan & 0xff) as u16),
+        crate::keys::Modifiers {
+            shift: state & 1 != 0,
+            ctrl: state & 2 != 0,
+            alt: state & 4 != 0,
+            meta: false,
+        },
+    )
+}
+
+/// Whether `MapVirtualKeyExW(.., MAPVK_VK_TO_CHAR, ..)` says the key is a
+/// dead key (the top bit).
+fn is_dead(mapped: u32) -> bool {
+    mapped & 0x8000_0000 != 0
+}
+
+/// The key that types `c` in `layout`, as the user's keyboard would: on
+/// AZERTY "1" is Shift plus the "&" key, and on a Russian layout "a" has no
+/// key at all (it is typed as a character).
+fn plain_char_key(c: char, layout: HKL) -> CharKey {
+    let mut buf = [0u16; 2];
+    let [unit] = *c.encode_utf16(&mut buf) else {
+        return CharKey::Unicode;
+    };
+    // SAFETY: pure lookups in a keyboard layout.
+    let scan = unsafe { VkKeyScanExW(unit, layout) };
+    let dead = scan != -1
+        && is_dead(unsafe {
+            MapVirtualKeyExW(
+                u32::from((scan & 0xff) as u16),
+                MAPVK_VK_TO_CHAR,
+                Some(layout),
+            )
+        });
+    char_key(scan, dead)
+}
+
 pub fn press(combo: &KeyCombo) -> Result<()> {
     let layout = target_layout();
     let mut mods = combo.modifiers;
+    // A plain character goes through the target's layout; with modifiers,
+    // letters and digits keep their fixed keys (ctrl+s, ctrl+1 work by key
+    // position whatever the layout).
+    if let Key::Char(c) = combo.key
+        && c != ' '
+        && !c.is_control()
+        && !combo.modifiers.any()
+    {
+        match plain_char_key(c, layout) {
+            CharKey::Unicode => return type_text(&c.to_string()),
+            CharKey::Key(vk, extra) => return press_vk(vk, extra, layout),
+        }
+    }
     let vk = match resolve_in(combo.key, layout) {
         Ok((vk, extra)) => {
             mods.shift |= extra.shift;
@@ -465,6 +561,11 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
             _ => return Err(e),
         },
     };
+    press_vk(vk, mods, layout)
+}
+
+/// Press and release `vk` with `mods` held around it.
+fn press_vk(vk: VIRTUAL_KEY, mods: crate::keys::Modifiers, layout: HKL) -> Result<()> {
     let mut down = Vec::new();
     let mut up = Vec::new();
     for (on, key) in [
@@ -565,4 +666,57 @@ fn resolve_in(key: Key, layout: HKL) -> Result<(VIRTUAL_KEY, crate::keys::Modifi
         }
     };
     Ok((vk, none))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::Modifiers;
+
+    #[test]
+    fn swapped_buttons_swap_left_and_right_only() {
+        let left = (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
+        let right = (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
+        let middle = (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP);
+        assert_eq!(flags_for(MouseButton::Left, false), left);
+        assert_eq!(flags_for(MouseButton::Right, false), right);
+        assert_eq!(flags_for(MouseButton::Middle, false), middle);
+        assert_eq!(flags_for(MouseButton::Left, true), right);
+        assert_eq!(flags_for(MouseButton::Right, true), left);
+        assert_eq!(flags_for(MouseButton::Middle, true), middle);
+    }
+
+    #[test]
+    fn plain_characters_use_the_layouts_key() {
+        // AZERTY: "1" is Shift plus the key with VK '1' (0x31).
+        assert_eq!(
+            char_key(0x0131, false),
+            CharKey::Key(
+                VIRTUAL_KEY(0x31),
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                }
+            )
+        );
+        // AltGr (Ctrl+Alt) for "@" on a German layout (the Q key).
+        assert_eq!(
+            char_key(0x0651, false),
+            CharKey::Key(
+                VIRTUAL_KEY(0x51),
+                Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    ..Default::default()
+                }
+            )
+        );
+        // No key ("a" on a Russian layout), a dead key, or a shift state
+        // that can't be pressed: typed as a character.
+        assert_eq!(char_key(-1, false), CharKey::Unicode);
+        assert_eq!(char_key(0x00DE, true), CharKey::Unicode);
+        assert_eq!(char_key(0x0841, false), CharKey::Unicode);
+        assert!(is_dead(0x8000_005E));
+        assert!(!is_dead(0x0000_0041));
+    }
 }

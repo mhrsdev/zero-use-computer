@@ -10,17 +10,22 @@
 
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, GetLastError, HWND, LPARAM, RECT,
+    SetLastError, WIN32_ERROR, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOTOWNER, GetAncestor, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     HWND_TOP, IsHungAppWindow, IsIconic, IsZoomed, MONITORINFOF_PRIMARY, PostMessageW,
-    SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowPos, ShowWindowAsync, WM_CLOSE,
+    SET_WINDOW_POS_FLAGS, SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE, WM_NULL,
 };
 use windows::core::BOOL;
 
@@ -32,6 +37,9 @@ const CHANGE_WAIT: Duration = Duration::from_millis(500);
 /// How long a busy app may take to restore a minimized or maximized window
 /// before the window is changed further.
 const RESTORE_WAIT: Duration = Duration::from_secs(3);
+/// How long an app moved to a monitor with another scale gets to resize
+/// itself for it.
+const DPI_SETTLE: Duration = Duration::from_millis(100);
 /// How long to wait for each attempt at bringing a window to the front.
 const FRONT_WAIT: Duration = Duration::from_millis(150);
 
@@ -85,6 +93,39 @@ pub fn displays() -> Result<Vec<Display>> {
 pub fn hung(hwnd: HWND) -> bool {
     // SAFETY: a read-only query that never waits on the window's thread.
     unsafe { IsHungAppWindow(hwnd) }.as_bool()
+}
+
+/// The window's thread takes a message within `limit` (a `WM_NULL`, which
+/// does nothing). False when it is busy or hung: whatever else waits on
+/// that thread (`PrintWindow`, a delayed clipboard render) would wait as
+/// long. A window that refuses the message (UIPI) or is gone counts as
+/// answering: this is no reason on its own to treat it as hung.
+pub fn answers(hwnd: HWND, limit: Duration) -> bool {
+    let ms = u32::try_from(limit.as_millis()).unwrap_or(u32::MAX);
+    let mut result = 0usize;
+    // SAFETY: a no-op message sent with a time limit; aborts at once if
+    // Windows already reports the window as hung.
+    let (ret, err) = unsafe {
+        SetLastError(WIN32_ERROR(0));
+        let ret = SendMessageTimeoutW(
+            hwnd,
+            WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            ms,
+            Some(&mut result),
+        );
+        (ret.0, GetLastError().0)
+    };
+    !unresponsive(ret, err)
+}
+
+/// `SendMessageTimeoutW`'s result (and the last error when it is 0) says
+/// the window didn't answer: it timed out, or failed for a reason other
+/// than being refused (UIPI) or gone.
+fn unresponsive(ret: isize, err: u32) -> bool {
+    ret == 0 && err != ERROR_ACCESS_DENIED.0 && err != ERROR_INVALID_WINDOW_HANDLE.0
 }
 
 /// Poll `done` until it holds or `limit` passes; whether it held.
@@ -175,12 +216,47 @@ fn bring_to_front(hwnd: HWND) -> bool {
     }
 }
 
+/// A window change that was asked for but hadn't shown by the time it was
+/// waited for.
+fn not_reached(app: &AppInfo, done: &str) -> Error {
+    Error::ActionFailed(format!(
+        "{} hasn't {done} yet (it may be busy, or this window doesn't allow it); it may still happen, so look again (get_app_state) before retrying",
+        app.name
+    ))
+}
+
+/// The scale (DPI) of the monitor the window is on.
+fn monitor_dpi(hwnd: HWND) -> Option<u32> {
+    let (mut x, mut y) = (0u32, 0u32);
+    // SAFETY: read-only queries into locals.
+    unsafe {
+        let m = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if m.is_invalid() {
+            return None;
+        }
+        GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut x, &mut y).ok()?;
+    }
+    Some(x)
+}
+
+fn same_size(a: RECT, b: RECT) -> bool {
+    (a.right - a.left, a.bottom - a.top) == (b.right - b.left, b.bottom - b.top)
+}
+
+/// The move took the window to a monitor with another scale and it no
+/// longer has the size asked for: the app rescaled itself after the move.
+fn needs_dpi_retry(
+    dpi_before: Option<u32>,
+    dpi_after: Option<u32>,
+    now: Option<RECT>,
+    target: RECT,
+) -> bool {
+    dpi_before != dpi_after && now.is_some_and(|now| !same_size(now, target))
+}
+
 pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
     // Only windows of the app the call is about.
-    let mut owner = 0u32;
-    // SAFETY: reads the owning process of a window handle.
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
-    if owner != app.pid {
+    if super::window_pid(hwnd) != app.pid {
         return Err(Error::ActionFailed("that window is gone".into()));
     }
     // Whatever is asked of a hung window would wait for it (or, posted,
@@ -246,34 +322,58 @@ pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
                 bottom: want.1.saturating_add(want.3),
             };
             let before = window_rect(hwnd);
+            let dpi_before = monitor_dpi(hwnd);
             set_pos_async(hwnd, None, want, SWP_NOZORDER | SWP_NOACTIVATE)
                 .map_err(|e| Error::ActionFailed(format!("could not move the window: {e}")))?;
             // Until it moves (the app may settle on a size of its own).
-            wait_until(CHANGE_WAIT, || {
+            let moved = wait_until(CHANGE_WAIT, || {
                 let now = window_rect(hwnd);
                 now != before || now == Some(target)
             });
+            if !moved {
+                return Err(not_reached(app, "moved or resized its window"));
+            }
+            // On a monitor with another scale, the app resizes itself for
+            // it (WM_DPICHANGED), which can undo the size asked for: once
+            // that has happened, ask for the size again, once.
+            let dpi_after = monitor_dpi(hwnd);
+            if dpi_after != dpi_before {
+                std::thread::sleep(DPI_SETTLE);
+                if needs_dpi_retry(dpi_before, dpi_after, window_rect(hwnd), target) {
+                    let _ = set_pos_async(hwnd, None, want, SWP_NOZORDER | SWP_NOACTIVATE);
+                    wait_until(CHANGE_WAIT, || {
+                        window_rect(hwnd).is_some_and(|now| same_size(now, target))
+                    });
+                }
+            }
         }
         WindowOp::Maximize => {
             responding()?;
             show_async(hwnd, SW_MAXIMIZE, "maximize")?;
-            wait_until(CHANGE_WAIT, zoomed);
+            if !wait_until(CHANGE_WAIT, zoomed) {
+                return Err(not_reached(app, "maximized its window"));
+            }
         }
         WindowOp::Minimize => {
             responding()?;
             show_async(hwnd, SW_MINIMIZE, "minimize")?;
-            wait_until(CHANGE_WAIT, iconic);
+            if !wait_until(CHANGE_WAIT, iconic) {
+                return Err(not_reached(app, "minimized its window"));
+            }
         }
         WindowOp::Restore => {
             responding()?;
             let was_iconic = iconic();
             show_async(hwnd, SW_RESTORE, "restore")?;
-            wait_until(
+            let restored = wait_until(
                 CHANGE_WAIT,
                 || {
                     if was_iconic { !iconic() } else { !zoomed() }
                 },
             );
+            if !restored {
+                return Err(not_reached(app, "restored its window"));
+            }
         }
         WindowOp::Fullscreen(_) => {
             return Err(Error::Unsupported(
@@ -298,4 +398,54 @@ pub fn apply(hwnd: HWND, app: &AppInfo, op: &WindowOp) -> Result<()> {
 pub fn minimized(hwnd: HWND) -> bool {
     // SAFETY: a read-only query.
     unsafe { IsIconic(hwnd) }.as_bool()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(left: i32, top: i32, w: i32, h: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right: left + w,
+            bottom: top + h,
+        }
+    }
+
+    #[test]
+    fn a_window_rescaled_on_another_monitor_is_sized_again() {
+        let target = r(2000, 100, 800, 600);
+        // Same monitor scale: whatever size the app chose stays.
+        assert!(!needs_dpi_retry(
+            Some(96),
+            Some(96),
+            Some(r(2000, 100, 640, 480)),
+            target
+        ));
+        // Another scale, and the app rescaled itself: ask again.
+        assert!(needs_dpi_retry(
+            Some(96),
+            Some(144),
+            Some(r(2000, 100, 1200, 900)),
+            target
+        ));
+        // Another scale, but the size is right (only the place differs).
+        assert!(!needs_dpi_retry(
+            Some(96),
+            Some(144),
+            Some(r(2010, 90, 800, 600)),
+            target
+        ));
+        assert!(!needs_dpi_retry(Some(96), Some(144), None, target));
+    }
+
+    #[test]
+    fn only_a_timeout_is_not_answering() {
+        assert!(!unresponsive(1, 0));
+        assert!(unresponsive(0, 1460)); // ERROR_TIMEOUT
+        assert!(unresponsive(0, 0));
+        assert!(!unresponsive(0, ERROR_ACCESS_DENIED.0));
+        assert!(!unresponsive(0, ERROR_INVALID_WINDOW_HANDLE.0));
+    }
 }

@@ -1391,7 +1391,8 @@ fn decode_text(bytes: &[u8]) -> Option<String> {
                 }
             })
             .collect();
-        (rest.len() % 2 == 0)
+        rest.len()
+            .is_multiple_of(2)
             .then(|| String::from_utf16(&units).ok())
             .flatten()
     };
