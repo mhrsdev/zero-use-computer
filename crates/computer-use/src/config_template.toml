@@ -155,6 +155,7 @@ app_cache_ms = 1500         # reuse the running-app list for this long
 wait_timeout_ms = 10000     # wait_for default timeout
 wait_poll_ms = 400          # wait_for default poll interval
 expect_wait_ms = 2000       # how long an action with `expect` waits for it to show
+adaptive_grace = true       # "nothing changed" after 200 ms (not 500) for apps that always show changes at once
 
 [cache]
 # Screen memory: when the app shows a screen the model has already seen (it

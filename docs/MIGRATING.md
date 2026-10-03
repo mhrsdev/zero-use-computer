@@ -1,3 +1,11 @@
+# Upgrading to v3.8.3
+
+Nothing to change: the same results, sooner. One timing differs:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| An action that changed nothing, in an app that has shown every change at once (3 or more) | "nothing changed" after 500 ms | after 200 ms | `timing.adaptive_grace = false` |
+
 # Upgrading to v3.8.2
 
 Nothing to change for most setups. What behaves differently:

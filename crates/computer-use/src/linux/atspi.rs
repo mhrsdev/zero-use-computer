@@ -22,6 +22,7 @@ const EDITABLE_IFACE: &str = "org.a11y.atspi.EditableText";
 const VALUE_IFACE: &str = "org.a11y.atspi.Value";
 const DOCUMENT_IFACE: &str = "org.a11y.atspi.Document";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
+const APP_IFACE: &str = "org.a11y.atspi.Application";
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 /// How long any one app may take to answer: a frozen app times out instead
 /// of hanging every listing and snapshot.
@@ -218,6 +219,33 @@ pub struct AtspiConnection {
     conn: Connection,
     /// Set once a call found the connection broken: the owner reconnects.
     lost: AtomicBool,
+    /// What an element keeps as long as it lives (its role and interfaces),
+    /// so a tree read again (as it is several times after every action)
+    /// doesn't ask for it again: only for apps whose elements' paths are
+    /// never reused (see [`AtspiConnection::paths_unique`]).
+    lasting: std::sync::Mutex<HashMap<ObjRef, Lasting>>,
+    /// Per app (its bus name): whether a path, once gone, never names
+    /// another element.
+    unique_paths: std::sync::Mutex<HashMap<String, bool>>,
+}
+
+/// What doesn't change while an element lives.
+#[derive(Clone)]
+struct Lasting {
+    role: String,
+    interfaces: Vec<String>,
+}
+
+/// Elements whose role and interfaces are remembered, at most (the oldest
+/// are forgotten all at once past it).
+const LASTING_MAX: usize = 100_000;
+
+/// Whether an app's toolkit names its elements from a counter, never
+/// reusing a path for another element: GTK (3 through at-spi2-atk, and 4).
+/// Others (Qt, Firefox) name them after their address in memory, which a
+/// new element can be given once the old one is freed.
+fn counts_paths(toolkit: &str) -> bool {
+    toolkit.trim().eq_ignore_ascii_case("gtk")
 }
 
 /// The session bus, with a timeout on calls: a hung bus launcher must not
@@ -340,6 +368,8 @@ impl AtspiConnection {
         Ok(Self {
             conn,
             lost: AtomicBool::new(false),
+            lasting: Default::default(),
+            unique_paths: Default::default(),
         })
     }
 
@@ -564,6 +594,8 @@ pub struct NodeData {
     pub fail: Option<Fail>,
     /// Some query timed out: what is here may be incomplete.
     pub timed_out: bool,
+    /// `acc.child_count` is what the element said (not a default).
+    pub counted: bool,
 }
 
 /// An element returned by [`AtspiConnection::walk`], in pre-order.
@@ -634,14 +666,70 @@ impl AtspiConnection {
     /// actions, all six queries in flight at once; with the error when it
     /// answered none of the basic ones.
     async fn fetch_props(&self, r: &ObjRef) -> (NodeData, Option<CallError>) {
+        let unique = self.paths_unique(&r.bus).await;
+        let known = unique
+            .then(|| {
+                self.lasting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(r)
+                    .cloned()
+            })
+            .flatten();
+        let role = async {
+            match &known {
+                Some(k) => Ok(k.role.clone()),
+                None => {
+                    self.acall::<_, String>(r, A11Y_IFACE, "GetRoleName", &())
+                        .await
+                }
+            }
+        };
+        let ifaces = async {
+            match &known {
+                Some(k) => Ok(k.interfaces.clone()),
+                None => {
+                    self.acall::<_, Vec<String>>(r, A11Y_IFACE, "GetInterfaces", &())
+                        .await
+                }
+            }
+        };
+        let acts = async {
+            // No Action interface: no actions to ask for.
+            if known.as_ref().is_some_and(|k| {
+                !k.interfaces
+                    .iter()
+                    .any(|i| i == ACTION_IFACE || i == "Action")
+            }) {
+                return Ok(Vec::new());
+            }
+            self.acall::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &())
+                .await
+        };
         let (props, role, state, ifaces, ext, acts) = futures_util::join!(
             self.acall::<_, HashMap<String, OwnedValue>>(r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,)),
-            self.acall::<_, String>(r, A11Y_IFACE, "GetRoleName", &()),
+            role,
             self.acall::<_, Vec<u32>>(r, A11Y_IFACE, "GetState", &()),
-            self.acall::<_, Vec<String>>(r, A11Y_IFACE, "GetInterfaces", &()),
+            ifaces,
             self.acall::<_, (i32, i32, i32, i32)>(r, COMPONENT_IFACE, "GetExtents", &(0u32,)),
-            self.acall::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &()),
+            acts,
         );
+        if unique
+            && known.is_none()
+            && let (Ok(role), Ok(interfaces)) = (&role, &ifaces)
+        {
+            let mut lasting = self.lasting.lock().unwrap_or_else(|e| e.into_inner());
+            if lasting.len() >= LASTING_MAX {
+                lasting.clear();
+            }
+            lasting.insert(
+                r.clone(),
+                Lasting {
+                    role: role.clone(),
+                    interfaces: interfaces.clone(),
+                },
+            );
+        }
         let fails: Vec<Fail> = [
             props.as_ref().err(),
             role.as_ref().err(),
@@ -668,16 +756,18 @@ impl AtspiConnection {
             _ => None,
         };
         let mut acc = Accessible::default();
+        let mut counted = false;
         if let Ok(props) = props {
             acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
             acc.description = props
                 .get("Description")
                 .and_then(owned_string)
                 .unwrap_or_default();
-            acc.child_count = props
+            let count = props
                 .get("ChildCount")
-                .and_then(|v| i32::try_from(v.clone()).ok())
-                .unwrap_or(0);
+                .and_then(|v| i32::try_from(v.clone()).ok());
+            counted = count.is_some();
+            acc.child_count = count.unwrap_or(0);
         }
         acc.role_name = role.unwrap_or_default();
         if let Ok(v) = state {
@@ -695,8 +785,37 @@ impl AtspiConnection {
             children: Vec::new(),
             fail: err.as_ref().map(|e| e.fail),
             timed_out: fails.contains(&Fail::Timeout),
+            counted,
         };
         (nd, err)
+    }
+
+    /// Whether `bus`'s app never reuses an element's path (asked once per
+    /// app: its toolkit's name).
+    async fn paths_unique(&self, bus: &str) -> bool {
+        if let Some(u) = self
+            .unique_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(bus)
+        {
+            return *u;
+        }
+        let root = ObjRef {
+            bus: bus.to_string(),
+            path: "/org/a11y/atspi/accessible/root".into(),
+        };
+        let toolkit: Option<String> = self
+            .acall::<_, OwnedValue>(&root, PROPS_IFACE, "Get", &(APP_IFACE, "ToolkitName"))
+            .await
+            .ok()
+            .and_then(|v| owned_string(&v));
+        let unique = toolkit.as_deref().is_some_and(counts_paths);
+        self.unique_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(bus.to_string(), unique);
+        unique
     }
 
     /// An element's children (when wanted), text content (when worth
@@ -717,6 +836,10 @@ impl AtspiConnection {
                 return (Vec::new(), false);
             }
             let n = nd.acc.child_count;
+            // It said it has none: nothing to ask for (most elements).
+            if nd.counted && n == 0 {
+                return (Vec::new(), false);
+            }
             if nd.acc.states.has(state::MANAGES_DESCENDANTS) || n > HUGE_CHILD_COUNT {
                 // Its children are made on demand (a table or tree view):
                 // only the first ones, never all of them at once.
@@ -781,25 +904,18 @@ impl AtspiConnection {
     /// Read a batch of elements: first their properties, then (knowing
     /// which are text and which are huge containers) children and text.
     async fn fetch_batch(&self, refs: &[(ObjRef, bool)], text_end: i32) -> Vec<NodeData> {
-        let mut nodes: Vec<NodeData> =
-            futures_util::future::join_all(refs.iter().map(|(r, _)| self.fetch_props(r)))
-                .await
-                .into_iter()
-                .map(|(nd, _)| nd)
-                .collect();
-        let rest = futures_util::future::join_all(
-            refs.iter()
-                .zip(&nodes)
-                .map(|((r, kids), nd)| self.fetch_rest(r, nd, *kids, text_end)),
-        )
-        .await;
-        for (nd, (children, text, label, timed_out)) in nodes.iter_mut().zip(rest) {
+        // Each element's children and text are asked for as soon as its
+        // own properties are in, not after the whole batch's.
+        futures_util::future::join_all(refs.iter().map(|(r, kids)| async move {
+            let (mut nd, _) = self.fetch_props(r).await;
+            let (children, text, label, timed_out) = self.fetch_rest(r, &nd, *kids, text_end).await;
             nd.children = children;
             nd.text = text;
             nd.label = label;
             nd.timed_out |= timed_out;
-        }
-        nodes
+            nd
+        }))
+        .await
     }
 
     /// Walk the subtree under `root` breadth-first, `batch` elements at a time

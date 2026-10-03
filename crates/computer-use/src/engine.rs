@@ -274,6 +274,9 @@ pub struct Engine<B: Backend> {
     last_input: Option<Instant>,
     /// The action epoch whose result has a fresh snapshot (after settling).
     settled: Option<u64>,
+    /// Per app (pid): how its tree has shown what an action changed, so
+    /// an action that changed nothing is waited on no longer than needed.
+    promptness: HashMap<u32, Promptness>,
     /// The last full-screen screenshot sent.
     screen_shot: Option<ScreenShot>,
     /// One taken during this call: it becomes `screen_shot` only if it is
@@ -452,6 +455,7 @@ impl<B: Backend> Engine<B> {
             cancel: Arc::new(AtomicBool::new(false)),
             last_input: None,
             settled: None,
+            promptness: HashMap::new(),
             screen_shot: None,
             pending_screen_shot: None,
             shots: 0,
@@ -2068,15 +2072,26 @@ impl<B: Backend> Engine<B> {
     ///
     /// Reads that still show exactly what was there before the action are
     /// not trusted at once: many apps (browsers, Electron apps) report a
-    /// change a little after making it. Only after `NO_CHANGE_GRACE` of
-    /// reads like that does the action count as having changed nothing.
+    /// change a little after making it. Only after a while of reads like
+    /// that (`Promptness::grace`) does the action count as having changed
+    /// nothing.
     fn settle_on(&mut self, app: &AppInfo) {
         use crate::config::SettleMode;
-        /// How long reads may keep showing the old state before "nothing
-        /// changed" is believed.
-        const NO_CHANGE_GRACE: Duration = Duration::from_millis(500);
+        // How long reads may keep showing the old state before "nothing
+        // changed" is believed.
+        let grace = if self.store.config.timing.adaptive_grace {
+            self.promptness
+                .get(&app.pid)
+                .copied()
+                .unwrap_or_default()
+                .grace()
+        } else {
+            Promptness::default().grace()
+        };
         // The latest read is still the one from before the action.
         let before = self.tree_fingerprint(app.pid);
+        let mut reads = 0;
+        let mut change_seen = false;
         self.settle();
         let cfg = &self.store.config;
         let adaptive = cfg.timing.settle == SettleMode::Adaptive;
@@ -2101,8 +2116,18 @@ impl<B: Backend> Engine<B> {
             }
             self.settled = Some(self.epoch);
             let now = self.tree_fingerprint(app.pid);
+            reads += 1;
+            // (Only against a read from before the action: with none, any
+            // read would look like a change.)
+            if !change_seen && before.is_some() && now.is_some() && now != before {
+                change_seen = true;
+                self.promptness
+                    .entry(app.pid)
+                    .or_default()
+                    .saw_change(reads == 1);
+            }
             let steady = now.is_some() && now == last;
-            if !adaptive || (steady && (now != before || waited >= NO_CHANGE_GRACE)) {
+            if !adaptive || (steady && (now != before || waited >= grace)) {
                 break;
             }
             let unchanged = now.is_some() && now == before;
@@ -8343,6 +8368,43 @@ fn describe_window(w: &WindowInfo) -> String {
     s
 }
 
+/// How an app's tree has shown the changes actions made: many apps
+/// (browsers, Electron apps) show one a little after making it, so reads
+/// that still show the state from before are not believed at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Promptness {
+    /// Changes shown by the first read after the action.
+    prompt: u32,
+    /// A change was first shown by a later read.
+    late: bool,
+}
+
+impl Promptness {
+    /// Changes shown at once, this many times and never late, make an
+    /// app prompt.
+    const PROMPT_AFTER: u32 = 3;
+
+    fn saw_change(&mut self, at_once: bool) {
+        if at_once {
+            self.prompt = self.prompt.saturating_add(1);
+        } else {
+            self.late = true;
+        }
+    }
+
+    /// How long reads that still show the state from before are waited
+    /// on: 500 ms, or 200 for an app that has always shown its changes at
+    /// once (most native apps), so an action that changed nothing (a click
+    /// on a canvas) is done sooner.
+    fn grace(self) -> Duration {
+        if !self.late && self.prompt >= Self::PROMPT_AFTER {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_millis(500)
+        }
+    }
+}
+
 fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -11444,6 +11506,26 @@ mod tests {
             .filter(|ev| matches!(ev, Event::Type(..)))
             .count();
         assert_eq!(typed, 1, "typed once, never again on its own");
+    }
+
+    #[test]
+    fn an_app_that_shows_changes_at_once_is_waited_on_less() {
+        let mut p = Promptness::default();
+        assert_eq!(
+            p.grace(),
+            Duration::from_millis(500),
+            "unknown: the long wait"
+        );
+        for _ in 0..Promptness::PROMPT_AFTER {
+            p.saw_change(true);
+        }
+        assert_eq!(p.grace(), Duration::from_millis(200));
+        // One change shown late, and it is never trusted again.
+        p.saw_change(false);
+        for _ in 0..10 {
+            p.saw_change(true);
+        }
+        assert_eq!(p.grace(), Duration::from_millis(500));
     }
 
     #[test]

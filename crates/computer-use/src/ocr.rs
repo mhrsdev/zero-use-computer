@@ -311,9 +311,16 @@ pub fn tesseract_at(
     layout: Layout,
 ) -> Result<Vec<OcrLine>> {
     let scale = scale.max(1);
-    let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
-        .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
-    let img = if scale > 1 {
+    if cap.rgba.len() != cap.width as usize * cap.height as usize * 4 {
+        return Err(Error::Internal("capture buffer size mismatch".into()));
+    }
+    let img = if scale == 2 {
+        let (w, h) = (cap.width * 2, cap.height * 2);
+        image::RgbaImage::from_raw(w, h, double(&cap.rgba, cap.width, cap.height))
+            .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?
+    } else if scale > 1 {
+        let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
+            .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?;
         image::imageops::resize(
             &img,
             cap.width * scale,
@@ -321,7 +328,8 @@ pub fn tesseract_at(
             image::imageops::FilterType::Triangle,
         )
     } else {
-        img
+        image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba.clone())
+            .ok_or_else(|| Error::Internal("capture buffer size mismatch".into()))?
     };
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(img)
@@ -368,6 +376,60 @@ pub fn tesseract_at(
         cap,
         f64::from(scale),
     ))
+}
+
+/// An RGBA picture `w`×`h` at twice its size, pixel for pixel what
+/// `image::imageops::resize` gives with `FilterType::Triangle`, in a
+/// fraction of the time (it was a third of reading an enlarged window).
+///
+/// That filter makes each new pixel ¾ of the nearest old one and ¼ of the
+/// next one over (the same one at an edge), rows first and then columns;
+/// in sixteenths every value is a whole number, so integers give exactly
+/// what its floats do, rounded half up as it rounds.
+fn double(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    // The neighbour giving the quarter: the row (or column) before for an
+    // even new one, after for an odd one, itself past an edge.
+    let near = |o: usize, n: usize| {
+        let k = o / 2;
+        if o.is_multiple_of(2) {
+            k.saturating_sub(1)
+        } else {
+            (k + 1).min(n - 1)
+        }
+    };
+    // Rows: quarters of a value (at most 4 × 255).
+    let mut rows = vec![0u16; w * 4 * h * 2];
+    for o in 0..h * 2 {
+        let (own, other) = (
+            &rgba[o / 2 * w * 4..][..w * 4],
+            &rgba[near(o, h) * w * 4..][..w * 4],
+        );
+        for (d, (a, b)) in rows[o * w * 4..][..w * 4]
+            .iter_mut()
+            .zip(own.iter().zip(other))
+        {
+            *d = 3 * u16::from(*a) + u16::from(*b);
+        }
+    }
+    // Columns: sixteenths, rounded to the nearest whole value.
+    let mut out = vec![0u8; w * 2 * 4 * h * 2];
+    for (src, dst) in rows
+        .chunks_exact(w * 4)
+        .zip(out.chunks_exact_mut(w * 2 * 4))
+    {
+        for o in 0..w * 2 {
+            let (own, other) = (o / 2 * 4, near(o, w) * 4);
+            for c in 0..4 {
+                let v = 3 * u32::from(src[own + c]) + u32::from(src[other + c]);
+                dst[o * 4 + c] = ((v + 8) / 16) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// Longest Tesseract may take on one picture.
@@ -489,6 +551,27 @@ fn parse_tsv(tsv: &str, cap: &Capture, scale: f64) -> Vec<OcrLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doubling_is_exactly_what_the_image_crate_gives() {
+        // Pseudo-random pictures (edges and one-pixel sizes included).
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        };
+        for (w, h) in [(1, 1), (1, 5), (6, 1), (7, 3), (64, 37), (129, 64)] {
+            let rgba: Vec<u8> = (0..w * h * 4).map(|_| next()).collect();
+            let img = image::RgbaImage::from_raw(w, h, rgba.clone()).unwrap();
+            let want =
+                image::imageops::resize(&img, w * 2, h * 2, image::imageops::FilterType::Triangle);
+            assert_eq!(double(&rgba, w, h), want.into_raw(), "{w}x{h}");
+        }
+        assert!(double(&[], 0, 0).is_empty());
+        assert!(double(&[], 0, 5).is_empty());
+    }
 
     #[test]
     fn traditional_chinese_gets_its_own_model() {
