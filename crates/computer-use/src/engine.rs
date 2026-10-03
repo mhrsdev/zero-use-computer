@@ -25,6 +25,11 @@ mod agents;
 mod batch;
 mod boards;
 mod deciding;
+
+/// How many things `decide` judges at a time, at most (scripts too).
+pub(crate) fn deciding_max_items() -> usize {
+    deciding::MAX_ITEMS
+}
 mod drawing;
 mod expect;
 mod finding;
@@ -581,6 +586,9 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.settings_problem = None;
                 self.backend.configure(&store.config);
+                if store.config.decision != self.store.config.decision {
+                    self.judge.forget();
+                }
                 // Another hub (or none): leave this one, the next call joins.
                 let hub_changed = {
                     let (old, new) = (&self.store.config.hub, &store.config.hub);
@@ -641,6 +649,10 @@ impl<B: Backend> Engine<B> {
             f(&mut store.config);
         }
         self.backend.configure(&store.config);
+        // Another model: the old one's failures and answers aren't its.
+        if store.config.decision != self.store.config.decision {
+            self.judge.forget();
+        }
         self.store = store;
         self.scripts.set_dir(self.store.config.script.library());
         self.epoch += 1;

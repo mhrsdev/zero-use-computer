@@ -335,7 +335,21 @@ impl<B: Backend> Engine<B> {
             // Raised by the engine on the stop key or a cancel.
             stop: Arc::new(AtomicBool::new(self.halted())),
             app_tools,
-            decision: self.store.config.decision.clone(),
+            // A decision model the user turned off ([tools]) is none for
+            // scripts too.
+            decision: if self.store.config.tools.is_enabled("decide") {
+                self.store.config.decision.clone()
+            } else {
+                Default::default()
+            },
+            private: {
+                // The server's folder, unless it is the user's whole home
+                // (or holds it): then only the settings file.
+                let home = crate::config::home_dir();
+                let user = dirs::home_dir().unwrap_or_default();
+                let folder = (!user.starts_with(&home)).then_some(home);
+                folder.into_iter().chain(self.store.path.clone()).collect()
+            },
         };
         let started = Instant::now();
         let running = script::start(script::Job {

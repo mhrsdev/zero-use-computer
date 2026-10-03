@@ -599,3 +599,86 @@ fn a_script_never_takes_a_tool_manager_name() {
         .collect();
     assert!(!names.iter().any(|n| n == "find_tools"), "{names:?}");
 }
+
+/// The server's settings (the decision model's key) and the server's own
+/// details in /proc are never a script's, whatever `files` allows.
+#[test]
+fn scripts_never_read_the_servers_settings_or_proc() {
+    let dir = library("private");
+    std::fs::create_dir_all(&dir).unwrap();
+    let settings = dir.join("config.toml");
+    std::fs::write(&settings, "[decision]\napi_key = \"sk-secret\"\n").unwrap();
+    let mut store = ConfigStore::load(Some(&settings)).unwrap();
+    store.config.script.dir = Some(dir.join("lib"));
+    store.config.script.files = ScriptFiles::All;
+    let mut backend = MockBackend::new();
+    backend.add_app(MockBackend::text_editor(4242));
+    let mut e = Engine::new(backend, store).with_time(std::time::Instant::now, |_| {});
+    for code in [
+        format!("read_text({:?})", settings.display().to_string()),
+        format!("write_text({:?}, \"x\")", settings.display().to_string()),
+    ] {
+        let out = run(&mut e, &code);
+        assert!(
+            out.is_error && out.text.contains("server's own") && !out.text.contains("sk-secret"),
+            "{code}: {}",
+            out.text
+        );
+    }
+    if cfg!(target_os = "linux") {
+        let out = run(&mut e, r#"read_text("/proc/self/environ")"#);
+        assert!(
+            out.is_error && out.text.contains("server's own"),
+            "{}",
+            out.text
+        );
+    }
+    // The scripts' own files are still theirs.
+    let out = run(
+        &mut e,
+        r#"write_text("note.txt", "hi"); read_text("note.txt")"#,
+    );
+    assert!(out.text.contains("Result: hi"), "{}", out.text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A value nested thousands deep is refused, not turned into data (that
+/// recursion overflowed the stack and ended the server).
+#[test]
+fn deeply_nested_values_are_refused() {
+    let dir = library("deep");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(&mut e, "let a = []; for i in 0..3000 { a = [a]; } a");
+    assert!(out.text.contains("nested more than"), "{}", out.text);
+    let out = run(
+        &mut e,
+        "let a = #{}; for i in 0..3000 { a = #{x: a}; } to_json(a)",
+    );
+    assert!(
+        out.is_error && out.text.contains("nested more than"),
+        "{}",
+        out.text
+    );
+    // Ordinary nesting is fine.
+    let out = run(&mut e, "let a = []; for i in 0..50 { a = [a]; } a");
+    assert!(!out.is_error, "{}", out.text);
+}
+
+/// A replacement that would expand to gigabytes is refused before it is
+/// built (it used to be checked only after a whole match was expanded).
+#[test]
+fn huge_regex_results_are_refused_before_they_are_built() {
+    let dir = library("regex-huge");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"let t = "a"; for i in 0..20 { t += t; } let w = "$0"; for i in 0..6 { w += w; } regex_replace(t, "(?s).+", w)"#,
+    );
+    assert!(
+        out.is_error && out.text.contains("more than"),
+        "{}",
+        out.text
+    );
+    let out = run(&mut e, r#"regex_replace("a-b", "-", "+")"#);
+    assert!(out.text.contains("Result: a+b"), "{}", out.text);
+}

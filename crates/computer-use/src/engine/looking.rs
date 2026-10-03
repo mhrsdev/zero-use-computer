@@ -64,11 +64,28 @@ impl<B: Backend> Engine<B> {
                 args.app
             )));
         }
+        // Nothing a script wrote or downloaded: a program in the scripts'
+        // folder would run whatever the web gave it (on Windows a .bat or
+        // .exe runs as it is).
+        if args.app.contains(['/', '\\']) {
+            let real = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            let path = match args.app.strip_prefix("~/").or(args.app.strip_prefix("~\\")) {
+                Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+                None => std::path::PathBuf::from(&args.app),
+            };
+            let scripts = self.store.config.script.library();
+            if real(&path).starts_with(real(&scripts)) {
+                return Err(Error::ActionFailed(format!(
+                    "{} is in the scripts' folder: programs there are not started (a script may have written it)",
+                    args.app
+                )));
+            }
+        }
         let before: HashSet<u32> = self.find_apps()?.iter().map(|a| a.pid).collect();
         let program = self.backend.launch_app(&args.app)?;
 
         let deadline = (self.clock)()
-            + Duration::from_secs_f64(self.store.config.launch_timeout_secs.max(0.5));
+            + Duration::from_secs_f64(self.store.config.launch_timeout_secs.clamp(0.5, 3600.0));
         // The app shows up under the name asked for, or (when the name was
         // looked up in the OS's app list) under the program that was run.
         let mut names = vec![args.app.to_lowercase()];

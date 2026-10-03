@@ -100,6 +100,11 @@ pub struct Env {
     pub app_tools: Vec<String>,
     /// The decision model, for decide(), ask(), choose() and score().
     pub decision: crate::config::DecisionConfig,
+    /// Never read or written by a script, whatever `[script] files` says:
+    /// the server's folder (its settings, with the decision model's key,
+    /// the hub's token, the memory) and the settings file. The scripts'
+    /// own folder inside it stays theirs.
+    pub private: Vec<PathBuf>,
 }
 
 impl Env {

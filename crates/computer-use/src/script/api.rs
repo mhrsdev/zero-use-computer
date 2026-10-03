@@ -51,12 +51,35 @@ pub(super) fn to_json(d: &Dynamic) -> Res<Value> {
     if d.is_unit() {
         return Ok(Value::Null);
     }
+    // Turning it into data goes as deep as it is nested: a value nested
+    // thousands deep would overflow the stack and end the whole server.
+    if too_deep(d, 0) {
+        return Err(err(format!(
+            "this value is nested more than {MAX_NESTING} levels deep; data that deep can't be used"
+        )));
+    }
     if let Some(p) = d.clone().try_cast::<Page>() {
         return Ok(json!(p.ctx.pages.borrow()[p.id].name));
     }
     let v: Value = rhai::serde::from_dynamic(d)
         .map_err(|e| err(format!("can't turn a {} into data: {e}", d.type_name())))?;
     Ok(whole(v))
+}
+
+/// How deep arrays and maps may nest in a value turned into data.
+const MAX_NESTING: usize = 128;
+
+fn too_deep(d: &Dynamic, depth: usize) -> bool {
+    if depth > MAX_NESTING {
+        return true;
+    }
+    if let Ok(a) = d.as_array_ref() {
+        return a.iter().any(|x| too_deep(x, depth + 1));
+    }
+    if let Ok(m) = d.as_map_ref() {
+        return m.values().any(|x| too_deep(x, depth + 1));
+    }
+    false
 }
 
 fn whole(v: Value) -> Value {
@@ -662,7 +685,14 @@ fn render(v: &Dynamic) -> Option<String> {
     } else if let Some(g) = v.clone().try_cast::<Grid>() {
         g.0.describe()
     } else {
-        to_json(v).map_or_else(|_| v.to_string(), |j| j.to_string())
+        match to_json(v) {
+            Ok(j) => j.to_string(),
+            // Printing it would go as deep as turning it into data.
+            Err(_) if too_deep(v, 0) => {
+                format!("(a value nested more than {MAX_NESTING} levels deep, not shown)")
+            }
+            Err(_) => v.to_string(),
+        }
     };
     Some(if text.len() > MAX_VALUE {
         let cut: String = text.chars().take(MAX_VALUE).collect();
@@ -822,6 +852,12 @@ fn decision_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     });
     let c = ctx.clone();
     engine.register_fn("decide_each", move |states: Array, qs: Map| -> Res<Array> {
+        let most = crate::engine::deciding_max_items();
+        if states.len() > most {
+            return Err(err(format!(
+                "decide_each judges at most {most} things at a time"
+            )));
+        }
         let d = decider(&c)?;
         let qs = questions(qs)?;
         let texts = states.iter().map(state_text).collect::<Res<Vec<_>>>()?;
@@ -1560,6 +1596,10 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     engine.register_fn("to_json", |v: Dynamic| -> Res<String> {
         Ok(to_json(&v)?.to_string())
     });
+    // Rhai has its own for maps, which doesn't check the depth: ours wins.
+    engine.register_fn("to_json", |m: rhai::Map| -> Res<String> {
+        Ok(to_json(&Dynamic::from_map(m))?.to_string())
+    });
     engine.register_fn("pretty_json", |v: Dynamic| -> Res<String> {
         serde_json::to_string_pretty(&to_json(&v)?).map_err(err)
     });
@@ -1585,17 +1625,23 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     engine.register_fn(
         "regex_groups",
         move |text: &str, pattern: &str| -> Res<Array> {
-            Ok(c.regex(pattern)?
-                .captures_iter(text)
-                .take(100_000)
-                .map(|caps| {
-                    let groups: Array = caps
-                        .iter()
-                        .map(|g| Dynamic::from(g.map_or(String::new(), |g| g.as_str().to_string())))
-                        .collect();
-                    Dynamic::from_array(groups)
-                })
-                .collect())
+            // Every group is copied: in all, no more than a text may hold.
+            let mut size = 0usize;
+            let mut out = Array::new();
+            for caps in c.regex(pattern)?.captures_iter(text).take(100_000) {
+                size += caps.iter().flatten().map(|g| g.len()).sum::<usize>();
+                if size > MAX_TEXT {
+                    return Err(
+                        format!("regex_groups would copy more than {MAX_TEXT} bytes").into(),
+                    );
+                }
+                let groups: Array = caps
+                    .iter()
+                    .map(|g| Dynamic::from(g.map_or(String::new(), |g| g.as_str().to_string())))
+                    .collect();
+                out.push(Dynamic::from_array(groups));
+            }
+            Ok(out)
         },
     );
     let c = ctx.clone();
@@ -1607,8 +1653,19 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
             let re = c.regex(pattern)?;
             let mut out = String::new();
             let mut last = 0;
+            // The most one match can add: each `$` a group as long as the
+            // match (checked before expanding: one match alone could ask
+            // for gigabytes).
+            let refs = with.matches('$').count();
             for caps in re.captures_iter(text) {
                 let m = caps.get(0).expect("group 0 is the match");
+                let most = out.len() + (m.start() - last) + with.len() + refs * m.len();
+                if most > MAX_TEXT {
+                    return Err(format!(
+                        "regex_replace would make a text of more than {MAX_TEXT} bytes"
+                    )
+                    .into());
+                }
                 out.push_str(&text[last..m.start()]);
                 caps.expand(with, &mut out);
                 last = m.end();

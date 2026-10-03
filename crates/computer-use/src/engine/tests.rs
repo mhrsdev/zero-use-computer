@@ -5191,3 +5191,27 @@ fn alone_nothing_changes() {
     let out = e.call_tool("agents", serde_json::json!({}));
     assert!(out.text.contains("works alone"), "{}", out.text);
 }
+
+/// A program in the scripts' folder (a script may have downloaded it) is
+/// never started.
+#[test]
+fn launch_app_refuses_programs_in_the_scripts_folder() {
+    let dir = std::env::temp_dir().join(format!("cu-launch-scripts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    let exe = dir.join("files").join("x.exe");
+    std::fs::write(&exe, "MZ").unwrap();
+    let mut e = engine();
+    let mut cfg = e.store.config.clone();
+    cfg.script.dir = Some(dir.clone());
+    e.store.config = cfg;
+    let out = e.call_tool(
+        "launch_app",
+        serde_json::json!({"app": exe.display().to_string()}),
+    );
+    assert!(
+        out.is_error && out.text.contains("scripts' folder"),
+        "{}",
+        out.text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

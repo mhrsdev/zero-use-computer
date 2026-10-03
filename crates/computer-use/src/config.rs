@@ -1468,6 +1468,10 @@ fn decode_text(bytes: &[u8]) -> Option<String> {
 /// one: validated as a whole before anything is written. A file that
 /// holds an API key is kept readable by its owner only.
 pub fn edit_file_many(path: &Path, edits: &[(&str, Edit)]) -> Result<()> {
+    // One edit at a time in this process: each reads the file, changes it
+    // and writes it back, so two at once would lose one of them.
+    static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = EDITING.lock().unwrap_or_else(|e| e.into_inner());
     let mut text = match read_text(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),

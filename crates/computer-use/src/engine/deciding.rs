@@ -13,7 +13,7 @@ const PICK_CHUNK: usize = 64;
 /// The most elements a pick looks through.
 const PICK_MAX: usize = 1024;
 /// The most items judged in one call.
-const MAX_ITEMS: usize = 500;
+pub(crate) const MAX_ITEMS: usize = 500;
 /// Longest description of an element offered to the model.
 const OPTION_CHARS: usize = 200;
 
@@ -697,8 +697,10 @@ impl<B: Backend> Engine<B> {
                 "open" | "page" | "settings" => {
                     let (url, browser) = decision::page::open(self.store.path.clone())?;
                     Ok(ToolOutput::text(match browser {
+                        // Not its address: it carries the page's secret, and
+                        // the page is the user's alone.
                         Ok(()) => format!(
-                            "Opened the decision model's settings page in the user's browser ({url}). Ask them to choose the model, paste its API key and press Save there; it is used at once.{}",
+                            "Opened the decision model's settings page in the user's browser. Ask them to choose the model, paste its API key and press Save there; it is used at once.{}",
                             key.map(|k| format!(" ({k} opens it too.)"))
                                 .unwrap_or_default()
                         ),

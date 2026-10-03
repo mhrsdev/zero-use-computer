@@ -35,6 +35,15 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
         Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
         None => PathBuf::from(path),
     };
+    let checked = |p: PathBuf| -> Result<PathBuf, String> {
+        if private(env, &p) {
+            Err(format!(
+                "\"{path}\" is the server's own (its settings and keys): scripts never use it"
+            ))
+        } else {
+            Ok(p)
+        }
+    };
     let up = expanded.components().any(|c| c == Component::ParentDir);
     // Relative only in name on Windows: `\Windows\x` (rooted) and `C:x`
     // (a drive's current folder) would leave the scripts' folder when
@@ -52,7 +61,7 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
                 ws.display()
             ));
         }
-        return Ok(ws.join(expanded));
+        return checked(ws.join(expanded));
     }
     let inside = !up && expanded.starts_with(&ws);
     let allowed = inside
@@ -62,7 +71,7 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
             ScriptFiles::Workspace | ScriptFiles::None => false,
         };
     if allowed {
-        return Ok(expanded);
+        return checked(expanded);
     }
     Err(if write {
         format!(
@@ -75,6 +84,44 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
             ws.display()
         )
     })
+}
+
+/// Where a path really leads: its deepest existing folder resolved (links,
+/// `..`), the rest as written.
+fn real(p: &Path) -> PathBuf {
+    let mut base = p.to_path_buf();
+    let mut rest = Vec::new();
+    while !base.as_os_str().is_empty() {
+        if let Ok(c) = base.canonicalize() {
+            let mut out = c;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (base.file_name().map(|n| n.to_os_string()), base.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                base = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    p.to_path_buf()
+}
+
+/// Whether `p` is the server's own: its folder (but the scripts' files in
+/// it), its settings file, or, on Linux, a process's own details in /proc
+/// (its environment holds the key `api_key_env` names).
+fn private(env: &Env, p: &Path) -> bool {
+    let p = real(p);
+    if cfg!(target_os = "linux") && p.starts_with("/proc") {
+        return true;
+    }
+    if p.starts_with(real(&env.workspace())) {
+        return false;
+    }
+    env.private.iter().any(|x| p.starts_with(real(x)))
 }
 
 pub fn read_text(env: &Env, path: &str) -> Result<String, String> {
@@ -520,6 +567,7 @@ mod tests {
             stop: Default::default(),
             app_tools: Vec::new(),
             decision: Default::default(),
+            private: Vec::new(),
         }
     }
 
