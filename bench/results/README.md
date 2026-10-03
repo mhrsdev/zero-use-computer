@@ -23,6 +23,7 @@ decide whether a change is turned on by default.
 | `v3.6-manager/` | v3.6.0 | `--config ../configs/manager.toml` (lean + the tool manager), `--plan batch` |
 | `v3.7-releases/` | v0.1.0, v3.0.0, v3.6.0, v3.7.0 as they ship, over MCP (`--server`), each with its own skills | defaults; `-batch`: `--plan batch`; `-plugin`: `--instructions short`. [step.md](v3.7-releases/step.md), [batch.md](v3.7-releases/batch.md) |
 | `v3.9-releases/` | the newest patch of every minor version, v0.1.5 to v3.9.0, as they ship, over MCP (`--server`), each with its own skills; **every task in a run of its own** (see below) | defaults; `-batch`: `--plan batch` (v3.6 on). [step.md](v3.9-releases/step.md), [batch.md](v3.9-releases/batch.md) |
+| `v3.9-codex/` | v3.9.0, in process, every task in a run of its own | `--preset codex` against defaults and `--plan batch`. [compare.md](v3.9-codex/compare.md) |
 | `v3.7-codex/` | v3.7.0, in process | `--preset codex` (Codex's behaviour, simulated) against defaults and `--plan batch`. [compare.md](v3.7-codex/compare.md) |
 
 The scripted ways through were refined after the v3.2 run (they look for

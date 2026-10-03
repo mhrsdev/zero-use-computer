@@ -103,16 +103,33 @@ Codex's computer use is the model this project started from: the same ten
 core tools, accessibility first. The benchmark can run Zero the way Codex
 behaves (a screenshot with every look, no screen memory, no change report
 after an action, every tool listed) and compare. This is a **simulation of
-Codex's behaviour on this server, not a run of Codex**, measured on v3.7
-(v3.9's tool results are within 5% of v3.7's).
-[Full table](bench/results/v3.7-codex/compare.md).
+Codex's behaviour on this server, not a run of Codex or of a GPT model**:
+the token figures are the benchmark's estimates (no prompt cache), and a
+GPT model counts pictures its own way. Measured on v3.9, every task in a
+run of its own, three runs each.
+[Full table](bench/results/v3.9-codex/compare.md).
 
-| Five tasks (form, table, board, shapes, long) | Codex-style (simulated) | Zero v3.7 | Zero v3.7 + `batch` |
+| Five tasks (form, table, board, shapes, long) | Codex-style (simulated) | Zero v3.9 | Zero v3.9 + `batch` |
 |---|---|---|---|
-| Input tokens | 364,354 | **245,147** (−33%) | **183,860** (−50%) |
+| Input tokens | 371,576 | **246,537** (−34%) | **184,910** (−50%) |
 | Screenshots sent | 11 | **5** | **5** |
 | Image tokens | 7,702 | **3,330** (−57%) | **3,330** |
 | Tool calls | 41 | 36 | **26** |
+
+Where the difference comes from: fewer pictures (5 instead of 11), a
+shorter tool list on every request (2,165 tokens of definitions instead of
+3,827) and so a shorter conversation to read again. Not everywhere: the
+Codex-style results carry *less* text (2,699 tokens against 4,221; it
+sends pictures instead), and on the shapes task, a canvas without text,
+the two come out almost even (27,303 against 26,586).
+
+**Read the gap with care.** The simulation lists all of this server's
+tools (25) on every request, while Codex's own computer use has about ten,
+so its real list is likely shorter. Given a list as short as Zero's, the
+Codex-style run would take about 295,000 tokens: Zero would be **about 16%
+less** one action a call, and 37% less with `batch`, instead of 34% and
+50%. The 16% (pictures, screen memory, change reports) is the part this
+benchmark can stand behind.
 
 | | Codex-style | Zero |
 |---|---|---|
