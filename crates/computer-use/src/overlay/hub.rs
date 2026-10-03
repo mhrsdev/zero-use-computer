@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use super::helper::{Hotkey, Machine, Painter, Surface, SurfaceEvent};
@@ -252,8 +253,10 @@ impl HubState {
         self.agents.keys().copied().collect()
     }
 
+    /// The screen to share out: the one the agent that joined last saw
+    /// (a laptop docked, or the resolution changed, since the first came).
     pub fn set_screen(&mut self, screen: Rect) {
-        if self.screen.is_none() && screen.width > 0.0 && screen.height > 0.0 {
+        if screen.width > 0.0 && screen.height > 0.0 {
             self.screen = Some(screen);
         }
     }
@@ -635,27 +638,82 @@ pub fn serve(listener: TcpListener, token: String, surface: Option<Box<dyn Surfa
     Hub::new(surface).run(&rx);
 }
 
+/// Connections still to say hello, at most: anyone on this computer can
+/// connect, before the token is checked.
+const MAX_GREETING: usize = 32;
+/// The whole hello, at most this long (not per read: a byte at a time
+/// would hold a connection for hours).
+const HELLO_WITHIN: Duration = Duration::from_secs(5);
+
 fn accept(listener: TcpListener, token: &str, tx: &mpsc::Sender<Event>) {
     let mut next = 0u64;
+    let greeting = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        if greeting.load(std::sync::atomic::Ordering::SeqCst) >= MAX_GREETING {
+            // Dropped: a real agent tries again.
+            continue;
+        }
+        greeting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         next += 1;
         let conn = next;
         let token = token.to_string();
         let tx = tx.clone();
-        let _ = std::thread::Builder::new()
+        let greeting = greeting.clone();
+        let spawned = std::thread::Builder::new()
             .name("hub-conn".into())
-            .spawn(move || connection(stream, conn, &token, &tx));
+            .spawn(move || connection(stream, conn, &token, &tx, &greeting));
+        if spawned.is_err() {
+            // Not started, so not waiting.
+            continue;
+        }
     }
 }
 
 /// One agent's connection: its hello, then its commands, until it goes.
-fn connection(stream: TcpStream, conn: u64, token: &str, tx: &mpsc::Sender<Event>) {
+fn connection(
+    stream: TcpStream,
+    conn: u64,
+    token: &str,
+    tx: &mpsc::Sender<Event>,
+    greeting: &std::sync::atomic::AtomicUsize,
+) {
+    // However it ends, it no longer waits to say hello.
+    struct Greeted<'a>(&'a std::sync::atomic::AtomicUsize, bool);
+    impl Greeted<'_> {
+        fn done(&mut self) {
+            if !std::mem::replace(&mut self.1, true) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    impl Drop for Greeted<'_> {
+        fn drop(&mut self) {
+            self.done();
+        }
+    }
+    let mut greeted = Greeted(greeting, false);
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
+    // Cut off a hello that takes too long in all.
+    let said = Arc::new(AtomicBool::new(false));
+    if let Ok(cut) = stream.try_clone() {
+        let said = said.clone();
+        let _ = std::thread::Builder::new()
+            .name("hub-hello".into())
+            .spawn(move || {
+                let until = Instant::now() + HELLO_WITHIN;
+                while Instant::now() < until && !said.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if !said.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = cut.shutdown(std::net::Shutdown::Both);
+                }
+            });
+    }
     let mut reader = BufReader::new(read_half);
     let mut write_half = stream;
     let refuse = |w: &mut TcpStream, why: &str| {
@@ -666,10 +724,10 @@ fn connection(stream: TcpStream, conn: u64, token: &str, tx: &mpsc::Sender<Event
     };
     // Read before the token is checked: at most a hello's worth.
     let mut line = String::new();
-    if std::io::Read::take(&mut reader, 64 * 1024)
-        .read_line(&mut line)
-        .is_err()
-    {
+    let read = std::io::Read::take(&mut reader, 64 * 1024).read_line(&mut line);
+    said.store(true, std::sync::atomic::Ordering::SeqCst);
+    greeted.done();
+    if read.is_err() {
         return;
     }
     let hello = match serde_json::from_str::<Cmd>(&line) {
@@ -1094,12 +1152,29 @@ impl Hub {
             return true;
         }
         let combo = crate::keys::parse_combo(key).ok();
+        let previous = slot.clone();
         let ok = self
             .surface
             .as_mut()
             .is_some_and(|s| s.set_hotkey(which, combo));
-        *slot = Some((key.to_string(), ok));
-        ok
+        if ok {
+            *slot = Some((key.to_string(), true));
+            return true;
+        }
+        // Registering drops the key before; one that worked is put back,
+        // so a key the system refuses never leaves the desktop with none.
+        match previous {
+            Some((k, true)) => {
+                let back = crate::keys::parse_combo(&k).ok();
+                let again = self
+                    .surface
+                    .as_mut()
+                    .is_some_and(|s| s.set_hotkey(which, back));
+                *slot = Some((k, again));
+            }
+            _ => *slot = Some((key.to_string(), false)),
+        }
+        false
     }
 
     /// The stop key: every agent stops (or may go on).
@@ -1345,6 +1420,10 @@ mod tests {
         assert!(!hub.register(Hotkey::Stop, "ctrl+alt+escape"));
         assert!(hub.register(Hotkey::Stop, "ctrl+alt+f12"));
         assert!(hub.register(Hotkey::Stop, "ctrl+alt+f12"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+f12".into(), true)));
+        // Another agent asks for a key the system refuses: the working
+        // one stays (it used to be dropped, leaving no stop key at all).
+        assert!(!hub.register(Hotkey::Stop, "ctrl+alt+escape"));
         assert_eq!(hub.hotkey, Some(("ctrl+alt+f12".into(), true)));
 
         let (tx, _rx) = mpsc::channel();

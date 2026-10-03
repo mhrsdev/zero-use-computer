@@ -718,7 +718,13 @@ impl<B: Backend> Engine<B> {
     /// Whether the call in progress must end now: the user stopped the
     /// agent, or the client cancelled the call.
     fn halted(&self) -> bool {
-        self.is_stopped() || self.cancel.load(Ordering::SeqCst)
+        self.is_stopped() || self.cancel.load(Ordering::SeqCst) || self.turn_lost()
+    }
+
+    /// The hub gave this agent's turn at the keyboard and mouse to another
+    /// (it held them too long without a word): it must not act on.
+    fn turn_lost(&self) -> bool {
+        self.ctx.turn && self.hub_link().is_some_and(|l| l.revoked())
     }
 
     /// Stop the agent (or let it continue), as the stop key does.
@@ -730,6 +736,11 @@ impl<B: Backend> Engine<B> {
     }
 
     fn stopped_error(&self) -> Error {
+        if !self.is_stopped() && self.turn_lost() {
+            return Error::ActionFailed(
+                "another agent on this desktop was given the keyboard and mouse (this action held them too long): it stopped part way; look again before going on".into(),
+            );
+        }
         if !self.is_stopped() && self.cancel.load(Ordering::SeqCst) {
             return Error::Cancelled;
         }

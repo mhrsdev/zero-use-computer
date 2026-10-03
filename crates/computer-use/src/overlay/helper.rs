@@ -149,6 +149,8 @@ pub enum Phase {
 }
 
 /// How long "stopped" stays on screen when nothing else happens.
+/// How long a host's "working" lasts with no call after it.
+const HOST_WORKING_HOLD: Duration = Duration::from_secs(120);
 const STOPPED_HOLD: Duration = Duration::from_millis(5000);
 
 /// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc".
@@ -511,7 +513,10 @@ impl Machine {
                         self.last_end = Some(now);
                         Phase::Thinking
                     }
-                    Status::Working => Phase::Working,
+                    Status::Working => {
+                        self.last_end = Some(now);
+                        Phase::Working
+                    }
                     Status::Done => Phase::Done,
                     Status::Error => {
                         self.last_end = Some(now);
@@ -554,6 +559,11 @@ impl Machine {
             Phase::Thinking
                 if !self.busy && idle >= Duration::from_millis(self.cfg.done_after_ms) =>
             {
+                self.advance(Phase::Done, now);
+            }
+            // "Working" from the host with no call after it (the turn was
+            // interrupted): it ends too, after a while longer.
+            Phase::Working if !self.busy && idle >= HOST_WORKING_HOLD => {
                 self.advance(Phase::Done, now);
             }
             Phase::Done if since >= Duration::from_millis(self.cfg.done_linger_ms) => {

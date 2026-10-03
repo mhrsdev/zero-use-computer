@@ -277,6 +277,8 @@ impl<B: Backend> Engine<B> {
         // Paced to `speed`, and stoppable between any two moves: the stop
         // key ends the drawing (the backend lets go of the button).
         let (stop, cancel) = (self.stop.clone(), self.cancel.clone());
+        // A turn the hub took back ends the drawing too.
+        let lost = self.ctx.turn.then(|| self.hub_link()).flatten();
         let stop_name = self.stop_control_name();
         let sleep = &self.sleep;
         let mut owed = 0.0f64;
@@ -293,6 +295,11 @@ impl<B: Backend> Engine<B> {
             }
             if cancel.load(Ordering::SeqCst) {
                 return Err(Error::Cancelled);
+            }
+            if lost.as_ref().is_some_and(|l| l.revoked()) {
+                return Err(Error::ActionFailed(
+                    "another agent on this desktop was given the keyboard and mouse (the drawing held them too long): it stopped part way".into(),
+                ));
             }
             travelled += d;
             if let Some(r) = &reporter {

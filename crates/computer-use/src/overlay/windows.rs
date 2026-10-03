@@ -258,8 +258,17 @@ impl WinSurface {
         }
         self.foreground = fg;
         self.raised = Instant::now();
-        for w in self.layers.values().filter(|w| w.visible) {
-            Self::raise(w.hwnd);
+        // In paint order (each raise goes on top): edges, then labels,
+        // then cursors last, so a cursor is never under a label or a glow.
+        let mut shown: Vec<(&Layer, HWND)> = self
+            .layers
+            .iter()
+            .filter(|(_, w)| w.visible)
+            .map(|(l, w)| (l, w.hwnd))
+            .collect();
+        shown.sort_by_key(|(l, _)| (l.part as u8, l.agent));
+        for (_, hwnd) in shown {
+            Self::raise(hwnd);
         }
     }
 
