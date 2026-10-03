@@ -4900,3 +4900,35 @@ fn own_typing_is_never_taken_for_a_restless_element() {
         "the model's own typing hidden:\n{last}"
     );
 }
+
+/// A host that asks for progress gets a batch's steps as they finish, and
+/// nothing from the steps themselves; without a sink nothing is sent.
+#[test]
+fn a_batch_reports_its_steps_as_progress() {
+    let mut e = engine();
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Progress>::new()));
+    let sink_got = got.clone();
+    e.set_progress(Some(std::sync::Arc::new(move |p| {
+        sink_got.lock().unwrap().push(p)
+    })));
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({
+            "app": "TextEdit",
+            "steps": [
+                {"tool": "get_app_state", "arguments": {}},
+                {"tool": "set_value", "arguments": {"element_index": 4, "value": "hi"}}
+            ]
+        }),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let got = got.lock().unwrap().clone();
+    assert_eq!(
+        got.iter().map(|p| p.message.as_str()).collect::<Vec<_>>(),
+        ["step 1 of 2: get_app_state", "step 2 of 2: set_value"]
+    );
+    assert_eq!((got[1].progress, got[1].total), (2.0, Some(2.0)));
+    e.set_progress(None);
+    let out = e.call_tool("list_apps", serde_json::json!({}));
+    assert!(!out.is_error);
+}

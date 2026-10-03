@@ -349,6 +349,7 @@ impl<B: Backend> Engine<B> {
         let halt = running.halt.clone();
         let seen_before = self.known_screens();
         self.ctx.in_script = true;
+        self.ctx.script_calls = 0;
         let mut images: Vec<Option<ScriptImage>> = Vec::new();
         let mut shown: Option<usize> = None;
         let mut limit = running.deadline + GRACE;
@@ -475,6 +476,9 @@ impl<B: Backend> Engine<B> {
             };
         match req {
             Request::Tool { name, args } => {
+                self.ctx.script_calls += 1;
+                let n = self.ctx.script_calls;
+                self.report_progress(n as f64, None, || format!("script: call {n}, {name}"));
                 let before = self.ctx.pending_images.len();
                 let shot_before = self.ctx.pending_screen_shot.take();
                 let result = match ToolCall::parse(&name, args) {

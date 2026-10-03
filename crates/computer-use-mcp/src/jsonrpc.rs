@@ -71,22 +71,46 @@ pub struct RpcError {
     pub data: Option<Value>,
 }
 
-/// Parse one message, answering what isn't a usable one: not JSON
-/// (-32700), or not a request, notification or response object (-32600,
-/// with the message's id when it has a valid one).
-pub fn parse_message(text: &str) -> Result<Incoming, Box<Response>> {
+/// What one line (stdio) or body (HTTP) holds: a message, or a batch of
+/// them (JSON-RPC 2.0; MCP 2025-03-26 allows batches).
+#[derive(Debug)]
+pub enum Payload {
+    One(Incoming),
+    /// Each message of the batch, or the answer to one that isn't usable.
+    Batch(Vec<Result<Incoming, Box<Response>>>),
+}
+
+/// Parse a message or a batch, answering what isn't usable: not JSON
+/// (-32700), an empty batch, or not a request, notification or response
+/// object (-32600, with the message's id when it has a valid one).
+pub fn parse_payload(text: &str) -> Result<Payload, Box<Response>> {
+    match parse_json(text)? {
+        Value::Array(items) if items.is_empty() => Err(Box::new(Response::err(
+            Value::Null,
+            INVALID_REQUEST,
+            "an empty batch",
+        ))),
+        Value::Array(items) => Ok(Payload::Batch(items.into_iter().map(parse_value).collect())),
+        value => parse_value(value).map(Payload::One),
+    }
+}
+
+fn parse_json(text: &str) -> Result<Value, Box<Response>> {
     // Some Windows pipelines start the stream with a byte-order mark.
     let text = text.trim_start_matches('\u{feff}');
-    let value: Value = serde_json::from_str(text).map_err(|e| {
+    serde_json::from_str(text).map_err(|e| {
         Box::new(Response::err(
             Value::Null,
             PARSE_ERROR,
             format!("parse error: {e}"),
         ))
-    })?;
+    })
+}
+
+fn parse_value(value: Value) -> Result<Incoming, Box<Response>> {
     let Value::Object(obj) = &value else {
         let why = if value.is_array() {
-            "batch requests are not supported"
+            "a batch inside a batch"
         } else {
             "a JSON-RPC message must be an object"
         };
@@ -188,8 +212,15 @@ mod tests {
     use super::*;
 
     fn code(text: &str) -> (i64, Value) {
-        let e = parse_message(text).unwrap_err();
+        let e = parse_payload(text).unwrap_err();
         (e.error.unwrap().code, e.id)
+    }
+
+    fn parse_message(text: &str) -> Result<Incoming, Box<Response>> {
+        match parse_payload(text)? {
+            Payload::One(m) => Ok(m),
+            Payload::Batch(_) => panic!("a batch"),
+        }
     }
 
     #[test]
@@ -231,6 +262,25 @@ mod tests {
         assert!(n.is_notification());
         let r = parse_message(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#).unwrap();
         assert!(r.is_response());
+    }
+
+    #[test]
+    fn batches_are_parsed_item_by_item() {
+        let Payload::Batch(items) = parse_payload(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},7,[]]"#,
+        )
+        .unwrap() else {
+            panic!("not a batch")
+        };
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].as_ref().unwrap().method.as_deref(), Some("ping"));
+        assert!(items[1].as_ref().unwrap().is_notification());
+        for bad in &items[2..] {
+            let e = bad.as_ref().unwrap_err();
+            assert_eq!(e.error.as_ref().unwrap().code, INVALID_REQUEST);
+        }
+        // An empty batch is one error, not an empty answer.
+        assert_eq!(code("[]"), (INVALID_REQUEST, Value::Null));
     }
 
     #[test]

@@ -31,11 +31,13 @@ mod looking;
 mod manager;
 mod observe;
 mod overlay;
+mod progress;
 mod screenshot;
 mod scripting;
 mod system;
 
 pub(crate) use drawing::draw_shapes;
+pub use progress::{Progress, ProgressSink};
 
 /// Cached state for one app between tool calls.
 #[derive(Default)]
@@ -269,6 +271,8 @@ struct CallState {
     /// One taken during this call: it becomes `screen_shot` only if it is
     /// the image the call returns (a batch returns only its last image).
     pending_screen_shot: Option<ScreenShot>,
+    /// Tools the running script has called (its progress).
+    script_calls: u32,
 }
 
 pub struct Engine<B: Backend> {
@@ -373,6 +377,8 @@ pub struct Engine<B: Backend> {
     /// The decision layer: the model's answers kept, its failures, what
     /// it cost (see [`crate::decision::judge`]).
     judge: crate::decision::judge::Judge,
+    /// Where the progress of the calls goes, set by the host.
+    progress: Option<progress::Reporter>,
     clock: Box<dyn Fn() -> Instant + Send>,
     sleep: Box<dyn Fn(Duration) + Send>,
 }
@@ -497,6 +503,7 @@ impl<B: Backend> Engine<B> {
             exports: crate::design::TempFiles::default(),
             scripts,
             judge: Default::default(),
+            progress: None,
             ocr_note: None,
             ocr_note_shown: false,
             partial_report: None,

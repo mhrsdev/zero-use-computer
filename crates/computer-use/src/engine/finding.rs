@@ -160,6 +160,10 @@ impl<B: Backend> Engine<B> {
                     ),
                 }));
             }
+            let waited = (self.clock)().saturating_duration_since(start);
+            self.report_progress(waited.as_millis() as f64, Some(timeout_ms as f64), || {
+                format!("waiting for {}", describe_matcher(&args))
+            });
             (self.sleep)(poll);
         }
     }

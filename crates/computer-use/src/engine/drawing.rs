@@ -261,6 +261,8 @@ impl<B: Backend> Engine<B> {
         let overlay = self.overlay.as_ref();
         let along = PathPosition::new(&plan.strokes);
         let (mut travelled, mut shown_at) = (0.0f64, Instant::now());
+        let reporter = self.reporter();
+        let length = along.length();
         let mut pace = |d: f64| -> Result<()> {
             if stop.load(Ordering::SeqCst) {
                 return Err(Error::Stopped(stop_name.clone()));
@@ -269,6 +271,9 @@ impl<B: Backend> Engine<B> {
                 return Err(Error::Cancelled);
             }
             travelled += d;
+            if let Some(r) = &reporter {
+                r.report(travelled.min(length), Some(length), "drawing");
+            }
             if let Some(o) = overlay
                 && shown_at.elapsed() >= Duration::from_millis(60)
                 && let Some(p) = along.at(travelled)
@@ -1437,6 +1442,11 @@ impl PathPosition {
             }
         }
         Self { points }
+    }
+
+    /// How long the strokes are, end to end.
+    pub(super) fn length(&self) -> f64 {
+        self.points.last().map_or(0.0, |(far, _)| *far)
     }
 
     /// The point the pen has reached after moving `far`.

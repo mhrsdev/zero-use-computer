@@ -61,6 +61,9 @@ impl<B: Backend> Engine<B> {
             let result = parsed.and_then(|c| self.call(c));
             self.ctx.quiet_depth = quiet;
             ran += 1;
+            self.report_progress(ran as f64, Some(total as f64), || {
+                format!("step {ran} of {total}: {}", step.tool)
+            });
             if acting.is_some() {
                 acted_on = acting;
             }

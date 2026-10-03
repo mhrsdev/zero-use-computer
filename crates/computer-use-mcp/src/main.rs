@@ -2,6 +2,7 @@
 //! MCP-capable agent the Codex-style computer-use tools.
 
 mod catalog;
+mod core;
 #[cfg(feature = "http")]
 mod http;
 mod jsonrpc;
@@ -186,8 +187,9 @@ fn apply_overrides(common: &Common) -> impl Fn(&mut Config) + Send + 'static {
         if text_only {
             c.text_only = true;
         }
-        // Over HTTP the server can't tell the client its tool list changed:
-        // found tools are run through use_tool instead.
+        // Over HTTP the server tells only the clients that keep an event
+        // stream open (GET) that its tool list changed, and not every
+        // client does: found tools are run through use_tool instead.
         if !c.server.http_addr.is_empty()
             && c.tools.manager == computer_use::config::ToolManager::ListChanged
         {
@@ -473,8 +475,9 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     // Read on a thread of the server's own (so the client can cancel a
     // call while it runs).
     let stdin = std::io::BufReader::new(std::io::stdin());
-    let stdout = std::io::stdout();
-    let mut server = Server::new(engine, stdin, stdout.lock()).stop_when_input_ends();
+    // The server writes whole lines under a lock of its own (answers,
+    // pings and a call's progress come from different threads).
+    let mut server = Server::new(engine, stdin, std::io::stdout()).stop_when_input_ends();
     server.run().context("serving MCP over stdio")
 }
 
