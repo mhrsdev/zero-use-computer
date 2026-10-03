@@ -30,7 +30,8 @@ pub fn words(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
+                // Every script's capitals (ПРИВЕТ is привет), not only ASCII.
+                c.to_lowercase().next().unwrap_or(c)
             } else {
                 ' '
             }
@@ -120,6 +121,40 @@ fn tesseract_lang(code: &str) -> String {
         "uk" => "ukr",
         "hi" => "hin",
         "he" => "heb",
+        "sv" => "swe",
+        "da" => "dan",
+        "fi" => "fin",
+        "no" | "nb" => "nor",
+        "cs" => "ces",
+        "el" => "ell",
+        "hu" => "hun",
+        "ro" => "ron",
+        "vi" => "vie",
+        "th" => "tha",
+        "id" => "ind",
+        "ms" => "msa",
+        "ur" => "urd",
+        "bn" => "ben",
+        "sr" => "srp",
+        "hr" => "hrv",
+        "bg" => "bul",
+        "sk" => "slk",
+        "sl" => "slv",
+        "lt" => "lit",
+        "lv" => "lav",
+        "et" => "est",
+        "ca" => "cat",
+        "ps" => "pus",
+        "ku" => "kmr",
+        "ta" => "tam",
+        "te" => "tel",
+        "ka" => "kat",
+        "hy" => "hye",
+        "az" => "aze",
+        "kk" => "kaz",
+        "uz" => "uzb",
+        "tl" => "tgl",
+        "sw" => "swa",
         other => return other.to_string(),
     }
     .to_string()

@@ -1235,7 +1235,15 @@ impl Design {
             let square = tr.b == 0.0 && tr.c == 0.0 && tr.a.abs() == 1.0 && tr.d.abs() == 1.0;
             if plain && square {
                 if let Some(r) = &s.rect {
-                    let rx = r.get(4).copied().unwrap_or(0.0);
+                    // As the board draws it: one radius, no more than half
+                    // either side (SVG would clamp rx and ry apart, making
+                    // the corners oval).
+                    let rx = r
+                        .get(4)
+                        .copied()
+                        .unwrap_or(0.0)
+                        .min(r[2].abs() / 2.0)
+                        .min(r[3].abs() / 2.0);
                     let (ax, ay) = tr.apply(r[0], r[1]);
                     let (bx, by) = tr.apply(r[0] + r[2], r[1] + r[3]);
                     out.push_str(&format!(
@@ -1244,7 +1252,7 @@ impl Design {
                         n(ay.min(by)),
                         n(r[2]),
                         n(r[3]),
-                        if rx > 0.0 { format!(" rx=\"{}\"", n(rx)) } else { String::new() }
+                        if rx > 0.0 { format!(" rx=\"{0}\" ry=\"{0}\"", n(rx)) } else { String::new() }
                     ));
                     continue;
                 }
@@ -2186,7 +2194,7 @@ mod tests {
             ),
             "{svg}"
         );
-        assert!(svg.contains("<rect id=\"card\" x=\"100\" y=\"100\" width=\"300\" height=\"200\" rx=\"16\" fill=\"#FFFFFF\" stroke=\"#222222\""), "{svg}");
+        assert!(svg.contains("<rect id=\"card\" x=\"100\" y=\"100\" width=\"300\" height=\"200\" rx=\"16\" ry=\"16\" fill=\"#FFFFFF\" stroke=\"#222222\""), "{svg}");
         assert!(
             svg.contains("<ellipse id=\"eye-2\" cx=\"600\" cy=\"200\" rx=\"30\" ry=\"20\""),
             "{svg}"

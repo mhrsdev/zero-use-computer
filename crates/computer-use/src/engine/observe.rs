@@ -194,7 +194,8 @@ impl<B: Backend> Engine<B> {
                         let line_sized = a.height <= 3.0 * b.height.max(8.0);
                         [&n.name, &n.value].into_iter().flatten().any(|t| {
                             let t = crate::ocr::words(t);
-                            t.contains(&text) || (line_sized && t.len() >= 3 && text.contains(&t))
+                            t.contains(&text)
+                                || (line_sized && t.chars().count() >= 3 && text.contains(&t))
                         })
                     })
             });

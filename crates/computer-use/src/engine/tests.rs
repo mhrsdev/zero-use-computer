@@ -5278,3 +5278,28 @@ fn batch_app_and_expect_only_where_they_apply() {
     assert!(!out.text.contains("wasn't confirmed"), "{}", out.text);
     assert!(out.text.contains("4. list_apps"), "{}", out.text);
 }
+
+/// The pen never goes down outside the window: an element whose box
+/// reaches past it (a zoomed canvas) is refused, not drawn over other apps.
+#[test]
+fn draw_never_presses_outside_the_window() {
+    let mut e = engine();
+    // The document is a canvas zoomed far past its 800x600 window.
+    for el in &mut e.backend_mut().app_mut(4242).unwrap().elements {
+        if el.name.as_deref() == Some("Document") {
+            el.bounds = Rect::new(-1000.0, -1000.0, 3000.0, 3000.0);
+        }
+    }
+    state_of(&mut e, serde_json::json!({}));
+    let doc = index_named(&e, 4242, "Document");
+    let out = e.call_tool(
+        "draw",
+        serde_json::json!({"app": "TextEdit", "element_index": doc,
+            "strokes": [{"ellipse": [0.5, 0.5, 0.45, 0.45]}]}),
+    );
+    assert!(
+        out.is_error && out.text.contains("outside the window"),
+        "{}",
+        out.text
+    );
+}

@@ -249,6 +249,30 @@ impl<B: Backend> Engine<B> {
         }
 
         self.overlay_point(first, true);
+        // The button goes down only inside the window: an element bigger
+        // than its window (a zoomed canvas) or a size too small to map
+        // would press and drag over other apps.
+        let window = self.pick_window(&app, args.window.as_deref(), false)?;
+        let outside = plan
+            .strokes
+            .iter()
+            .flatten()
+            .filter(|p| {
+                !(p.x.is_finite() && p.y.is_finite())
+                    || window.bounds.is_some_and(|b| {
+                        p.x < b.x - 1.0
+                            || p.y < b.y - 1.0
+                            || p.x > b.x + b.width + 1.0
+                            || p.y > b.y + b.height + 1.0
+                    })
+            })
+            .count();
+        if outside > 0 {
+            return Err(Error::ActionFailed(format!(
+                "{outside} of the {} pointer positions fall outside the window (the element or canvas reaches past what is visible): nothing was drawn; draw inside the visible part, or preview=true to see where it goes",
+                plan.points()
+            )));
+        }
         let target = self.input_target(&app)?;
         // Paced to `speed`, and stoppable between any two moves: the stop
         // key ends the drawing (the backend lets go of the button).

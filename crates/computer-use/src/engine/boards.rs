@@ -67,12 +67,14 @@ impl<B: Backend> Engine<B> {
                 size
             ));
         }
-        let place = crate::paint::fit_in(
-            frame.screen_rect(),
-            d.width.round().max(1.0) as u32,
-            d.height.round().max(1.0) as u32,
-        );
-        let (sx, sy) = (place.width / d.width, place.height / d.height);
+        // One scale for both sides, from the real size: rounding it first
+        // (1.5 x 1 as 2 x 1) stretched the drawing.
+        let r = frame.screen_rect();
+        let scale = (r.width / d.width).min(r.height / d.height);
+        let (w, h) = (d.width * scale, d.height * scale);
+        let place =
+            crate::types::Rect::new(r.x + (r.width - w) / 2.0, r.y + (r.height - h) / 2.0, w, h);
+        let (sx, sy) = (scale, scale);
         let (xa, xb) = (frame.x0.min(frame.x1), frame.x0.max(frame.x1));
         let (ya, yb) = (frame.y0.min(frame.y1), frame.y0.max(frame.y1));
         let lines = d.step_lines(step)?;
