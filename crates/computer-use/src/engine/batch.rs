@@ -34,7 +34,11 @@ impl<B: Backend> Engine<B> {
                     break;
                 }
             };
+            // Only tools that take an app get the batch's (design, scene
+            // and script refuse one; notifications and screenshot read it
+            // as something else).
             if !step_args.contains_key("app")
+                && crate::tools::needs_app(&step.tool)
                 && let Some(app) = &args.app
             {
                 step_args.insert("app".into(), serde_json::json!(app));
@@ -43,17 +47,16 @@ impl<B: Backend> Engine<B> {
                 .get("app")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            let expects = step_args
-                .get("expect")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|e| !e.trim().is_empty());
+            let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
+            // Only an expectation the step's tool checks (others take
+            // `expect` as an unknown, ignored argument).
+            let expects = parsed.as_ref().ok().and_then(super::expectation).is_some();
             let more = i + 1 < total;
             // The window in front before the step, to notice one coming up.
             let window_before = match &step_app {
                 Some(a) if more && !args.through_windows && !expects => self.front_window(a),
                 _ => None,
             };
-            let parsed = ToolCall::parse(&step.tool, serde_json::Value::Object(step_args));
             let acting = parsed.as_ref().ok().and_then(mutating_app);
             let before = self.ctx.pending_images.len();
             let shot_before = self.ctx.pending_screen_shot.take();
@@ -79,7 +82,8 @@ impl<B: Backend> Engine<B> {
                     report.push_str(&format!("{}. {} — {first}\n", i + 1, step.tool));
                     if out.image.is_some() {
                         // Earlier images are replaced by this one.
-                        self.ctx.pending_images.drain(..before);
+                        let earlier = before.min(self.ctx.pending_images.len());
+                        self.ctx.pending_images.drain(..earlier);
                         last_image = out.image;
                     }
                     if out.is_error {

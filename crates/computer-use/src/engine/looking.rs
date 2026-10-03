@@ -185,9 +185,11 @@ impl<B: Backend> Engine<B> {
         let mut r = self.render(app.pid, args.disable_diff, args.max_tokens)?;
         if self.ctx.depth == 1 {
             if r.full {
-                self.note.looks_full.push(app.pid);
+                let key = self.screen_key(app.pid);
+                self.note.looks_full.push(key);
             } else {
-                self.note.looks_diff.push(app.pid);
+                let key = self.screen_key(app.pid);
+                self.note.looks_diff.push(key);
             }
         }
         if r.full {
@@ -396,7 +398,8 @@ impl<B: Backend> Engine<B> {
                         }) => {
                             stale = changed;
                             if self.ctx.depth == 1 {
-                                self.note.pictures_part.push(app.pid);
+                                let key = self.screen_key(app.pid);
+                                self.note.pictures_part.push(key);
                             }
                             let (w, h, (ox, oy)) = (img.width, img.height, at);
                             let (x1, y1) = (ox + w, oy + h);
@@ -421,7 +424,8 @@ impl<B: Backend> Engine<B> {
                         }) => {
                             stale = changed;
                             if self.ctx.depth == 1 {
-                                self.note.pictures_whole.push(app.pid);
+                                let key = self.screen_key(app.pid);
+                                self.note.pictures_whole.push(key);
                             }
                             header.push_str(&format!(
                                 "\nScreenshot #{id}: {}x{} px.",

@@ -576,7 +576,18 @@ impl<B: Backend> Engine<B> {
         }
         let got = n.value.as_deref()?;
         if let (Ok(a), Ok(b)) = (got.trim().parse::<f64>(), want.trim().parse::<f64>()) {
-            return Some((a - b).abs() <= 1e-6_f64.max(b.abs() * 0.01));
+            // A slider or spin button snaps to its steps: near is taken.
+            // A field holds what was typed: 2004 is not 2024.
+            let role = n.role.to_lowercase();
+            let ranged = ["slider", "spin", "scroll bar", "progress", "dial", "level"]
+                .iter()
+                .any(|r| role.contains(r));
+            let tolerance = if ranged {
+                1e-6_f64.max(b.abs() * 0.01)
+            } else {
+                1e-9_f64.max(b.abs() * 1e-12)
+            };
+            return Some((a - b).abs() <= tolerance);
         }
         let cfg = &self.store.config.privacy;
         // Compare the way the value is shown (card numbers are masked).

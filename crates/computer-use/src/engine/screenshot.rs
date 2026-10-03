@@ -409,7 +409,8 @@ impl<B: Backend> Engine<B> {
                         img, id, base, at, ..
                     } => {
                         if self.ctx.depth == 1 {
-                            self.note.pictures_part.push(pid);
+                            let key = self.screen_key(pid);
+                            self.note.pictures_part.push(key);
                         }
                         let (ox, oy) = at;
                         let (x1, y1) = (ox + img.width, oy + img.height);
@@ -424,7 +425,8 @@ impl<B: Backend> Engine<B> {
                     }
                     Picture::Whole { img, id, .. } => {
                         if self.ctx.depth == 1 {
-                            self.note.pictures_whole.push(pid);
+                            let key = self.screen_key(pid);
+                            self.note.pictures_whole.push(key);
                         }
                         let text = format!(
                             "Screenshot #{id} of {label}: {}x{} px.{note}",

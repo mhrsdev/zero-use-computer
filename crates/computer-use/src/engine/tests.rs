@@ -5215,3 +5215,66 @@ fn launch_app_refuses_programs_in_the_scripts_folder() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Going to a new screen doesn't mark the old screen's look as repeated:
+/// coming back shows it "as it was", which the host must still have.
+#[test]
+fn a_new_screen_does_not_supersede_the_last_screens_look() {
+    let mut e = nav_engine(false);
+    e.store.config.server.result_meta = true;
+    let meta = |e: &mut Engine<MockBackend>| e.take_result_meta().expect("meta");
+    state_of(&mut e, serde_json::json!({}));
+    assert_eq!(meta(&mut e)["zero-use-computer/result"], 1);
+    let next = index_named(&e, 7, "Next");
+    press(&mut e, next);
+    meta(&mut e);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.text.contains("screen #2 (new)"), "{}", out.text);
+    let m = meta(&mut e);
+    assert_eq!(
+        m["zero-use-computer/supersedes"],
+        serde_json::json!([]),
+        "{m}"
+    );
+    assert_eq!(
+        m["zero-use-computer/supersedes-images"],
+        serde_json::json!([]),
+        "{m}"
+    );
+}
+
+/// A script inside a batch, after a step with a picture, no longer
+/// empties the batch's list of pictures (it panicked).
+#[test]
+fn a_script_step_after_a_picture_in_a_batch() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"steps": [
+            {"tool": "get_app_state", "arguments": {"app": "TextEdit", "screenshot": true}},
+            {"tool": "script", "arguments": {"code": "let p = page(\"t\", 50, 50); p.rect(5, 5, 10, 10); p"}}
+        ]}),
+    );
+    assert!(!out.text.contains("unexpectedly"), "{}", out.text);
+    assert!(out.text.contains("2. script"), "{}", out.text);
+}
+
+/// The batch's app goes only to tools that take one: a design step in a
+/// batch with an app works, and an `expect` the tool doesn't check stops
+/// nothing.
+#[test]
+fn batch_app_and_expect_only_where_they_apply() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"app": "TextEdit", "steps": [
+            {"tool": "get_app_state", "arguments": {}},
+            {"tool": "design", "arguments": {"name": "b1", "size": [100, 100], "add": ["rect 10 10 20 20"]}},
+            {"tool": "get_app_state", "arguments": {"expect": "Total"}},
+            {"tool": "list_apps", "arguments": {}}
+        ]}),
+    );
+    assert!(!out.text.contains("unknown field `app`"), "{}", out.text);
+    assert!(!out.text.contains("wasn't confirmed"), "{}", out.text);
+    assert!(out.text.contains("4. list_apps"), "{}", out.text);
+}
