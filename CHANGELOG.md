@@ -1,5 +1,83 @@
 # Changelog
 
+## v3.8.5
+
+The MCP side brought up to the protocol, and the code made easier to work
+on. What the tools return is the same as v3.8.3, unless a client asks for
+the new things (progress, results as data)
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.3...v3.8.5);
+[upgrading](docs/MIGRATING.md#upgrading-to-v385)).
+
+### The protocol
+
+- **One core for stdio and HTTP.** Each transport had its own copy of
+  `initialize`, `tools/list`, `tools/call` and the status method, and they
+  had drifted (HTTP never told the client its tool list changed). Now both
+  answer through `core.rs`.
+- **Batches** (MCP 2025-03-26): a JSON-RPC array is answered with one
+  array, in order, nothing for notifications; an empty one is an error.
+  They used to be refused.
+- **Progress:** a `tools/call` with `_meta.progressToken` gets
+  `notifications/progress` while it runs: `batch` per step, `draw` by how
+  far the pen has gone, `wait_for` by the time waited, `script` per tool
+  it calls. Never backwards, at most every 100 ms, the last always.
+- **A ping is answered at once,** even while a long call runs (it waited
+  behind the call).
+- **Annotations per tool.** They were one of two shapes: every tool that
+  acts destructive and open-world, every other read-only. Now `scroll`
+  and `select_text` aren't destructive, `set_value` and `set_clipboard`
+  are idempotent, `launch_app` isn't destructive, `window` stays on the
+  desktop, and `decide` reaches beyond it (it asks a model).
+- **Results as data** (`server.structured_output`, off): `list_apps`,
+  `find_element` and `get_clipboard` also return `structuredContent`,
+  with an `outputSchema` in the tool list, for clients on MCP 2025-06-18.
+  Off, as the roadmap asks of anything that changes what results hold:
+  models read the text, and some clients would send both.
+
+### HTTP: Streamable HTTP
+
+- **A cancel reaches the running call.** Requests were answered one after
+  another on one thread, so a cancel waited until the call it was meant
+  to stop had ended. Now they are read on a thread of their own.
+- **Sessions:** `initialize` is answered with an `Mcp-Session-Id`; an
+  unknown one gets 404 (the client starts again), DELETE ends one. A
+  client that sends none is served as before.
+- **Event streams:** a call that asks for progress, from a client that
+  takes `text/event-stream`, is answered with its progress and then its
+  result; a GET opens a stream on which a changed tool list is announced.
+  The events are written to the connection as they come (`tiny_http`
+  held small ones back).
+- **Checks:** `MCP-Protocol-Version` must be one the server speaks;
+  bound to this machine, a `Host` naming another is refused (DNS
+  rebinding, with the `Origin` check that was there); a refusal is a
+  JSON-RPC error, and 401 says `WWW-Authenticate: Bearer`. A body that
+  isn't JSON gets 400.
+- Tested end to end over a socket: sessions, batches, refusals, progress
+  events, a cancel from a second request, the GET stream.
+
+### The code
+
+- **`engine.rs` in parts.** It held 13,368 lines: every tool handler, the
+  drawing helpers and 4,900 lines of tests. The handlers are now in
+  `engine/` by what they do (`actions`, `looking`, `observe`, `drawing`,
+  `boards`, `screenshot`, `finding`, `batch`, `system`, `expect`,
+  `overlay`, `manager`, `progress`), next to `deciding` and `scripting`;
+  the tests are in `engine/tests.rs`. `engine.rs` is 2,100 lines.
+- **A call's state in one place.** What lives only while a call runs (its
+  depth, a batch's quiet steps, the element it aims at, what its `expect`
+  found, the pictures it took) is one `CallState`. A call that panics
+  resets all of it. It used to miss three: after a batch step panicked,
+  the tools a later script called reported no changes. A test with a key
+  that panics fails on the old reset.
+
+### Checked
+
+All 394 library tests (5 new) and 40 server tests (14 new) pass, and the
+live tests build; clippy is clean with and without `http`; Rust 1.88
+builds it; it type-checks for Windows and macOS. Not checked: real MCP
+clients over HTTP (Claude Code, Cursor), and real Windows and macOS
+desktops, as before.
+
 ## v3.8.3
 
 Faster, and nothing else: the tool results are the same text and the

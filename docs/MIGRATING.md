@@ -1,3 +1,23 @@
+# Upgrading to v3.8.5
+
+Nothing to change over stdio. Over HTTP, and for hosts that read the
+annotations:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| A JSON-RPC batch (an array) | an error | one array of answers | none |
+| HTTP: a body that isn't JSON | 200 with the error | 400 with the error | none |
+| HTTP: refusals (no token, another origin…) | `{"error": "…"}` | a JSON-RPC error; 401 also has `WWW-Authenticate: Bearer` | none |
+| HTTP: `initialize` | no session | `Mcp-Session-Id`; an unknown one later gets 404 | send none: served as before |
+| HTTP: GET | 405 | an event stream, with `Accept: text/event-stream` (405 without) | none |
+| HTTP: a `Host` naming another machine, bound to localhost | served | 403 | bind to the address you use |
+| HTTP: a cancel for a running call | waited behind it | ends it | none |
+| Tool annotations | acting tools all destructive and open-world, the others read-only | per tool (`scroll`, `select_text` not destructive; `set_value` idempotent; `decide` open-world…) | none |
+| A `tools/call` with `_meta.progressToken` | no progress | `notifications/progress` | send no token |
+
+New setting: `server.structured_output` (`false`): `list_apps`,
+`find_element` and `get_clipboard` also return `structuredContent`.
+
 # Upgrading to v3.8.3
 
 Nothing to change: the same results, sooner. One timing differs:

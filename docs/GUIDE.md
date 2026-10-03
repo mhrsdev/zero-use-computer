@@ -648,8 +648,26 @@ Then point any MCP client at `computer-use-mcp serve`, e.g. Claude Code's
 Desktop, Codex, Cursor, VS Code and HTTP, with configs in
 [`examples/`](../examples).
 
-The server speaks JSON-RPC 2.0 over stdio (or HTTP) and implements
-`initialize`, `tools/*`, and `prompts/*` / `resources/*` for the skills: for
+The server speaks JSON-RPC 2.0 over stdio (or HTTP), batches included
+(MCP 2025-06-18, 2025-03-26 and 2024-11-05), and implements
+`initialize`, `ping`, `tools/*`, and `prompts/*` / `resources/*` for the skills.
+Both transports answer through one core (`computer-use-mcp/src/core.rs`):
+
+- **Progress:** a `tools/call` with `_meta.progressToken` gets
+  `notifications/progress` while it runs: `batch` per step, `draw` by how
+  far the pen has gone, `wait_for` by the time waited, `script` per tool it
+  calls (at most every 100 ms, the last always).
+- **Cancel and ping:** `notifications/cancelled` ends the call that is
+  running, as the stop key would; a `ping` is answered at once, even
+  during a long call.
+- **Annotations:** each tool says whether it only reads, may destroy,
+  can be repeated safely and reaches beyond the desktop (hints for a host,
+  never a permission).
+- **Results as data** (`server.structured_output`, off): `list_apps`,
+  `find_element` and `get_clipboard` also return `structuredContent`, with
+  an `outputSchema` in the tool list, for clients on MCP 2025-06-18.
+
+For
 clients without skill files, the `computer-use`, `computer-use-design` and
 `computer-use-security` skills are MCP prompts (each comes with the safety
 rules), and every skill file is a resource
@@ -730,7 +748,7 @@ applying after a reload. The agent has no tool to change settings.
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window, `rebase_after_tokens` |
 | `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
-| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta` |
+| `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
 | top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
 
@@ -777,13 +795,36 @@ computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN"
 # or put it in settings: server.http_addr / server.http_token
 ```
 
-Each POST body is one JSON-RPC message (`Content-Type: application/json`, at
-most 4 MiB). Whoever can reach the endpoint can control the desktop, so:
+It is MCP's Streamable HTTP transport, on one endpoint (`/mcp`, or any
+path):
+
+- **POST** a JSON-RPC message or a batch (`Content-Type: application/json`,
+  at most 4 MiB). Requests are answered with JSON; a call that asks for
+  progress, from a client that accepts `text/event-stream`, is answered
+  with events: its progress, then the result. Notifications alone get
+  202. A body that isn't JSON gets 400 with a JSON-RPC error.
+- **Sessions:** `initialize` is answered with an `Mcp-Session-Id`. A
+  request naming a session the server doesn't know (it ended, or the
+  server restarted) gets 404, and the client starts again; a request
+  naming none is served. **DELETE** with the header ends a session.
+- **GET** with `Accept: text/event-stream` opens a stream on which the
+  server announces a changed tool list (a settings change, a saved
+  script). Not every client keeps one, so `tools.manager = "list_changed"`
+  still works as `"dispatch"` over HTTP.
+- Requests are read on a thread of their own: a cancel reaches the call
+  that is running, and a ping is answered at once. The engine answers the
+  rest in order.
+- `MCP-Protocol-Version`, when sent, must be one the server speaks (400).
+
+Whoever can reach the endpoint can control the desktop, so:
 
 - a bearer token is **required**: without one the server refuses to start;
   it is compared in constant time;
 - requests carrying a browser `Origin` other than `localhost` / `127.0.0.1` /
-  `[::1]` are refused, so a web page can't drive the desktop;
+  `[::1]` are refused, so a web page can't drive the desktop; bound to this
+  machine, so are those whose `Host` names another (DNS rebinding);
+- a refused request says why as a JSON-RPC error; a missing or wrong token
+  gets 401 with `WWW-Authenticate: Bearer`;
 - bind it to localhost or a trusted network (a warning is logged otherwise).
 
 ## Performance

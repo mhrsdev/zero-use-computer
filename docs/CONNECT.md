@@ -112,6 +112,11 @@ than on the command line (it would show in `ps`). The server refuses to
 start without a token, rejects browser origins that aren't local, and has no
 TLS: beyond localhost, put it behind an SSH tunnel or a TLS proxy.
 
+It is MCP's Streamable HTTP: sessions (`Mcp-Session-Id`), batches, progress
+as an event stream, cancels that reach the running call, and a GET stream
+that announces a changed tool list
+([details](GUIDE.md#remote-transport-optional)).
+
 Client entries: [`examples/http.mcp.json`](../examples/http.mcp.json)
 (Cursor / generic) and, for Claude Code,
 `claude mcp add --transport http computer-use http://127.0.0.1:8787/mcp --header "Authorization: Bearer $COMPUTER_USE_HTTP_TOKEN"`.
