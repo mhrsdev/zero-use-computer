@@ -14,9 +14,9 @@ use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
 use crate::types::Rect;
 
-/// One on-screen piece of the overlay.
+/// A piece of one agent's overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Layer {
+pub enum Part {
     Top,
     Right,
     Bottom,
@@ -25,7 +25,42 @@ pub enum Layer {
     Cursor,
 }
 
-const EDGES: [Layer; 4] = [Layer::Top, Layer::Right, Layer::Bottom, Layer::Left];
+impl Part {
+    pub const ALL: [Part; 6] = [
+        Part::Top,
+        Part::Right,
+        Part::Bottom,
+        Part::Left,
+        Part::Label,
+        Part::Cursor,
+    ];
+}
+
+/// One on-screen piece of the overlay: a part of one agent's (0 when the
+/// helper serves one engine; the hub's agents from 1).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Layer {
+    pub agent: u32,
+    pub part: Part,
+}
+
+impl Layer {
+    pub const fn new(agent: u32, part: Part) -> Self {
+        Self { agent, part }
+    }
+}
+
+/// `Cursor`, or `2:Cursor` for one of the hub's agents.
+impl std::fmt::Debug for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.agent {
+            0 => write!(f, "{:?}", self.part),
+            n => write!(f, "{n}:{:?}", self.part),
+        }
+    }
+}
+
+const EDGES: [Part; 4] = [Part::Top, Part::Right, Part::Bottom, Part::Left];
 
 /// The global keys the helper listens for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -275,6 +310,8 @@ pub struct Machine {
     stopped: bool,
     /// The stop key, for the label.
     hotkey: String,
+    /// Put before the label ("2 · "): which of the hub's agents it is.
+    badge: String,
 }
 
 impl Machine {
@@ -301,6 +338,7 @@ impl Machine {
             paused: false,
             stopped: false,
             hotkey: String::new(),
+            badge: String::new(),
         }
     }
 
@@ -487,7 +525,16 @@ impl Machine {
                 };
                 self.set_phase(p, now);
             }
-            Cmd::Hide { .. } | Cmd::Show | Cmd::Quit => {}
+            Cmd::Hide { .. }
+            | Cmd::Show
+            | Cmd::Quit
+            | Cmd::Hello { .. }
+            | Cmd::Client { .. }
+            | Cmd::Doing { .. }
+            | Cmd::Area { .. }
+            | Cmd::Lock { .. }
+            | Cmd::Unlock
+            | Cmd::Send { .. } => {}
         }
     }
 
@@ -611,7 +658,17 @@ impl Machine {
             Phase::Paused => &cfg.label_paused,
             Phase::Stopped => &cfg.label_stopped,
         };
-        template.replace("{hotkey}", &pretty_key(&self.hotkey))
+        format!(
+            "{}{}",
+            self.badge,
+            template.replace("{hotkey}", &pretty_key(&self.hotkey))
+        )
+    }
+
+    /// Say which agent this is in the label ("2 · Zero is thinking…"), or
+    /// nothing ("").
+    pub fn set_badge(&mut self, badge: &str) {
+        self.badge = badge.to_string();
     }
 
     /// What should be on screen now.
@@ -674,8 +731,8 @@ fn color_key(c: Color) -> [u8; 4] {
 type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 /// What the label was drawn with: text, colour, opacity, and its position.
 type LabelKey = (String, [u8; 4], u8, i64, i64);
-/// What the cursor image was drawn with: ring, body, ripple, opacity.
-type CursorKey = ([u8; 4], [u8; 4], i32, u8);
+/// What the cursor image was drawn with: ring, body, ripple, opacity, tag.
+type CursorKey = ([u8; 4], [u8; 4], i32, u8, String);
 
 #[derive(Default)]
 pub struct Painter {
@@ -689,6 +746,13 @@ pub struct Painter {
     /// Whether the surface fades natively, and the opacity last given to it.
     native_fade: Option<bool>,
     opacity: f32,
+    /// Whose parts these are (0: the helper's one engine).
+    agent: u32,
+    /// The cursor's tag instead of `cursor_tag` (the hub's agent numbers).
+    tag: Option<String>,
+    /// The agent's part of the screen: its glow and label stay in it
+    /// (None: the main screen).
+    area: Option<Rect>,
 }
 
 /// Scale an image's (premultiplied) pixels by `a`.
@@ -702,6 +766,50 @@ fn faded(mut pm: Pixmap, a: f32) -> Pixmap {
 }
 
 impl Painter {
+    /// The painter of one of the hub's agents. Its fades are drawn, never
+    /// the surface's own: that one opacity is every agent's.
+    pub fn for_agent(agent: u32) -> Self {
+        Self {
+            agent,
+            native_fade: Some(false),
+            ..Self::default()
+        }
+    }
+
+    /// Tag the cursor with `tag` instead of the settings' `cursor_tag`.
+    pub fn set_tag(&mut self, tag: Option<String>) {
+        if self.tag != tag {
+            self.tag = tag;
+            if self.cursor_img.is_some() {
+                self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new()));
+            }
+        }
+    }
+
+    /// Keep the glow and the label in `area` (the hub's agents' parts of
+    /// the screen), or on the main screen (None).
+    pub fn set_area(&mut self, area: Option<Rect>) {
+        if self.area != area {
+            self.area = area;
+            self.redraw();
+        }
+    }
+
+    fn layer(&self, part: Part) -> Layer {
+        Layer::new(self.agent, part)
+    }
+
+    /// Hide everything this painter shows (its agent left).
+    pub fn clear(&mut self, s: &mut dyn Surface) {
+        for p in Part::ALL {
+            s.hide(self.layer(p));
+        }
+        self.border = None;
+        self.label = None;
+        self.cursor_img = None;
+        self.cursor_pos = None;
+    }
+
     pub fn paint(
         &mut self,
         scene: &Scene,
@@ -716,7 +824,7 @@ impl Painter {
         });
         let ppu = s.px_per_unit().max(0.1);
         let screen = s.screen();
-        let main = s.main_screen();
+        let main = self.area.unwrap_or_else(|| s.main_screen());
 
         // Fading: natively where the platform can, else by redrawing.
         let o = (scene.opacity * 48.0).round() / 48.0;
@@ -817,21 +925,22 @@ impl Painter {
                 let key = (key, color_key(color), (core * 100.0) as u32, ak);
                 if self.border != Some(key) {
                     let core_px = (core * f64::from(ppu)) as f32;
-                    for (layer, (x, y, w, h, strong)) in EDGES.iter().zip(edges) {
+                    for (part, (x, y, w, h, strong)) in EDGES.iter().zip(edges) {
+                        let layer = self.layer(*part);
                         if w < 1.0 || h < 1.0 {
-                            s.hide(*layer);
+                            s.hide(layer);
                             continue;
                         }
                         let img = faded(draw::edge(px(w), px(h), color, strong, core_px), alpha);
-                        s.show(*layer, &img, x, y);
+                        s.show(layer, &img, x, y);
                     }
                     self.border = Some(key);
                 }
             }
             None => {
                 if self.border.take().is_some() {
-                    for l in EDGES {
-                        s.hide(l);
+                    for p in EDGES {
+                        s.hide(self.layer(p));
                     }
                 }
             }
@@ -860,13 +969,15 @@ impl Painter {
                     .min(screen.x + screen.width - lw)
                     .max(screen.x);
                 let above = top - lh - 4.0;
-                let y = if above >= screen.y { above } else { inside };
+                // An agent's label stays in its part of the screen.
+                let fits = above >= screen.y && (self.area.is_none() || above >= main.y);
+                let y = if fits { above } else { inside };
                 let pos = (x.round() as i64, y.round() as i64);
                 match img {
-                    Some(pm) => s.show(Layer::Label, &pm, x, y),
+                    Some(pm) => s.show(self.layer(Part::Label), &pm, x, y),
                     None => {
                         if self.label.as_ref().is_some_and(|l| (l.3, l.4) != pos) {
-                            s.move_to(Layer::Label, x, y);
+                            s.move_to(self.layer(Part::Label), x, y);
                         }
                     }
                 }
@@ -874,7 +985,7 @@ impl Painter {
             }
             _ => {
                 if self.label.take().is_some() {
-                    s.hide(Layer::Label);
+                    s.hide(self.layer(Part::Label));
                 }
             }
         }
@@ -882,15 +993,16 @@ impl Painter {
         // Cursor: redraw the image only when its look changes; move it cheaply.
         match scene.cursor {
             Some(c) => {
+                let tag = self.tag.as_deref().unwrap_or(&cfg.cursor_tag);
                 let key = (
                     color_key(c.ring),
                     color_key(c.body),
                     c.ripple.map_or(-1, |r| (r * 30.0) as i32),
                     ak,
+                    tag.to_string(),
                 );
-                let redraw = self.cursor_img != Some(key);
-                let art = redraw
-                    .then(|| draw::cursor(fonts, &cfg.cursor_tag, scale, c.body, c.ring, c.ripple));
+                let redraw = self.cursor_img.as_ref() != Some(&key);
+                let art = redraw.then(|| draw::cursor(fonts, tag, scale, c.body, c.ring, c.ripple));
                 if let Some(a) = &art {
                     self.cursor_hot = (
                         f64::from(a.hotspot.0) / f64::from(ppu),
@@ -901,17 +1013,17 @@ impl Painter {
                 let pos = (x.round() as i64, y.round() as i64);
                 if let Some(a) = art {
                     let img = faded(a.image, alpha);
-                    s.show(Layer::Cursor, &img, x, y);
+                    s.show(self.layer(Part::Cursor), &img, x, y);
                     self.cursor_img = Some(key);
                 } else if self.cursor_pos != Some(pos) {
-                    s.move_to(Layer::Cursor, x, y);
+                    s.move_to(self.layer(Part::Cursor), x, y);
                 }
                 self.cursor_pos = Some(pos);
             }
             None => {
                 if self.cursor_img.take().is_some() {
                     self.cursor_pos = None;
-                    s.hide(Layer::Cursor);
+                    s.hide(self.layer(Part::Cursor));
                 }
             }
         }
@@ -931,7 +1043,7 @@ impl Painter {
             self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN));
         }
         if self.cursor_img.is_some() {
-            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0));
+            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new()));
         }
     }
 
@@ -1191,7 +1303,7 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
-fn open_surface() -> Result<Box<dyn Surface>, String> {
+pub(super) fn open_surface() -> Result<Box<dyn Surface>, String> {
     #[cfg(target_os = "linux")]
     {
         // Wayland compositors with layer-shell (Hyprland, sway, KDE…) get

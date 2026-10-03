@@ -31,7 +31,7 @@ use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zx
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use super::draw;
-use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Part, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -43,13 +43,15 @@ const NAMESPACE: &str = "computer-use";
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
 
 /// Every layer the painter uses, created up front.
+/// The parts made at start (one engine's); a hub's other agents get theirs
+/// when first shown.
 const LAYERS: [Layer; 6] = [
-    Layer::Top,
-    Layer::Right,
-    Layer::Bottom,
-    Layer::Left,
-    Layer::Label,
-    Layer::Cursor,
+    Layer::new(0, Part::Top),
+    Layer::new(0, Part::Right),
+    Layer::new(0, Part::Bottom),
+    Layer::new(0, Part::Left),
+    Layer::new(0, Part::Label),
+    Layer::new(0, Part::Cursor),
 ];
 
 fn err(e: impl std::fmt::Display) -> String {

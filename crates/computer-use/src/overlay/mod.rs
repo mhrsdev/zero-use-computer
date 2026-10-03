@@ -17,6 +17,7 @@
 
 pub mod draw;
 pub mod helper;
+pub mod hub;
 pub mod text;
 
 #[cfg(target_os = "linux")]
@@ -129,7 +130,117 @@ pub enum Cmd {
     },
     Show,
     Quit,
+    // -- to the hub only (a helper of its own ignores these) --
+    /// The first line to the hub: the token it wrote, who this is, and the
+    /// number it had before (a hub started again gives it back if free).
+    Hello {
+        token: String,
+        #[serde(default)]
+        client: String,
+        #[serde(default)]
+        pid: u32,
+        #[serde(default)]
+        want: Option<u32>,
+        /// The screen's work area, for sharing it out.
+        #[serde(default)]
+        screen: Option<[f64; 4]>,
+        #[serde(default)]
+        proto: u32,
+    },
+    /// The MCP client this engine serves ("claude-code", "codex"…).
+    Client {
+        name: String,
+    },
+    /// The app this agent works with now.
+    Doing {
+        app: String,
+    },
+    /// The part of the screen this agent would like.
+    Area {
+        want: AreaWant,
+    },
+    /// Ask for the keyboard and mouse (answered with [`Reply::Granted`]).
+    Lock {
+        id: u64,
+    },
+    /// Done with the keyboard and mouse.
+    Unlock,
+    /// A message for one agent, or all (`to` None).
+    Send {
+        #[serde(default)]
+        to: Option<u32>,
+        text: String,
+    },
 }
+
+/// A part of the screen an agent asks the hub for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AreaWant {
+    /// Whatever the hub shares out.
+    #[default]
+    Auto,
+    Full,
+    Half,
+    Third,
+    Quarter,
+}
+
+impl AreaWant {
+    /// The share of the screen asked for (None: whatever is left).
+    pub fn fraction(self) -> Option<f64> {
+        match self {
+            AreaWant::Auto => None,
+            AreaWant::Full => Some(1.0),
+            AreaWant::Half => Some(0.5),
+            AreaWant::Third => Some(1.0 / 3.0),
+            AreaWant::Quarter => Some(0.25),
+        }
+    }
+}
+
+impl std::str::FromStr for AreaWant {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Ok(Self::Auto),
+            "full" | "whole" | "all" => Ok(Self::Full),
+            "half" => Ok(Self::Half),
+            "third" => Ok(Self::Third),
+            "quarter" => Ok(Self::Quarter),
+            other => Err(format!(
+                "unknown area `{other}` (full, half, third, quarter, auto)"
+            )),
+        }
+    }
+}
+
+/// Another agent on this desktop, as the hub knows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Peer {
+    pub agent: u32,
+    #[serde(default)]
+    pub client: String,
+    /// The app it works with, when it said.
+    #[serde(default)]
+    pub app: String,
+    /// Its part of the screen.
+    #[serde(default)]
+    pub area: Option<[f64; 4]>,
+}
+
+/// A message from another agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Message {
+    pub from: u32,
+    #[serde(default)]
+    pub client: String,
+    pub text: String,
+}
+
+/// The hub protocol's version: a member and a hub that differ don't mix
+/// (the member draws its own overlay instead).
+pub const HUB_PROTO: u32 = 1;
 
 /// Helper → engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +275,36 @@ pub enum Reply {
     Arrived {
         id: u64,
     },
+    // -- from the hub only --
+    /// Joined: this agent's number.
+    Welcome {
+        agent: u32,
+        proto: u32,
+    },
+    /// Not joined (a wrong token, another protocol).
+    Refused {
+        why: String,
+    },
+    /// Every agent now on this desktop.
+    Agents {
+        agents: Vec<Peer>,
+    },
+    /// This agent's part of the screen (None: all of it), and whether it
+    /// is what it asked for.
+    Region {
+        rect: Option<[f64; 4]>,
+        granted: bool,
+    },
+    /// The keyboard and mouse are this agent's ([`Cmd::Lock`] `id`).
+    Granted {
+        id: u64,
+    },
+    /// Another agent has just used the keyboard or mouse (so the input
+    /// isn't taken for the user's).
+    Input {
+        agent: u32,
+    },
+    Message(Message),
 }
 
 /// Replies kept for a later `wait_for` at most.
@@ -224,6 +365,82 @@ pub struct Overlay {
     /// is first asked.
     arrivals: Option<bool>,
     next_id: u64,
+    /// What the hub said, when this overlay is the hub's.
+    hub: Option<Arc<HubLink>>,
+}
+
+/// What the hub has told this engine: its number, the other agents, its
+/// part of the screen, their messages. Kept up to date by the reader thread.
+#[derive(Default)]
+pub struct HubLink {
+    agent: std::sync::atomic::AtomicU32,
+    peers: Mutex<Vec<Peer>>,
+    /// Its part of the screen and whether it was what it asked for; None
+    /// until the hub says.
+    region: Mutex<Option<(Option<crate::types::Rect>, bool)>>,
+    inbox: Mutex<std::collections::VecDeque<Message>>,
+    /// When another agent last used the keyboard or mouse.
+    others_input: Mutex<Option<Instant>>,
+}
+
+/// Messages kept for the engine at most (the oldest go first).
+const MAX_INBOX: usize = 50;
+
+impl HubLink {
+    fn take(&self, r: Reply) {
+        match r {
+            Reply::Welcome { agent, .. } => self.agent.store(agent, Ordering::SeqCst),
+            Reply::Agents { agents } => *lock(&self.peers) = agents,
+            Reply::Region { rect, granted } => {
+                let rect = rect.map(|r| crate::types::Rect::new(r[0], r[1], r[2], r[3]));
+                *lock(&self.region) = Some((rect, granted));
+            }
+            Reply::Input { .. } => *lock(&self.others_input) = Some(Instant::now()),
+            Reply::Message(m) => {
+                let mut inbox = lock(&self.inbox);
+                if inbox.len() >= MAX_INBOX {
+                    inbox.pop_front();
+                }
+                inbox.push_back(m);
+            }
+            _ => {}
+        }
+    }
+
+    /// This engine's number on the desktop.
+    pub fn agent(&self) -> u32 {
+        self.agent.load(Ordering::SeqCst)
+    }
+
+    /// Every agent on the desktop, this one included.
+    pub fn peers(&self) -> Vec<Peer> {
+        lock(&self.peers).clone()
+    }
+
+    /// This engine's part of the screen (None: the whole of it, or not
+    /// told yet), and whether it is what it asked for.
+    pub fn region(&self) -> (Option<crate::types::Rect>, bool) {
+        lock(&self.region).unwrap_or((None, true))
+    }
+
+    /// The messages that came since the last call.
+    pub fn take_messages(&self) -> Vec<Message> {
+        lock(&self.inbox).drain(..).collect()
+    }
+
+    /// Whether a message is waiting.
+    pub fn has_messages(&self) -> bool {
+        !lock(&self.inbox).is_empty()
+    }
+
+    /// When another agent last used the keyboard or mouse.
+    pub fn others_input(&self) -> Option<Instant> {
+        *lock(&self.others_input)
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Overlay {
@@ -252,8 +469,59 @@ impl Overlay {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = cmd.spawn()?;
-        let mut stdin = child.stdin.take().expect("piped stdin");
+        let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        Self::start(
+            Some(child),
+            Box::new(stdin),
+            Box::new(BufReader::new(stdout)),
+            config,
+            keys,
+            stop,
+            on_settings,
+            None,
+        )
+    }
+
+    /// Join the hub every engine on this desktop shares (starting it with
+    /// `launcher` if none runs): one overlay with a cursor for each agent,
+    /// one stop key for all of them, their numbers and parts of the screen,
+    /// turns at the keyboard and mouse, and their messages.
+    pub fn join_hub(
+        launcher: &Launcher,
+        opts: &hub::JoinOptions,
+        config: &OverlayConfig,
+        keys: &Keys,
+        stop: Arc<AtomicBool>,
+        on_settings: Option<OnSettings>,
+    ) -> std::io::Result<Self> {
+        let (stream, reader, agent) = hub::connect(launcher, opts)?;
+        let link = Arc::new(HubLink::default());
+        link.agent.store(agent, Ordering::SeqCst);
+        Self::start(
+            None,
+            Box::new(stream),
+            Box::new(reader),
+            config,
+            keys,
+            stop,
+            on_settings,
+            Some(link),
+        )
+    }
+
+    /// Talk to a helper (or the hub) over `writer` and `reader`.
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        child: Option<Child>,
+        mut writer: Box<dyn Write + Send>,
+        reader: Box<dyn BufRead + Send>,
+        config: &OverlayConfig,
+        keys: &Keys,
+        stop: Arc<AtomicBool>,
+        on_settings: Option<OnSettings>,
+        hub: Option<Arc<HubLink>>,
+    ) -> std::io::Result<Self> {
         let alive = Arc::new(AtomicBool::new(true));
 
         // Bounded: a helper that stops reading can't make it grow forever.
@@ -263,15 +531,15 @@ impl Overlay {
             .name("overlay-writer".into())
             .spawn(move || {
                 for line in lines {
-                    if writeln!(stdin, "{line}")
-                        .and_then(|_| stdin.flush())
+                    if writeln!(writer, "{line}")
+                        .and_then(|_| writer.flush())
                         .is_err()
                     {
                         a.store(false, Ordering::Relaxed);
                         break;
                     }
                 }
-                // Dropping stdin here tells the helper to exit.
+                // Dropping the writer here tells the helper to exit.
             })?;
 
         let (rtx, rx) = mpsc::channel::<Reply>();
@@ -281,10 +549,11 @@ impl Overlay {
         let hk = hotkey_state.clone();
         let settings_state = Arc::new(Mutex::new(None));
         let sk = settings_state.clone();
+        let link = hub.clone();
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
-                for line in BufReader::new(stdout).lines() {
+                for line in reader.lines() {
                     let Ok(line) = line else { break };
                     let Ok(r) = serde_json::from_str::<Reply>(&line) else {
                         continue;
@@ -326,6 +595,16 @@ impl Overlay {
                                 f();
                             }
                         }
+                        r @ (Reply::Welcome { .. }
+                        | Reply::Refused { .. }
+                        | Reply::Agents { .. }
+                        | Reply::Region { .. }
+                        | Reply::Input { .. }
+                        | Reply::Message(_)) => {
+                            if let Some(link) = &link {
+                                link.take(r);
+                            }
+                        }
                         r => {
                             if rtx.send(r).is_err() {
                                 break;
@@ -337,7 +616,7 @@ impl Overlay {
             })?;
 
         let o = Self {
-            child: Some(child),
+            child,
             tx: Some(tx),
             rx,
             backlog: Vec::new(),
@@ -349,6 +628,7 @@ impl Overlay {
             hide_answered: false,
             arrivals: None,
             next_id: 0,
+            hub,
         };
         o.configure(config, keys);
         Ok(o)
@@ -477,6 +757,51 @@ impl Overlay {
             .is_some();
         self.arrivals = Some(arrived);
         arrived
+    }
+
+    /// What the hub said, when this overlay is the hub's.
+    pub fn hub(&self) -> Option<&Arc<HubLink>> {
+        self.hub.as_ref()
+    }
+
+    /// Wait for a turn at the keyboard and mouse (the hub gives them to one
+    /// agent at a time), at most `limit`, or until `give_up` says to.
+    /// True once it is this engine's.
+    pub fn lock_input(&mut self, limit: Duration, give_up: impl Fn() -> bool) -> bool {
+        if self.hub.is_none() || !self.alive() {
+            return true;
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&Cmd::Lock { id });
+        let deadline = Instant::now() + limit;
+        loop {
+            if self
+                .wait_for(
+                    Duration::from_millis(50),
+                    |r| matches!(r, Reply::Granted { id: i } if *i == id),
+                )
+                .is_some()
+            {
+                return true;
+            }
+            // A hub that went away gives no turns: the engine goes on alone.
+            if !self.alive() {
+                return true;
+            }
+            if give_up() || Instant::now() >= deadline {
+                // Not waiting any longer: the turn, if it comes, goes back.
+                self.send(&Cmd::Unlock);
+                return false;
+            }
+        }
+    }
+
+    /// Done with the keyboard and mouse.
+    pub fn unlock_input(&self) {
+        if self.hub.is_some() {
+            self.send(&Cmd::Unlock);
+        }
     }
 
     pub fn hide_for_capture(&mut self) -> Option<bool> {

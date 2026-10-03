@@ -119,6 +119,16 @@ enum Command {
         #[arg(long)]
         demo: bool,
     },
+    /// (internal) The hub every server on this desktop shares: one overlay
+    /// with a cursor per agent, one stop key, turns at the keyboard and
+    /// mouse. The first server to start runs it.
+    #[command(hide = true)]
+    Hub {
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,6 +256,14 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    // The hub runs on its own: no logging, no config.
+    if let Some(Command::Hub { port, home }) = &cli.command {
+        let mut args = vec!["--port".to_string(), port.to_string()];
+        if let Some(h) = home {
+            args.extend(["--home".to_string(), h.display().to_string()]);
+        }
+        std::process::exit(computer_use::overlay::hub::run(&args));
+    }
     // The overlay helper talks JSON on stdout: no logging, no config.
     if let Some(Command::Overlay { parent, demo }) = &cli.command {
         let mut args = Vec::new();
@@ -324,7 +342,9 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Command::Config { .. } | Command::Overlay { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Overlay { .. } | Command::Hub { .. } => {
+            unreachable!("handled above")
+        }
         Command::Doctor => doctor(&cli.common, store),
         Command::Settings { no_browser } => {
             let path = config_path(&cli.common);
