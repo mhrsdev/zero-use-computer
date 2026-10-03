@@ -1,5 +1,155 @@
 # Changelog
 
+## v3.8.2
+
+Stable across Windows, macOS and Linux, and predictable on setups that
+aren't the usual one: other keyboard layouts and languages, Store and
+Electron apps, apps run as administrator, Wayland desktops without the
+usual tools, headless and remote sessions, broken settings files. Four
+reviews (one per system, one of the shared core) looked for the places
+where the server hung, did the wrong thing or failed without saying why;
+each fix has a test where one can be written off the real desktop
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.8.1...v3.8.2)).
+
+### Everywhere
+
+- **A broken settings file no longer stops the server.** A typo, a value
+  of the wrong type or a stop key written `Ctrl + Alt + Esc` made the
+  client show only "server failed to start". Now it serves with the
+  default settings and the first tool result says what is wrong; the
+  fixed file is used as soon as it is saved. A file saved as UTF-16
+  (Windows PowerShell 5.1's `>`) or with a byte-order mark is read, and
+  `Ctrl + Alt + Esc` is a valid key.
+- **The client going away stops the work.** When the client closes the
+  connection, the call that is running stops (as the stop key would) and
+  the ones waiting don't run, instead of acting on the desktop for nobody
+  until the client kills the server mid-drag. Cancels always get through,
+  however many messages are waiting.
+- **Folders don't depend on where the server was started** (`/` for some
+  hosts, the project for others): an empty `COMPUTER_USE_HOME` counts as
+  unset, `~` is the home folder, and a relative `script.dir` or
+  `audit.path` is in the server's folder.
+- **Apps the agent opens are not closed with it:** on macOS and Linux
+  they get a process group of their own, so Ctrl+C in the client's
+  terminal no longer closes the user's editor or browser.
+- **Text matching** ignores accents however they are written (`é` as one
+  letter, or `e` and an accent mark, as macOS file names store it), and
+  Korean written as its parts matches the syllables.
+- **No more hangs:** card-number masking took seconds to minutes on a
+  long line of digit groups; now it is linear.
+- **Settings are checked:** timing values the stop key can't end
+  (`timing.settle_ms = 600000`) and misspelt log levels are refused with
+  the reason. The log level comes from `server.log` or
+  `$COMPUTER_USE_LOG`, no longer `$RUST_LOG` (one exported for another
+  program flooded the client's log).
+- Saved scripts can't be named `find_tools` or `use_tool` (the tool list
+  named them twice, which clients refuse for the whole session). Two
+  settings saves at once no longer share a temporary file, and on
+  Windows a save is retried while an antivirus holds the file. Tesseract
+  opens no console window. HTTP accepts `bearer` in any case. A
+  byte-order mark before the first message is skipped. The on-screen
+  indicator draws Chinese, Japanese and Korean app names.
+- **Installing over a running copy:** the install scripts move a new
+  program into place instead of writing over the old one (macOS killed
+  the signed program, "Killed: 9"; Windows refused to replace the running
+  file).
+
+### Windows
+
+- **Keys on other layouts:** `press_key` of a plain character uses the
+  user's layout (on AZERTY `1` typed `&`; on a Russian layout `a` typed
+  `ф`), and a dead key (`^`, `` ` ``, `~`) is typed, never left waiting to
+  combine with the next key. Shortcuts (`ctrl+s`, `ctrl+1`) work by key
+  position as before.
+- **Swapped mouse buttons** (left-handed setups): a click was a
+  right-click; now a click is a click.
+- **Store apps** (Calculator, Settings, Photos) are their own apps, not
+  all "ApplicationFrameHost", so `launch_app("calc")` finds its window.
+- **Non-English Windows:** a click used the mouse instead of the
+  element's own action, because the action was named in the system's
+  language ("Drücken"); Start Menu shortcuts are found by their
+  translated names.
+- **Apps run as administrator:** Windows drops input to them without an
+  error; now the agent is told to run the server as administrator to
+  control them.
+- **Nothing waits forever:** a busy window (not yet "not responding") no
+  longer blocks the capture; opening a link can't hang; a clipboard whose
+  owner hangs is an error. `list_windows` asks the app nothing, so a hung
+  app no longer slows it down or loses its windows.
+- **Errors that say what happened:** a move, resize, maximize or minimize
+  that didn't happen is an error (a window moved to a monitor of another
+  scale is sized again); a capture that fails falls back to the screen
+  or says why (a locked screen, a UAC prompt, a disconnected remote
+  session); a window that closed is an error, not an empty tree.
+- Console programs (`cmd`, `powershell`, `python`) open in a console of
+  their own instead of exiting at once. Per-monitor scaling on Windows
+  8.1 and 10 before 1703. `.EXE` in capitals. The indicator's fonts come
+  from wherever Windows is installed and are drawn at the monitor's
+  scale.
+
+### macOS
+
+- **Shortcuts on other layouts:** keys were sent as US key codes, so on
+  AZERTY `cmd+a` was Cmd+Q (the app quit) and `cmd+z` was Cmd+W (the
+  window closed); QWERTZ swapped `y` and `z`. Keys now come from the
+  current layout. Text is typed with an ASCII layout for the moment a
+  Japanese, Chinese or Korean input method is on, so it isn't converted.
+- **Electron and Chromium apps** (Slack, VS Code, Discord, Teams) show
+  their whole tree, not only the window frame.
+- **The tree:** an element that answers "can't complete" at once no
+  longer cuts the walk short; a window that closed is an error, not a
+  fake empty node.
+- **OCR in the user's languages:** Vision read English only unless
+  `ocr.languages` was set; now the system's preferred languages it
+  supports, and Vision's own reason when it fails.
+- **`launch_app`** finds apps whose process is named otherwise ("Visual
+  Studio Code" runs as "Code") at once, instead of waiting out the launch
+  timeout; an app whose windows are all on another Space or in full
+  screen is explained.
+- Clicks name the target window (one behind another no longer gets the
+  click in the wrong window). Several large displays no longer make a
+  screenshot of hundreds of megabytes. Accessibility errors are in words,
+  not numbers, and a short `macos.messaging_timeout_secs` no longer
+  breaks the detection of a hung app. Notifications without the
+  Accessibility permission, a clipboard holding only a picture, and a
+  window that refused a resize are errors that say so; empty images no
+  longer crash a call.
+
+### Linux
+
+- **Accessibility is switched on:** most desktops (KDE, XFCE, sway,
+  Hyprland, often GNOME) start with it off, and Qt apps, Firefox and
+  Chromium then show no tree. The server switches it on and starts apps
+  it opens with it on; `doctor` says whether it is.
+- **No accessibility bus** (ssh, a container, a headless test machine):
+  the server used not to start. Now screenshots, input and windows work,
+  element calls say why they can't, and the bus is looked for again
+  later (also where `AT_SPI_BUS_ADDRESS` or the X root says).
+- **Wayland on GNOME and KDE:** X11 apps' windows were captured black; a
+  native app in front was reported as "Desktop". A leftover
+  `WAYLAND_DISPLAY` in an X11 session no longer makes it act as Wayland.
+- **No hangs on a remote or dead X server:** connecting gives up after 2
+  seconds instead of about two minutes, again on every retry.
+- **Clipboard:** a picture on it was returned as bytes and an empty one
+  was an error; now text only, and empty is "".
+- A window manager that quit is no longer taken for running; Flatpak
+  apps' windows are matched by the real process id; GTK apps at 2× on
+  X11 are clicked where they are; GNOME's own and Flatpak notifications
+  are recorded; up to 16 characters not on the keyboard are typed
+  without one being re-mapped while an app still reads it; coordinates
+  out of range are refused instead of wrapping; XTest missing leaves
+  screenshots working; the work area is the current desktop's.
+
+### Not done
+
+- Real Windows and macOS desktops: the fixes for them are checked by CI
+  (build, clippy and unit tests on both) and by reading, not on the
+  hardware.
+- Linux: an X server that stops answering (not one that is gone) can
+  still hold a screenshot or pointer query.
+- Clients that negotiate MCP 2025-03-26 and send JSON-RPC batches still
+  get an error.
+
 ## v3.8.1
 
 The design board (`design`, the Canva-like tool) is cheaper, faster and

@@ -1,8 +1,9 @@
 //! A thin blocking wrapper over the AT-SPI2 D-Bus API.
 //!
 //! AT-SPI exposes the desktop accessibility tree on a dedicated bus. The
-//! address of that bus is fetched from `org.a11y.Bus` on the session bus;
-//! every accessible is addressed by `(bus_name, object_path)`.
+//! address of that bus is `$AT_SPI_BUS_ADDRESS`, else the X root window's
+//! `AT_SPI_BUS`, else asked of `org.a11y.Bus` on the session bus; every
+//! accessible is addressed by `(bus_name, object_path)`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -219,15 +220,91 @@ pub struct AtspiConnection {
     lost: AtomicBool,
 }
 
+/// The session bus, with a timeout on calls: a hung bus launcher must not
+/// hang the server.
+fn session() -> Result<Connection> {
+    zbus::blocking::connection::Builder::session()
+        .map_err(bus_err)?
+        .method_timeout(METHOD_TIMEOUT)
+        .build()
+        .map_err(bus_err)
+}
+
+/// Where the accessibility bus is, in the order AT-SPI's own library looks:
+/// `$AT_SPI_BUS_ADDRESS`, the X root window's `AT_SPI_BUS` property (set
+/// by the bus launcher when there is an X server; asked only if needed),
+/// then the bus launcher on the session bus.
+fn bus_address(
+    env: Option<String>,
+    x_root: impl FnOnce() -> Option<String>,
+    launcher: impl FnOnce() -> Result<String>,
+) -> Result<String> {
+    if let Some(a) = env.filter(|a| !a.trim().is_empty()) {
+        return Ok(a);
+    }
+    if let Some(a) = x_root().filter(|a| !a.trim().is_empty()) {
+        return Ok(a);
+    }
+    launcher()
+}
+
+/// Whether accessibility is switched on for the session
+/// (`org.a11y.Status.IsEnabled`); `None` when there is no one to ask.
+pub fn enabled() -> Option<bool> {
+    status(&session().ok()?)
+}
+
+fn status(session: &Connection) -> Option<bool> {
+    let reply = session
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some(PROPS_IFACE),
+            "Get",
+            &("org.a11y.Status", "IsEnabled"),
+        )
+        .ok()?;
+    let v: OwnedValue = reply.body().deserialize().ok()?;
+    bool::try_from(v).ok()
+}
+
+/// Switch accessibility on for the session when it is off: it is off by
+/// default outside GNOME (KDE, Xfce, sway, Hyprland), and Qt, Firefox and
+/// Chromium then don't expose their elements. Apps started from then on
+/// (and Qt ones that are running) do.
+fn switch_on() {
+    let Ok(session) = session() else {
+        return;
+    };
+    if status(&session) != Some(false) {
+        return;
+    }
+    let on = zbus::zvariant::Value::from(true);
+    match session.call_method(
+        Some("org.a11y.Bus"),
+        "/org/a11y/bus",
+        Some(PROPS_IFACE),
+        "Set",
+        &("org.a11y.Status", "IsEnabled", on),
+    ) {
+        Ok(_) => log::info!("switched accessibility on (org.a11y.Status.IsEnabled)"),
+        Err(e) => log::warn!("cannot switch accessibility on: {e}"),
+    }
+}
+
 impl AtspiConnection {
-    /// The accessibility bus's address (asked on the session bus).
-    fn address() -> Result<String> {
-        // With a timeout: a hung bus launcher must not hang the server.
-        let session = zbus::blocking::connection::Builder::session()
-            .map_err(bus_err)?
-            .method_timeout(METHOD_TIMEOUT)
-            .build()
-            .map_err(bus_err)?;
+    /// The accessibility bus's address (see [`bus_address`]); `x_root`
+    /// reads the X root window's `AT_SPI_BUS`.
+    fn address(x_root: impl FnOnce() -> Option<String>) -> Result<String> {
+        bus_address(std::env::var("AT_SPI_BUS_ADDRESS").ok(), x_root, || {
+            Self::ask_launcher()
+        })
+    }
+
+    /// The accessibility bus's address, as its launcher on the session bus
+    /// says.
+    fn ask_launcher() -> Result<String> {
+        let session = session()?;
         let reply = session
             .call_method(
                 Some("org.a11y.Bus"),
@@ -244,20 +321,36 @@ impl AtspiConnection {
         reply.body().deserialize().map_err(bus_err)
     }
 
-    /// Connect to the accessibility bus (starting from the session bus).
-    pub fn connect() -> Result<Self> {
-        let addr = Self::address()?;
-        // The timeout covers every call on this connection, blocking and
-        // async (`fetch_many`, `walk`, `pids_of`) alike.
-        let conn = zbus::blocking::connection::Builder::address(addr.as_str())
-            .map_err(bus_err)?
-            .method_timeout(METHOD_TIMEOUT)
-            .build()
-            .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))?;
+    /// Connect to the accessibility bus (see [`bus_address`]; `x_root`
+    /// reads the X root window's `AT_SPI_BUS`), switching accessibility on
+    /// for the session if it is off.
+    pub fn connect(x_root: impl FnOnce() -> Option<String>) -> Result<Self> {
+        let addr = Self::address(x_root)?;
+        switch_on();
+        let conn = match Self::open(&addr) {
+            Ok(c) => c,
+            // An address from the environment or the X server can be
+            // another machine's (ssh -X) or a session's that ended: the
+            // launcher's, if it says another.
+            Err(e) => match Self::ask_launcher() {
+                Ok(other) if other != addr => Self::open(&other)?,
+                _ => return Err(e),
+            },
+        };
         Ok(Self {
             conn,
             lost: AtomicBool::new(false),
         })
+    }
+
+    fn open(addr: &str) -> Result<Connection> {
+        // The timeout covers every call on this connection, blocking and
+        // async (`fetch_many`, `walk`, `pids_of`) alike.
+        zbus::blocking::connection::Builder::address(addr)
+            .map_err(bus_err)?
+            .method_timeout(METHOD_TIMEOUT)
+            .build()
+            .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))
     }
 
     /// Whether the connection broke (the bus went away): reconnect.
@@ -960,11 +1053,11 @@ mod tests {
     #[test]
     #[ignore]
     fn an_action_held_by_the_app_times_out_and_a_gone_app_is_gone() {
-        let a11y = AtspiConnection::connect().expect("the accessibility bus");
+        let a11y = AtspiConnection::connect(|| None).expect("the accessibility bus");
         // An app that takes the call and doesn't answer (a button whose
         // handler opened a modal dialog before the reply).
         let app = zbus::blocking::connection::Builder::address(
-            AtspiConnection::address().unwrap().as_str(),
+            AtspiConnection::address(|| None).unwrap().as_str(),
         )
         .unwrap()
         .build()
@@ -982,6 +1075,36 @@ mod tests {
         let e = a11y.do_action(&r, 0).unwrap_err();
         assert_eq!(e.fail, Fail::Gone, "{e}");
         assert!(!a11y.lost());
+    }
+
+    #[test]
+    fn the_bus_address_is_looked_for_in_order() {
+        let fail = || -> Result<String> { Err(Error::Platform("no session bus".into())) };
+        // The environment first: neither X nor the session bus is asked.
+        assert_eq!(
+            bus_address(
+                Some("unix:path=/a".into()),
+                || unreachable!(),
+                || unreachable!()
+            )
+            .unwrap(),
+            "unix:path=/a"
+        );
+        // Then the X root window's property (ssh -X, containers).
+        assert_eq!(
+            bus_address(None, || Some("unix:path=/x".into()), || unreachable!()).unwrap(),
+            "unix:path=/x"
+        );
+        assert_eq!(
+            bus_address(Some(" ".into()), || Some("unix:path=/x".into()), fail).unwrap(),
+            "unix:path=/x"
+        );
+        // Then the bus launcher.
+        assert_eq!(
+            bus_address(None, || None, || Ok("unix:path=/s".into())).unwrap(),
+            "unix:path=/s"
+        );
+        assert!(bus_address(None, || Some(String::new()), fail).is_err());
     }
 
     #[test]
