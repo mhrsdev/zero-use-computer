@@ -428,7 +428,8 @@ pub struct OverlayConfig {
     pub done_linger_ms: u64,
     /// How long an error stays red before returning to "thinking".
     pub error_hold_ms: u64,
-    /// Duration of the cursor's glide to a new point.
+    /// Duration of the cursor's glide to a new point. An action waits for
+    /// the cursor to get there first (at most this long, plus a little).
     pub move_ms: u64,
     /// How long the overlay takes to fade in when it appears.
     pub fade_in_ms: u64,

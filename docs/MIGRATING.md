@@ -1,3 +1,16 @@
+# Upgrading to v3.8.1
+
+The design board changes what it sends, not what it takes:
+
+| What | Before | Now | The old way |
+|---|---|---|---|
+| The picture after a change | the whole page | the part that changed, and where it is, when it is under half the page | `screenshot.scope = "full"` |
+| `export` alone | the listing and the picture again | the file, and what changed (nothing) | none (a call with only `name` shows everything) |
+| Look-alike layers in a row | a line each | one record (`3 × ellipse …: d1 x … · d2 x …`) | none |
+| Paint steps of a see-through layer | its colour | the colour it shows over the page | none |
+| Bold text with no font | measured and painted regular | bold | none |
+| An action, with the cursor shown | at once, the cursor arriving after | when the cursor is there (up to `overlay.move_ms`, 220 ms) | `overlay.move_ms` lower, or `overlay.show_cursor = false` |
+
 # Upgrading to v3.8
 
 Nothing changes without a decision model. With one:

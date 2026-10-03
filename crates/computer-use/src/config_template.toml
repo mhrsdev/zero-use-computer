@@ -207,7 +207,7 @@ cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
 error_hold_ms = 2500
-move_ms = 220                # cursor glide time
+move_ms = 220                # cursor glide time; an action waits for the cursor to arrive
 fade_in_ms = 250             # appear gradually
 fade_out_ms = 1200           # disappear gradually, never abruptly
 transition_ms = 300          # blend from one state colour to the next

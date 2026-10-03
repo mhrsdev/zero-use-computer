@@ -266,6 +266,8 @@ pub struct Machine {
     target: Option<Rect>,
     glide: Option<Glide>,
     click_pending: bool,
+    /// The engine waits to hear the cursor is there (a pointer's id).
+    arrival: Option<u64>,
     ripple_at: Option<Instant>,
     /// Waiting for the user to stop using the mouse/keyboard.
     paused: bool,
@@ -294,6 +296,7 @@ impl Machine {
             target: None,
             glide: None,
             click_pending: false,
+            arrival: None,
             ripple_at: None,
             paused: false,
             stopped: false,
@@ -441,14 +444,24 @@ impl Machine {
             Cmd::Target { rect } => {
                 self.target = rect.map(|r| Rect::new(r[0], r[1], r[2], r[3]));
             }
-            Cmd::Pointer { x, y, click } => {
+            Cmd::Pointer { x, y, click, id } => {
                 let from = self.cursor_pos(now).unwrap_or((x, y));
+                // Already there (or shown there first): no glide to wait for.
+                let start = if (from.0 - x).hypot(from.1 - y) < 1.0 {
+                    now.checked_sub(Duration::from_millis(self.cfg.move_ms))
+                        .unwrap_or(now)
+                } else {
+                    now
+                };
                 self.glide = Some(Glide {
                     from,
                     to: (x, y),
-                    start: now,
+                    start,
                 });
                 self.click_pending = click && self.cfg.click_effect;
+                if id.is_some() {
+                    self.arrival = id;
+                }
                 if self.phase == Phase::Off {
                     let p = self.active_phase();
                     self.set_phase(p, now);
@@ -531,6 +544,17 @@ impl Machine {
             .is_some_and(|t| now.saturating_duration_since(t) >= RIPPLE)
         {
             self.ripple_at = None;
+        }
+    }
+
+    /// The pointer whose arrival the engine waits for, once the cursor is
+    /// shown there (or isn't shown at all: nothing to wait for).
+    pub fn arrived(&mut self, now: Instant) -> Option<u64> {
+        let shown = self.cfg.show_cursor && self.phase != Phase::Off && !self.leaving;
+        if !shown || self.glide_progress(now) >= 1.0 {
+            self.arrival.take()
+        } else {
+            None
         }
     }
 
@@ -1153,6 +1177,10 @@ pub fn run(args: &[String]) -> i32 {
         machine.tick(now);
         let scene = machine.scene(now);
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
+        // Said once the frame with the cursor there is painted.
+        if let Some(id) = machine.arrived(now) {
+            reply(&Reply::Arrived { id });
+        }
         if let Some(t) = quitting
             && (machine.phase == Phase::Off || t.elapsed() > Duration::from_secs(2))
         {
@@ -1216,7 +1244,12 @@ fn demo_script(tx: mpsc::Sender<Input>) {
         (520.0, 300.0, true),
         (700.0, 480.0, true),
     ] {
-        send(Cmd::Pointer { x, y, click });
+        send(Cmd::Pointer {
+            x,
+            y,
+            click,
+            id: None,
+        });
         pause(900);
     }
     send(Cmd::End { ok: true });
@@ -1226,6 +1259,7 @@ fn demo_script(tx: mpsc::Sender<Input>) {
         x: 600.0,
         y: 520.0,
         click: true,
+        id: None,
     });
     pause(1500);
     send(Cmd::End { ok: false });
@@ -1357,6 +1391,7 @@ mod tests {
                 x: 10.0,
                 y: 10.0,
                 click: false,
+                id: None,
             },
             t0,
         );
@@ -1365,6 +1400,7 @@ mod tests {
                 x: 110.0,
                 y: 10.0,
                 click: true,
+                id: None,
             },
             at(0),
         );
@@ -1377,6 +1413,51 @@ mod tests {
         assert!(end.ripple.is_some(), "ripple on arrival");
         m.tick(at(700));
         assert!(m.scene(at(700)).cursor.unwrap().ripple.is_none());
+    }
+
+    #[test]
+    fn the_engine_hears_when_the_cursor_is_there() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        let point = |x: f64, id: u64| Cmd::Pointer {
+            x,
+            y: 10.0,
+            click: true,
+            id: Some(id),
+        };
+        // The first point: shown there at once, nothing to wait for.
+        m.apply(point(10.0, 1), t0);
+        assert_eq!(m.arrived(t0), Some(1));
+        // A glide: not before it is over (move_ms 100 here), then once.
+        m.apply(point(210.0, 2), at(0));
+        assert_eq!(m.arrived(at(50)), None);
+        assert_eq!(m.arrived(at(100)), Some(2));
+        assert_eq!(m.arrived(at(150)), None);
+        // A glide sent without an id is nobody's wait.
+        m.apply(
+            Cmd::Pointer {
+                x: 10.0,
+                y: 10.0,
+                click: false,
+                id: None,
+            },
+            at(200),
+        );
+        assert_eq!(m.arrived(at(400)), None);
+        // No cursor shown: nothing to wait for.
+        let mut hidden = Machine::new(
+            OverlayConfig {
+                show_cursor: false,
+                ..cfg()
+            },
+            t0,
+        );
+        hidden.apply(Cmd::Begin, t0);
+        hidden.apply(point(10.0, 7), t0);
+        hidden.apply(point(500.0, 8), at(1));
+        assert_eq!(hidden.arrived(at(1)), Some(8));
     }
 
     #[test]
@@ -1396,6 +1477,7 @@ mod tests {
                 x: 1.0,
                 y: 1.0,
                 click: true,
+                id: None,
             },
             t0,
         );
@@ -1555,6 +1637,7 @@ mod tests {
                 x: 50.0,
                 y: 50.0,
                 click: false,
+                id: None,
             },
             t0,
         );

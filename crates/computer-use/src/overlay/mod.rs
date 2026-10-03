@@ -108,12 +108,16 @@ pub enum Cmd {
     Target {
         rect: Option<[f64; 4]>,
     },
-    /// Glide the agent cursor to a point, optionally clicking there.
+    /// Glide the agent cursor to a point, optionally clicking there. With
+    /// an `id`, the helper answers [`Reply::Arrived`] once the cursor is
+    /// shown there, so the action can wait for it.
     Pointer {
         x: f64,
         y: f64,
         #[serde(default)]
         click: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
     },
     /// An explicit status from the host agent.
     Status {
@@ -156,6 +160,10 @@ pub enum Reply {
     },
     /// The user pressed the settings key.
     Settings,
+    /// The cursor is shown where [`Cmd::Pointer`] `id` sent it.
+    Arrived {
+        id: u64,
+    },
 }
 
 /// Replies kept for a later `wait_for` at most.
@@ -212,6 +220,9 @@ pub struct Overlay {
     /// The helper has answered a `Hide` in time once: it is up (until then
     /// it may still be starting, and the first pictures wait for it).
     hide_answered: bool,
+    /// Whether the helper says when the cursor arrives: unknown until it
+    /// is first asked.
+    arrivals: Option<bool>,
     next_id: u64,
 }
 
@@ -336,6 +347,7 @@ impl Overlay {
             settings_key: settings_state,
             excluded: false,
             hide_answered: false,
+            arrivals: None,
             next_id: 0,
         };
         o.configure(config, keys);
@@ -432,6 +444,41 @@ impl Overlay {
     /// out of captures. `None` when nothing needed hiding; otherwise whether
     /// anything was on screen (the caller then waits `capture_hide_ms` for
     /// the screen to repaint, and sends [`Cmd::Show`] afterwards).
+    /// Glide the agent cursor to a point (clicking there when `click`)
+    /// and wait until it is shown there, at most `limit`: an action then
+    /// happens where the user sees the cursor, not before it gets there.
+    /// A helper that never answers is given the glide's time instead.
+    pub fn point(&mut self, x: f64, y: f64, click: bool, glide: Duration) -> bool {
+        self.drain();
+        if !self.alive() {
+            return false;
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&Cmd::Pointer {
+            x,
+            y,
+            click,
+            id: Some(id),
+        });
+        if self.arrivals == Some(false) {
+            std::thread::sleep(glide);
+            return false;
+        }
+        // A helper just started takes longer to answer at first.
+        let limit = glide
+            + if self.arrivals == Some(true) {
+                Duration::from_millis(300)
+            } else {
+                Duration::from_millis(1000)
+            };
+        let arrived = self
+            .wait_for(limit, |r| matches!(r, Reply::Arrived { id: i } if *i == id))
+            .is_some();
+        self.arrivals = Some(arrived);
+        arrived
+    }
+
     pub fn hide_for_capture(&mut self) -> Option<bool> {
         self.drain();
         if self.excluded || !self.alive() {
@@ -546,6 +593,7 @@ mod tests {
                 x: 5.0,
                 y: 6.0,
                 click: true,
+                id: Some(3),
             },
             Cmd::Status {
                 state: Status::Done,

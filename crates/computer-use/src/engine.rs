@@ -92,6 +92,11 @@ struct DraftSeen {
     picture: u64,
     /// The cells named on a design's picture, as said.
     cells: String,
+    /// The last picture of a design sent whole or in part, as the model
+    /// now has it, and the marks drawn over it: a change then sends only
+    /// the part that changed.
+    shot: Option<std::sync::Arc<Capture>>,
+    marks: Option<crate::design::Extras>,
 }
 
 /// What the result of the current top-level call holds, for hosts that
@@ -863,26 +868,70 @@ impl<B: Backend> Engine<B> {
         imaging::redact(cap, &rects, self.store.config.privacy.style)
     }
 
-    /// Point the agent cursor at an element (its centre), optionally clicking.
+    /// Point the agent cursor at an element (its centre), optionally
+    /// clicking, and wait until it is there. An element with no box of its
+    /// own (accessibility trees have many) is shown at the nearest one
+    /// around it that has one, else at the window: the cursor always goes
+    /// where the work is, never stays behind.
     fn overlay_point_element(&mut self, app: &AppInfo, handle: ElementHandle, click: bool) {
-        let p = self
-            .state(app.pid)
-            .ok()
-            .and_then(|s| s.bounds.get(&handle))
-            .filter(|b| !b.is_empty())
-            .map(|b| b.center());
-        if let Some(p) = p {
-            self.overlay_point(p, click);
+        if self.overlay.is_none() {
+            return;
+        }
+        let Ok(st) = self.state(app.pid) else { return };
+        let boxed = |b: &&Rect| !b.is_empty();
+        let mut at = st.bounds.get(&handle).filter(boxed).copied();
+        if at.is_none() {
+            let mut node = st.nodes.iter().position(|n| n.handle == handle);
+            while let Some(i) = node {
+                if let Some(b) = st.nodes[i].bounds.as_ref().filter(boxed) {
+                    at = Some(*b);
+                    break;
+                }
+                node = st.nodes[i].parent;
+            }
+        }
+        // Else the window, as the last screenshot of it covered it.
+        let at = at.or_else(|| st.coord.map(|c| c.bounds).filter(|b| !b.is_empty()));
+        if let Some(b) = at {
+            self.overlay_point(b.center(), click);
         }
     }
 
+    /// Point the agent cursor at a screen point (clicking there when
+    /// `click`) and wait until it is shown there, so the action that
+    /// follows happens where the user sees it.
     fn overlay_point(&mut self, p: Point, click: bool) {
+        let glide = Duration::from_millis(self.store.config.overlay.move_ms);
+        if let Some(o) = self.overlay.as_mut() {
+            o.point(p.x, p.y, click, glide);
+        }
+    }
+
+    /// Start the agent cursor gliding to a point without waiting: it moves
+    /// along with an action under way (a drag).
+    fn overlay_glide(&mut self, p: Point) {
         if self.overlay.is_some() {
             self.overlay_send(OverlayCmd::Pointer {
                 x: p.x,
                 y: p.y,
-                click,
+                click: false,
+                id: None,
             });
+        }
+    }
+
+    /// Point the agent cursor at the element keys go to (the focused one),
+    /// when an action types without naming one.
+    fn overlay_point_focus(&mut self, app: &AppInfo) {
+        let focused = self.state(app.pid).ok().and_then(|st| {
+            st.nodes
+                .iter()
+                .rev()
+                .find(|n| n.states.focused)
+                .map(|n| n.handle)
+        });
+        if let Some(h) = focused {
+            self.overlay_point_element(app, h, false);
         }
     }
 
@@ -3725,7 +3774,6 @@ impl<B: Backend> Engine<B> {
         let point = self.anchor_point(&app, &anchor).ok();
 
         // The agent cursor goes there first, so the user sees what is next.
-        self.overlay_anchor(&app, &anchor, false);
         self.overlay_anchor(&app, &anchor, true);
 
         // A single left click on an element with a press action goes through
@@ -3824,7 +3872,6 @@ impl<B: Backend> Engine<B> {
         })?;
         let native = action.native.clone();
         let before = self.tree_fingerprint(app.pid);
-        self.overlay_point_element(&app, handle, false);
         self.overlay_point_element(&app, handle, true);
         match self.backend.perform_action(handle, &native) {
             Ok(()) => {}
@@ -4030,8 +4077,9 @@ impl<B: Backend> Engine<B> {
             self.anchor_point(&app, &to)?,
         );
         let before = self.tree_fingerprint(app.pid);
+        // At the start before the button goes down, then along with the drag.
         self.overlay_point(p0, true);
-        self.overlay_point(p1, false);
+        self.overlay_glide(p1);
         let target = self.input_target(&app)?;
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
@@ -4298,12 +4346,30 @@ impl<B: Backend> Engine<B> {
         let stop_name = self.stop_control_name();
         let sleep = &self.sleep;
         let mut owed = 0.0f64;
+        // The agent cursor follows the pen: the backends report each move's
+        // length, so how far along the strokes the pen is gives where.
+        let overlay = self.overlay.as_ref();
+        let along = PathPosition::new(&plan.strokes);
+        let (mut travelled, mut shown_at) = (0.0f64, Instant::now());
         let mut pace = |d: f64| -> Result<()> {
             if stop.load(Ordering::SeqCst) {
                 return Err(Error::Stopped(stop_name.clone()));
             }
             if cancel.load(Ordering::SeqCst) {
                 return Err(Error::Cancelled);
+            }
+            travelled += d;
+            if let Some(o) = overlay
+                && shown_at.elapsed() >= Duration::from_millis(60)
+                && let Some(p) = along.at(travelled)
+            {
+                shown_at = Instant::now();
+                o.send(&OverlayCmd::Pointer {
+                    x: p.x,
+                    y: p.y,
+                    click: false,
+                    id: None,
+                });
             }
             owed += d / speed;
             if owed >= 0.004 {
@@ -4316,7 +4382,7 @@ impl<B: Backend> Engine<B> {
             .backend
             .draw(&target, &plan.strokes, args.button, &mut pace);
         self.last_input = Some((self.clock)());
-        self.overlay_point(last, false);
+        self.overlay_glide(last);
         drawn?;
         self.settle_on(&app);
 
@@ -4623,6 +4689,8 @@ impl<B: Backend> Engine<B> {
             steps: String::new(),
             picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
             cells: String::new(),
+            shot: None,
+            marks: None,
         };
         if self.depth == 1 {
             if prev.is_none() {
@@ -4704,12 +4772,13 @@ impl<B: Backend> Engine<B> {
             && args.mirror.is_none()
             && args.align.is_none()
             && args.distribute.is_none()
-            && args.order.is_none();
-        let prev = self
-            .drafts_seen
-            .get(&seen_key)
-            .filter(|_| self.store.config.tree.compact && !looking)
-            .cloned();
+            && args.order.is_none()
+            // Writing a file shows nothing new.
+            && args.export.is_none();
+        let stored = self.drafts_seen.get(&seen_key).cloned();
+        let prev = stored
+            .clone()
+            .filter(|_| self.store.config.tree.compact && !looking);
         let head = format!(
             "Design \"{key}\": {} x {}, background {}, margin {}.",
             d.width,
@@ -4805,8 +4874,12 @@ impl<B: Backend> Engine<B> {
             items,
             checks: checks_said,
             steps: steps_said,
-            picture: prev.as_ref().map(|p| p.picture).unwrap_or(0),
-            cells: prev.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
+            // What the model has of the picture holds through a look or a
+            // zoom into a cell (only `prev` is set aside for those).
+            picture: stored.as_ref().map(|p| p.picture).unwrap_or(0),
+            cells: stored.as_ref().map(|p| p.cells.clone()).unwrap_or_default(),
+            shot: stored.as_ref().and_then(|p| p.shot.clone()),
+            marks: stored.as_ref().and_then(|p| p.marks),
         };
         if self.depth == 1 {
             if prev.is_none() {
@@ -4871,6 +4944,100 @@ impl<B: Backend> Engine<B> {
             self.drafts_seen.insert(seen_key, seen);
             return Ok(ToolOutput::text(text));
         }
+        // Only the part that changed, when the model has this design's
+        // picture at this size and with the same marks, and the change is
+        // a small part of it: a colour, a move, a few layers.
+        let part = prev
+            .as_ref()
+            .filter(|_| cfg.scope == crate::config::ShotScope::Auto)
+            .filter(|p| p.marks == Some(extras))
+            .and_then(|p| p.shot.as_deref())
+            .and_then(|old| imaging::diff_box(old, &picture, 2))
+            .map(|area| imaging::widen(area, 16, 96, picture.width, picture.height))
+            .filter(|&(_, _, w, h)| {
+                f64::from(w) * f64::from(h)
+                    <= 0.5 * f64::from(picture.width) * f64::from(picture.height)
+            });
+        if let Some((px, py, pw, ph)) = part {
+            let scale = f64::from(picture.width) / d.width.max(1e-9);
+            let u = |v: u32| f64::from(v) / scale;
+            let span = crate::cells::Span {
+                x0: u(px),
+                x1: u(px + pw),
+                y0: u(py),
+                y1: u(py + ph),
+            };
+            let at = format!(
+                "x {:.0}–{:.0}, y {:.0}–{:.0} ({})",
+                span.x0,
+                span.x1,
+                span.y0,
+                span.y1,
+                d.cells().covering(span)
+            );
+            let long = format!(
+                "\nThe picture changed only at {at}: that part is shown, {pw}×{ph} px at the same scale as your last picture of it; the rest is as before."
+            );
+            let short = format!("\nOnly the part that changed: {at}.");
+            let note = self.explain("design-part", &long, &short).to_string();
+            text.push_str(&note);
+            seen.picture = hash;
+            seen.shot = Some(std::sync::Arc::new(picture.clone()));
+            self.drafts_seen.insert(seen_key, seen);
+            let (img, _) = imaging::encode(imaging::crop(&picture, (px, py, pw, ph)), &cfg)?;
+            return Ok(ToolOutput {
+                text,
+                image: Some(img),
+                is_error: false,
+            });
+        }
+        // Only the part that changed, when the model has this design's
+        // picture at this size and with the same marks, and the change is
+        // a small part of it: a colour, a move, a few layers.
+        let part = prev
+            .as_ref()
+            .filter(|_| cfg.scope == crate::config::ShotScope::Auto)
+            .filter(|p| p.marks == Some(extras))
+            .and_then(|p| p.shot.as_deref())
+            .and_then(|old| imaging::diff_box(old, &picture, 2))
+            .map(|area| imaging::widen(area, 16, 96, picture.width, picture.height))
+            .filter(|&(_, _, w, h)| {
+                f64::from(w) * f64::from(h)
+                    <= 0.5 * f64::from(picture.width) * f64::from(picture.height)
+            });
+        if let Some((px, py, pw, ph)) = part {
+            let scale = f64::from(picture.width) / d.width.max(1e-9);
+            let u = |v: u32| f64::from(v) / scale;
+            let span = crate::cells::Span {
+                x0: u(px),
+                x1: u(px + pw),
+                y0: u(py),
+                y1: u(py + ph),
+            };
+            let at = format!(
+                "x {:.0}–{:.0}, y {:.0}–{:.0} ({})",
+                span.x0,
+                span.x1,
+                span.y0,
+                span.y1,
+                d.cells().covering(span)
+            );
+            let long = format!(
+                "\nThe picture changed only at {at}: that part is shown, {pw}×{ph} px at the same scale as your last picture of it; the rest is as before."
+            );
+            let short = format!("\nOnly the part that changed: {at}.");
+            let note = self.explain("design-part", &long, &short).to_string();
+            text.push_str(&note);
+            seen.picture = hash;
+            seen.shot = Some(std::sync::Arc::new(picture.clone()));
+            self.drafts_seen.insert(seen_key, seen);
+            let (img, _) = imaging::encode(imaging::crop(&picture, (px, py, pw, ph)), &cfg)?;
+            return Ok(ToolOutput {
+                text,
+                image: Some(img),
+                is_error: false,
+            });
+        }
         // The cells are as they were: said with the first picture only.
         let described = d.cells().describe();
         if cells && prev.as_ref().is_none_or(|p| p.cells != described) {
@@ -4880,11 +5047,13 @@ impl<B: Backend> Engine<B> {
             seen.cells = described;
         }
         seen.picture = hash;
+        seen.marks = Some(extras);
         if self.depth == 1 {
             self.note.drafts_picture.push(seen_key.clone());
         }
+        let (img, _) = imaging::encode(picture.clone(), &cfg)?;
+        seen.shot = Some(std::sync::Arc::new(picture));
         self.drafts_seen.insert(seen_key, seen);
-        let (img, _) = imaging::encode(picture, &cfg)?;
         Ok(ToolOutput {
             text,
             image: Some(img),
@@ -5748,6 +5917,8 @@ impl<B: Backend> Engine<B> {
             let node = self.node_by_index(&app, i)?.clone();
             self.overlay_point_element(&app, h, false);
             self.focus_element(&app, h, &node)?;
+        } else if args.x.is_none() {
+            self.overlay_point_focus(&app);
         }
         let back = self.hover(&app, args.x, args.y)?;
         let pressed = self.press_combos(&app, &combos);
@@ -5778,6 +5949,8 @@ impl<B: Backend> Engine<B> {
             self.focus_element(&app, h, &node)?;
             self.settle();
             field = Some((i, node));
+        } else if args.x.is_none() {
+            self.overlay_point_focus(&app);
         }
         let back = self.hover(&app, args.x, args.y)?;
         let typed = self.type_into_focus(&app, &args.text);
@@ -7968,6 +8141,40 @@ fn shape_similarity(nodes: &[Node], shapes: &HashSet<u64>) -> f64 {
     }
     let common = mine.intersection(shapes).count();
     common as f64 / (mine.len() + shapes.len() - common).max(1) as f64
+}
+
+/// Where along a drawing's strokes the pen is, by how far it has moved
+/// along them (the jumps between strokes aren't moves).
+struct PathPosition {
+    /// Every point, with how far along the strokes it is.
+    points: Vec<(f64, Point)>,
+}
+
+impl PathPosition {
+    fn new(strokes: &[Vec<Point>]) -> Self {
+        let mut points = Vec::new();
+        let mut far = 0.0;
+        for stroke in strokes {
+            let mut last: Option<Point> = None;
+            for &p in stroke {
+                if let Some(l) = last {
+                    far += (p.x - l.x).hypot(p.y - l.y);
+                }
+                points.push((far, p));
+                last = Some(p);
+            }
+        }
+        Self { points }
+    }
+
+    /// The point the pen has reached after moving `far`.
+    fn at(&self, far: f64) -> Option<Point> {
+        let i = self.points.partition_point(|(d, _)| *d < far);
+        self.points
+            .get(i)
+            .or_else(|| self.points.last())
+            .map(|(_, p)| *p)
+    }
 }
 
 /// The text an `expect` waits for, when it waits for a text rather than
@@ -10542,6 +10749,116 @@ mod tests {
         std::fs::read_to_string(path).unwrap_or_default()
     }
 
+    /// A stand-in helper that records what it is told and says the cursor
+    /// arrived, `delay` seconds after each pointer.
+    #[cfg(unix)]
+    fn answering_helper(log: &std::path::Path, delay: &str) -> Launcher {
+        Launcher {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    r#"while IFS= read -r l; do printf '%s\n' "$l" >> '{}'; case "$l" in *'"t":"pointer"'*'"id":'*) id=${{l##*\"id\":}}; id=${{id%%[!0-9]*}}; sleep {delay}; printf '{{"t":"arrived","id":%s}}\n' "$id";; esac; done"#,
+                    log.display()
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn the_pen_is_found_by_how_far_it_moved() {
+        let strokes = vec![
+            vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)],
+            // A jump to the next stroke isn't a move.
+            vec![Point::new(500.0, 500.0), Point::new(500.0, 600.0)],
+        ];
+        let along = PathPosition::new(&strokes);
+        assert_eq!(along.at(0.0), Some(Point::new(0.0, 0.0)));
+        assert_eq!(along.at(60.0), Some(Point::new(100.0, 0.0)));
+        assert_eq!(along.at(100.0), Some(Point::new(100.0, 0.0)));
+        assert_eq!(along.at(150.0), Some(Point::new(500.0, 600.0)));
+        assert_eq!(along.at(1e9), Some(Point::new(500.0, 600.0)));
+        assert_eq!(PathPosition::new(&[]).at(5.0), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cursor_gets_there_before_the_action() {
+        let dir = std::env::temp_dir().join(format!("cu-arrive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("arrive.log");
+        let mut e = engine().with_overlay(answering_helper(&log, "0.3"));
+        state_of(&mut e, serde_json::json!({}));
+        let bold = index_named(&e, 4242, "Bold");
+        let start = Instant::now();
+        let out = e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        // The click waited for the cursor (the helper answers after 0.3 s).
+        assert!(
+            start.elapsed() >= Duration::from_millis(300),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(e);
+        let t = read_log(&log);
+        // One glide for the click, not two.
+        let pointers = t.lines().filter(|l| l.contains(r#""t":"pointer""#)).count();
+        assert_eq!(pointers, 1, "{t}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cursor_goes_where_the_work_is() {
+        let dir = std::env::temp_dir().join(format!("cu-where-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("where.log");
+        let mut e = engine().with_overlay(answering_helper(&log, "0"));
+        e.backend_mut()
+            .app_mut(4242)
+            .unwrap()
+            .elements
+            .iter_mut()
+            .find(|el| el.handle == 5)
+            .unwrap()
+            .states
+            .focused = true;
+        state_of(&mut e, serde_json::json!({}));
+        let bold = index_named(&e, 4242, "Bold");
+        // Bold's box isn't known (as in trees that give none): its
+        // toolbar's centre.
+        {
+            let st = e.states.get_mut(&4242).unwrap();
+            let i = st.nodes.iter().position(|n| n.index == bold).unwrap();
+            let h = st.nodes[i].handle;
+            st.nodes[i].bounds = None;
+            st.bounds.remove(&h);
+        }
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "TextEdit", "element_index": bold}),
+        );
+        // Typing with no element named: the focused one, the document.
+        e.call_tool(
+            "type_text",
+            serde_json::json!({"app": "TextEdit", "text": "x"}),
+        );
+        drop(e);
+        let t = read_log(&log);
+        assert!(
+            t.contains(r#""t":"pointer","x":400.0,"y":20.0,"click":true"#),
+            "{t}"
+        );
+        assert!(
+            t.contains(r#""t":"pointer","x":400.0,"y":320.0,"click":false"#),
+            "{t}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[cfg(unix)]
     #[test]
     fn overlay_follows_the_work() {
@@ -11584,6 +11901,68 @@ mod tests {
         assert!(out.text.contains("Added to your tools"), "{}", out.text);
         let now = names(&mut e);
         assert!(now.contains(&"design".to_string()) && now.contains(&"locate".to_string()));
+    }
+
+    #[test]
+    fn a_design_change_sends_only_the_part_that_changed() {
+        let mut e = engine();
+        let first = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "size": [800, 600], "add": [
+                {"id": "disc", "ellipse": [400, 300, 200, 200], "fill": "#1D3557"},
+                {"id": "star", "star": [700, 500, 40, 18, 5], "fill": "#FFB703"}
+            ]}),
+        );
+        let full = first.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        // A small change: only that part, and where it is.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#E63946"}]}),
+        );
+        let part = out.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        assert!(
+            part.0 < full.0 / 3 && part.1 < full.1 / 3,
+            "{part:?} of {full:?}"
+        );
+        assert!(
+            out.text.contains("The picture changed only at x 6")
+                && out.text.contains("that part is shown"),
+            "{}",
+            out.text
+        );
+        // Said in full once, then short.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#2A9D8F"}]}),
+        );
+        assert!(
+            out.text.contains("Only the part that changed: x 6"),
+            "{}",
+            out.text
+        );
+        // A zoom into a cell, then an export: no picture again.
+        e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "show": {"cell": "B2"}}),
+        );
+        let out = e.call_tool("design", serde_json::json!({"name": "b", "export": "svg"}));
+        assert!(out.image.is_none(), "{}", out.text);
+        // A big change: all of it.
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "background": "#000000"}),
+        );
+        let all = out.image.as_ref().map(|i| (i.width, i.height)).unwrap();
+        assert_eq!(all, full);
+        // screenshot.scope = "full": always all of it.
+        let mut cfg = e.store().config.clone();
+        cfg.screenshot.scope = crate::config::ShotScope::Full;
+        e.set_config(ConfigStore::in_memory(cfg));
+        let out = e.call_tool(
+            "design",
+            serde_json::json!({"name": "b", "change": [{"id": "star", "fill": "#FFFFFF"}]}),
+        );
+        assert_eq!(out.image.as_ref().map(|i| (i.width, i.height)), Some(full));
     }
 
     #[test]

@@ -576,6 +576,29 @@ impl Affine {
         )
     }
 
+    /// The transform that undoes this one (the identity when it can't
+    /// be undone).
+    pub fn inverse(&self) -> Affine {
+        let det = self.a * self.d - self.b * self.c;
+        if det.abs() < 1e-12 {
+            return Affine::IDENTITY;
+        }
+        let (a, b, c, d) = (self.d / det, -self.b / det, -self.c / det, self.a / det);
+        Affine {
+            a,
+            b,
+            c,
+            d,
+            e: -(a * self.e + b * self.f),
+            f: -(c * self.e + d * self.f),
+        }
+    }
+
+    /// Whether it mirrors (turns left into right).
+    pub fn mirrors(&self) -> bool {
+        self.a * self.d - self.b * self.c < 0.0
+    }
+
     /// `self` first, then `next`.
     pub fn then(self, next: Affine) -> Affine {
         let n = next;

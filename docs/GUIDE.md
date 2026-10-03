@@ -57,7 +57,7 @@ This project follows the same architecture and behaviour:
 | `drag` | Drag between elements or points (`snap` as for `click`). |
 | `draw` | Draw with the mouse held down: rectangles (rounded), ellipses, arcs, regular polygons, stars, Bézier curves, smooth freehand strokes, parametric curves `x(t)`, `y(t)` and function plots `y = f(x)` with axes; any stroke can be rotated and repeated (rows, radial patterns). Coordinates in screenshot pixels, an element's box, the document's own units or a math range with y up (`canvas`). `fill` paints a closed shape solid with the brush (shapes painted back to front cover each other). `preview` shows the strokes over a screenshot first, on named cells (graph paper sized to the drawing); the result says which cells the drawing covers and where a bucket click fills each closed outline, checked on the real pixels (one click per piece when other lines cut it, or where a fill would leak out). |
 | `trace_image` | Turn a reference picture (an image file, or what a window shows) into a few flat colours and shapes, as steps to paint back to front with `draw`; `screenshot` with `compare` then shows where the canvas still differs. |
-| `design` | A design board, like Canva: a picture composed from layers (the shapes `draw` takes, and text) that can be added, changed, mirrored, aligned, distributed and reordered. Returns the rendered picture on named cells, the layers' boxes, checks (off the page, nearly centred, not quite symmetric, hard-to-read text) and the steps to paint it; then `draw` paints a step, or `export` writes a temporary SVG or PNG to import. |
+| `design` | A design board, like Canva: a picture composed from layers (the shapes `draw` takes, and text) that can be added, changed, mirrored, aligned, distributed and reordered. Returns the rendered picture on named cells, the layers' boxes, checks (off the page, nearly centred, not quite symmetric, hard-to-read text) and the steps to paint it; after that, only what changed (of the picture, the part that changed). Then `draw` paints a step, or `export` writes a temporary SVG or PNG to import. |
 | `scene` | A 3D model planned as solids (box, cylinder, sphere, cone, torus, plane) with exact sizes, centres and rotations, Z up. Returns the front, right and top views to one scale and a perspective view with shadows, the parts' extents, checks (what floats, sinks into the ground or runs into another part, and by how much) and the numbers to build it in Blender or another 3D app; `export` writes a temporary OBJ with its colours. |
 | `locate` | Exact places in a window, in click coordinates: every area of a colour, every look-alike of an icon or marker, or the exact corner, edge or centre next to a rough point. |
 | `press_key` | A key or shortcut, e.g. `cmd+s`, `ctrl+shift+t`, `Down Down Return`, `Numpad7`; `x`/`y` points the mouse there first (apps like Blender send keys to what is under the pointer). |
@@ -415,7 +415,10 @@ their mouse:
 - **The agent's own cursor.** A separate pointer — a rounded arrowhead in its
   own colour with a soft shadow, a white edge, an outline and glow in the
   state colour, and a small name tag ("Zero", `cursor_tag`) — glides to where
-  the agent acts and ripples where it clicks. The real mouse is never moved, locked or restyled:
+  the agent acts and ripples where it clicks. Each action waits until the
+  cursor is shown there (at most `move_ms`), so what the user sees happens
+  where the cursor is, not before it gets there; it follows a drawing as the
+  pen moves, and goes to the focused element for typing. The real mouse is never moved, locked or restyled:
   element actions go through accessibility APIs, and the coordinate fallbacks
   on Windows and Linux put the pointer straight back (`restore_pointer`;
   macOS posts events to the app without moving it).
