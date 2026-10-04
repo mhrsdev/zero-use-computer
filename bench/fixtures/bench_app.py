@@ -9,6 +9,8 @@ One GTK 3 program, a different app per scenario:
            labels are painted, invisible to accessibility)
   shapes   "Shapes": the same toolbar above a canvas of shapes, no text
   orders   "Orders": a painted notice, a field, a confirmation dialog
+  counter  "Counter": all painted, nothing for accessibility (a game's
+           menu, a custom-drawn app): a count and three painted buttons
 
 Everything it shows is fixed (no clock, no randomness), so every run starts
 from the same state. What the agent did is written to the JSON file given
@@ -33,6 +35,7 @@ TITLES = {
     "board": "Board",
     "shapes": "Shapes",
     "orders": "Orders",
+    "counter": "Counter",
 }
 
 TOOLBAR = [
@@ -378,12 +381,70 @@ def build_orders(win, state):
     win.set_default_size(560, 260)
 
 
+# --------------------------------------------------------------------------
+# counter: all painted
+
+COUNTER_BUTTONS = [("PLUS", 60), ("MINUS", 230), ("DONE", 400)]
+COUNTER_BUTTON_Y, COUNTER_BUTTON_W, COUNTER_BUTTON_H = 260, 140, 60
+
+
+def build_counter(win, state):
+    count = {"n": 0}
+    state.set("count", 0)
+    state.set("done", None)
+    area = Gtk.DrawingArea()
+    area.set_size_request(600, 380)
+    area.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+
+    def on_draw(_a, cr):
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        cr.select_font_face("Sans")
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        cr.set_font_size(26)
+        cr.move_to(60, 70)
+        cr.show_text("Score keeper")
+        cr.set_font_size(40)
+        cr.move_to(60, 170)
+        cr.show_text("Count: %d" % count["n"])
+        cr.set_font_size(24)
+        for name, x in COUNTER_BUTTONS:
+            cr.set_source_rgb(0.85, 0.92, 1.0)
+            cr.rectangle(x, COUNTER_BUTTON_Y, COUNTER_BUTTON_W, COUNTER_BUTTON_H)
+            cr.fill_preserve()
+            cr.set_source_rgb(0.2, 0.3, 0.5)
+            cr.set_line_width(2)
+            cr.stroke()
+            ext = cr.text_extents(name)
+            cr.move_to(x + (COUNTER_BUTTON_W - ext.width) / 2,
+                       COUNTER_BUTTON_Y + COUNTER_BUTTON_H / 2 + ext.height / 2)
+            cr.show_text(name)
+
+    def on_press(_a, event):
+        for name, x in COUNTER_BUTTONS:
+            if x <= event.x <= x + COUNTER_BUTTON_W and \
+                    COUNTER_BUTTON_Y <= event.y <= COUNTER_BUTTON_Y + COUNTER_BUTTON_H:
+                if name == "PLUS":
+                    count["n"] += 1
+                elif name == "MINUS":
+                    count["n"] -= 1
+                else:
+                    state.set("done", count["n"])
+                state.set("count", count["n"])
+                area.queue_draw()
+
+    area.connect("draw", on_draw)
+    area.connect("button-press-event", on_press)
+    win.add(area)
+
+
 BUILDERS = {
     "form": build_form,
     "table": build_table,
     "board": build_board,
     "shapes": build_shapes,
     "orders": build_orders,
+    "counter": build_counter,
 }
 
 

@@ -222,7 +222,7 @@ impl<B: Backend> Engine<B> {
         // update of the same layout), the one the model knows, or one it saw
         // earlier.
         let small = same_window
-            && (tree::change_count(&st.nodes, &nodes) as f64) < ratio * nodes.len().max(1) as f64;
+            && !tree::big_change(tree::change_count(&st.nodes, &nodes), nodes.len(), ratio);
         let screen = if small {
             st.screen
         } else {
@@ -478,7 +478,7 @@ impl<B: Backend> Engine<B> {
                     .chain(d.changed.iter().map(|(p, _)| p))
                     .filter_map(|&p| nodes[p].bounds)
                     .collect();
-                let large = out.changes as f64 >= tcfg.diff_full_ratio * nodes.len().max(1) as f64;
+                let large = tree::big_change(out.changes, nodes.len(), tcfg.diff_full_ratio);
                 if full || !tcfg.diff || large {
                     out.text = tree::render_full_within(nodes, tcfg.indent, budget);
                     out.full = true;

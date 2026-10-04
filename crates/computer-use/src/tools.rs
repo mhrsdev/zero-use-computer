@@ -128,6 +128,10 @@ pub struct GetAppStateArgs {
     /// `screenshot.attach`.
     #[serde(default, alias = "include_screenshot")]
     pub screenshot: Option<bool>,
+    /// Screenshots of this app from now on (kept until changed): always,
+    /// never (unless `screenshot=true`), or auto (when they add something).
+    #[serde(default)]
+    pub pictures: Option<crate::config::AttachMode>,
     /// Also read the window's text off the screen (OCR), whatever settings say.
     #[serde(default)]
     pub ocr: bool,
@@ -2105,6 +2109,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
                 json!({
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff.", "default": false},
                     "screenshot": {"type": "boolean", "description": "true = always include a screenshot, false = never (default: decided by settings)."},
+                    "pictures": {"type": "string", "enum": ["auto", "always", "never"], "description": "Screenshots of this app from now on, until you change it: always (with every look), never (only with screenshot=true), auto (when they add something the tree doesn't say; the default)."},
                     "ocr": {"type": "boolean", "default": false, "description": "Also read the window's text off the screen (for custom-drawn UI); the lines become clickable \"ocr text\" elements. Done automatically when the tree is nearly empty."},
                     "max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for this tree (default from settings). 0 = the whole tree, with no list folded or cut; use it only when you really need every element at once."},
                     "within": index_prop("Only this element and what is in it (a table, a panel, a dialog's part)."),
@@ -2594,7 +2599,7 @@ fn short_description(name: &str) -> Option<&'static str> {
             "Start an app by name/id; returns its first state. Or open an https:// address in the browser."
         }
         "get_app_state" => {
-            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first; actions then report the state after them, so call again only for more. Element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
+            "The app window's numbered accessibility tree (+ a screenshot when useful). Call first; actions then report the state after them, so call again only for more. Element indices are valid until the next call; later calls return a diff. A screen \"seen before\" keeps the indices you saw then. screenshot=true forces an image; pictures=always/never/auto sets them for this app from now on; max_tokens=0 returns a huge tree whole, unfolded; within=index: just that element's part; about=\"words\": just the parts about that; rebase=true: all of it again."
         }
         "click" => {
             "Click element_index (preferred), name (+role) of one element, or x,y in screenshot pixels. button right/middle, click_count 2 = double; snap corner/edge/center/#hex moves x,y onto it. expect = dialog, change, value, gone or a text to see after: checked (confirmed, not seen, uncertain)."
@@ -3502,6 +3507,7 @@ mod tests {
                 window: Some("42".into()),
                 disable_diff: true,
                 screenshot: None,
+                pictures: None,
                 ocr: false,
                 max_tokens: None,
                 within: None,

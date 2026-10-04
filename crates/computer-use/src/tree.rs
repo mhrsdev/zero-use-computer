@@ -1077,6 +1077,14 @@ pub fn diff(old: &[Node], new: &[Node]) -> Diff {
 
 /// Number of elements added, changed or removed between two snapshots,
 /// without building the diff.
+/// Whether `changes` to a tree of `len` elements make a big change (a new
+/// screen, the whole tree sent): `ratio` of them, and more than one line
+/// replaced, so a small window (a painted app's few lines read off the
+/// screen) isn't new each time one of its lines changes.
+pub fn big_change(changes: usize, len: usize, ratio: f64) -> bool {
+    changes as f64 >= (ratio * len.max(1) as f64).max(3.0)
+}
+
 pub fn change_count(old: &[Node], new: &[Node]) -> usize {
     let old_by_key: HashMap<u64, &str> = old.iter().map(|n| (n.key, n.line.as_str())).collect();
     let mut matched = 0usize;
@@ -1220,7 +1228,18 @@ fn was(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::types::NodeStates;
+
+    #[test]
+    fn one_line_replaced_in_a_small_window_is_not_a_big_change() {
+        // A painted app's six lines: one replaced (removed + added).
+        assert!(!big_change(2, 6, 0.33));
+        assert!(big_change(3, 6, 0.33));
+        // A large tree: the ratio as before.
+        assert!(!big_change(32, 100, 0.33));
+        assert!(big_change(33, 100, 0.33));
+    }
 
     #[test]
     fn a_changed_line_shows_only_what_was_different() {

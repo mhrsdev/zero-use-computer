@@ -99,6 +99,15 @@ struct AppState {
     /// screenshot asked for): [screenshot] adaptive.
     looks: u32,
     pixel_uses: u32,
+    /// Screenshots of this app the model asked for from now on
+    /// (get_app_state pictures), instead of `screenshot.attach`.
+    pictures: Option<crate::config::AttachMode>,
+    /// Since the last picture the model got of this app: an action at x/y
+    /// was done, an `expect` was not met; and automatic pictures left out
+    /// in a row ([screenshot] smart).
+    pixel_action: bool,
+    expect_missed: bool,
+    left_out: u8,
     /// Unnamed buttons already shown in an icon strip, by key.
     icons_shown: HashSet<u64>,
     /// `sent_tokens` when this app's tree was last sent whole ([cache]
@@ -326,6 +335,8 @@ pub struct Engine<B: Backend> {
     settings_problem_shown: bool,
     /// Explanations already given in full.
     hints: Hints,
+    /// How often each app needed pixels ([screenshot] record_apps).
+    apps_log: crate::apps_log::AppsLog,
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
@@ -522,6 +533,7 @@ impl<B: Backend> Engine<B> {
             settings_problem: None,
             settings_problem_shown: false,
             hints: Hints::default(),
+            apps_log: crate::apps_log::AppsLog::default(),
             stop: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             last_input: None,
@@ -676,6 +688,15 @@ impl<B: Backend> Engine<B> {
     /// `overlay.command`), no overlay is shown.
     pub fn with_overlay(mut self, launcher: Launcher) -> Self {
         self.overlay_launcher = Some(launcher);
+        self
+    }
+
+    /// Keep the count of how often each app needed pixels in this file
+    /// ([screenshot] record_apps), added to what it already holds.
+    pub fn with_apps_log(mut self, path: std::path::PathBuf) -> Self {
+        if self.store.config.screenshot.record_apps {
+            self.apps_log = crate::apps_log::AppsLog::at(path);
+        }
         self
     }
 
@@ -1481,11 +1502,18 @@ impl<B: Backend> Engine<B> {
         {
             let st = self.states.entry(app.pid).or_default();
             st.pixel_uses = st.pixel_uses.saturating_add(1);
+            // Its effect is checked with a picture, not taken on trust.
+            st.pixel_action |= mutating;
         }
         self.ctx.last_expect = None;
         let checked = match expecting {
             Some((query, what, index)) if !out.is_error => {
                 let (outcome, note) = self.check_expect(&query, &what, index, before.as_ref());
+                if !matches!(outcome, Outcome::Confirmed)
+                    && let Ok(app) = self.resolve_app(&query)
+                {
+                    self.states.entry(app.pid).or_default().expect_missed = true;
+                }
                 self.ctx.last_expect = Some(outcome);
                 Some(note)
             }

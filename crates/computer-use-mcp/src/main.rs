@@ -223,6 +223,9 @@ fn load_store(common: &Common) -> Result<ConfigStore> {
     Ok(store)
 }
 
+/// How often each app needed pixels, in the server's folder.
+const APPS_LOG: &str = "apps.json";
+
 fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Backend>>> {
     let backend = computer_use::platform_backend().with_context(|| {
         format!(
@@ -462,7 +465,8 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     let server_cfg = store.config.server.clone();
     // Before anything is started: no child may hold the client's pipes.
     computer_use::backend::keep_stdio_private();
-    let mut engine = with_overlay(build_engine(common, store)?);
+    let mut engine =
+        with_overlay(build_engine(common, store)?).with_apps_log(config::home_dir().join(APPS_LOG));
     if let Some(p) = problem {
         engine = engine.with_settings_problem(p);
     }
@@ -595,6 +599,17 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         c.screenshot.attach,
         c.screenshot.max_dimension
     );
+    if c.screenshot.record_apps {
+        let apps = computer_use::apps_log::summary(&config::home_dir().join(APPS_LOG), 5);
+        if apps.is_empty() {
+            println!("pixels:   no app has needed them often yet ({APPS_LOG})");
+        } else {
+            println!("pixels:   the apps whose tree said least ({APPS_LOG}):");
+            for line in apps {
+                println!("  {line}");
+            }
+        }
+    }
 
     // Several agents on this desktop share one hub.
     let mut hub_running = false;

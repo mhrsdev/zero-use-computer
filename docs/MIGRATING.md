@@ -1,3 +1,17 @@
+# Upgrading to v3.9.4
+
+Nothing to change. What looks different:
+
+- An automatic screenshot whose change the tree already says isn't sent
+  ("Screenshot: not sent (the change is in the tree)"); `screenshot.smart =
+  false` sends it as before.
+- `get_app_state` takes `pictures` (always, never, auto) for an app.
+- The server keeps `apps.json` in its folder (how often each app needed
+  pixels); `screenshot.record_apps = false` turns it off.
+- A small window (a painted app's few lines) stays the same screen when one
+  line changes, so its diff is sent instead of the whole tree again.
+- `screenshot.attach = "always"` now always attaches one.
+
 # Upgrading to v3.9.3
 
 Nothing to change. On X11, a window move, resize, maximize, minimize or

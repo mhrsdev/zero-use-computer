@@ -410,6 +410,37 @@ impl PixelSig {
         Some((x0, y0, x1 - x0, y1 - y0))
     }
 
+    /// Each grid cell that changed by more than `tolerance`, as
+    /// (x, y, width, height) in the picture's pixels; None when the two
+    /// can't be compared (another size or grid).
+    pub fn changed_cells(
+        &self,
+        other: &PixelSig,
+        tolerance: u8,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        if (self.width, self.height, self.cols, self.rows)
+            != (other.width, other.height, other.cols, other.rows)
+        {
+            return None;
+        }
+        Some(
+            self.cells
+                .iter()
+                .zip(&other.cells)
+                .enumerate()
+                .filter(|(_, (a, b))| a.abs_diff(**b) > tolerance)
+                .map(|(i, _)| {
+                    let (c, r) = (i as u32 % self.cols, i as u32 / self.cols);
+                    let x0 = c * self.width / self.cols;
+                    let y0 = r * self.height / self.rows;
+                    let x1 = ((c + 1) * self.width).div_ceil(self.cols).min(self.width);
+                    let y1 = ((r + 1) * self.height).div_ceil(self.rows).min(self.height);
+                    (x0, y0, x1 - x0, y1 - y0)
+                })
+                .collect(),
+        )
+    }
+
     /// Same picture, allowing each cell's average to drift by `tolerance`.
     pub fn same_as(&self, other: &PixelSig, tolerance: u8) -> bool {
         self.width == other.width
