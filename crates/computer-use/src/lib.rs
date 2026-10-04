@@ -50,6 +50,7 @@
 //! Or run it as an MCP stdio server (see the `computer-use-mcp` crate) so any
 //! MCP-capable agent — Codex, Claude Code, or your own — can use it.
 
+pub mod apps_log;
 pub mod backend;
 pub mod cells;
 pub mod config;

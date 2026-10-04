@@ -141,6 +141,15 @@ pub struct ScreenshotConfig {
     /// no screenshot asked for), well-described windows come without one
     /// (`screenshot=true` still gets one).
     pub adaptive: bool,
+    /// Leave out an automatic screenshot when all that changed on screen
+    /// is what the tree reports changed (a number, a line of text read off
+    /// the screen): the text already says it. One is still sent after an
+    /// action at x/y, an `expect` not met, and after 3 left out in a row.
+    pub smart: bool,
+    /// Keep a count of how often each app needed pixels (little in its
+    /// tree, text read off the screen, screenshots sent and left out) in
+    /// `apps.json` in the server's folder; `doctor` shows it.
+    pub record_apps: bool,
     /// `locate` sends the window with the places it found numbered.
     pub locate_picture: bool,
     /// When no screenshot is attached, a small strip of the buttons that
@@ -176,6 +185,8 @@ impl Default for ScreenshotConfig {
             region_padding: 24,
             region_min_size: 200,
             adaptive: true,
+            smart: true,
+            record_apps: true,
             locate_picture: false,
             icon_sprite: false,
         }

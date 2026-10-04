@@ -631,6 +631,13 @@ impl<B: Backend> Engine<B> {
         if r.seen == Seen::Same && !r.full && r.changes == 0 {
             return out;
         }
+        // Settling doesn't read the text off the screen again: a change
+        // only that text shows (a painted app) was missed there.
+        // (The action's own line: a batch's steps each say their own.)
+        let first = out.text.find('\n').unwrap_or(out.text.len());
+        if (r.seen != Seen::Same || r.changes > 0) && out.text[..first].contains(NO_CHANGE_NOTE) {
+            out.text = out.text.replacen(NO_CHANGE_NOTE, "", 1);
+        }
         let title = match r.seen {
             Seen::Same if r.large_change => {
                 "State after the action (large change, full tree):".to_string()

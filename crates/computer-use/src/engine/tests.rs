@@ -5320,3 +5320,169 @@ fn a_look_inside_a_batch_does_not_use_up_the_header() {
     let out = state_of(&mut e, serde_json::json!({}));
     assert!(out.text.contains("pid 4242"), "{}", out.text);
 }
+
+/// A text editor with a small label (handle 9) whose value changes, and
+/// automatic pictures decided by [screenshot] smart alone (not adaptive).
+fn smart_engine() -> Engine<MockBackend> {
+    let mut backend = MockBackend::new();
+    let mut app = MockBackend::text_editor(4242);
+    let mut label = MockElement::new(
+        9,
+        "static text",
+        "Count",
+        Rect::new(300.0, 300.0, 100.0, 20.0),
+    )
+    .child_of(1);
+    label.value = Some("0".into());
+    app.elements.push(label);
+    backend.add_app(app);
+    let mut cfg = Config::default();
+    cfg.screenshot.adaptive = false;
+    cfg.cache.snapshot_ttl_ms = 0;
+    // Its count changes between looks with no action: not a clock.
+    cfg.tree.quiet_volatile = false;
+    Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+}
+
+/// The label shows `n`: in the tree and in the pixels.
+fn count_to(e: &mut Engine<MockBackend>, n: u8) {
+    e.backend_mut()
+        .snapshot_script
+        .push_back((9, n.to_string()));
+    e.backend_mut().patch = Some((Rect::new(300.0, 300.0, 100.0, 20.0), 20 + 30 * n));
+}
+
+#[test]
+fn a_picture_whose_change_the_tree_says_is_left_out() {
+    let mut e = smart_engine();
+    assert!(state_of(&mut e, serde_json::json!({})).image.is_some());
+    count_to(&mut e, 1);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_none(), "{}", out.text);
+    assert!(out.text.contains("value=\"1\""), "{}", out.text);
+    assert!(
+        out.text
+            .contains("Screenshot: not sent: all that changed on screen is what the tree reports"),
+        "{}",
+        out.text
+    );
+    // Three in a row at most: the fourth is sent.
+    count_to(&mut e, 2);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(
+        out.text.contains("not sent (the change is in the tree)"),
+        "{}",
+        out.text
+    );
+    count_to(&mut e, 3);
+    assert!(state_of(&mut e, serde_json::json!({})).image.is_none());
+    count_to(&mut e, 4);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_some(), "{}", out.text);
+    // After it, left out again.
+    count_to(&mut e, 5);
+    assert!(state_of(&mut e, serde_json::json!({})).image.is_none());
+    // A change elsewhere too: sent.
+    e.backend_mut().snapshot_script.push_back((9, "6".into()));
+    e.backend_mut().patch = Some((Rect::new(600.0, 500.0, 100.0, 60.0), 250));
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_some(), "{}", out.text);
+    // Asked for: sent.
+    count_to(&mut e, 7);
+    let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+    assert!(out.image.is_some(), "{}", out.text);
+}
+
+#[test]
+fn a_picture_comes_after_an_action_at_x_y_or_an_expect_not_met() {
+    let mut e = smart_engine();
+    state_of(&mut e, serde_json::json!({}));
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "x": 350, "y": 310}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    count_to(&mut e, 1);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_some(), "after a click at x/y: {}", out.text);
+    // Seen: the next change the tree explains is left out again.
+    count_to(&mut e, 2);
+    assert!(state_of(&mut e, serde_json::json!({})).image.is_none());
+
+    let bold = index_named(&e, 4242, "Bold");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "element_index": bold, "expect": "a dialog"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    count_to(&mut e, 3);
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_some(), "after an expect not met: {}", out.text);
+}
+
+#[test]
+fn the_model_sets_pictures_for_an_app() {
+    let mut e = smart_engine();
+    state_of(&mut e, serde_json::json!({}));
+    // Always: even a change the tree explains comes with one.
+    count_to(&mut e, 1);
+    let out = state_of(&mut e, serde_json::json!({"pictures": "always"}));
+    assert!(out.image.is_some(), "{}", out.text);
+    count_to(&mut e, 2);
+    assert!(
+        state_of(&mut e, serde_json::json!({})).image.is_some(),
+        "kept"
+    );
+    // Never: not even for a change the tree doesn't explain…
+    e.backend_mut().patch = Some((Rect::new(600.0, 500.0, 100.0, 60.0), 250));
+    let out = state_of(&mut e, serde_json::json!({"pictures": "never"}));
+    assert!(out.image.is_none(), "{}", out.text);
+    e.backend_mut().patch = Some((Rect::new(600.0, 500.0, 100.0, 60.0), 90));
+    assert!(
+        state_of(&mut e, serde_json::json!({})).image.is_none(),
+        "kept"
+    );
+    // …but one asked for comes.
+    let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+    assert!(out.image.is_some(), "{}", out.text);
+    // Auto again: what the tree explains is left out.
+    count_to(&mut e, 3);
+    state_of(&mut e, serde_json::json!({"screenshot": true}));
+    count_to(&mut e, 4);
+    let out = state_of(&mut e, serde_json::json!({"pictures": "auto"}));
+    assert!(out.image.is_none(), "{}", out.text);
+    assert!(out.text.contains("not sent"), "{}", out.text);
+}
+
+#[test]
+fn a_big_element_changing_does_not_explain_a_picture() {
+    let mut e = smart_engine();
+    state_of(&mut e, serde_json::json!({}));
+    // The document (most of the window) changed, and the pixels in it.
+    e.backend_mut()
+        .snapshot_script
+        .push_back((5, "Changed".into()));
+    e.backend_mut().patch = Some((Rect::new(100.0, 100.0, 80.0, 40.0), 90));
+    let out = state_of(&mut e, serde_json::json!({}));
+    assert!(out.image.is_some(), "{}", out.text);
+}
+
+#[test]
+fn how_often_an_app_needed_pixels_is_kept() {
+    let dir = std::env::temp_dir().join(format!("cu-apps-engine-{}", std::process::id()));
+    let path = dir.join("apps.json");
+    let _ = std::fs::remove_file(&path);
+    {
+        let mut e = smart_engine().with_apps_log(path.clone());
+        state_of(&mut e, serde_json::json!({}));
+        count_to(&mut e, 1);
+        state_of(&mut e, serde_json::json!({}));
+    }
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let r = &v["apps"]["TextEdit"];
+    assert_eq!(r["looks"], 2, "{text}");
+    assert_eq!(r["pictures"], 1, "{text}");
+    assert_eq!(r["pictures_left_out"], 1, "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

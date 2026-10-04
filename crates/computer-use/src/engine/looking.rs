@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// [screenshot] smart: automatic pictures left out in a row before one is
+/// sent anyway.
+const SMART_MAX_LEFT_OUT: u8 = 3;
+
 impl<B: Backend> Engine<B> {
     pub(super) fn list_apps(&mut self) -> Result<ToolOutput> {
         let apps = self.find_apps()?;
@@ -153,6 +157,10 @@ impl<B: Backend> Engine<B> {
 
     pub(super) fn get_app_state(&mut self, mut args: GetAppStateArgs) -> Result<ToolOutput> {
         let app = self.resolve_app(&args.app)?;
+        // The model's choice of screenshots for this app, kept.
+        if let Some(p) = args.pictures {
+            self.states.entry(app.pid).or_default().pictures = Some(p);
+        }
         // [cache] rebase_after_tokens: much said since this app's tree was
         // last sent whole, so the model may have lost what a diff refers to.
         let threshold = self.store.config.cache.rebase_after_tokens;
@@ -304,7 +312,21 @@ impl<B: Backend> Engine<B> {
                 (s.looks, s.pixel_uses)
             })
             .unwrap_or((1, 0));
+        let sparse = r.interactive < self.store.config.ocr.sparse_threshold;
+        self.apps_log.note(&app.name, |a| {
+            a.looks += 1;
+            a.little_tree += u64::from(sparse || blind > 0);
+            a.text_read += u64::from(ocr_lines > 0);
+        });
+        let now = (self.clock)();
+        self.apps_log.flush(Some(now));
+        let attach = self
+            .state(app.pid)
+            .ok()
+            .and_then(|s| s.pictures)
+            .unwrap_or(self.store.config.screenshot.attach);
         let unneeded = self.store.config.screenshot.adaptive
+            && attach == AttachMode::Auto
             && looks > 3
             && pixel_uses == 0
             && r.interactive >= self.store.config.screenshot.auto_sparse_threshold.max(3)
@@ -317,7 +339,7 @@ impl<B: Backend> Engine<B> {
             .known
             .as_ref()
             .ok_or(Error::Internal("no known screen".into()))?;
-        let auto = match shot.attach {
+        let auto = match attach {
             AttachMode::Always => true,
             AttachMode::Never => false,
             AttachMode::Auto => {
@@ -336,21 +358,73 @@ impl<B: Backend> Engine<B> {
                     || blind > 0
             }
         };
-        let want = allowed && args.screenshot.unwrap_or(auto && !unneeded);
+        let mut want = allowed && args.screenshot.unwrap_or(auto && !unneeded);
         // A picture held back only because the model hasn't needed any here.
         let withheld = allowed && args.screenshot.is_none() && auto && unneeded;
         let force = args.screenshot == Some(true);
         let mut image = None;
         let mut stale: Option<Changed> = None;
-        if want {
+        // [screenshot] smart: an automatic picture whose only news is what
+        // the tree reports changed (a number, a line read off the screen)
+        // is left out, unless the model has to see what it did: an action
+        // at x/y, an `expect` not met, or 3 left out in a row.
+        let (pixel_action, expect_missed, left_out) = self
+            .state(app.pid)
+            .map(|s| (s.pixel_action, s.expect_missed, s.left_out))
+            .unwrap_or_default();
+        let candidate = want
+            && args.screenshot.is_none()
+            && attach == AttachMode::Auto
+            && self.store.config.screenshot.smart
+            && known.shot
+            && r.seen == Seen::Same
+            && !r.full
+            && !r.large_change
+            && !size_changed
+            && r.changes > 0
+            && !r.touched.is_empty()
+            && !pixel_action
+            && !expect_missed
+            && left_out < SMART_MAX_LEFT_OUT;
+        let mut captured_early = None;
+        if candidate {
             // The picture just read for OCR, if any, is the screenshot.
-            let reuse = match self.ctx.last_capture.take() {
+            let cap = match self.ctx.last_capture.take() {
                 Some((pid, wid, epoch, cap))
                     if pid == app.pid && wid == window.id && epoch == self.epoch =>
                 {
-                    Some(cap)
+                    Ok(cap)
                 }
-                _ => None,
+                _ => self.capture_clean(|b| b.capture(&app, &window)),
+            };
+            if let Ok(cap) = cap {
+                if self.change_in_tree(app.pid, r.screen, &cap, &r.touched) {
+                    want = false;
+                    if let Some(st) = self.states.get_mut(&app.pid) {
+                        st.left_out = st.left_out.saturating_add(1);
+                    }
+                    self.apps_log.note(&app.name, |a| a.pictures_left_out += 1);
+                    header.push_str(self.explain(
+                        "shot-in-tree",
+                        "\nScreenshot: not sent: all that changed on screen is what the tree reports changed (screenshot=true sends one; pictures=\"always\" sends one every time in this app).",
+                        "\nScreenshot: not sent (the change is in the tree).",
+                    ));
+                }
+                captured_early = Some(cap);
+            }
+        }
+        if want {
+            // The picture just read for OCR, if any, is the screenshot.
+            let reuse = match captured_early.take() {
+                Some(cap) => Some(cap),
+                None => match self.ctx.last_capture.take() {
+                    Some((pid, wid, epoch, cap))
+                        if pid == app.pid && wid == window.id && epoch == self.epoch =>
+                    {
+                        Some(cap)
+                    }
+                    _ => None,
+                },
             };
             let captured = match reuse {
                 Some(cap) => Ok(cap),
@@ -380,6 +454,7 @@ impl<B: Backend> Engine<B> {
                         && self.state(app.pid).is_ok_and(|s| s.ocr_lines == 0);
                     match self.window_picture(app.pid, r.screen, cap, force, overview) {
                         Ok(Picture::Unchanged { base }) => {
+                            self.saw_pixels(app.pid);
                             let at = base.map(|b| format!(" (#{b})")).unwrap_or_default();
                             header.push_str(&if self.explain_first("shot-unchanged") {
                                 format!(
@@ -397,6 +472,8 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
+                            self.saw_pixels(app.pid);
+                            self.apps_log.note(&app.name, |a| a.pictures += 1);
                             if self.ctx.depth == 1 {
                                 let key = self.screen_key(app.pid);
                                 self.note.pictures_part.push(key);
@@ -423,6 +500,8 @@ impl<B: Backend> Engine<B> {
                             changed,
                         }) => {
                             stale = changed;
+                            self.saw_pixels(app.pid);
+                            self.apps_log.note(&app.name, |a| a.pictures += 1);
                             if self.ctx.depth == 1 {
                                 let key = self.screen_key(app.pid);
                                 self.note.pictures_whole.push(key);
@@ -451,7 +530,7 @@ impl<B: Backend> Engine<B> {
                     header.push_str(&format!("\n[screenshot unavailable: {e}]"));
                 }
             }
-        } else if allowed {
+        } else if allowed && !(candidate && captured_early.is_some()) {
             header.push_str(if withheld && self.explain_first("shot-unneeded") {
                 "\nScreenshot: not attached (you haven't needed pictures in this app; screenshot=true for one)."
             } else {
@@ -524,6 +603,63 @@ impl<B: Backend> Engine<B> {
             text: format!("{header}\nTree:\n{}", r.text),
             image,
             is_error: false,
+        })
+    }
+
+    /// The model got (or was told it has) a current picture of this app:
+    /// what [screenshot] smart counted since starts again.
+    pub(super) fn saw_pixels(&mut self, pid: u32) {
+        if let Some(st) = self.states.get_mut(&pid) {
+            st.pixel_action = false;
+            st.expect_missed = false;
+            st.left_out = 0;
+        }
+    }
+
+    /// Whether every part of the window whose pixels changed since the
+    /// model's picture of `screen` holds an element the tree reports added
+    /// or changed (`touched`, those small enough to say what changed in
+    /// them): then the tree already says what changed.
+    /// False when it can't tell (no picture of this screen at this size).
+    fn change_in_tree(&self, pid: u32, screen: u32, cap: &Capture, touched: &[Rect]) -> bool {
+        let cache = &self.store.config.cache;
+        let Some((known, coord)) = self
+            .states
+            .get(&pid)
+            .and_then(|s| s.known.as_ref())
+            .filter(|k| k.id == screen)
+            .and_then(|k| Some((k.pixels.clone()?, k.coord?)))
+        else {
+            return false;
+        };
+        if coord.bounds != cap.bounds {
+            return false;
+        }
+        let sig = PixelSig::of(cap, cache.pixel_grid);
+        let Some(cells) = sig.changed_cells(&known, cache.pixel_tolerance) else {
+            return false;
+        };
+        if cells.is_empty() {
+            return false;
+        }
+        // A big element that changed (the window's title, a document)
+        // doesn't say what changed inside it.
+        let window_area = cap.bounds.width * cap.bounds.height;
+        let small: Vec<Rect> = touched
+            .iter()
+            .filter(|t| t.width * t.height <= 0.25 * window_area)
+            .map(|t| Rect::new(t.x - 4.0, t.y - 4.0, t.width + 8.0, t.height + 8.0))
+            .collect();
+        let sx = cap.bounds.width / f64::from(cap.width.max(1));
+        let sy = cap.bounds.height / f64::from(cap.height.max(1));
+        cells.iter().all(|&(x, y, w, h)| {
+            let cell = Rect::new(
+                cap.bounds.x + f64::from(x) * sx,
+                cap.bounds.y + f64::from(y) * sy,
+                f64::from(w) * sx,
+                f64::from(h) * sy,
+            );
+            small.iter().any(|t| t.intersects(&cell))
         })
     }
 

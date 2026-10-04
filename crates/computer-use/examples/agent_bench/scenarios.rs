@@ -74,6 +74,16 @@ pub const ALL: &[Scenario] = &[
         batched: batched_orders,
     },
     Scenario {
+        id: "counter",
+        fixture: "counter",
+        app: "Counter",
+        task: "In the Counter app, press PLUS until the count is 3, checking the count after each press, then press DONE.",
+        about: "all painted, nothing for accessibility: a count and three painted buttons",
+        check: check_counter,
+        scripted: scripted_counter,
+        batched: scripted_counter,
+    },
+    Scenario {
         id: "long",
         fixture: "table",
         app: "Inventory",
@@ -301,6 +311,34 @@ fn scripted_board(s: &mut Session) -> Result<(), String> {
         .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))
         .ok_or("no boxes located")?;
     s.call("click", json!({"app": app, "x": x, "y": y}))?;
+    Ok(())
+}
+
+fn check_counter(s: &Value) -> Result<(), String> {
+    match s.get("done").and_then(Value::as_i64) {
+        Some(3) => Ok(()),
+        Some(n) => Err(format!("done at {n}")),
+        None => Err("DONE never pressed".into()),
+    }
+}
+
+/// A careful agent in an app it can only see: press, then look whether
+/// the count went up, as a model checks each step there.
+fn scripted_counter(s: &mut Session) -> Result<(), String> {
+    let app = s.app.clone();
+    s.call("get_app_state", json!({"app": app}))?;
+    let ocr = |s: &Session, word: &str| s.index(|l| l.starts_with(&format!("ocr text \"{word}")));
+    for n in 1..=3 {
+        let plus = need(ocr(s, "PLUS"), "PLUS")?;
+        s.call("click", json!({"app": app, "element_index": plus}))?;
+        let look = s.call("get_app_state", json!({"app": app}))?;
+        let shows = format!("Count: {n}");
+        if !look.contains(&shows) && !s.seen.iter().rev().take(2).any(|t| t.contains(&shows)) {
+            return Err(format!("the count isn't {n} after pressing PLUS: {look}"));
+        }
+    }
+    let done = need(ocr(s, "DONE"), "DONE")?;
+    s.call("click", json!({"app": app, "element_index": done}))?;
     Ok(())
 }
 

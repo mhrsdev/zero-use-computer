@@ -31,6 +31,7 @@ what the model says.
 | `shapes` | Shapes | click the red circle | a canvas without any text |
 | `orders` | Orders | copy a painted order number into a field, submit, confirm | mixed: picture, form, dialog |
 | `long` | Inventory | open five rows in turn | a longer session |
+| `counter` | Counter | press a painted PLUS until the count is 3, checking after each press, then DONE (v3.9.4) | an app with nothing for accessibility (a game, a custom-drawn app) |
 
 ## Two ways to run
 

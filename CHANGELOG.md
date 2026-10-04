@@ -1,5 +1,67 @@
 # Changelog
 
+## v3.9.4
+
+Screenshots by need, and the model's say over them
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.3...v3.9.4)).
+
+- **A picture whose news the text already says is left out**
+  (`screenshot.smart`, on). When all that changed on screen is where the
+  tree reports a change (a number, a line read off the screen), the look
+  says "Screenshot: not sent (the change is in the tree)". One is still
+  sent after an action at x/y, after an `expect` that wasn't met, after 3
+  left out in a row, and whenever asked (`screenshot: true`). A big element
+  changing (the window's title, a document) doesn't count as saying what
+  changed in it.
+- **The model sets pictures per app**: `get_app_state` with `pictures:
+  "always"`, `"never"` (only `screenshot: true` then) or `"auto"`, kept for
+  that app until changed.
+- **Which apps needed pixels is kept** (`screenshot.record_apps`, on): per
+  app, looks, looks with little in the tree, text read off the screen,
+  screenshots sent and left out, in `apps.json` in the server's folder.
+  `doctor` lists the apps whose tree said least.
+- **Fixed: a painted app got a whole new picture for every change.** In a
+  window of a few elements (an app read only by OCR), one line changing was
+  taken for a new screen, so the whole window was sent each time. Now one
+  line replaced is a change on the same screen (a big change needs at least
+  3 changed elements as well as a third of them).
+- **Fixed: "Nothing on screen changed after it"** was said after an action
+  whose change only the text read off the screen showed (settling doesn't
+  read it again); the report that followed showed the change.
+- `screenshot.attach = "always"` now always attaches one: `adaptive` held
+  some back there too.
+
+### Measured (scripted benchmark; token figures are estimates)
+
+A new task, `counter`: an app with nothing for accessibility (a count and
+three painted buttons, 600x380), pressing PLUS three times and looking
+after each press, then DONE. Two runs each, the same figures:
+
+| | pictures | result tokens | input tokens (8 requests) |
+|---|---|---|---|
+| v3.9.3 | 4 whole | 1,788 | 53,928 |
+| v3.9.4, `smart = false` | 4 parts | 1,071 | 51,456 |
+| v3.9.4 | 1 | 870 (−51%) | 50,640 (−6%) |
+
+The input falls less because tool definitions and skills (≈4,500 tokens)
+go with every request. A whole 1280-px window is ≈1,700 tokens, so in a
+bigger painted app each picture left out saves more.
+
+The six earlier tasks: the same result tokens (shapes 1 fewer); ≈35 more
+input tokens a request (+0.5%), `get_app_state`'s `pictures` option.
+
+**Not measured:** whether a real model does as well with fewer pictures
+(that needs runs with a model, not done). `long` fails 1 run in 10 with
+v3.9.3 and with v3.9.4 alike (GTK updates the filtered table late; the
+script looks once more, then gives up).
+
+### Checked
+
+- 427 tests in the library (8 new: pictures left out, sent after x/y and
+  an unmet `expect`, the model's setting, big elements, the record, a
+  small window's change), 41 in the server, the fuzz test; clippy on
+  Linux, Windows and macOS; Rust 1.88; the live X11 test.
+
 ## v3.9.3
 
 The six bugs v3.9.2 found and left ([not fixed yet](#not-fixed-yet)),

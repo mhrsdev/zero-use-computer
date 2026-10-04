@@ -397,6 +397,7 @@ impl<B: Backend> Engine<B> {
         // of it.
         if let Some((pid, screen)) = known_window {
             let force = args.mode == Some(ScreenshotMode::Window);
+            self.saw_pixels(pid);
             return Ok(
                 match self.window_picture(pid, screen, capture, force, false)? {
                     Picture::Unchanged { base } => {

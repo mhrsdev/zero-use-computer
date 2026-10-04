@@ -407,6 +407,28 @@ can also pick the part itself: `element_index` zooms into one element of a
 window at full resolution, for small text. `scope = "full"` turns the
 automatic choice off.
 
+**When the text already says it** (v3.9.4, `screenshot.smart`, on): an
+automatic picture whose only news is what the tree reports changed (a
+number, a line of text read off the screen) is left out ("Screenshot: not
+sent (the change is in the tree)"). It compares the parts of the window
+whose pixels changed with where the changed elements are; a big element
+(the window, a document) doesn't count. One is still sent after an action
+at x/y (its effect is checked with a picture, not taken on trust), after
+an `expect` that wasn't met, and after 3 left out in a row; and always when
+asked (`screenshot: true`).
+
+**The model's say** (v3.9.4): `get_app_state` with `pictures: "always"`
+sends a screenshot with every look of that app, `"never"` none unless
+`screenshot: true` asks, `"auto"` goes back to the above. It is kept for
+the app until changed (in this session).
+
+**Which apps needed pixels** (v3.9.4, `screenshot.record_apps`, on): the
+server counts, per app, its looks, how many had little in the tree, how
+often text was read off the screen, and the screenshots sent and left out,
+in `apps.json` in its folder (added to across sessions). `doctor` lists the
+apps whose tree said least: the ones to read with OCR, or to report to
+their makers.
+
 ## On-screen indicator (overlay)
 
 While the agent works, the user sees what it is doing — without it ever taking
@@ -830,7 +852,7 @@ rebasing; each has a setting to turn it off, and the
 | **Each thing said once** | Look-alike siblings are records (the roles once, then a line a record), a table is its column names and a row a line, flags and actions the role implies are left out, many removed elements are ranges, a look that changed nothing is one line, a value just set isn't echoed. Nothing is lost: `find_element` and indices work as before. | `tree.compact` |
 | **Reports in levels** | An action's report of what changed: the changes around what it acted on and a count of the rest (default), all of it, or just how many; elements that keep changing on their own summed up. | `tree.report`, `tree.quiet_volatile` |
 | **Fewer round trips** | `batch` lines with one report at the end, `click` by name, `expect` (the server waits for what should follow and says whether it came), `launch_app` returning the first state. | `tools.launch_look`, `timing.expect_wait_ms` |
-| **Fewer automatic pictures** | While the model doesn't use an app's pixels, a well-described window's automatic picture is held back; `locate` can answer without one. | `screenshot.adaptive`, `screenshot.locate_picture` |
+| **Fewer automatic pictures** | While the model doesn't use an app's pixels, a well-described window's automatic picture is held back; `locate` can answer without one. A picture whose change the tree already says is left out (v3.9.4); the model can set pictures per app (`pictures`). | `screenshot.adaptive`, `screenshot.locate_picture`, `screenshot.smart` |
 | **Lighter definitions** | A tool manager, on by default since v3.7, that lists the base tools and finds the rest (`find_tools`, `use_tool`; the list never changes, so the prompt cache holds): ≈ 2,000 tokens instead of ≈ 5,000, with lean schemas (default). Opt-in: a ten-tool preset, short server instructions. | `tools.manager`, `tools.descriptions`, `tools.preset`, `server.instructions` |
 | **Design answers** | After the first, only what changed, no picture twice, layers as lines; paint steps only when asked. | `tree.compact`, `tools.design_steps` |
 | **Long conversations** | Hosts that trim their context can drop the results a later one repeats (`_meta`, on); opt-in: past a number of tokens, the next look sends the whole tree and a picture again. | `cache.rebase_after_tokens`, `server.result_meta` |

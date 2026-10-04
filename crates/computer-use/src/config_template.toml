@@ -97,6 +97,12 @@ region_min_size = 200       # the part is at least this big on each side, for co
 # has looked a few times without ever using pixels there (no x/y, no
 # screenshot asked for), well-described windows come without one.
 adaptive = true
+# Leave out an automatic screenshot when all that changed on screen is what
+# the tree reports changed (the text already says it); one is still sent
+# after an action at x/y, an `expect` not met, and after 3 left out in a row.
+smart = true
+# Count how often each app needed pixels, in apps.json (`doctor` shows it).
+record_apps = true
 locate_picture = false      # true: locate sends the window with the places found numbered
 # Experimental: when no screenshot is attached, a small strip of the
 # buttons without a name, each numbered with its element_index.
