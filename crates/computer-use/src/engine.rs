@@ -242,8 +242,10 @@ const MAX_DEPTH: u32 = 8;
 /// Failed starts or crashes of the overlay helper before the engine stops
 /// trying (until the server restarts).
 const MAX_OVERLAY_FAILURES: u32 = 5;
-/// Hubs that went away and were joined again at once, at most.
+/// Hubs that went away and were joined again at once, at most, in a row.
 const MAX_HUB_LOSSES: u32 = 3;
+/// A hub connection that lasted this long: losing it starts a new row.
+const HUB_STEADY: Duration = Duration::from_secs(60);
 
 /// `draw`: the farthest the pointer moves in one step (screen units), so
 /// apps see a continuous line.
@@ -419,6 +421,8 @@ pub struct Engine<B: Backend> {
     hub_agent: Option<u32>,
     /// Hubs lost and joined again at once (a few, then the usual waits).
     hub_losses: u32,
+    /// When the hub was last joined.
+    hub_since: Option<Instant>,
     /// Where the hub's token is, instead of the server's folder (tests).
     hub_home: Option<std::path::PathBuf>,
     /// Windows put in this agent's part of the screen, and the part.
@@ -564,6 +568,7 @@ impl<B: Backend> Engine<B> {
             client: String::new(),
             hub_agent: None,
             hub_losses: 0,
+            hub_since: None,
             hub_home: None,
             arranged: HashMap::new(),
             doing: None,

@@ -596,8 +596,9 @@ impl Overlay {
         std::thread::Builder::new()
             .name("overlay-reader".into())
             .spawn(move || {
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
+                let mut reader = reader;
+                let mut buf = String::new();
+                while let Some(line) = next_line(&mut reader, &mut buf) {
                     let Ok(r) = serde_json::from_str::<Reply>(&line) else {
                         continue;
                     };
@@ -903,6 +904,32 @@ impl Overlay {
     }
 }
 
+/// The next line from the hub, the helper or an agent, without its line
+/// ending; `None` once the other end is gone. A read that times out is not
+/// the end: Windows keeps a socket's read timeout per handle, so the 3 s one
+/// set for the hello stayed on the reader's handle when it was cleared on
+/// another, and every quiet 3 s read as the hub gone (the overlay then went
+/// for good after a few model turns). What a timed-out read got stays in
+/// `buf` for the next.
+pub(crate) fn next_line<R: BufRead + ?Sized>(reader: &mut R, buf: &mut String) -> Option<String> {
+    use std::io::ErrorKind;
+    loop {
+        match reader.read_line(buf) {
+            Ok(0) => return None,
+            Ok(_) => {
+                let line = std::mem::take(buf);
+                return Some(line.trim_end_matches(['\r', '\n']).to_string());
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
 impl Drop for Overlay {
     fn drop(&mut self) {
         self.send(&Cmd::Quit);
@@ -981,6 +1008,37 @@ pub(crate) fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_timeout_left_on_the_socket_is_not_the_end() {
+        // As on Windows: the hello's 3 s timeout is still on the handle that
+        // reads, and the hub says nothing for longer than that.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hub = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            s.write_all(b"{\"type\":\"rev").unwrap();
+            s.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            s.write_all(b"oked\"}\nnext\n").unwrap();
+        });
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut buf = String::new();
+        // A line cut by a timeout comes whole.
+        assert_eq!(
+            next_line(&mut reader, &mut buf).as_deref(),
+            Some("{\"type\":\"revoked\"}")
+        );
+        assert_eq!(next_line(&mut reader, &mut buf).as_deref(), Some("next"));
+        hub.join().unwrap();
+        // The other end gone: the end.
+        assert_eq!(next_line(&mut reader, &mut buf), None);
+    }
 
     #[test]
     fn protocol_round_trips() {

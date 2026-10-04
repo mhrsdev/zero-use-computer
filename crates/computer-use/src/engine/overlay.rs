@@ -19,6 +19,15 @@ impl<B: Backend> Engine<B> {
         if let Some(o) = self.overlay.as_ref().filter(|o| !o.alive()) {
             let was_hub = o.hub().is_some();
             self.overlay = None;
+            // A connection that held a while: not one of a row of losses
+            // (a long session would otherwise use them all up).
+            let now = (self.clock)();
+            if self
+                .hub_since
+                .is_some_and(|t| now.saturating_duration_since(t) >= HUB_STEADY)
+            {
+                self.hub_losses = 0;
+            }
             if was_hub && self.hub_losses < MAX_HUB_LOSSES {
                 // The hub went (killed, or ended between two agents): join
                 // it again at once, so the stop key works again and this
@@ -85,6 +94,7 @@ impl<B: Backend> Engine<B> {
                         let agent = o.hub().map(|h| h.agent());
                         log::info!("joined the hub as agent {}", agent.unwrap_or(0));
                         self.hub_agent = agent;
+                        self.hub_since = Some((self.clock)());
                         Some(o)
                     }
                     Err(e) => {

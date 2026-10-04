@@ -1,4 +1,4 @@
-"""Windows: does the overlay show while the server works? (diagnosis)
+"""Windows: does the overlay show while the server works? (live test)
 
 Runs a released computer-use-mcp.exe as an MCP server against Notepad and,
 while it works, lists the overlay's windows (class ComputerUseOverlay):
@@ -7,6 +7,11 @@ the overlay out (WDA_EXCLUDEFROMCAPTURE), so the window state is what we
 can read.
 
   python scripts/overlay_diag.py path\\to\\computer-use-mcp.exe
+
+The calls come 4 s apart, as a model's do: the server must keep its hub
+(it used to read every 3 quiet seconds as the hub gone, and gave the
+overlay up after a few turns). Exits 1 if it lost the hub or no overlay
+window showed after a call.
 """
 import ctypes, ctypes.wintypes as wt, glob, json, os, subprocess, sys, tempfile, threading, time
 
@@ -68,11 +73,18 @@ def tool(name, args):
 
 print(call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "diag", "version": "1"}})["result"]["serverInfo"])
 threading.Thread(target=sampler, daemon=True).start()
-tool("list_apps", {})
-for i in range(3):
-    tool("get_app_state", {"app": "notepad"}); time.sleep(1.5)
-tool("click", {"app": "notepad", "x": 200, "y": 200}); time.sleep(1.0)
-tool("type_text", {"app": "notepad", "text": "hello overlay"}); time.sleep(4)
+after = []  # visible overlay windows in the second after each call
+def step(name, args, pause=4.0):
+    tool(name, args)
+    t0 = len(samples); time.sleep(1.0)
+    after.append((name, max((len(v) for _, _, v, _ in samples[t0:]), default=0)))
+    time.sleep(pause - 1.0)
+step("list_apps", {})
+step("get_app_state", {"app": "notepad"})
+step("get_app_state", {"app": "notepad"})
+step("click", {"app": "notepad", "x": 200, "y": 200})
+step("type_text", {"app": "notepad", "text": "hello overlay"})
+step("get_app_state", {"app": "notepad"}, pause=1.0)
 stop.set(); time.sleep(0.3)
 
 print("\n== overlay windows over time (t, count, visible ones, notepad z-index) ==")
@@ -83,7 +95,15 @@ for t, count, vis, note in samples:
         print(t, count, [(i, v["rect"], "cloaked=%d" % v["cloaked"], v["ex"]) for i, v in vis], "notepad z:", note)
         last = key
 print("max visible overlay windows at once:", max((len(v) for _, _, v, _ in samples), default=0))
+print("visible overlay windows after each call:", after)
 p.stdin.close(); time.sleep(2)
-print("\n== server.err ==\n" + open(os.path.join(home, "server.err"), errors="replace").read()[-6000:])
+log = open(os.path.join(home, "server.err"), errors="replace").read()
+print("\n== server.err ==\n" + log[-6000:])
 for f in glob.glob(os.path.join(home, "*.log")):
     print(f"\n== {f} ==\n" + open(f, errors="replace").read()[-4000:])
+problems = []
+if "hub went away" in log:
+    problems.append("the server lost the hub while it was running")
+problems += [f"no overlay window after {name}" for name, n in after[1:] if n == 0]
+print("\nRESULT:", "; ".join(problems) if problems else "ok")
+sys.exit(1 if problems else 0)

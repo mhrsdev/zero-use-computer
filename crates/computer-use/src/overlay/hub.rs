@@ -129,7 +129,10 @@ fn handshake(
     reader.read_line(&mut line)?;
     match serde_json::from_str::<Reply>(&line) {
         Ok(Reply::Welcome { agent, proto }) if proto == HUB_PROTO => {
+            // On every handle: Windows keeps the timeout per handle, and
+            // the reader's is the one that reads from now on.
             stream.set_read_timeout(None)?;
+            reader.get_ref().set_read_timeout(None)?;
             Ok((stream, reader, agent))
         }
         Ok(Reply::Welcome { proto, .. }) => Err(std::io::Error::new(
@@ -776,8 +779,8 @@ fn connection(
     if tx.send(Event::Joined { conn, hello, out }).is_err() {
         return;
     }
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    let mut buf = String::new();
+    while let Some(line) = super::next_line(&mut reader, &mut buf) {
         let Ok(cmd) = serde_json::from_str::<Cmd>(&line) else {
             continue;
         };
