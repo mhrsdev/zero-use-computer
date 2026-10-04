@@ -57,6 +57,12 @@ State after the steps:
   changes, so the prompt cache holds.
 - **It reads what the tree can't.** Canvases and painted text are read off
   the screen and become clickable `ocr text` elements.
+- **Pictures by need.** A screenshot comes when it shows something the
+  text doesn't: a picture whose only news is a number or a line the tree
+  already reports is left out, and one always follows an action at x/y or
+  an `expect` that wasn't met. The model can set it per app (`pictures`:
+  always, never, auto), and `doctor` lists the apps whose tree said least
+  (v3.9.4).
 - **A decision model, if you want one.** Add a fast model (TypeSafe's
   Jev, or any OpenAI-compatible one) and the agent hands it the small
   judgments: which of 50 reviews are positive, has the page loaded,
@@ -96,6 +102,22 @@ v3.9 sends **36% less per request and 33% less per task** than v3.6
 (all of it from v3.7; v3.8 and v3.9 added features at almost no cost: +34
 tokens per request). With
 `batch`, all six tasks: 323,982 → 216,991 (−33%).
+
+### Apps with nothing for accessibility (v3.9.4)
+
+A seventh task, `counter`: an app that is all painted (a count and three
+painted buttons), pressing PLUS three times and looking after each press.
+Scripted, two runs each, the same figures:
+
+| | v3.9.3 | **v3.9.4** |
+|---|---|---|
+| Screenshots sent | 4 whole | **1** |
+| Tool results (tokens) | 1,788 | **870** (−51%) |
+| Input for the task | 53,928 | **50,640** (−6%) |
+
+The six tasks above: the same results, ≈35 more tokens a request (+0.5%)
+for `get_app_state`'s new `pictures` option. Whether a real model does as
+well with fewer pictures hasn't been measured.
 
 ### Against Codex-style computer use
 
@@ -185,7 +207,7 @@ Or embed the library (`computer-use`) in your own agent:
 ## Version history and token use
 
 <details>
-<summary>Every minor version from the first release to v3.9: what changed, and what it cost in tokens (measured)</summary>
+<summary>Every minor version from the first release to v3.9 (and v3.9.1–v3.9.4): what changed, and what it cost in tokens (measured)</summary>
 
 ### How this was measured
 
@@ -307,6 +329,19 @@ possible, and far more tools behind `find_tools`.
   core for stdio and HTTP, batches, progress, Streamable HTTP,
   annotations. Per request +0.7% (+34 tokens, a line in the skill about
   other agents), over the tasks −0.5%.
+- **v3.9.1–v3.9.4**, fixes and one feature:
+  - v3.9.1: the Windows overlay stays above the taskbar.
+  - v3.9.2: a debugging release: security (keys out of scripts' reach),
+    crashes, wrong results, Persian typing on X11.
+  - v3.9.3: the six bugs v3.9.2 left (a minimized Store app's window,
+    X11 window moves checked, a closed Wayland layer, per-monitor scale,
+    one-character OCR words, first-time explanations).
+  - v3.9.4: screenshots by need, the model's `pictures` setting, a record
+    of which apps needed pixels; a painted app no longer gets a whole
+    picture per change. The six tasks: tool results unchanged, +0.5% per
+    request; the painted-app task: 4 pictures → 1, −51% of tool results.
+  Windows and Wayland fixes in these were checked by CI, not on real
+  desktops.
 
 ### v3.9 against v3.6 (with v3.5) and v3.0
 
