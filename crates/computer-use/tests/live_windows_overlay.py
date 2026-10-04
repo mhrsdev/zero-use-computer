@@ -6,7 +6,7 @@ visible, cloaked by DWM, where, and where in the z-order. Screenshots leave
 the overlay out (WDA_EXCLUDEFROMCAPTURE), so the window state is what we
 can read.
 
-  python scripts/overlay_diag.py path\\to\\computer-use-mcp.exe
+  python crates/computer-use/tests/live_windows_overlay.py path\\to\\computer-use-mcp.exe
 
 The calls come 4 s apart, as a model's do: the server must keep its hub
 (it used to read every 3 quiet seconds as the hub gone, and gave the
