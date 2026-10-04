@@ -1,0 +1,37 @@
+name: Overlay diagnosis (Windows)
+
+# Temporary: runs released builds on Windows and reports whether the
+# overlay's windows show while the server works.
+on:
+  push:
+    branches: ["ccr-4dbc414e-c3y6g5"]
+    paths: [".github/workflows/overlay-diag.yml", "scripts/overlay_diag.py"]
+  workflow_dispatch:
+
+jobs:
+  diag:
+    name: ${{ matrix.version }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+        version: [v3.9.0, v3.9.1, v3.9.2, v3.9.3, v3.9.4]
+        include:
+          - os: windows-2022
+            version: v3.9.0
+          - os: windows-2022
+            version: v3.9.4
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download ${{ matrix.version }}
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/mhrsdev/zero-use-computer/releases/download/${{ matrix.version }}/computer-use-mcp-windows-x64.zip" -OutFile m.zip
+          Expand-Archive m.zip -DestinationPath rel
+          [System.Environment]::OSVersion.Version
+      - name: Diagnose
+        run: python scripts/overlay_diag.py rel
