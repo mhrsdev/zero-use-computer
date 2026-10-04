@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.9.5
+
+An urgent fix for Windows: the overlay and the stop key went away during a
+session ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.4...v3.9.5)).
+
+- **The overlay disappeared, and with it the emergency stop key**, on
+  Windows, from v3.9.0 (when the hub came) to v3.9.4. Joining the hub, the
+  server waits at most 3 s for its welcome and then clears that wait; but
+  Windows keeps a socket's read timeout per handle, and it was cleared on
+  another handle than the one that reads. So every 3 quiet seconds (a
+  model thinking between two calls) read as "the hub went away": the
+  server joined again, three times, then counted it as a failure, and
+  after a few of those stopped trying. From then on the agent worked
+  with no overlay and Ctrl+Alt+Esc did nothing ("the emergency stop key
+  is not working" in the server's log). Now the wait is cleared on every
+  handle, a read that times out is never taken for the end, and a hub
+  connection that held for a minute starts the count of losses again.
+  Linux and macOS share a socket's settings between handles and weren't
+  affected.
+- **Found and checked on Windows.** A new live test runs the server on a
+  Windows runner against Notepad, with calls 4 s apart as a model's
+  come, and lists the overlay's windows after each call. v3.9.4 lost the
+  hub three times in 12 s and showed no overlay after the fifth call; this
+  release kept the hub and showed it after every call, on Windows Server
+  2025 (the Windows 11 24H2 core) and 2022. It is now part of CI.
+- Not yet seen on the Windows 11 desktop where it was reported.
+
 ## v3.9.4
 
 Screenshots by need, and the model's say over them

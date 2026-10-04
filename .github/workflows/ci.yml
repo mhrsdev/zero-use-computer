@@ -120,6 +120,21 @@ jobs:
           APPS=gtk3-widget-factory scripts/wayland-session.sh \
             cargo test -p computer-use --test live_wayland -- --ignored --nocapture --test-threads=1
 
+  live-windows:
+    name: Live Windows overlay test (hub, Notepad)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p computer-use-mcp
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Calls 4 s apart, as a model's: the server keeps its hub and the
+      # overlay shows after every call (v3.9.0-v3.9.4 lost both on Windows).
+      - run: python crates/computer-use/tests/live_windows_overlay.py target\debug\computer-use-mcp.exe
+
   package:
     name: Package ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

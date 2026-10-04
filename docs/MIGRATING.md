@@ -1,3 +1,8 @@
+# Upgrading to v3.9.5
+
+Nothing to change. On Windows, quit the client once after upgrading so no
+server of the old version stays connected to the hub.
+
 # Upgrading to v3.9.4
 
 Nothing to change. What looks different:
