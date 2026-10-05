@@ -158,37 +158,46 @@ pub enum Phase {
 const HOST_WORKING_HOLD: Duration = Duration::from_secs(120);
 const STOPPED_HOLD: Duration = Duration::from_millis(5000);
 
-/// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc".
+/// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc"
+/// ("Control+Option+Esc" on a Mac).
 pub fn pretty_key(key: &str) -> String {
+    let os = if cfg!(target_os = "macos") {
+        KeyNames::Mac
+    } else if cfg!(windows) {
+        KeyNames::Windows
+    } else {
+        KeyNames::Linux
+    };
+    pretty_key_for(key, os)
+}
+
+/// Whose keyboard the names are for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyNames {
+    Mac,
+    Windows,
+    Linux,
+}
+
+/// [`pretty_key`] for a given system. On a Mac the keys are named as on
+/// its keyboard: Control (never "Ctrl", read there as Cmd: Cmd+Option+Esc is
+/// Force Quit, not the stop key), Option and Cmd.
+pub fn pretty_key_for(key: &str, os: KeyNames) -> String {
+    let mac = os == KeyNames::Mac;
     key.split('+')
         .map(|p| {
             let p = p.trim();
             match p.to_ascii_lowercase().as_str() {
                 "escape" | "esc" => "Esc".to_string(),
-                "ctrl" | "control" => "Ctrl".to_string(),
-                "cmd" | "command" => {
-                    if cfg!(target_os = "macos") {
-                        "Cmd".to_string()
-                    } else {
-                        "Ctrl".to_string()
-                    }
+                "ctrl" | "control" => if mac { "Control" } else { "Ctrl" }.to_string(),
+                "cmd" | "command" => if mac { "Cmd" } else { "Ctrl" }.to_string(),
+                "meta" | "super" | "win" => match os {
+                    KeyNames::Mac => "Cmd",
+                    KeyNames::Windows => "Win",
+                    KeyNames::Linux => "Super",
                 }
-                "meta" | "super" | "win" => {
-                    if cfg!(target_os = "macos") {
-                        "Cmd".to_string()
-                    } else if cfg!(windows) {
-                        "Win".to_string()
-                    } else {
-                        "Super".to_string()
-                    }
-                }
-                "alt" | "option" | "opt" => {
-                    if cfg!(target_os = "macos") {
-                        "Option".to_string()
-                    } else {
-                        "Alt".to_string()
-                    }
-                }
+                .to_string(),
+                "alt" | "option" | "opt" => if mac { "Option" } else { "Alt" }.to_string(),
                 _ => {
                     let mut c = p.chars();
                     match c.next() {
@@ -1520,7 +1529,25 @@ mod tests {
         m.apply(Cmd::Stopped { on: false }, at(7100));
         assert_eq!(m.phase, Phase::Working);
         assert!(!m.stopped());
-        assert_eq!(pretty_key("ctrl+shift+f12"), "Ctrl+Shift+F12");
+        assert_eq!(
+            pretty_key_for("ctrl+shift+f12", KeyNames::Linux),
+            "Ctrl+Shift+F12"
+        );
+    }
+
+    #[test]
+    fn the_stop_key_is_named_as_on_a_mac_keyboard() {
+        // Not "Ctrl", read there as Cmd: Cmd+Option+Esc is Force Quit.
+        assert_eq!(
+            pretty_key_for("ctrl+alt+escape", KeyNames::Mac),
+            "Control+Option+Esc"
+        );
+        assert_eq!(
+            pretty_key_for("ctrl+alt+escape", KeyNames::Windows),
+            "Ctrl+Alt+Esc"
+        );
+        assert_eq!(pretty_key_for("cmd+shift+s", KeyNames::Mac), "Cmd+Shift+S");
+        assert_eq!(pretty_key_for("meta+l", KeyNames::Windows), "Win+L");
     }
 
     #[test]

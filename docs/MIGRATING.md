@@ -1,3 +1,8 @@
+# Upgrading to v3.9.6
+
+Nothing to change. On a Mac the stop key is named Control+Option+Esc (it
+always was that key; it used to be shown as "Ctrl+Option+Esc").
+
 # Upgrading to v3.9.5
 
 Nothing to change. On Windows, quit the client once after upgrading so no
