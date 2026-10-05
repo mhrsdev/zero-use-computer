@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v3.9.5](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v3.9.6](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
 · [Benchmarks](bench/README.md)
@@ -77,7 +77,8 @@ State after the steps:
 
   ![Four agents on one desktop, each with its numbered cursor and part of the screen](docs/images/hub-four-agents.png)
 - **You stay in control.** An on-screen indicator, an emergency stop key
-  (Ctrl+Alt+Esc), a pause while you use the mouse, masked passwords and
+  (Ctrl+Alt+Esc; on a Mac **Control**+Option+Esc, not Cmd+Option+Esc,
+  which is Force Quit), a pause while you use the mouse, masked passwords and
   card numbers, and keystrokes that only ever go to the app they're meant
   for. Which apps the agent may touch is set by a
   [security skill](skills/computer-use-security/SKILL.md).
@@ -207,7 +208,7 @@ Or embed the library (`computer-use`) in your own agent:
 ## Version history and token use
 
 <details>
-<summary>Every minor version from the first release to v3.9 (and v3.9.1–v3.9.5): what changed, and what it cost in tokens (measured)</summary>
+<summary>Every minor version from the first release to v3.9 (and v3.9.1–v3.9.6): what changed, and what it cost in tokens (measured)</summary>
 
 ### How this was measured
 
@@ -329,7 +330,7 @@ possible, and far more tools behind `find_tools`.
   core for stdio and HTTP, batches, progress, Streamable HTTP,
   annotations. Per request +0.7% (+34 tokens, a line in the skill about
   other agents), over the tasks −0.5%.
-- **v3.9.1–v3.9.5**, fixes and one feature:
+- **v3.9.1–v3.9.6**, fixes and one feature:
   - v3.9.1: the Windows overlay stays above the taskbar.
   - v3.9.2: a debugging release: security (keys out of scripts' reach),
     crashes, wrong results, Persian typing on X11.
@@ -343,6 +344,8 @@ possible, and far more tools behind `find_tools`.
   - v3.9.5: on Windows the overlay and the stop key went away during a
     session (the hub connection dropped every 3 quiet seconds since
     v3.9.0); found and checked with a new live test on Windows runners.
+  - v3.9.6: on a Mac the stop key is named Control+Option+Esc everywhere
+    ("Ctrl" was read as Cmd, and Cmd+Option+Esc is Force Quit).
   Windows and Wayland fixes in these were checked by CI, not on real
   desktops.
 

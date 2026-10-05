@@ -633,8 +633,9 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         println!("agents:   no hub (hub.enabled = false): an overlay of each server's own");
     }
 
-    let stop_key = c.control.stop_hotkey.trim().to_string();
-    let settings_key = c.control.settings_hotkey.trim().to_string();
+    // As the user's keyboard names it ("Control+Option+Esc" on a Mac).
+    let stop_key = computer_use::overlay::helper::pretty_key(c.control.stop_hotkey.trim());
+    let settings_key = computer_use::overlay::helper::pretty_key(c.control.settings_hotkey.trim());
     let decision = c.decision.clone();
     // doctor is not an agent: joining the hub would split the screen of
     // the agents at work, move their windows and draw another cursor.

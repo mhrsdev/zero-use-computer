@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.9.6
+
+The stop key on a Mac, named so it is pressed
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.5...v3.9.6)).
+
+- **On a Mac the stop key was called "Ctrl+Option+Esc"** (and "Ctrl+Alt+Esc"
+  in the README and in `doctor`). Read on a Mac keyboard, "Ctrl" passes for
+  Cmd, and Cmd+Option+Esc is the system's Force Quit window: pressed in an
+  emergency, it opened that window and the agent went on. The key itself
+  was always Control+Option+Esc (the two don't clash). Now the overlay,
+  what the agent is told and `doctor` name it as the Mac keyboard does,
+  **Control+Option+Esc**, and the README and the guide say it isn't
+  Cmd+Option+Esc. Windows and Linux keep "Ctrl+Alt+Esc".
+- `doctor` shows both keys as the keyboard names them (it printed the
+  setting as written, "ctrl+alt+escape").
+
+### Checked
+
+- 429 tests in the library (a new one for the names on each system), 41
+  in the server; clippy on Linux, Windows and macOS; Rust 1.88. Not seen on
+  a Mac: CI only type-checks macOS.
+
 ## v3.9.5
 
 An urgent fix for Windows: the overlay and the stop key went away during a

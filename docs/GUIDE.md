@@ -550,13 +550,15 @@ own, as before.
 
 ## You stay in control
 
-- **Emergency stop key** — `Ctrl+Alt+Esc` by default (`Ctrl+Option+Esc` on a
-  Mac; `control.stop_hotkey`),
+- **Emergency stop key** — `Ctrl+Alt+Esc` by default; on a Mac
+  `Control+Option+Esc` (the Control key, not Cmd: Cmd+Option+Esc is the
+  system's Force Quit window and doesn't stop the agent). The overlay, the
+  agent and `doctor` name it as the keyboard does (`control.stop_hotkey`),
   from any app. The agent stops at once: every tool call is refused with a
   message telling the model that the user stopped it and to ask how to
   proceed; a batch, a wait or an on-screen question in progress ends too.
   The label turns orange ("Zero stopped. Press Ctrl+Alt+Esc to let it
-  continue"). Press the key again to let it continue. The overlay helper
+  continue"; "Control+Option+Esc" on a Mac). Press the key again to let it continue. The overlay helper
   registers exactly that one combination with the OS (`RegisterHotKey` on
   Windows, a passive key grab on X11, `RegisterEventHotKey` on macOS), so it
   receives that key and nothing else. If another program already owns the
