@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v3.9.6](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v3.9.7](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
 · [Benchmarks](bench/README.md)
@@ -208,7 +208,7 @@ Or embed the library (`computer-use`) in your own agent:
 ## Version history and token use
 
 <details>
-<summary>Every minor version from the first release to v3.9 (and v3.9.1–v3.9.6): what changed, and what it cost in tokens (measured)</summary>
+<summary>Every minor version from the first release to v3.9 (and v3.9.1–v3.9.7): what changed, and what it cost in tokens (measured)</summary>
 
 ### How this was measured
 
@@ -330,7 +330,7 @@ possible, and far more tools behind `find_tools`.
   core for stdio and HTTP, batches, progress, Streamable HTTP,
   annotations. Per request +0.7% (+34 tokens, a line in the skill about
   other agents), over the tasks −0.5%.
-- **v3.9.1–v3.9.6**, fixes and one feature:
+- **v3.9.1–v3.9.7**, fixes and one feature:
   - v3.9.1: the Windows overlay stays above the taskbar.
   - v3.9.2: a debugging release: security (keys out of scripts' reach),
     crashes, wrong results, Persian typing on X11.
@@ -346,6 +346,11 @@ possible, and far more tools behind `find_tools`.
     v3.9.0); found and checked with a new live test on Windows runners.
   - v3.9.6: on a Mac the stop key is named Control+Option+Esc everywhere
     ("Ctrl" was read as Cmd, and Cmd+Option+Esc is Force Quit).
+  - v3.9.7: a debugging release: the whole project read twice, line by
+    line; about 150 problems fixed, among them the HTTP server could be
+    stopped without the token, OCR text from private fields and values in
+    the audit log reached the model or the disk, and clicks landed at the
+    old place after a window moved.
   Windows and Wayland fixes in these were checked by CI, not on real
   desktops.
 
