@@ -318,7 +318,14 @@ pub fn type_text(pid: u32, text: &str) -> Result<()> {
 
 pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
     let src = source()?;
-    match keycode(combo) {
+    // A dead key pressed on its own only starts an accent, typing nothing:
+    // the character is typed as text instead. With a modifier it is a
+    // shortcut, which doesn't compose, so the key is right there.
+    let key = match key_stroke(combo) {
+        Some((_, _, true)) if !combo.modifiers.any() => None,
+        k => k.map(|(code, extra, _)| (code, extra)),
+    };
+    match key {
         Some((code, extra)) => {
             let mut mods = combo.modifiers;
             mods.shift |= extra.shift;
@@ -788,25 +795,25 @@ fn redraw(image: &CGImage) -> Result<Vec<u8>> {
 /// keyboard layout, so `cmd+a` hits the key that types "a" on AZERTY too;
 /// the US layout's keys only without layout data (off the main thread),
 /// or for a shortcut on a character the layout doesn't type (a Latin
-/// letter on a Cyrillic layout). `None` for a character only a dead key
-/// gives, unless it is a shortcut.
+/// letter on a Cyrillic layout).
 pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
+    key_stroke(combo).map(|(code, extra, _)| (code, extra))
+}
+
+/// `keycode`, and whether the key is a dead key on this layout.
+fn key_stroke(combo: &KeyCombo) -> Option<(u16, Modifiers, bool)> {
     let plain = Modifiers::default();
     let c = match combo.key {
-        Key::Named(n) => return named_keycode(n).map(|code| (code, plain)),
-        Key::Char(' ') => return Some((49, plain)),
+        Key::Named(n) => return named_keycode(n).map(|code| (code, plain, false)),
+        Key::Char(' ') => return Some((49, plain, false)),
         Key::Char(c) => c,
     };
     let shortcut = combo.modifiers.meta || combo.modifiers.ctrl;
-    let us = || char_keycode(c).map(|(code, shift)| (code, Modifiers { shift, ..plain }));
+    let us = || char_keycode(c).map(|(code, shift)| (code, Modifiers { shift, ..plain }, false));
     let Some(table) = layout::current() else {
         return us();
     };
     match layout::pick(&table, c, shortcut) {
-        // A dead key pressed on its own only starts an accent: no key, so
-        // `press` types the character instead. (A shortcut doesn't compose,
-        // so there the key is right.)
-        Some(k) if k.dead && !shortcut => None,
         Some(k) => Some((
             k.code,
             Modifiers {
@@ -814,6 +821,7 @@ pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
                 alt: k.option,
                 ..plain
             },
+            k.dead,
         )),
         None if shortcut => us(),
         None => None,

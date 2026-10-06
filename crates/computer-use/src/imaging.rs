@@ -945,8 +945,6 @@ pub fn palette(cap: &Capture, max: usize) -> Vec<(String, f64)> {
         .collect()
 }
 
-/// Draw each element's index over the capture (set-of-marks). `marks` are
-/// (index, screen-space bounds); they are mapped into the capture's pixels.
 /// Small pictures side by side on white, each scaled to `height` pixels
 /// (and at most twice as wide) and numbered with its index: a strip of
 /// icons to show what unnamed buttons look like without a screenshot.
@@ -995,6 +993,8 @@ pub fn strip(items: &[(u32, Capture)], height: u32) -> Capture {
     cap
 }
 
+/// Draw each element's index over the capture (set-of-marks). `marks` are
+/// (index, screen-space bounds); they are mapped into the capture's pixels.
 pub fn annotate(cap: &mut Capture, marks: &[(u32, Rect)]) {
     let box_rgb = [255, 40, 40];
     let text_rgb = [255, 255, 0];

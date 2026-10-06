@@ -562,8 +562,10 @@ fn cell(s: String) -> Value {
     Value::String(s)
 }
 
-/// CSV text of rows (arrays, or maps that share their keys).
-pub fn to_csv(rows: &[Value]) -> String {
+/// CSV text of rows (arrays, or maps that share their keys), at most `max`
+/// bytes. Every map row gets a cell for each of the first row's keys, so
+/// many small rows can make a text far bigger than the values.
+pub fn to_csv(rows: &[Value], max: usize) -> Result<String, String> {
     let field = |v: &Value| {
         let s = match v {
             Value::String(s) => s.clone(),
@@ -602,8 +604,11 @@ pub fn to_csv(rows: &[Value]) -> String {
         };
         out.push_str(&cells.join(","));
         out.push('\n');
+        if out.len() > max {
+            return Err(format!("the CSV would be more than {max} bytes"));
+        }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -619,6 +624,7 @@ mod tests {
             stop: Default::default(),
             app_tools: Vec::new(),
             decision: Default::default(),
+            settings_key: None,
             private: Vec::new(),
         }
     }
@@ -682,6 +688,28 @@ mod tests {
         assert!(parse_csv(&commas).is_err_and(|e| e.contains("more than")));
         let lines = "\n".repeat(MAX_CELLS + 1);
         assert!(parse_csv(&lines).is_err());
+    }
+
+    /// Each map row gets a cell for every key of the first row, so empty
+    /// maps under a wide first row made a text far bigger than the rows.
+    #[test]
+    fn a_csv_bigger_than_the_limit_is_refused_while_it_is_made() {
+        use serde_json::json;
+        let wide: Map<String, Value> = (0..1000)
+            .map(|i| (format!("k{i}"), Value::from(1)))
+            .collect();
+        let mut rows = vec![Value::Object(wide)];
+        rows.extend((0..1000).map(|_| json!({})));
+        let r = to_csv(&rows, 100_000);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("more than 100000 bytes")),
+            "{r:?}"
+        );
+        assert_eq!(
+            to_csv(&[json!({"a": 1, "b": "x,y"}), json!({"a": 2})], 100),
+            Ok("a,b\n1,\"x,y\"\n2,\n".to_string())
+        );
     }
 
     /// `\Windows\x` and `C:x` are "relative" on Windows, but joined to the

@@ -476,16 +476,18 @@ pub fn try_model(d: &DecisionConfig) -> std::result::Result<String, String> {
     let decider = Decider::from_config(d)
         .map_err(|e| e.to_string())?
         .ok_or("choose a kind of model first")?;
-    try_decider(&decider)
+    try_decider(&decider, &|| false)
 }
 
-/// Ask this model one easy question; what to show the user.
-pub fn try_decider(decider: &Decider) -> std::result::Result<String, String> {
+/// Ask this model one easy question; what to show the user. `halted`
+/// stops the wait (the stop key, the client's cancel).
+pub fn try_decider(
+    decider: &Decider,
+    halted: &(dyn Fn() -> bool + Sync),
+) -> std::result::Result<String, String> {
     let q = [Question::yes_no("sky", "Is the sky in this text blue?")];
     let (answers, took) = decider
-        .ask("The sky over the sea is clear and blue today.", &q, &|| {
-            false
-        })
+        .ask("The sky over the sea is clear and blue today.", &q, halted)
         .map_err(|e| e.to_string())?;
     let a = answers.first().map(|(_, a)| a.brief()).unwrap_or_default();
     Ok(format!(

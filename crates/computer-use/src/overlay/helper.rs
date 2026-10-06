@@ -153,9 +153,9 @@ pub enum Phase {
     Stopped,
 }
 
-/// How long "stopped" stays on screen when nothing else happens.
 /// How long a host's "working" lasts with no call after it.
 const HOST_WORKING_HOLD: Duration = Duration::from_secs(120);
+/// How long "stopped" stays on screen when nothing else happens.
 const STOPPED_HOLD: Duration = Duration::from_millis(5000);
 
 /// A key combination as people write it: "ctrl+alt+escape" → "Ctrl+Alt+Esc"
@@ -248,7 +248,6 @@ struct Glide {
 
 const RIPPLE: Duration = Duration::from_millis(450);
 
-/// The overlay's state, independent of any platform.
 /// A value easing from one level to another over time.
 #[derive(Debug, Clone, Copy)]
 struct Ramp {
@@ -299,6 +298,7 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     .unwrap_or(b)
 }
 
+/// The overlay's state, independent of any platform.
 pub struct Machine {
     cfg: OverlayConfig,
     colors: Colors,
@@ -756,7 +756,6 @@ fn color_key(c: Color) -> [u8; 4] {
     [c.red(), c.green(), c.blue(), c.alpha()]
 }
 
-/// Turns scenes into surface calls, redrawing only what changed.
 /// What the border was drawn with: band rects, colour, core width, opacity.
 type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 /// What the label was drawn with: text, colour, opacity, and its position.
@@ -765,6 +764,7 @@ type LabelKey = (String, [u8; 4], u8, i64, i64, u32);
 /// and the scale (per cent) of the monitor it is on.
 type CursorKey = ([u8; 4], [u8; 4], i32, u8, String, u32);
 
+/// Turns scenes into surface calls, redrawing only what changed.
 #[derive(Default)]
 pub struct Painter {
     border: Option<BorderKey>,
@@ -1128,7 +1128,7 @@ pub(super) fn register_key(
     // another (the user changed it), is registered anew: the last asked for
     // wins.
     if let Some((k, true)) = slot
-        && k.eq_ignore_ascii_case(key)
+        && same_key(k, key)
     {
         return true;
     }
@@ -1147,6 +1147,15 @@ pub(super) fn register_key(
         _ => *slot = Some((key.to_string(), false)),
     }
     false
+}
+
+/// Whether `a` and `b` name the same key combination: "ctrl+alt+escape"
+/// and "Ctrl + Alt + Esc" do. Text that names no key is compared as text.
+pub(super) fn same_key(a: &str, b: &str) -> bool {
+    match (crate::keys::parse_combo(a), crate::keys::parse_combo(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a.trim().eq_ignore_ascii_case(b.trim()),
+    }
 }
 
 /// Entry point of `computer-use-mcp overlay [--parent PID] [--demo]`.
@@ -1326,7 +1335,8 @@ pub fn run(args: &[String]) -> i32 {
                                 Hotkey::Settings => Reply::SettingsKey { key, ok },
                             });
                         }
-                        // The label names the stop key that works.
+                        // The label names the stop key registered: the one
+                        // that works, or (none does) the one asked for.
                         *hotkey = stop_key.clone().map(|k| k.0).unwrap_or_default();
                         // Redraw everything with the new settings.
                         painter.redraw();

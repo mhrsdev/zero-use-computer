@@ -255,9 +255,11 @@ fn found_index(text: &str) -> Option<u32> {
 }
 
 /// Pressing Open is checked, not taken on trust: the app says
-/// "Opened <sku>", and the action's answer must say it saw that.
+/// "Opened <sku>", and the action's answer must say it saw that. A server
+/// before v3.6 ignores `expect` and reports no expectation: nothing to
+/// check there, and the scenario's own check still judges the run.
 fn opened_confirmed(text: &str, sku: &str) -> Result<(), String> {
-    if text.contains(&format!("Expected Opened {sku}: confirmed")) {
+    if !text.contains("Expected ") || text.contains(&format!("Expected Opened {sku}: confirmed")) {
         Ok(())
     } else {
         Err(format!("opening {sku} wasn't confirmed: {text}"))
@@ -559,5 +561,10 @@ mod tests {
         assert!(opened_confirmed("Clicked 7. Expected Opened K-0137: confirmed.", sku).is_ok());
         assert!(opened_confirmed("Clicked 7. Expected Opened K-0137: not seen.", sku).is_err());
         assert!(opened_confirmed("Clicked 7. Expected Opened K-0012: confirmed.", sku).is_err());
+    }
+
+    #[test]
+    fn an_open_on_a_server_without_expectations_is_not_failed() {
+        assert!(opened_confirmed("Clicked 7.\nChanged: label \"Opened K-0137\"", "K-0137").is_ok());
     }
 }

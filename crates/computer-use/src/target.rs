@@ -385,20 +385,21 @@ pub fn look_alikes(
     if tw < 3 || th < 3 {
         return Err("the box to look for must be at least 3 x 3 pixels".into());
     }
-    // Work on a smaller copy so the template is about 16 pixels across.
-    let f = (tw.max(th) as f64 / 16.0).ceil().max(1.0) as usize;
+    // Work on a smaller copy so the template is about 16 pixels each way
+    // (shrunk on each side by itself, so a thin box keeps its short side).
+    let (fx, fy) = (tw.div_ceil(16).max(1), th.div_ceil(16).max(1));
     let small = |x0: usize, y0: usize, w: usize, h: usize| -> (Vec<f64>, usize, usize) {
-        let (sw, sh) = (w / f, h / f);
+        let (sw, sh) = (w / fx, h / fy);
         let mut out = vec![0.0; sw * sh];
         for y in 0..sh {
             for x in 0..sw {
                 let mut s = 0.0;
-                for dy in 0..f {
-                    for dx in 0..f {
-                        s += gray(rgb(cap, x0 + x * f + dx, y0 + y * f + dy));
+                for dy in 0..fy {
+                    for dx in 0..fx {
+                        s += gray(rgb(cap, x0 + x * fx + dx, y0 + y * fy + dy));
                     }
                 }
-                out[y * sw + x] = s / (f * f) as f64;
+                out[y * sw + x] = s / (fx * fy) as f64;
             }
         }
         (out, sw, sh)
@@ -457,8 +458,8 @@ pub fn look_alikes(
     let mut out: Vec<Match> = Vec::new();
     for (score, x, y) in hits {
         let bbox = Rect::new(
-            (ax0 + x * f) as f64,
-            (ay0 + y * f) as f64,
+            (ax0 + x * fx) as f64,
+            (ay0 + y * fy) as f64,
             tw as f64,
             th as f64,
         );
@@ -650,6 +651,28 @@ mod tests {
             0.9,
         );
         assert!(flat.unwrap_err().contains("flat colour"));
+    }
+
+    #[test]
+    fn a_thin_box_with_detail_is_looked_for() {
+        // A column of small dark marks 10 wide and 200 tall, and a copy
+        // further right.
+        let mut cap = canvas(200, 220);
+        for x in [20, 120] {
+            for y in (10..200).step_by(20) {
+                fill(&mut cap, x + 2, y + 4, x + 8, y + 12, [30, 30, 30]);
+            }
+        }
+        let found = look_alikes(
+            &cap,
+            Rect::new(20.0, 10.0, 10.0, 200.0),
+            Rect::new(0.0, 10.0, 200.0, 200.0),
+            0.9,
+        )
+        .unwrap();
+        let mut at: Vec<(f64, f64)> = found.iter().map(|m| (m.bbox.x, m.bbox.y)).collect();
+        at.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(at, vec![(20.0, 10.0), (120.0, 10.0)], "{found:?}");
     }
 
     #[test]

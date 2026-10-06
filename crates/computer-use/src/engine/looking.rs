@@ -64,7 +64,7 @@ impl<B: Backend> Engine<B> {
         if crate::launch::is_url(&args.app) {
             crate::launch::open_url(&args.app)?;
             return Ok(ToolOutput::text(format!(
-                "Opened {} in the default browser. Call list_apps, then get_app_state on the browser, to see it.",
+                "Opened \"{}\" in the default browser. Call list_apps, then get_app_state on the browser, to see it.",
                 args.app
             )));
         }

@@ -546,15 +546,17 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
         && !c.is_control()
         && !combo.modifiers.any()
     {
-        // With Caps Lock on, a key can type something else: a letter's
-        // other case ("a" came out "A"), and on some layouts other keys too
-        // (AZERTY's number row gives digits). The character itself then,
-        // typed as text.
-        if caps_lock_on() {
-            return type_text(&c.to_string());
-        }
         match plain_char_key(c, layout) {
             CharKey::Unicode => return type_text(&c.to_string()),
+            // With Caps Lock on, a key can type something else: a letter's
+            // other case ("a" came out "A"), and on some layouts other keys
+            // too (AZERTY's number row gives digits). The character itself
+            // then, typed as text; other keys stay keys.
+            CharKey::Key(vk, extra)
+                if caps_lock_on() && caps_lock_changes(c, vk, extra, layout) =>
+            {
+                return type_text(&c.to_string());
+            }
             CharKey::Key(vk, extra) => return press_vk(vk, extra, layout),
         }
     }
@@ -580,6 +582,46 @@ fn caps_lock_on() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
     // SAFETY: a plain query of the keyboard state.
     unsafe { GetKeyState(i32::from(VK_CAPITAL.0)) & 1 != 0 }
+}
+
+/// Whether `vk` with `mods` types something other than `c` in `layout`
+/// while Caps Lock is on (or nothing the layout can say).
+fn caps_lock_changes(c: char, vk: VIRTUAL_KEY, mods: crate::keys::Modifiers, layout: HKL) -> bool {
+    let mut want = [0u16; 2];
+    let want = c.encode_utf16(&mut want);
+    let mut out = [0u16; 8];
+    // SAFETY: pure lookups in a keyboard layout; flag 4 leaves the
+    // keyboard's dead-key state alone.
+    let n = unsafe {
+        let scan = MapVirtualKeyExW(u32::from(vk.0), MAPVK_VK_TO_VSC, Some(layout));
+        ToUnicodeEx(
+            u32::from(vk.0),
+            scan,
+            &caps_lock_key_state(mods),
+            &mut out,
+            4,
+            Some(layout),
+        )
+    };
+    usize::try_from(n).map_or(true, |n| out.get(..n) != Some(&*want))
+}
+
+/// A keyboard state for `ToUnicodeEx`: `mods` held and Caps Lock on.
+fn caps_lock_key_state(mods: crate::keys::Modifiers) -> [u8; 256] {
+    let mut state = [0u8; 256];
+    for (on, key) in [
+        (mods.shift, VK_SHIFT),
+        (mods.ctrl, VK_CONTROL),
+        (mods.alt, VK_MENU),
+    ] {
+        if on {
+            // The top bit: held.
+            state[usize::from(key.0)] = 0x80;
+        }
+    }
+    // The low bit: toggled on.
+    state[usize::from(VK_CAPITAL.0)] = 1;
+    state
 }
 
 /// Press and release `vk` with `mods` held around it.
@@ -736,5 +778,27 @@ mod tests {
         assert_eq!(char_key(0x0841, false), CharKey::Unicode);
         assert!(is_dead(0x8000_005E));
         assert!(!is_dead(0x0000_0041));
+    }
+
+    #[test]
+    fn the_caps_lock_key_state_holds_the_keys_modifiers() {
+        let state = caps_lock_key_state(Modifiers {
+            shift: true,
+            ..Default::default()
+        });
+        assert_eq!(state[usize::from(VK_SHIFT.0)], 0x80);
+        assert_eq!(state[usize::from(VK_CAPITAL.0)], 1);
+        assert_eq!(state[usize::from(VK_CONTROL.0)], 0);
+        assert_eq!(state[usize::from(VK_MENU.0)], 0);
+        // AltGr is Ctrl+Alt.
+        let altgr = caps_lock_key_state(Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        });
+        assert_eq!(altgr[usize::from(VK_CONTROL.0)], 0x80);
+        assert_eq!(altgr[usize::from(VK_MENU.0)], 0x80);
+        assert_eq!(altgr[usize::from(VK_SHIFT.0)], 0);
+        assert_eq!(altgr.iter().filter(|&&b| b != 0).count(), 3);
     }
 }

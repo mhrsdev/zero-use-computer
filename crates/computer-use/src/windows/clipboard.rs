@@ -2,8 +2,8 @@
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner, OpenClipboard,
-    SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner,
+    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
@@ -13,6 +13,11 @@ use super::wm::{answers, hung};
 use crate::error::{Error, Result};
 
 const CF_UNICODETEXT: u32 = 13;
+/// The marker format password managers (KeePass, KeePassXC, Bitwarden…)
+/// put on what they copy, so clipboard histories and monitors leave it
+/// alone: a secret.
+const CONCEALED: windows::core::PCWSTR =
+    windows::core::w!("ExcludeClipboardContentFromMonitorProcessing");
 /// How long the clipboard's owner may take to answer before it counts as
 /// not responding.
 const OWNER_PROBE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -49,6 +54,18 @@ impl Drop for ClipboardGuard {
 
 pub fn get() -> Result<String> {
     let _guard = ClipboardGuard::open()?;
+    // SAFETY: registering a format name (or getting its existing id) and
+    // a query that renders nothing.
+    let concealed = unsafe {
+        let format = RegisterClipboardFormatW(CONCEALED);
+        format != 0 && IsClipboardFormatAvailable(format).is_ok()
+    };
+    if concealed {
+        return Err(Error::Blocked(
+            "reading the clipboard".into(),
+            "it holds concealed content (a password or another secret, as marked by the app that copied it)".into(),
+        ));
+    }
     // Text its owner renders only when asked for (delayed rendering) is
     // asked for with a message that waits for the owner: a hung owner
     // would block here for as long as it hangs.

@@ -457,7 +457,7 @@ impl Decider {
             .split("://")
             .nth(1)
             .unwrap_or(&self.url)
-            .split('/')
+            .split(['/', '?', '#'])
             .next()
             .unwrap_or_default();
         // Never a user name and password given in the address.
@@ -1295,12 +1295,23 @@ fn parse_chat(v: &Value, questions: &[Question]) -> Result<Answers> {
                     Value::String(s) => option_named(q, s),
                     // An option named by that number (an element's index
                     // when picking one), else the option in that place.
+                    // Not when the options are all numbers: another number
+                    // is then none of them (an element that wasn't
+                    // offered), never the one that happens to be there.
                     Value::Number(n) => {
                         let said = n.to_string();
+                        let numbers = q
+                            .options
+                            .iter()
+                            .all(|(l, _)| l.trim().parse::<f64>().is_ok());
                         q.options
                             .iter()
                             .find(|(l, _)| l.trim() == said)
-                            .or_else(|| n.as_u64().and_then(|i| q.options.get(i as usize)))
+                            .or_else(|| {
+                                n.as_u64()
+                                    .filter(|_| !numbers)
+                                    .and_then(|i| q.options.get(i as usize))
+                            })
                             .map(|(l, _)| l.clone())
                     }
                     _ => None,

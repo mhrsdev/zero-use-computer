@@ -5628,9 +5628,20 @@ fn the_audit_log_keeps_no_value_that_was_set() {
     let log = std::fs::read_to_string(&path).unwrap();
     assert!(!log.contains("s3cret"), "{log}");
     assert!(log.contains("\"tool\":\"set_value\""), "{log}");
+    // Nothing from the first quote on: a quote inside a value can't flip
+    // what is kept.
     assert_eq!(
-        super::audit_summary("Set text area \"Code\" to \"4821\". Code 482913 sent."),
-        "Set text area \"…\" to \"…\". Code •••••• sent."
+        super::audit_summary("Set text field \"Notes\" to \"my \"secret phrase\" here\"."),
+        "Set text field …"
+    );
+    // Nor what an `expect` said it waited for.
+    assert_eq!(
+        super::audit_summary("Typed 5 character(s). Expected Welcome back Jane: confirmed."),
+        "Typed 5 character(s).…"
+    );
+    assert_eq!(
+        super::audit_summary("Sent. Code 482913 is valid."),
+        "Sent. Code •••••• is valid."
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -5679,4 +5690,143 @@ fn a_value_that_is_not_a_finite_number_is_compared_as_text() {
         assert!(!set.is_error, "{value}: {}", set.text);
         assert!(!set.text.contains("now shows"), "{value}: {}", set.text);
     }
+}
+
+#[test]
+fn text_read_off_a_window_moves_with_it() {
+    let mut e = canvas_engine(Some(vec![
+        line("New Game", 100.0, 100.0),
+        line("Options", 100.0, 140.0),
+    ]));
+    let out = e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
+    let options = index_of_name(&out.text, "\"Options\"");
+    let runs = e.backend().ocr_runs;
+    let moved = e.call_tool(
+        "window",
+        serde_json::json!({"app": "Game", "action": "move", "x": 300, "y": 200}),
+    );
+    assert!(!moved.is_error, "{}", moved.text);
+    let clicked = |e: &Engine<MockBackend>| {
+        e.backend().events.iter().rev().find_map(|ev| match ev {
+            Event::Click(_, p, ..) => Some(*p),
+            _ => None,
+        })
+    };
+    // Right after the move: never where the text was.
+    e.call_tool(
+        "click",
+        serde_json::json!({"app": "Game", "element_index": options}),
+    );
+    assert_ne!(clicked(&e), Some(Point::new(140.0, 150.0)));
+    // The same picture: not read again, but where the window is now.
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": "Game", "disable_diff": true}),
+    );
+    let options = index_of_name(&out.text, "\"Options\"");
+    let r = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Game", "element_index": options}),
+    );
+    assert!(!r.is_error, "{}", r.text);
+    assert_eq!(clicked(&e), Some(Point::new(440.0, 350.0)));
+    assert_eq!(e.backend().ocr_runs, runs);
+}
+
+#[test]
+fn text_read_inside_a_private_field_stays_out_after_the_window_moved() {
+    let win = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let mut field = MockElement::new(
+        2,
+        "text field",
+        "Verification code",
+        Rect::new(20.0, 20.0, 200.0, 30.0),
+    )
+    .child_of(1)
+    .editable();
+    field.states.enabled = true;
+    let app = MockApp {
+        info: AppInfo {
+            name: "Bank".into(),
+            id: "bank".into(),
+            pid: 91,
+            exe: None,
+            frontmost: true,
+            hidden: false,
+        },
+        windows: vec![MockWindow {
+            id: 3,
+            title: "Login".into(),
+            bounds: win,
+            root: 1,
+            focused: true,
+        }],
+        elements: vec![MockElement::new(1, "window", "Login", win), field],
+    };
+    let mut backend = MockBackend::new();
+    backend.add_app(app);
+    backend.ocr_text = Some(vec![
+        line("482913", 25.0, 25.0),
+        line("Welcome back", 20.0, 200.0),
+    ]);
+    let mut cfg = Config::default();
+    cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
+    cfg.cache.snapshot_ttl_ms = 0;
+    let mut e = Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+    let out = e.call_tool("get_app_state", serde_json::json!({"app": "Bank"}));
+    assert!(!out.text.contains("482913"), "{}", out.text);
+    let moved = e.call_tool(
+        "window",
+        serde_json::json!({"app": "Bank", "action": "move", "x": 500, "y": 300}),
+    );
+    assert!(!moved.is_error, "{}", moved.text);
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": "Bank", "disable_diff": true}),
+    );
+    assert!(out.text.contains("Welcome back"), "{}", out.text);
+    assert!(!out.text.contains("482913"), "{}", out.text);
+}
+
+#[test]
+fn a_hub_change_from_the_embedder_leaves_the_hub() {
+    let (port, home) = test_hub("set-config");
+    let mut e = hub_engine(port, &home, false);
+    e.call_tool("list_apps", serde_json::json!({}));
+    assert!(e.hub_link().is_some());
+    let mut cfg = e.store().config.clone();
+    cfg.hub.enabled = false;
+    e.set_config(ConfigStore::in_memory(cfg));
+    assert!(e.hub_link().is_none());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_design_drawn_in_a_batch_is_not_counted_as_seen() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "design",
+        serde_json::json!({"name": "card", "size": [400, 200], "background": "#FFFFFF",
+            "add": [{"id": "disc", "ellipse": [100, 100, 60, 60], "fill": "#CC2222"}]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let green = serde_json::json!({"name": "card", "change": [{"id": "disc", "fill": "#00FF00"}]});
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"steps": [
+            {"tool": "design", "arguments": green},
+            {"tool": "list_apps", "arguments": {}}]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    // The model last got it red: the change is said, the picture sent.
+    let out = e.call_tool("design", green);
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("#00FF00"), "{}", out.text);
+    assert!(out.text.contains("changed disc"), "{}", out.text);
+    assert!(
+        !out.text.contains("The picture is as before"),
+        "{}",
+        out.text
+    );
+    assert!(out.image.is_some(), "{}", out.text);
 }

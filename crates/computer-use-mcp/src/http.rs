@@ -171,7 +171,7 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
                 continue;
             }
         };
-        shared.reading.fetch_add(1, Ordering::SeqCst);
+        eprintln!("DBG take {} reading={}", request.url(), shared.reading.fetch_add(1, Ordering::SeqCst));
         let (ours, tx) = (shared.clone(), tx.clone());
         let spawned = std::thread::Builder::new()
             .name("http-request".into())
@@ -706,7 +706,10 @@ fn respond(request: Request, status: u16, body: Value, headers: &[(&str, &str)])
         }
     }
     let send = move || {
+        let t = Instant::now();
+        let st = request.body_length();
         let _ = request.respond(response);
+        eprintln!("DBG respond {st:?} took {:?} {:?}", t.elapsed(), std::thread::current().name());
     };
     // A refused request may still be sending its body, which tiny_http
     // reads to the end (up to a megabyte: see vendor/tiny_http) once it is
@@ -1287,23 +1290,22 @@ mod tests {
     }
 
     /// Clients that declare a body and never send it hold the threads that
-    /// refuse them, never the one taking requests: once most of them go,
-    /// the server serves again, while the rest still hold back.
+    /// refuse them (each reads what is left of its body), never the one
+    /// taking requests, and only until their reads time out (see
+    /// vendor/tiny_http): the server serves again while they all still hold
+    /// back. Before, it never did.
     #[test]
-    fn clients_holding_back_their_bodies_never_hold_up_taking_requests() {
+    fn clients_holding_back_their_bodies_hold_up_requests_only_until_they_time_out() {
         serving("stalled", |addr| {
-            let mut stalled: Vec<TcpStream> = (0..MAX_READING + MAX_REFUSING + 10)
+            let stalled: Vec<TcpStream> = (0..MAX_READING + MAX_REFUSING + 10)
                 .map(|_| declaring(addr, &[JSON], 2000, ""))
                 .collect();
             std::thread::sleep(Duration::from_millis(500));
-            // Those past the limit were refused (503), before the fix, by
-            // the thread taking requests, which then waited on them. Half
-            // the others go: room enough for the rest, and for a ping.
-            let last = stalled.split_off(MAX_READING / 2);
-            drop(stalled);
             let r = post(addr, None, json!({"jsonrpc":"2.0","id":7,"method":"ping"}));
             assert_eq!(r.json()["id"], 7);
-            drop(last);
+            for s in stalled {
+                assert_eq!(status_of(s), 401);
+            }
         });
     }
 

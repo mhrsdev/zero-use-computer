@@ -1,10 +1,11 @@
 //! One agent session run twice on the real platform backend: once the way
 //! Codex's computer use behaves (a screenshot attached to every
 //! get_app_state, no screen memory, no picture dedupe, whole-window
-//! pictures, no change report after an action), once with this server's
-//! defaults. Same app, same steps: look, go to another page, look, come
-//! back, look. Reports what the model would receive (estimated tokens) and
-//! how long the calls took.
+//! pictures, no change report after an action, and none of what this
+//! server adds on top: every tool listed, no blind areas, no adaptive
+//! pictures), once with this server's defaults. Same app, same steps:
+//! look, go to another page, look, come back, look. Reports what the model
+//! would receive (estimated tokens) and how long the calls took.
 //!
 //! ```text
 //! APPS=gtk3-widget-factory scripts/desktop-session.sh \

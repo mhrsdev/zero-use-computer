@@ -164,7 +164,7 @@ impl<B: Backend> Engine<B> {
                         )? {
                             let waited = (self.clock)().saturating_duration_since(start);
                             let mut out = format!(
-                                "Yes after {:.1} s ({yes:.2}): {question}",
+                                "Yes after {:.1} s ({yes:.2}): \"{question}\"",
                                 waited.as_secs_f64()
                             );
                             if let Some((index, line)) = found.filter(|_| matchers) {

@@ -224,6 +224,7 @@ impl<B: Backend> Engine<B> {
                 .iter()
                 .map(|(pid, st)| (*pid, (st.header_seen.clone(), st.icons_shown.clone())))
                 .collect(),
+            drafts: self.drafts_seen.clone(),
         }
     }
 
@@ -233,8 +234,12 @@ impl<B: Backend> Engine<B> {
             memory,
             hints,
             mut shown,
+            drafts,
         } = seen;
         *self.hints.0.borrow_mut() = hints;
+        // A design the steps drew is compared, next time, with what the
+        // model last got of it.
+        self.drafts_seen = drafts;
         for (pid, st) in self.states.iter_mut() {
             let (header, icons) = shown.remove(pid).unwrap_or_default();
             st.header_seen = header;

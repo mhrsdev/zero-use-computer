@@ -37,7 +37,7 @@ impl Saved {
         // hold anything there: what isn't a schema is left out, as one bad
         // tool makes clients refuse the whole list.
         match schema.get_mut("properties") {
-            Some(Value::Object(props)) => props.retain(|_, v| v.is_object()),
+            Some(Value::Object(props)) => props.retain(|_, v| property_ok(v)),
             _ => schema["properties"] = json!({}),
         }
         if schema.get("required").is_some_and(|r| !names(r))
@@ -52,6 +52,22 @@ impl Saved {
 /// Whether `v` is a list of names (a schema's `required`).
 fn names(v: &Value) -> bool {
     v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
+}
+
+/// JSON Schema's type names.
+const TYPES: [&str; 7] = [
+    "string", "number", "integer", "boolean", "object", "array", "null",
+];
+
+/// Whether `v` can describe one argument: a map whose `type`, if it has
+/// one, is a JSON Schema type name or a list of them ("int" is not).
+fn property_ok(v: &Value) -> bool {
+    let known = |t: &Value| t.as_str().is_some_and(|t| TYPES.contains(&t));
+    v.as_object().is_some_and(|m| match m.get("type") {
+        None => true,
+        Some(Value::Array(a)) => a.iter().all(known),
+        Some(t) => known(t),
+    })
 }
 
 /// What is wrong with `params` as the script's arguments, if anything:
@@ -76,7 +92,12 @@ fn check_params(params: &Value) -> Result<(), String> {
     let Value::Object(props) = props else {
         return Err(HOW.into());
     };
-    match props.iter().find(|(_, v)| !v.is_object()) {
+    match props.iter().find(|(_, v)| !property_ok(v)) {
+        Some((k, v)) if v.is_object() => Err(format!(
+            "{HOW}; \"{k}\" has the type {}, but a type is one of {}",
+            v["type"],
+            TYPES.join(", ")
+        )),
         Some((k, v)) => Err(format!("{HOW}; \"{k}\" is described by {v}, not by a map")),
         None => Ok(()),
     }
@@ -243,19 +264,23 @@ impl Library {
 
 /// A saved script from its file.
 fn parse(name: String, code: String, path: PathBuf) -> Saved {
-    let mut description = String::new();
-    let mut params = Value::Null;
+    // The first of each counts: `save` writes them on top, and comments
+    // below them in the code must not replace what was checked.
+    let mut description = None;
+    let mut params = None;
     for line in code
         .lines()
         .take_while(|l| l.trim_start().starts_with("//"))
     {
         let body = line.trim_start().trim_start_matches('/').trim();
         if let Some(d) = body.strip_prefix("description:") {
-            description = d.trim().to_string();
+            description.get_or_insert_with(|| d.trim().to_string());
         } else if let Some(p) = body.strip_prefix("params:") {
-            params = serde_json::from_str(p.trim()).unwrap_or(Value::Null);
+            params.get_or_insert_with(|| serde_json::from_str(p.trim()).unwrap_or(Value::Null));
         }
     }
+    let mut description = description.unwrap_or_default();
+    let params = params.unwrap_or(Value::Null);
     if description.is_empty() {
         description = format!("The saved script {name}.");
     }
@@ -322,6 +347,52 @@ mod tests {
         ] {
             assert!(lib.save("s", "1", "d", &good).is_ok(), "{good}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Header-like comments further down the code don't replace the
+    /// description and params `save` checked and wrote on top.
+    #[test]
+    fn comments_in_the_code_do_not_replace_the_saved_header() {
+        let dir = std::env::temp_dir().join(format!("cu-lib-header-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut lib = Library::new(dir.clone());
+        let code = "// helper\n// description: something else\n// params: {\"zzz\": {\"type\": \"int\"}}\na + b";
+        let params = json!({"a": {"type": "number"}});
+        lib.save("demo", code, "Adds two numbers", &params).unwrap();
+        let saved = lib.get("demo").unwrap();
+        assert_eq!(saved.description, "Adds two numbers");
+        assert_eq!(saved.params, params);
+        assert!(saved.code.contains("something else"), "{}", saved.code);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A type JSON Schema doesn't know ("int") would make clients refuse
+    /// every tool, so it isn't saved, and an old file's is left out.
+    #[test]
+    fn a_property_of_an_unknown_type_is_refused() {
+        let dir = std::env::temp_dir().join(format!("cu-lib-types-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut lib = Library::new(dir.clone());
+        let r = lib.save("s", "1", "d", &json!({"n": {"type": "int"}}));
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("\"n\" has the type \"int\"")),
+            "{r:?}"
+        );
+        let r = lib.save("s", "1", "d", &json!({"n": {"type": ["integer", 5]}}));
+        assert!(r.is_err(), "{r:?}");
+        for good in [
+            json!({"n": {"type": "integer"}}),
+            json!({"n": {"type": ["string", "null"]}}),
+            json!({"n": {"description": "any"}}),
+        ] {
+            assert!(lib.save("s", "1", "d", &good).is_ok(), "{good}");
+        }
+        assert_eq!(
+            saved(json!({"n": {"type": "int"}, "m": {"type": "string"}})).input_schema(),
+            json!({"type": "object", "properties": {"m": {"type": "string"}}})
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

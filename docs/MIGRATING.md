@@ -249,4 +249,6 @@ real-model benchmark has measured them ([roadmap](ROADMAP.md)).
 | `ocr.blind_regions` | `false` | read and watch what the tree says nothing about (v3.5) |
 
 `bench/configs/lean.toml` turns on every one that saves tokens, for an
-A/B run.
+A/B run. Since v3.7 they are all on by default, so on v3.7 and later the
+file equals the defaults; it is kept as what `bench/results/v3.6-lean` was
+measured with.

@@ -779,6 +779,29 @@ fn regex_results_of_too_many_values_are_refused() {
     );
 }
 
+/// With a header, short rows are filled out to every name: a long header
+/// over many empty lines would make millions of values from a small text.
+#[test]
+fn a_csv_header_over_many_empty_rows_is_refused() {
+    let dir = library("csv-header");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"let h = ""; for i in 0..3000 { h += `k${i},`; } for i in 0..3000 { h += "\n"; } parse_csv(h, true).len()"#,
+    );
+    assert!(
+        out.is_error && out.text.contains("more than 2000000 values"),
+        "{}",
+        out.text
+    );
+    let out = run(&mut e, r#"parse_csv("a,b\n1\n", true)"#);
+    assert!(
+        out.text.contains(r#"Result: [{"a":1,"b":""}]"#),
+        "{}",
+        out.text
+    );
+}
+
 /// A script may throw a text of any size; the error shows its start.
 #[test]
 fn a_huge_error_is_cut_short() {
@@ -791,4 +814,47 @@ fn a_huge_error_is_cut_short() {
     assert!(out.is_error, "{}", out.text);
     assert!(out.text.len() < 20_000, "{} bytes", out.text.len());
     assert!(out.text.contains("characters in all"), "{}", out.text);
+}
+
+/// The limits on errors and results count characters: a text under them
+/// in letters of two bytes each is kept whole, not marked as cut.
+#[test]
+fn a_short_text_of_wide_letters_is_not_cut() {
+    let dir = library("wide-letters");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"let s = ""; for i in 0..7000 { s += "é"; } throw s;"#,
+    );
+    assert!(out.is_error, "{}", out.text);
+    assert!(!out.text.contains("characters in all"), "{}", out.text);
+    assert!(out.text.contains(&"é".repeat(7000)), "{}", out.text);
+    let out = run(&mut e, r#"let s = ""; for i in 0..6000 { s += "é"; } s"#);
+    assert!(!out.is_error, "{}", out.text);
+    assert!(!out.text.contains("characters in all"), "{}", out.text);
+    assert!(out.text.contains(&"é".repeat(6000)), "{}", out.text);
+    let out = run(&mut e, r#"let s = ""; for i in 0..9000 { s += "é"; } s"#);
+    assert!(
+        out.text.contains("… (9000 characters in all)"),
+        "{}",
+        out.text
+    );
+}
+
+/// A script's decision errors name the settings key the user has, or none
+/// when there is none, as the engine's own do.
+#[test]
+fn a_script_without_a_model_is_sent_to_the_users_settings_key() {
+    let dir = library("settings-key");
+    let mut e = engine_with(&dir, |c| c.control.settings_hotkey = "ctrl+shift+f9".into());
+    let out = run(&mut e, r#"ask("a blue sky", "Is it blue?")"#);
+    assert!(out.is_error, "{}", out.text);
+    let key = crate::overlay::helper::pretty_key("ctrl+shift+f9");
+    assert!(out.text.contains(&key), "{}", out.text);
+    assert!(!out.text.contains("unless it was changed"), "{}", out.text);
+    let mut e = engine_with(&dir, |c| c.control.settings_hotkey = String::new());
+    let out = run(&mut e, r#"ask("a blue sky", "Is it blue?")"#);
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.contains(r#"decide setup="open""#), "{}", out.text);
+    assert!(!out.text.contains("settings key"), "{}", out.text);
 }

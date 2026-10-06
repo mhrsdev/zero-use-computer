@@ -57,7 +57,8 @@ left.
 
 - **Real-model runs** (5 or more per scenario, `bench/run.sh --runs 5`)
   of v3.2, v3.6 with its defaults, `bench/configs/lean.toml` and
-  `manager.toml`, with `--plan` left to the model; `--calibrate` to check
+  `manager.toml` (against v3.6: from v3.7 on, both files equal the
+  defaults), with `--plan` left to the model; `--calibrate` to check
   the token estimate (Persian and other non-Latin text especially).
   Every number so far is a scripted estimate.
 - **Defaults from those runs**: `ocr.blind_regions`, `tree.report`,

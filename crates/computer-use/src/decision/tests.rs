@@ -342,7 +342,7 @@ fn long_states_keep_start_and_end() {
 }
 
 #[test]
-fn a_number_answer_is_the_option_of_that_name_before_the_one_in_that_place() {
+fn a_number_answer_is_never_another_element_when_the_options_are_numbers() {
     // Picking an element: the options are element indices.
     let q = [Question::choice("element", "Which one", &["3", "8", "57"])];
     let reply = |content: &str| json!({"choices": [{"message": {"content": content}}]});
@@ -352,9 +352,19 @@ fn a_number_answer_is_the_option_of_that_name_before_the_one_in_that_place() {
     };
     assert_eq!(chosen(r#"{"element": 57}"#), "57");
     assert_eq!(chosen(r#"{"element": 8}"#), "8");
-    // No option of that name: the option in that place.
-    assert_eq!(chosen(r#"{"element": 1}"#), "8");
+    // Another element's index is none of them, never the one in that place.
+    assert!(parse_chat(&reply(r#"{"element": 1}"#), &q).is_err());
     assert!(parse_chat(&reply(r#"{"element": 99}"#), &q).is_err());
+}
+
+#[test]
+fn a_number_answer_is_the_option_in_that_place_when_the_options_are_words() {
+    let q = [Question::choice("kind", "What is it", &["bug", "idea"])];
+    let reply = json!({"choices": [{"message": {"content": r#"{"kind": 1}"#}}]});
+    match parse_chat(&reply, &q).unwrap().pop() {
+        Some((_, Answer::Choice { choice, .. })) => assert_eq!(choice, "idea"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -363,6 +373,14 @@ fn the_label_never_shows_a_name_and_password_from_the_address() {
     assert_eq!(d.label(), "fast-1 at models.example");
     let d = decider("openai", "http://127.0.0.1:8080/v1", "k");
     assert_eq!(d.label(), "fast-1 at 127.0.0.1:8080");
+}
+
+#[test]
+fn the_label_never_shows_a_query_from_the_address() {
+    let d = decider("openai", "https://proxy.example?key=SECRET", "k");
+    assert_eq!(d.label(), "fast-1 at proxy.example");
+    let d = decider("openai", "https://proxy.example#key=SECRET", "k");
+    assert_eq!(d.label(), "fast-1 at proxy.example");
 }
 
 #[test]
@@ -385,4 +403,16 @@ fn errors_name_the_settings_key_the_user_has() {
     );
     assert!(not_set_up(Some("F9")).contains("press F9:"));
     assert!(!not_set_up(None).contains("press"));
+}
+
+#[test]
+fn the_setup_test_stops_when_halted() {
+    let f = fake(|_| {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        (500, "{}".into())
+    });
+    let d = decider("openai", &f.url, "k");
+    let start = std::time::Instant::now();
+    assert!(page::try_decider(&d, &|| true).is_err());
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }

@@ -5,10 +5,12 @@
 //! exclusive zone.
 //!
 //! Compositors animate a surface when it is mapped and unmapped (Hyprland's
-//! fades and pop-ins), and the overlay hides around every screenshot. So
-//! every layer's surface is created once, when the overlay starts, and
-//! stays mapped for good: hiding shows a transparent buffer instead, and a
-//! layer only gets a new surface when it moves to another output.
+//! fades and pop-ins), and the overlay hides around every screenshot. So a
+//! layer's surface is created once and stays mapped for good: hiding shows
+//! a transparent buffer instead, and a layer only gets a new surface when
+//! it moves to another output. One engine's layers are created when the
+//! overlay starts, so their animation plays unseen; a hub's other agents'
+//! layers are created (and animated) when first shown.
 //!
 //! Images are drawn at the highest output scale and shown at their logical
 //! size through wp_viewporter, so they stay sharp at fractional scales.
@@ -42,7 +44,6 @@ const NAMESPACE: &str = "computer-use";
 /// Longest wait for the compositor to answer (a configure, a sync).
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
 
-/// Every layer the painter uses, created up front.
 /// The parts made at start (one engine's); a hub's other agents get theirs
 /// when first shown.
 const LAYERS: [Layer; 6] = [
@@ -307,9 +308,13 @@ impl WaylandSurface {
         // Every layer gets its surface now, mapped with a transparent
         // buffer (no image yet): whatever animation the compositor plays on
         // a new surface plays unseen, and never again.
+        // Not one the compositor hasn't configured (it didn't answer in
+        // time): a buffer before that is a protocol error, which would end
+        // the connection; it gets its buffer when first shown.
         for layer in LAYERS {
             if let Some(out) = s.main_output()
-                && s.surf(layer, out, (1, 1)).is_some()
+                && s.surf(layer, out, (1, 1))
+                    .is_some_and(|surf| surf.acked.is_some())
             {
                 s.present(layer);
             }
@@ -431,11 +436,12 @@ impl WaylandSurface {
             .copied()
     }
 
-    /// The layer's surface on `output`, made (or moved there) if needed,
-    /// sized `size` (logical units) and acknowledged.
+    /// The layer's surface on `output`, made (or moved there, with its
+    /// image) if needed, sized `size` (logical units) and acknowledged.
     fn surf(&mut self, layer: Layer, output: u32, size: (u32, u32)) -> Option<&mut Surf> {
+        let mut image = None;
         if self.surfs.get(&layer).is_some_and(|s| s.output != output) {
-            self.surfs.remove(&layer);
+            image = self.surfs.remove(&layer).and_then(|mut s| s.image.take());
         }
         if !self.surfs.contains_key(&layer) {
             let wl_out = self.state.outputs.get(&output)?.wl.clone()?;
@@ -473,7 +479,7 @@ impl WaylandSurface {
                     acked: None,
                     margin: (0, 0),
                     buffers: Vec::new(),
-                    image: None,
+                    image,
                 },
             );
         }
@@ -659,24 +665,24 @@ impl Surface for WaylandSurface {
             let _ = self.conn.flush();
             return;
         }
-        let Some((image, output)) = self
-            .surfs
-            .get(&layer)
-            .and_then(|s| s.image.clone().map(|image| (image, s.output)))
-        else {
+        // Only its size: copying the image on every move (each frame of a
+        // glide) was wasted.
+        let Some((w, h, output)) = self.surfs.get(&layer).and_then(|s| {
+            let (_, w, h) = s.image.as_ref()?;
+            Some((*w, *h, s.output))
+        }) else {
             return;
         };
-        if !self.place(layer, x, y, (image.1, image.2)) {
+        if !self.place(layer, x, y, (w, h)) {
             return;
         }
-        // Moved to another output: a new surface (made without an image),
-        // so the image again.
-        if self.surfs.get(&layer).is_some_and(|s| s.output != output) {
-            if let Some(s) = self.surfs.get_mut(&layer) {
-                s.image = Some(image);
-            }
-            self.present(layer);
-        } else if self.surfs.get(&layer).is_some_and(|s| s.buffers.is_empty()) {
+        // Moved to another output: a new surface (the image went with it),
+        // with nothing on it yet.
+        if self
+            .surfs
+            .get(&layer)
+            .is_some_and(|s| s.output != output || s.buffers.is_empty())
+        {
             self.present(layer);
         } else if let Some(s) = self.surfs.get(&layer) {
             s.layer.set_margin(s.margin.1, 0, 0, s.margin.0);

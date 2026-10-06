@@ -21,8 +21,13 @@ if ((-not $NoRegister) -and (-not (Get-Command claude -ErrorAction SilentlyConti
   throw 'claude (Claude Code) is not on PATH. Install it first: https://docs.claude.com/claude-code'
 }
 if ($Uninstall) {
+  # A failing native command doesn't throw: check its exit code.
   claude mcp remove $Name --scope $Scope
-  Write-Host "Removed '$Name'."
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Nothing removed: '$Name' wasn't found in the $Scope scope (see claude mcp list)."
+    exit 1
+  }
+  Write-Host "Removed '$Name' ($Scope scope)."
   return
 }
 

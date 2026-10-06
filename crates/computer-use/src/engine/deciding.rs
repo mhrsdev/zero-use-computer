@@ -146,15 +146,42 @@ impl<B: Backend> Engine<B> {
         decision::not_set_up(self.settings_key_name().as_deref())
     }
 
+    /// The settings file, when hot reload is off and the file changed
+    /// since it was last read (an empty one is taken as half-written).
+    fn changed_without_hot_reload(&self) -> Option<std::path::PathBuf> {
+        let path = self.store.path.as_deref()?;
+        (!self.store.config.hot_reload
+            && file_mtime(path) != self.config_mtime
+            && std::fs::metadata(path).is_ok_and(|m| m.len() > 0))
+        .then(|| path.to_path_buf())
+    }
+
     /// The decision model's settings as they are now. Without hot reload,
-    /// settings saved on the page since the start are read from the file.
+    /// settings saved on the page since the file was last read are read
+    /// from it.
     pub(super) fn decision_settings(&self) -> crate::config::DecisionConfig {
-        (!self.store.config.hot_reload)
-            .then_some(self.store.path.as_deref())
-            .flatten()
-            .and_then(|p| ConfigStore::load(Some(p)).ok())
+        self.changed_without_hot_reload()
+            .and_then(|p| ConfigStore::load(Some(&p)).ok())
             .map(|s| s.config.decision)
             .unwrap_or_else(|| self.store.config.decision.clone())
+    }
+
+    /// Without hot reload, take up the decision model saved on the page
+    /// (only the file's `[decision]` settings), so the tool list,
+    /// `decision.auto` and the model's record follow it. Before each call.
+    pub(super) fn sync_decision_settings(&mut self) {
+        let Some(path) = self.changed_without_hot_reload() else {
+            return;
+        };
+        self.config_mtime = file_mtime(&path);
+        let Ok(store) = ConfigStore::load(Some(&path)) else {
+            return;
+        };
+        if store.config.decision != self.store.config.decision {
+            // Another model: the old one's failures and answers aren't its.
+            self.judge.forget();
+            self.store.config.decision = store.config.decision;
+        }
     }
 
     pub(super) fn decider(&self) -> Result<Decider> {
@@ -281,6 +308,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn decide(&mut self, args: DecideArgs) -> Result<ToolOutput> {
+        self.sync_decision_settings();
         if let Some(setup) = args.setup.clone() {
             return self.decision_setup(setup);
         }
@@ -716,12 +744,21 @@ impl<B: Backend> Engine<B> {
                             key.map(|k| format!(" ({k} opens it too.)"))
                                 .unwrap_or_default()
                         ),
-                        Err(e) => format!(
-                            "Couldn't open the browser ({e}). Ask the user to run `computer-use-mcp settings --no-browser` in a terminal on this computer: it shows the address of the page where they set up the decision model."
-                        ),
+                        // The command names this server's settings file:
+                        // without it, the page would save to the default
+                        // one, which this server may not read.
+                        Err(e) => match &self.store.path {
+                            Some(p) => format!(
+                                "Couldn't open the browser ({e}). Ask the user to run `computer-use-mcp settings --no-browser --config \"{}\"` in a terminal on this computer: it shows the address of the page where they set up the decision model.",
+                                p.display()
+                            ),
+                            None => format!(
+                                "Couldn't open the browser ({e}). This server keeps its settings in memory, so no page can save them: the decision model can be given here with decide setup={{provider, base_url, model, api_key}}."
+                            ),
+                        },
                     }))
                 }
-                "test" => decision::page::try_decider(&self.decider()?)
+                "test" => decision::page::try_decider(&self.decider()?, &self.halt_watch())
                     .map(ToolOutput::text)
                     .map_err(Error::ActionFailed),
                 "remove" | "clear" | "delete" => {
@@ -851,7 +888,11 @@ impl<B: Backend> Engine<B> {
             .flatten()
             .map(|x| x.with_settings_key(self.settings_key_name()));
         let label = decider.as_ref().map(Decider::label).unwrap_or_default();
-        let test = match decider.as_ref().map(decision::page::try_decider) {
+        let halted = self.halt_watch();
+        let test = match decider
+            .as_ref()
+            .map(|d| decision::page::try_decider(d, &halted))
+        {
             Some(Ok(t)) => format!("Test: {t}"),
             Some(Err(e)) => format!("But the test failed: {e}"),
             None => String::new(),
@@ -1600,6 +1641,40 @@ mod tests {
         assert_eq!(saved.base_url, new.url);
         assert_eq!(saved.api_key, "sk-new-2222");
         assert_eq!(saved.model, "m2");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_hot_reload_a_model_saved_on_the_page_is_taken_up_once() {
+        let dir = std::env::temp_dir().join(format!("cu-decide-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let file = |model: &str, auto: bool| {
+            format!(
+                "hot_reload = false\n[decision]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:9/v1\"\nmodel = \"{model}\"\napi_key = \"k\"\nauto = {auto}\n"
+            )
+        };
+        std::fs::write(&path, file("m1", true)).unwrap();
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {});
+        assert!(e.auto_decider().is_some());
+        // The page saves another model that the server mustn't ask on its own.
+        std::fs::write(&path, file("m2", false)).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(e.changed_without_hot_reload().is_some());
+        e.sync_decision_settings();
+        assert_eq!(e.store.config.decision.model, "m2");
+        assert!(e.auto_decider().is_none());
+        // Read once: not again until the file changes.
+        assert!(e.changed_without_hot_reload().is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -961,6 +961,19 @@ fn within<T: Send + 'static>(
     const RUNNING: u8 = 0;
     const DONE: u8 = 1;
     const ABANDONED: u8 = 2;
+    /// Marks the attempt ended, however it ends (a panic too), and uncounts
+    /// it if it was given up on.
+    struct Ending {
+        state: Arc<AtomicU8>,
+        unanswered: &'static AtomicIsize,
+    }
+    impl Drop for Ending {
+        fn drop(&mut self) {
+            if self.state.swap(DONE, Ordering::SeqCst) == ABANDONED {
+                self.unanswered.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
     if unanswered.load(Ordering::SeqCst) > 0 {
         return Err(Error::Platform(
             "the X server hasn't answered an earlier connection attempt".into(),
@@ -968,19 +981,24 @@ fn within<T: Send + 'static>(
     }
     let state = Arc::new(AtomicU8::new(RUNNING));
     let (tx, rx) = std::sync::mpsc::channel();
-    let st = state.clone();
+    let ending = Ending {
+        state: state.clone(),
+        unanswered,
+    };
     std::thread::Builder::new()
         .name("x11-connect".into())
         .spawn(move || {
+            let _ending = ending;
             let _ = tx.send(f());
-            if st.swap(DONE, Ordering::SeqCst) == ABANDONED {
-                unanswered.fetch_sub(1, Ordering::SeqCst);
-            }
         })
         .map_err(|e| Error::Platform(format!("cannot connect to the X server: {e}")))?;
     match rx.recv_timeout(timeout) {
         Ok(r) => r,
-        Err(_) => {
+        // The attempt ended without a result (it panicked).
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Error::Platform(
+            "cannot connect to the X server: the connection attempt failed".into(),
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             unanswered.fetch_add(1, Ordering::SeqCst);
             if state
                 .compare_exchange(RUNNING, ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
@@ -1547,6 +1565,21 @@ mod tests {
         assert_eq!(
             within(Duration::from_secs(5), &PENDING, || Ok(3)).unwrap(),
             3
+        );
+    }
+
+    #[test]
+    fn a_connection_attempt_that_panics_doesnt_block_the_next() {
+        static PENDING: AtomicIsize = AtomicIsize::new(0);
+        let t = Instant::now();
+        let r: Result<u32> = within(Duration::from_secs(5), &PENDING, || panic!("broken"));
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("failed"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(PENDING.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            within(Duration::from_secs(5), &PENDING, || Ok(1)).unwrap(),
+            1
         );
     }
 

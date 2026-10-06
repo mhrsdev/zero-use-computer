@@ -37,6 +37,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       - run: cargo clippy -p computer-use-mcp --all-targets --features http
       - run: cargo test --workspace
+      # Examples' own tests don't run with the workspace's (an example is
+      # built, not tested, by default): the bench's scenario checks.
+      - run: cargo test -p computer-use --example agent_bench
 
   msrv:
     name: MSRV (Rust 1.88)

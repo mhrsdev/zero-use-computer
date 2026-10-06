@@ -705,12 +705,15 @@ fn render(v: &Dynamic) -> Option<String> {
             Err(_) => v.to_string(),
         }
     };
-    Some(if text.len() > MAX_VALUE {
-        let cut: String = text.chars().take(MAX_VALUE).collect();
-        format!("{cut}… ({} characters in all)", text.chars().count())
-    } else {
-        text
-    })
+    // Cut by characters (not bytes), so a text that is short enough but
+    // not ASCII is shown whole.
+    let mut text = text;
+    if let Some((end, _)) = text.char_indices().nth(MAX_VALUE) {
+        let all = text.chars().count();
+        text.truncate(end);
+        text.push_str(&format!("… ({all} characters in all)"));
+    }
+    Some(text)
 }
 
 fn page_text(p: &Page) -> String {
@@ -849,13 +852,14 @@ fn state_text(d: &Dynamic) -> Res<String> {
 }
 
 fn decision_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
-    use crate::decision::{Answer, Decider, NOT_SET_UP, Question};
+    use crate::decision::{Answer, Decider, Question, not_set_up};
 
+    // Errors send the user to the settings key they have (if any).
     let decider = |c: &Ctx| -> Res<Decider> {
         c.check()?;
         match Decider::from_config(&c.env.decision) {
-            Ok(Some(d)) => Ok(d),
-            Ok(None) => Err(err(NOT_SET_UP)),
+            Ok(Some(d)) => Ok(d.with_settings_key(c.env.settings_key.clone())),
+            Ok(None) => Err(err(not_set_up(c.env.settings_key.as_deref()))),
             Err(e) => Err(err(e)),
         }
     };
@@ -1463,6 +1467,15 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
                 other => other.to_string(),
             })
             .collect();
+        // Short rows are filled out to every name, so a long header over
+        // many empty lines would make far more values than the text has.
+        if keys.len().saturating_mul(it.len()) > MAX_ITEMS {
+            return Err(err(format!(
+                "the CSV's {} names over {} rows would make more than {MAX_ITEMS} values",
+                keys.len(),
+                it.len()
+            )));
+        }
         let maps: Vec<Value> = it
             .map(|r| {
                 Value::Object(
@@ -1489,7 +1502,7 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     });
     engine.register_fn("to_csv", |rows: Array| -> Res<String> {
         let rows: Vec<Value> = rows.iter().map(to_json).collect::<Res<_>>()?;
-        Ok(io::to_csv(&rows))
+        io::to_csv(&rows, MAX_TEXT).map_err(err)
     });
     let written = |r: Result<std::path::PathBuf, String>| -> Res<String> {
         r.map(|p| p.display().to_string()).map_err(err)
@@ -1513,7 +1526,8 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     let c = ctx.clone();
     engine.register_fn("write_csv", move |path: &str, rows: Array| -> Res<String> {
         let rows: Vec<Value> = rows.iter().map(to_json).collect::<Res<_>>()?;
-        written(io::write_text(&c.env, path, &io::to_csv(&rows), false))
+        let text = io::to_csv(&rows, io::MAX_WRITE).map_err(err)?;
+        written(io::write_text(&c.env, path, &text, false))
     });
     let c = ctx.clone();
     engine.register_fn("exists", move |path: &str| io::exists(&c.env, path));

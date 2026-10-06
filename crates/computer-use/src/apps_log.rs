@@ -54,7 +54,8 @@ const WRITE_EVERY: Duration = Duration::from_secs(10);
 
 /// The counts, and where they are kept (none: counted, never written).
 /// Several servers may share the file (agents side by side): each adds
-/// what it counted since its last write to what the file holds then.
+/// what it counted since its last write to what the file holds then,
+/// one at a time (see [`WriteLock`]).
 #[derive(Debug, Default)]
 pub struct AppsLog {
     path: Option<PathBuf>,
@@ -107,11 +108,20 @@ impl AppsLog {
         {
             return;
         }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // Another server writing now is waited for; if it takes too long,
+        // this write is left for the next flush (the last one still writes).
+        let lock: Option<WriteLock> = None;
+        if lock.is_none() && now.is_some() {
+            return;
+        }
         // What the file holds now (another server may have written since),
-        // plus what this one counted.
+        // plus what this one counted. Those stay counted until written.
         let mut apps = read(path);
-        for (app, more) in std::mem::take(&mut self.added) {
-            apps.entry(app).or_default().add(&more);
+        for (app, more) in &self.added {
+            apps.entry(app.clone()).or_default().add(more);
         }
         if apps.len() > MAX_APPS {
             // The ones looked at least go, but not the ones just used (a
@@ -132,14 +142,17 @@ impl AppsLog {
             static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_err() {
+            let saved = std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_ok();
+            if saved {
+                self.added.clear();
+            } else {
                 let _ = std::fs::remove_file(&tmp);
             }
         }
+        drop(lock);
         self.apps = file.apps;
+        // Also after a failed write, so a full disk is tried again only
+        // every few seconds.
         self.written = now.or_else(|| Some(Instant::now()));
     }
 
@@ -152,6 +165,48 @@ impl AppsLog {
 impl Drop for AppsLog {
     fn drop(&mut self) {
         self.flush(None);
+    }
+}
+
+/// `apps.json.lock`, held while one server reads, adds to and replaces
+/// the file, so two servers writing at the same moment keep both counts.
+struct WriteLock(PathBuf);
+
+impl WriteLock {
+    /// Waits up to about a second for another server's write. A lock left
+    /// by a server that stopped mid-write (a write takes milliseconds) is
+    /// taken over after a few seconds.
+    fn take(path: &Path) -> Option<Self> {
+        let lock = path.with_extension("json.lock");
+        for _ in 0..100 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock)
+            {
+                Ok(_) => return Some(Self(lock)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&lock)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > Duration::from_secs(5));
+                    if stale {
+                        let _ = std::fs::remove_file(&lock);
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -224,7 +279,51 @@ mod tests {
     }
 
     #[test]
-    fn two_servers_writing_at_once_keep_both_counts() {
+    fn servers_writing_at_the_same_moment_keep_every_count() {
+        let dir = std::env::temp_dir().join(format!("cu-apps-log-race-{}", std::process::id()));
+        let path = dir.join("apps.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let servers: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut log = AppsLog::at(path);
+                    for _ in 0..20 {
+                        log.note("Paint", |r| r.looks += 1);
+                        log.flush(None);
+                    }
+                })
+            })
+            .collect();
+        for s in servers {
+            s.join().unwrap();
+        }
+        assert_eq!(read(&path)["Paint"].looks, 120);
+        assert!(!path.with_extension("json.lock").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn counts_a_write_failed_to_save_are_written_later() {
+        let dir = std::env::temp_dir().join(format!("cu-apps-log-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The log's folder is a file for now, so writing fails.
+        let blocker = dir.join("logs");
+        std::fs::write(&blocker, "").unwrap();
+        let path = blocker.join("apps.json");
+        let mut log = AppsLog::at(path.clone());
+        log.note("Paint", |r| r.looks += 2);
+        log.flush(None);
+        assert!(!path.exists());
+        std::fs::remove_file(&blocker).unwrap();
+        log.flush(None);
+        assert_eq!(read(&path)["Paint"].looks, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_servers_writing_one_after_the_other_keep_both_counts() {
         let dir = std::env::temp_dir().join(format!("cu-apps-log-two-{}", std::process::id()));
         let path = dir.join("apps.json");
         let _ = std::fs::remove_dir_all(&dir);

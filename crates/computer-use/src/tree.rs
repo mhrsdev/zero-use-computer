@@ -37,9 +37,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// Role and name, the name on one line with its quotes escaped as in
+    /// the tree.
     pub fn label(&self) -> String {
         match &self.name {
-            Some(n) if !n.is_empty() => format!("{} \"{}\"", self.role, truncate(n, 60)),
+            Some(n) if !n.trim().is_empty() => format!("{} \"{}\"", self.role, clean_text(n, 60)),
             _ => self.role.clone(),
         }
     }
@@ -108,7 +110,7 @@ fn has_text(s: &Option<String>) -> bool {
     s.as_deref().is_some_and(|t| !t.trim().is_empty())
 }
 
-/// Collapse whitespace runs, escape quotes, and cap length.
+/// Collapse whitespace runs, escape quotes and backslashes, and cap length.
 pub fn clean_text(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max + 16));
     let mut prev_space = false;
@@ -120,6 +122,12 @@ pub fn clean_text(s: &str, max: usize) -> String {
             c if crate::text::is_bidi_control(c) => {}
             '\n' => {
                 out.push_str("\\n");
+                prev_space = false;
+            }
+            // A backslash too, so a name ending in one (a drive, C:\)
+            // still closes its quotes.
+            '\\' => {
+                out.push_str("\\\\");
                 prev_space = false;
             }
             '"' => {
@@ -1089,8 +1097,6 @@ pub fn diff(old: &[Node], new: &[Node]) -> Diff {
     d
 }
 
-/// Number of elements added, changed or removed between two snapshots,
-/// without building the diff.
 /// Whether `changes` to a tree of `len` elements make a big change (a new
 /// screen, the whole tree sent): `ratio` of them, and more than one line
 /// replaced, so a small window (a painted app's few lines read off the
@@ -1099,6 +1105,8 @@ pub fn big_change(changes: usize, len: usize, ratio: f64) -> bool {
     changes as f64 >= (ratio * len.max(1) as f64).max(3.0)
 }
 
+/// Number of elements added, changed or removed between two snapshots,
+/// without building the diff.
 pub fn change_count(old: &[Node], new: &[Node]) -> usize {
     let old_by_key: HashMap<u64, &str> = old.iter().map(|n| (n.key, n.line.as_str())).collect();
     let mut matched = 0usize;
@@ -1682,5 +1690,21 @@ mod tests {
     fn text_cleanup() {
         assert_eq!(clean_text("  a\n\"b\"   c ", 100), "a\\n\\\"b\\\" c");
         assert_eq!(truncate("abcdef", 3), "abc… (+3 chars)");
+    }
+
+    #[test]
+    fn a_name_ending_in_a_backslash_still_closes_its_quotes() {
+        assert_eq!(clean_text("C:\\", 100), "C:\\\\");
+        let row = format!("5 \"{}\" | 6 \"x\"", clean_text("C:\\", 100));
+        assert_eq!(
+            split_outside_quotes(&row, " | "),
+            vec!["5 \"C:\\\\\"", "6 \"x\""]
+        );
+    }
+
+    #[test]
+    fn a_label_keeps_a_name_on_one_line() {
+        let p = prune(&[node(None, "button", "Line1\nLine2 \"x\"")], None, &cfg());
+        assert_eq!(p.nodes[0].label(), "button \"Line1\\nLine2 \\\"x\\\"\"");
     }
 }

@@ -765,10 +765,6 @@ impl Overlay {
         }
     }
 
-    /// Hide the overlay before a screenshot when the platform can't leave it
-    /// out of captures. `None` when nothing needed hiding; otherwise whether
-    /// anything was on screen (the caller then waits `capture_hide_ms` for
-    /// the screen to repaint, and sends [`Cmd::Show`] afterwards).
     /// Glide the agent cursor to a point (clicking there when `click`)
     /// and wait until it is shown there, at most `limit`: an action then
     /// happens where the user sees the cursor, not before it gets there.
@@ -883,6 +879,10 @@ impl Overlay {
         }
     }
 
+    /// Hide the overlay before a screenshot when the platform can't leave it
+    /// out of captures. `None` when nothing needed hiding; otherwise whether
+    /// anything was on screen (the caller then waits `capture_hide_ms` for
+    /// the screen to repaint, and sends [`Cmd::Show`] afterwards).
     pub fn hide_for_capture(&mut self) -> Option<bool> {
         self.drain();
         if self.excluded || !self.alive() {

@@ -47,6 +47,9 @@ const FIRST_WAIT: Duration = Duration::from_secs(15);
 /// A screenshot's hiding ends by itself after this, should the agent never
 /// say it is done.
 const MAX_HIDE: Duration = Duration::from_secs(3);
+/// For this long after the stop key lets everyone continue, an agent that
+/// says it is stopped said so before it heard: it doesn't stop them again.
+const CONTINUE_ECHO: Duration = Duration::from_secs(1);
 /// Longest message passed on (characters).
 pub const MAX_MESSAGE: usize = 1000;
 /// Messages one agent may send a minute.
@@ -844,6 +847,8 @@ struct Hub {
     /// The stop key each agent asked for last.
     asked: HashMap<u32, String>,
     stopped: bool,
+    /// When the stop key last let everyone continue.
+    continued: Option<Instant>,
     last_hotkey: Option<Instant>,
     last_settings: Option<Instant>,
     started: Instant,
@@ -874,6 +879,7 @@ impl Hub {
             settings_key: None,
             asked: HashMap::new(),
             stopped: false,
+            continued: None,
             last_hotkey: None,
             last_settings: None,
             started: Instant::now(),
@@ -1120,7 +1126,9 @@ impl Hub {
                 stopped,
             } => {
                 // An agent that is stopped (a hub started again under it)
-                // stops the others too: the stop key is everyone's.
+                // stops the others too: the stop key is everyone's. Not
+                // one that hasn't yet heard the key let it continue.
+                let stopped = stopped && !self.just_continued(now);
                 if stopped && !self.stopped {
                     self.stop(true);
                 }
@@ -1164,7 +1172,10 @@ impl Hub {
             // it again) when the others go on: the stop key is everyone's,
             // so all stop, and its next press lets them all continue (it
             // used to stop them, as the hub didn't know). One that goes on
-            // by itself leaves the others stopped.
+            // by itself leaves the others stopped. Right after the stop key
+            // let everyone continue, it was sent before the agent heard
+            // (it used to stop everyone again): it is left out.
+            Cmd::Stopped { on: true } if self.just_continued(now) => {}
             Cmd::Stopped { on: true } if !self.stopped => self.stop(true),
             other => {
                 if let Some(look) = self.looks.get_mut(&agent) {
@@ -1174,34 +1185,45 @@ impl Hub {
         }
     }
 
-    /// The stop key registered before `before` is no longer it (another
-    /// agent asked for another key, and it worked): the agents that asked
-    /// for the old one are told theirs no longer works, and every label
-    /// names the one that does.
+    /// The stop key registered was `before` (another agent may have asked
+    /// for another key, or one the system refused, and the key before may
+    /// not have come back): if that changed, every label names the key now
+    /// registered, and the agents that asked for the old key, when it
+    /// worked, are told it no longer does. Keys are compared by what they
+    /// press, not how they are written ("Esc" is "escape").
     fn stop_key_replaced(&mut self, before: Option<(String, bool)>) {
-        let (Some((old, true)), Some((new, true))) = (before, self.hotkey.clone()) else {
-            return;
+        use super::helper::same_key;
+        let after = self.hotkey.clone();
+        let unchanged = match (&before, &after) {
+            (Some((old, was_ok)), Some((new, ok))) => was_ok == ok && same_key(old, new),
+            (None, None) => true,
+            _ => false,
         };
-        if old.eq_ignore_ascii_case(&new) {
+        if unchanged {
             return;
         }
-        let stale: Vec<(u32, String)> = self
-            .asked
-            .iter()
-            .filter(|(_, k)| k.eq_ignore_ascii_case(&old))
-            .map(|(a, k)| (*a, k.clone()))
-            .collect();
-        for (agent, key) in stale {
-            self.reply(agent, &Reply::Hotkey { key, ok: false });
+        if let Some((old, true)) = &before
+            && !matches!(&after, Some((new, true)) if same_key(new, old))
+        {
+            let stale: Vec<(u32, String)> = self
+                .asked
+                .iter()
+                .filter(|(_, k)| same_key(k, old))
+                .map(|(a, k)| (*a, k.clone()))
+                .collect();
+            for (agent, key) in stale {
+                self.reply(agent, &Reply::Hotkey { key, ok: false });
+            }
         }
+        let label = after.map(|h| h.0).unwrap_or_default();
         for look in self.looks.values_mut() {
-            look.machine.set_hotkey(&new);
+            look.machine.set_hotkey(&label);
             look.painter.redraw();
         }
     }
 
-    /// Register a global key, the first time one is asked for: whether
-    /// `key` is the one that works.
+    /// Register a global key (again when another, or one that failed, is
+    /// asked for): whether `key` is the one that works.
     fn register(&mut self, which: Hotkey, key: &str) -> bool {
         let slot = match which {
             Hotkey::Stop => &mut self.hotkey,
@@ -1220,10 +1242,21 @@ impl Hub {
     fn stop(&mut self, on: bool) {
         self.stopped = on;
         let now = Instant::now();
+        if !on {
+            self.continued = Some(now);
+        }
         for look in self.looks.values_mut() {
             look.machine.apply(Cmd::Stopped { on }, now);
         }
         self.broadcast(&Reply::Stop { on }, None);
+    }
+
+    /// Whether the stop key let everyone continue a moment ago.
+    fn just_continued(&self, now: Instant) -> bool {
+        !self.stopped
+            && self
+                .continued
+                .is_some_and(|t| now.saturating_duration_since(t) < CONTINUE_ECHO)
     }
 
     fn update_hidden(&mut self) {
@@ -1409,10 +1442,11 @@ mod tests {
     }
 
     /// A display that refuses the stop key `taken` (another program has
-    /// it) and takes any other.
+    /// it) and takes any other, or none once `down`.
     struct Display {
         taken: &'static str,
         keys: Vec<String>,
+        down: Arc<AtomicBool>,
     }
 
     impl Surface for Display {
@@ -1434,7 +1468,8 @@ mod tests {
         fn set_hidden(&mut self, _: bool) {}
         fn set_hotkey(&mut self, _: Hotkey, combo: Option<crate::keys::KeyCombo>) -> bool {
             let Some(c) = combo else { return false };
-            let ok = crate::keys::parse_combo(self.taken).ok().as_ref() != Some(&c);
+            let ok = !self.down.load(std::sync::atomic::Ordering::SeqCst)
+                && crate::keys::parse_combo(self.taken).ok().as_ref() != Some(&c);
             if ok {
                 self.keys.push(c.to_string());
             }
@@ -1454,6 +1489,7 @@ mod tests {
         let display = Display {
             taken: "ctrl+alt+escape",
             keys: Vec::new(),
+            down: Arc::default(),
         };
         let mut hub = Hub::new(Some(Box::new(display)));
         assert!(!hub.register(Hotkey::Stop, "ctrl+alt+escape"));
@@ -1528,6 +1564,7 @@ mod tests {
         let display = Display {
             taken: "ctrl+alt+escape",
             keys: Vec::new(),
+            down: Arc::default(),
         };
         let mut hub = Hub::new(Some(Box::new(display)));
         let first = joined(&mut hub, 1);
@@ -1560,6 +1597,112 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r, Reply::Hotkey { ok: false, .. }))
         );
+    }
+
+    /// Two agents may write the same stop key two ways: it is one key, and
+    /// neither is told it was refused (the first used to be, each time).
+    #[test]
+    fn a_stop_key_written_another_way_is_the_same_key() {
+        let display = Display {
+            taken: "ctrl+alt+f1",
+            keys: Vec::new(),
+            down: Arc::default(),
+        };
+        let mut hub = Hub::new(Some(Box::new(display)));
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        hub.command(1, config("ctrl+alt+escape"));
+        hub.command(2, config("Ctrl + Alt + Esc"));
+        hub.command(1, config("control+alt+escape"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+escape".into(), true)));
+        for rx in [&first, &second] {
+            let said = replies(rx);
+            assert!(
+                said.iter()
+                    .any(|r| matches!(r, Reply::Hotkey { ok: true, .. }))
+            );
+            assert!(
+                !said
+                    .iter()
+                    .any(|r| matches!(r, Reply::Hotkey { ok: false, .. }))
+            );
+        }
+    }
+
+    /// A key that works in place of a refused one is named in every label
+    /// (the refused one stayed in them), and agents whose key worked are
+    /// told when it no longer does, even with nothing working in its place.
+    #[test]
+    fn labels_and_agents_follow_the_stop_key_whether_or_not_it_works() {
+        let down = Arc::new(AtomicBool::new(false));
+        let display = Display {
+            taken: "ctrl+alt+escape",
+            keys: Vec::new(),
+            down: down.clone(),
+        };
+        let mut hub = Hub::new(Some(Box::new(display)));
+        let first = joined(&mut hub, 1);
+        let _second = joined(&mut hub, 2);
+        hub.command(1, config("ctrl+alt+escape"));
+        hub.command(2, config("ctrl+alt+f12"));
+        hub.stop(true);
+        let now = Instant::now();
+        let label = |hub: &Hub, agent: u32| {
+            hub.looks[&agent]
+                .machine
+                .scene(now)
+                .label
+                .map(|l| l.0)
+                .unwrap_or_default()
+        };
+        let f12 = super::super::helper::pretty_key("ctrl+alt+f12");
+        assert!(label(&hub, 1).contains(&f12), "{}", label(&hub, 1));
+        assert!(label(&hub, 2).contains(&f12));
+
+        // The first asks for F12 too; then the display takes no key, so a
+        // new one is refused and F12 can't be put back.
+        hub.command(1, config("ctrl+alt+f12"));
+        let _ = replies(&first);
+        down.store(true, std::sync::atomic::Ordering::SeqCst);
+        hub.command(2, config("ctrl+alt+f11"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+f12".into(), false)));
+        assert!(
+            replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Hotkey { key, ok: false } if key == "ctrl+alt+f12"))
+        );
+    }
+
+    /// The stop key lets everyone continue while an agent, not yet told,
+    /// shows itself stopped again: that doesn't stop everyone again (it
+    /// used to undo the press). Later it does.
+    #[test]
+    fn an_agent_stopped_a_moment_after_the_stop_key_let_it_continue_stops_no_one() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let _second = joined(&mut hub, 2);
+        hub.stop(true);
+        hub.stop(false);
+        let _ = replies(&first);
+        hub.command(2, Cmd::Stopped { on: true });
+        hub.command(
+            2,
+            Cmd::Config {
+                config: Box::default(),
+                hotkey: String::new(),
+                settings_key: String::new(),
+                stopped: true,
+            },
+        );
+        assert!(!hub.stopped);
+        assert!(
+            !replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Stop { on: true }))
+        );
+        hub.continued = Some(Instant::now() - CONTINUE_ECHO);
+        hub.command(2, Cmd::Stopped { on: true });
+        assert!(hub.stopped);
     }
 
     #[test]

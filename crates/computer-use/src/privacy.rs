@@ -159,7 +159,12 @@ pub fn mask_codes_near(s: &str, near: &str) -> Option<String> {
     let mut changed = false;
     let mut i = 0;
     while i < chars.len() {
-        if is_digit(chars[i]) && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+        let starts = i == 0 || !chars[i - 1].is_alphanumeric();
+        if starts && let Some(len) = iso_date_len(&chars[i..]) {
+            // A date (2024-10-06) is no code: left as it is.
+            out.extend(&chars[i..i + len]);
+            i += len;
+        } else if is_digit(chars[i]) && starts {
             // A run of digits, allowing one space or dash inside.
             let mut j = i;
             let mut digits = 0;
@@ -193,6 +198,30 @@ pub fn mask_codes_near(s: &str, near: &str) -> Option<String> {
         }
     }
     changed.then_some(out)
+}
+
+/// Length of the ISO date (YYYY-MM-DD, a year 1900–2099 and a real month
+/// and day) `s` starts with, not followed by another digit.
+fn iso_date_len(s: &[char]) -> Option<usize> {
+    let date = s.get(..10)?;
+    let shape = date.iter().enumerate().all(|(k, c)| {
+        if k == 4 || k == 7 {
+            *c == '-'
+        } else {
+            c.is_ascii_digit()
+        }
+    });
+    if !shape || s.get(10).is_some_and(|c| is_digit(*c)) {
+        return None;
+    }
+    let num = |a: usize, b: usize| -> u32 {
+        date[a..b]
+            .iter()
+            .fold(0, |n, c| n * 10 + c.to_digit(10).unwrap_or(0))
+    };
+    let (year, month, day) = (num(0, 4), num(5, 7), num(8, 10));
+    ((1900..=2099).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day))
+        .then_some(10)
 }
 
 fn masked(v: &str) -> String {
@@ -324,6 +353,24 @@ mod tests {
         assert_eq!(mask_codes("Meeting at 1530 in room 4"), None);
         assert_eq!(mask_codes("code v2.1 released"), None);
         assert_eq!(mask_codes("Order 123456789 code"), None, "too long");
+    }
+
+    #[test]
+    fn iso_dates_are_not_masked_but_codes_beside_them_are() {
+        assert_eq!(mask_codes("Meeting on 2024-10-06"), None);
+        assert_eq!(mask_codes("Due 2024-10-06T09:30, room 12"), None);
+        assert_eq!(
+            mask_codes("Your code 482913, sent 2024-10-06").as_deref(),
+            Some("Your code ••••••, sent 2024-10-06")
+        );
+        // Not a date: still masked as a code.
+        assert_eq!(
+            mask_codes("Sign-in: 2024-13").as_deref(),
+            Some("Sign-in: ••••-••")
+        );
+        assert!(mask_codes("Code 1234-56-78").is_some(), "no real year");
+        assert!(mask_codes("Code 2024-99-01").is_some(), "no real month");
+        assert!(mask_codes("Code 2024-10-067").is_some(), "a digit follows");
     }
 
     #[test]
