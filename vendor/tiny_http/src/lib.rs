@@ -303,7 +303,8 @@ impl Server {
                         // Patched (computer-use-mcp): a client that stops
                         // sending (a request's head, or a body the server
                         // reads to its end) no longer holds a thread for
-                        // good; an idle connection is closed after as long.
+                        // good. Waiting for a request to begin is not
+                        // limited (client.rs `read_next_line`).
                         if sock.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
                             continue;
                         }

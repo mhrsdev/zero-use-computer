@@ -31,8 +31,9 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
-# tiny_http 0.12.0 with a bounded drain of unread request bodies (the
-# published one allocates as much as a client's `Content-Length` declares,
-# so any client could abort the HTTP server): see vendor/tiny_http.
+# tiny_http 0.12.0, patched: unread request bodies are drained within limits
+# (the published one allocates as much as a client's `Content-Length`
+# declares), header lines are capped and a request that stops arriving times
+# out: see vendor/tiny_http/PATCHED.md.
 [patch.crates-io]
 tiny_http = { path = "vendor/tiny_http" }

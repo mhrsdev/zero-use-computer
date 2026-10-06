@@ -73,7 +73,7 @@ impl From<TestRequest> for Request {
             Some(mock.remote_addr),
             mock.body.as_bytes(),
             std::io::sink(),
-            Default::default(),
+            Default::default(), // Patched (computer-use-mcp): `body_left_unread`.
         )
         .unwrap()
     }

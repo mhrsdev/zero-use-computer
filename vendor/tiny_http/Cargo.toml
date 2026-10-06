@@ -9,9 +9,10 @@
 # will likely look very different (and much more reasonable).
 #
 # Vendored by computer-use-mcp (see the workspace's [patch.crates-io]):
-# tiny_http 0.12.0 as published, with one change in src/util/equal_reader.rs
-# (an unread request body is drained through a fixed buffer, and only up to
-# a limit). The tests, examples, benches and dev-dependencies are left out.
+# tiny_http 0.12.0 as published, with the changes listed in PATCHED.md
+# (bounded draining of unread bodies, which then end the connection; a read
+# timeout on every connection; limits on header lines; two allowed
+# warnings). The tests, examples, benches and dev-dependencies are left out.
 
 [package]
 edition = "2018"

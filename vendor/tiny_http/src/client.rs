@@ -84,7 +84,12 @@ impl ClientConnection {
     ///
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
-    fn read_next_line(&mut self) -> IoResult<AsciiString> {
+    ///
+    /// Patched (computer-use-mcp): `idle` is the wait for a new request's
+    /// first byte, which may last (a keep-alive connection, or one whose
+    /// last answer is still being made): the read timeout only counts once
+    /// a request has begun.
+    fn read_next_line(&mut self, idle: bool) -> IoResult<AsciiString> {
         /// The longest request or header line read (patched).
         const MAX_LINE: usize = 16 * 1024;
         let mut buf = Vec::new();
@@ -94,6 +99,13 @@ impl ClientConnection {
             let byte = self.next_header_source.by_ref().bytes().next();
 
             let byte = match byte {
+                Some(Err(e))
+                    if idle
+                        && buf.is_empty()
+                        && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    continue;
+                }
                 Some(b) => b?,
                 None => return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF")),
             };
@@ -135,7 +147,7 @@ impl ClientConnection {
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
-                let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                let line = self.read_next_line(true).map_err(ReadError::ReadIoError)?;
 
                 parse_request_line(
                     line.as_str().trim(), // TODO: remove this conversion
@@ -146,7 +158,7 @@ impl ClientConnection {
             let headers = {
                 let mut headers = Vec::new();
                 loop {
-                    let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                    let line = self.read_next_line(false).map_err(ReadError::ReadIoError)?;
 
                     if line.is_empty() {
                         break;

@@ -45,7 +45,9 @@ const MAX_REFUSING: usize = 16;
 /// Sessions remembered (the oldest is forgotten first).
 const MAX_SESSIONS: usize = 64;
 /// Requests read at once, at most (each on a thread of its own, so one
-/// sent slowly holds up no other); the next waits its turn.
+/// sent slowly holds up no other); the next waits its turn. A client that
+/// stops sending holds its thread only until its read times out (see
+/// vendor/tiny_http).
 const MAX_READING: usize = 64;
 /// Event streams open at once (GET), at most.
 const MAX_STREAMS: usize = 16;
@@ -157,8 +159,9 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
         }
         // Past the limit, requests wait their turn (in tiny_http's queue).
         // This thread never answers one itself: answering a refused request
-        // reads what is left of its body, which a client can hold up.
-        // (Only this thread adds to the count, so it can't pass the limit.)
+        // reads what is left of its body, which a client can hold up (for
+        // at most twenty seconds: see vendor/tiny_http). (Only this thread
+        // adds to the count, so it can't pass the limit.)
         if shared.reading.load(Ordering::SeqCst) >= MAX_READING {
             std::thread::sleep(Duration::from_millis(20));
             continue;
@@ -404,15 +407,19 @@ fn answer_job<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
         },
         Some(request) => {
             let mut answers = Vec::new();
-            let mut cancelled = Vec::new();
             for item in job.items {
                 match item {
                     Ok(msg) => {
                         let (id, k) = (msg.id.clone(), key(&msg.id));
-                        let request = msg.method.is_some() && id.is_some();
+                        let request = msg.method.is_some();
                         match core.handle(msg, &shared.cancels, &k, None) {
                             Some(r) => answers.push(r),
-                            None if request => cancelled.extend(id),
+                            // HTTP needs an answer even for a cancelled
+                            // request (in a batch too: a POST with requests
+                            // gets JSON, not 202).
+                            None if request => answers.extend(id.map(|id| {
+                                RpcResponse::err(id, REQUEST_CANCELLED, "request cancelled")
+                            })),
                             None => {}
                         }
                     }
@@ -422,12 +429,7 @@ fn answer_job<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
             let body = if job.batch {
                 (!answers.is_empty()).then(|| json!(answers))
             } else {
-                // HTTP needs an answer even for a cancelled request.
-                answers.pop().map(|a| json!(a)).or_else(|| {
-                    cancelled.pop().map(|id| {
-                        json!(RpcResponse::err(id, REQUEST_CANCELLED, "request cancelled"))
-                    })
-                })
+                answers.pop().map(|a| json!(a))
             };
             match body {
                 Some(body) => respond(request, 200, body, &headers),
@@ -709,11 +711,12 @@ fn respond(request: Request, status: u16, body: Value, headers: &[(&str, &str)])
         let _ = request.respond(response);
     };
     // A refused request may still be sending its body, which tiny_http
-    // reads to the end (up to a megabyte: see vendor/tiny_http) once it is
-    // answered: that happens on a thread of its own, so a client sending
-    // slowly can't hold up the others. At most a few such threads at once;
-    // past that, the thread that read the request sends it (never the one
-    // accepting requests).
+    // reads to the end once it is answered (up to 4 MiB, for at most
+    // twenty seconds; then the connection ends: see vendor/tiny_http). That
+    // happens on a thread of its own, so a client sending slowly doesn't
+    // hold up the thread that read its request. At most a few such threads
+    // at once; past that, the thread that read the request sends it (never
+    // the one accepting requests).
     static REFUSING: AtomicUsize = AtomicUsize::new(0);
     if status >= 400 && REFUSING.fetch_add(1, Ordering::SeqCst) < MAX_REFUSING {
         let spawned = std::thread::Builder::new()
@@ -1258,6 +1261,36 @@ mod tests {
         });
     }
 
+    /// The read timeout counts only once a request has begun: a keep-alive
+    /// connection left idle for longer still serves the next request.
+    #[test]
+    fn a_connection_left_idle_still_serves_its_next_request() {
+        serving("idle", |addr| {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let ping = |id: u32| {
+                let body = json!({"jsonrpc":"2.0","id":id,"method":"ping"}).to_string();
+                format!(
+                    "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            write!(s, "{}", ping(1)).unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let (status, headers) = read_head(&mut r);
+            assert_eq!(status, 200);
+            let len: usize = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap();
+            r.read_exact(&mut vec![0; len]).unwrap();
+            std::thread::sleep(Duration::from_secs(12));
+            write!(s, "{}", ping(2)).unwrap();
+            assert_eq!(read_head(&mut r).0, 200);
+        });
+    }
+
     /// A header line that never ends ends the connection once it is long,
     /// instead of growing in memory for as long as the client sends it.
     #[test]
@@ -1308,6 +1341,58 @@ mod tests {
             for s in stalled {
                 assert_eq!(status_of(s), 401);
             }
+        });
+    }
+
+    /// A body too long to read through is left unread, and the connection
+    /// ends: what follows is not served as a request of its own (one sent
+    /// without the outer request's headers, `Origin` included).
+    #[test]
+    fn a_body_left_unread_is_not_read_as_the_next_request() {
+        serving("left-unread", |addr| {
+            let ping = json!({"jsonrpc":"2.0","id":5,"method":"ping"}).to_string();
+            let inner = format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{ping}",
+                ping.len()
+            );
+            let origin = ("Origin", "https://evil.example");
+            let s = declaring(addr, &[AUTH, JSON, origin], 5_000_000, &inner);
+            let mut r = BufReader::new(s);
+            assert_eq!(read_head(&mut r).0, 403);
+            let mut rest = Vec::new();
+            let _ = r.read_to_end(&mut rest);
+            let rest = String::from_utf8_lossy(&rest);
+            assert!(!rest.contains("HTTP/1.1"), "{rest}");
+        });
+    }
+
+    /// A cancelled request in a batch answered with JSON is answered too
+    /// (a POST with requests gets JSON, not 202 with nothing).
+    #[test]
+    fn a_call_cancelled_in_a_batch_is_answered() {
+        serving("batch-cancel", |addr| {
+            let session = initialize(addr);
+            let s = session.clone();
+            let call = std::thread::spawn(move || {
+                post(
+                    addr,
+                    Some(&s),
+                    json!([{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{
+                        "name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"}}}]),
+                )
+            });
+            std::thread::sleep(Duration::from_millis(400));
+            let r = post(
+                addr,
+                Some(&session),
+                json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9}}),
+            );
+            assert_eq!(r.status, 202);
+            let r = call.join().unwrap();
+            assert_eq!(r.status, 200, "{}", r.body);
+            let answers = r.json();
+            assert_eq!(answers[0]["id"], 9, "{answers}");
+            assert_eq!(answers[0]["error"]["code"], REQUEST_CANCELLED, "{answers}");
         });
     }
 
