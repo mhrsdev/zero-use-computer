@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt as _;
-use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
 use crate::error::{Error, Result};
@@ -30,6 +29,9 @@ const SAME_WITHIN: u64 = 2;
 /// How often the listening thread checks whether it was stopped while no
 /// notification arrives.
 const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long to wait before connecting to the session bus again, at first
+/// (doubled each time, up to 30 times this).
+const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct Listener {
     seen: Arc<Mutex<VecDeque<Notification>>>,
@@ -74,7 +76,7 @@ impl Listener {
         let spawned = std::thread::Builder::new()
             .name("notifications".into())
             .spawn(move || {
-                if let Err(e) = listen(&seen, &keep, &running) {
+                if let Err(e) = listen(&seen, &keep, &running, &error) {
                     log::warn!("not listening for notifications: {e}");
                     *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
                 }
@@ -194,19 +196,63 @@ fn record(q: &mut VecDeque<Notification>, n: Notification, keep: usize) {
     }
 }
 
+/// Connect with `connect`, again and again (less and less often, starting
+/// after `first`) while the listener runs: a session bus slow to start, or
+/// one an earlier attempt still waits on, is listened to once it answers.
+/// Meanwhile `error` says why not. `None` once stopped.
+fn connect_retrying<T>(
+    running: &AtomicBool,
+    error: &Mutex<Option<String>>,
+    first: std::time::Duration,
+    mut connect: impl FnMut() -> Result<T>,
+) -> Option<T> {
+    let mut wait = first;
+    while running.load(Ordering::SeqCst) {
+        let e = match connect() {
+            Ok(c) => {
+                *error.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                return Some(c);
+            }
+            Err(e) => e.to_string(),
+        };
+        let mut last = error.lock().unwrap_or_else(|p| p.into_inner());
+        if last.is_none() {
+            log::warn!("not listening for notifications yet: {e}");
+        }
+        *last = Some(e);
+        drop(last);
+        // Sleep in short steps so that stop() is seen.
+        let until = std::time::Instant::now() + wait;
+        while running.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+            std::thread::sleep(
+                STOP_POLL.min(until.saturating_duration_since(std::time::Instant::now())),
+            );
+        }
+        wait = (wait * 2).min(first * 30);
+    }
+    None
+}
+
 fn listen(
     seen: &Mutex<VecDeque<Notification>>,
     keep: &AtomicUsize,
     running: &AtomicBool,
-) -> zbus::Result<()> {
-    let conn = Connection::session()?;
+    error: &Mutex<Option<String>>,
+) -> Result<()> {
+    // With time limits on connecting and on the call: a session bus that
+    // doesn't answer is reported, instead of leaving the listener waiting
+    // for ever (and seeming to run), and tried again.
+    let Some(conn) = connect_retrying(running, error, RETRY_FIRST, super::atspi::session) else {
+        return Ok(());
+    };
     conn.call_method(
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus.Monitoring"),
         "BecomeMonitor",
         &(RULES.to_vec(), 0u32),
-    )?;
+    )
+    .map_err(|e| Error::Platform(format!("cannot become a monitor: {e}")))?;
     let mut stream = zbus::MessageStream::from(conn.inner());
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -346,6 +392,47 @@ mod tests {
         record(&mut q, n("x", "Last", 111), 2);
         assert_eq!(q.len(), 2);
         assert_eq!(q[1].title, "Last");
+    }
+
+    #[test]
+    fn a_session_bus_that_answers_late_is_still_listened_to() {
+        let running = AtomicBool::new(true);
+        let error = Mutex::new(None);
+        let mut tries = 0;
+        let ms = std::time::Duration::from_millis(10);
+        let got = connect_retrying(&running, &error, ms, || {
+            tries += 1;
+            if tries < 3 {
+                Err(Error::Platform(
+                    "the session bus didn't answer in 5s".into(),
+                ))
+            } else {
+                Ok(tries)
+            }
+        });
+        assert_eq!(got, Some(3));
+        // Connected: no error left to report.
+        assert_eq!(*error.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn a_listener_stopped_while_the_bus_doesnt_answer_gives_up_and_says_why() {
+        let running = AtomicBool::new(true);
+        let error = Mutex::new(None);
+        let ms = std::time::Duration::from_millis(10);
+        let got: Option<()> = connect_retrying(&running, &error, ms, || {
+            running.store(false, Ordering::SeqCst);
+            Err(Error::Platform("no answer".into()))
+        });
+        assert_eq!(got, None);
+        assert!(
+            error
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap()
+                .contains("no answer")
+        );
     }
 
     #[test]

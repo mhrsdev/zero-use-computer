@@ -353,7 +353,12 @@ impl Ctx {
         if let Some(i) = held {
             self.flush(i)?;
         }
-        let info = self.ask(Request::Design { name: name.clone() }).ok();
+        let info = match self.ask(Request::Design { name: name.clone() }) {
+            Ok(i) => Some(i),
+            // The design board is switched off ([tools]): said as such.
+            Err(e) if e.to_string().contains("disabled in settings") => return Err(e),
+            Err(_) => None,
+        };
         let existing: Vec<String> = info
             .as_ref()
             .and_then(|i| i["layers"].as_array().cloned())
@@ -548,6 +553,12 @@ pub(super) struct Grid(Cells);
 
 /// The longest text a script makes (bytes).
 const MAX_TEXT: usize = 32 * 1024 * 1024;
+/// The most items in an array (and the most values a function that makes
+/// many may make).
+const MAX_ITEMS: usize = 2_000_000;
+/// How many matches a function that goes through a text takes between
+/// looks at the stop key and the time.
+const CHECK_EVERY: usize = 4096;
 
 /// A Rhai engine with the limits and settings every script runs with, but
 /// none of the functions (enough to check that a script parses).
@@ -558,7 +569,7 @@ pub(super) fn bare_engine() -> Engine {
         .set_max_call_levels(64)
         .set_max_expr_depths(256, 128)
         .set_max_string_size(MAX_TEXT)
-        .set_max_array_size(2_000_000)
+        .set_max_array_size(MAX_ITEMS)
         .set_max_map_size(500_000)
         .set_max_modules(64);
     // Never the process's stdout: it is the MCP connection.
@@ -694,12 +705,15 @@ fn render(v: &Dynamic) -> Option<String> {
             Err(_) => v.to_string(),
         }
     };
-    Some(if text.len() > MAX_VALUE {
-        let cut: String = text.chars().take(MAX_VALUE).collect();
-        format!("{cut}… ({} characters in all)", text.chars().count())
-    } else {
-        text
-    })
+    // Cut by characters (not bytes), so a text that is short enough but
+    // not ASCII is shown whole.
+    let mut text = text;
+    if let Some((end, _)) = text.char_indices().nth(MAX_VALUE) {
+        let all = text.chars().count();
+        text.truncate(end);
+        text.push_str(&format!("… ({all} characters in all)"));
+    }
+    Some(text)
 }
 
 fn page_text(p: &Page) -> String {
@@ -736,12 +750,13 @@ fn full_engine(ctx: &Rc<Ctx>) -> Engine {
         }
         None
     });
-    engine.set_module_resolver(LibraryResolver(
-        rhai::module_resolvers::FileModuleResolver::new_with_path_and_extension(
+    engine.set_module_resolver(LibraryResolver {
+        files: rhai::module_resolvers::FileModuleResolver::new_with_path_and_extension(
             ctx.env.library.clone(),
             "rhai",
         ),
-    ));
+        open: RefCell::default(),
+    });
     tools_api(&mut engine, ctx);
     page_api(&mut engine, ctx);
     data_api(&mut engine, ctx);
@@ -752,7 +767,15 @@ fn full_engine(ctx: &Rc<Ctx>) -> Engine {
 
 /// `import` of saved scripts only, by name: no paths (absolute ones, `..`)
 /// that would read files the `[script] files` setting keeps out.
-struct LibraryResolver(rhai::module_resolvers::FileModuleResolver);
+struct LibraryResolver {
+    files: rhai::module_resolvers::FileModuleResolver,
+    /// The saved scripts being imported now, outermost first. Each import
+    /// runs the script it imports, with counts of its own (operations,
+    /// calls), so a script that imports itself, or one deeper than
+    /// MAX_DEPTH, would go on until the stack overflows and ends the
+    /// server.
+    open: RefCell<Vec<String>>,
+}
 
 impl LibraryResolver {
     fn check(path: &str, pos: rhai::Position) -> Result<(), Box<EvalAltResult>> {
@@ -763,6 +786,27 @@ impl LibraryResolver {
                 pos,
             ))
         })
+    }
+
+    /// A refusal to import `path` again while it is being imported, or
+    /// deeper than MAX_DEPTH.
+    fn check_open(&self, path: &str, pos: rhai::Position) -> Result<(), Box<EvalAltResult>> {
+        let open = self.open.borrow();
+        let why = if open.iter().any(|p| p == path) {
+            format!(
+                "\"{path}\" imports itself ({} > {path}): a script can't import one that imports it",
+                open.join(" > ")
+            )
+        } else if open.len() >= MAX_DEPTH as usize {
+            format!("imports go at most {MAX_DEPTH} deep")
+        } else {
+            return Ok(());
+        };
+        Err(Box::new(EvalAltResult::ErrorInModule(
+            path.to_string(),
+            why.into(),
+            pos,
+        )))
     }
 }
 
@@ -775,7 +819,11 @@ impl rhai::ModuleResolver for LibraryResolver {
         pos: rhai::Position,
     ) -> Result<rhai::Shared<rhai::Module>, Box<EvalAltResult>> {
         Self::check(path, pos)?;
-        self.0.resolve(engine, source, path, pos)
+        self.check_open(path, pos)?;
+        self.open.borrow_mut().push(path.to_string());
+        let module = self.files.resolve(engine, source, path, pos);
+        self.open.borrow_mut().pop();
+        module
     }
 
     fn resolve_ast(
@@ -788,7 +836,7 @@ impl rhai::ModuleResolver for LibraryResolver {
         if let Err(e) = Self::check(path, pos) {
             return Some(Err(e));
         }
-        self.0.resolve_ast(engine, source, path, pos)
+        self.files.resolve_ast(engine, source, path, pos)
     }
 }
 
@@ -804,13 +852,14 @@ fn state_text(d: &Dynamic) -> Res<String> {
 }
 
 fn decision_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
-    use crate::decision::{Answer, Decider, NOT_SET_UP, Question};
+    use crate::decision::{Answer, Decider, Question, not_set_up};
 
+    // Errors send the user to the settings key they have (if any).
     let decider = |c: &Ctx| -> Res<Decider> {
         c.check()?;
         match Decider::from_config(&c.env.decision) {
-            Ok(Some(d)) => Ok(d),
-            Ok(None) => Err(err(NOT_SET_UP)),
+            Ok(Some(d)) => Ok(d.with_settings_key(c.env.settings_key.clone())),
+            Ok(None) => Err(err(not_set_up(c.env.settings_key.as_deref()))),
             Err(e) => Err(err(e)),
         }
     };
@@ -1404,9 +1453,9 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
         from_json(&v)
     });
     let csv = |text: &str, header: bool| -> Res<Dynamic> {
-        let rows = io::parse_csv(text);
+        let rows = io::parse_csv(text).map_err(err)?;
         if !header {
-            return from_json(&json!(rows));
+            return from_json(&Value::Array(rows.into_iter().map(Value::Array).collect()));
         }
         let mut it = rows.into_iter();
         let keys: Vec<String> = it
@@ -1418,6 +1467,15 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
                 other => other.to_string(),
             })
             .collect();
+        // Short rows are filled out to every name, so a long header over
+        // many empty lines would make far more values than the text has.
+        if keys.len().saturating_mul(it.len()) > MAX_ITEMS {
+            return Err(err(format!(
+                "the CSV's {} names over {} rows would make more than {MAX_ITEMS} values",
+                keys.len(),
+                it.len()
+            )));
+        }
         let maps: Vec<Value> = it
             .map(|r| {
                 Value::Object(
@@ -1444,7 +1502,7 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     });
     engine.register_fn("to_csv", |rows: Array| -> Res<String> {
         let rows: Vec<Value> = rows.iter().map(to_json).collect::<Res<_>>()?;
-        Ok(io::to_csv(&rows))
+        io::to_csv(&rows, MAX_TEXT).map_err(err)
     });
     let written = |r: Result<std::path::PathBuf, String>| -> Res<String> {
         r.map(|p| p.display().to_string()).map_err(err)
@@ -1468,7 +1526,8 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     let c = ctx.clone();
     engine.register_fn("write_csv", move |path: &str, rows: Array| -> Res<String> {
         let rows: Vec<Value> = rows.iter().map(to_json).collect::<Res<_>>()?;
-        written(io::write_text(&c.env, path, &io::to_csv(&rows), false))
+        let text = io::to_csv(&rows, io::MAX_WRITE).map_err(err)?;
+        written(io::write_text(&c.env, path, &text, false))
     });
     let c = ctx.clone();
     engine.register_fn("exists", move |path: &str| io::exists(&c.env, path));
@@ -1614,25 +1673,45 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     engine.register_fn(
         "regex_find",
         move |text: &str, pattern: &str| -> Res<Array> {
-            Ok(c.regex(pattern)?
-                .find_iter(text)
-                .take(100_000)
-                .map(|m| Dynamic::from(m.as_str().to_string()))
-                .collect())
+            let mut out = Array::new();
+            for (i, m) in c.regex(pattern)?.find_iter(text).take(100_000).enumerate() {
+                if i % CHECK_EVERY == 0 {
+                    c.check()?;
+                }
+                out.push(Dynamic::from(m.as_str().to_string()));
+            }
+            Ok(out)
         },
     );
     let c = ctx.clone();
     engine.register_fn(
         "regex_groups",
         move |text: &str, pattern: &str| -> Res<Array> {
-            // Every group is copied: in all, no more than a text may hold.
+            // Every group is copied: in all, no more than a text may hold,
+            // and no more values than an array may (empty groups copy no
+            // text, but each is a value).
             let mut size = 0usize;
+            let mut items = 0usize;
             let mut out = Array::new();
-            for caps in c.regex(pattern)?.captures_iter(text).take(100_000) {
+            for (i, caps) in c
+                .regex(pattern)?
+                .captures_iter(text)
+                .take(100_000)
+                .enumerate()
+            {
+                if i % CHECK_EVERY == 0 {
+                    c.check()?;
+                }
                 size += caps.iter().flatten().map(|g| g.len()).sum::<usize>();
                 if size > MAX_TEXT {
                     return Err(
                         format!("regex_groups would copy more than {MAX_TEXT} bytes").into(),
+                    );
+                }
+                items += caps.len();
+                if items > MAX_ITEMS {
+                    return Err(
+                        format!("regex_groups would make more than {MAX_ITEMS} values").into(),
                     );
                 }
                 let groups: Array = caps
@@ -1657,7 +1736,10 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
             // match (checked before expanding: one match alone could ask
             // for gigabytes).
             let refs = with.matches('$').count();
-            for caps in re.captures_iter(text) {
+            for (i, caps) in re.captures_iter(text).enumerate() {
+                if i % CHECK_EVERY == 0 {
+                    c.check()?;
+                }
                 let m = caps.get(0).expect("group 0 is the match");
                 let most = out.len() + (m.start() - last) + with.len() + refs * m.len();
                 if most > MAX_TEXT {
@@ -1689,16 +1771,23 @@ fn data_api(engine: &mut Engine, ctx: &Rc<Ctx>) {
     let c = ctx.clone();
     engine.register_fn("numbers", move |text: &str| -> Res<Array> {
         let r = c.regex(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")?;
-        Ok(r.find_iter(text)
-            .filter_map(|m| {
-                let s = m.as_str();
-                if s.contains(['.', 'e', 'E']) {
-                    s.parse::<FLOAT>().ok().map(Dynamic::from_float)
-                } else {
-                    s.parse::<INT>().ok().map(Dynamic::from_int)
-                }
-            })
-            .collect())
+        let mut out = Array::new();
+        for (i, m) in r.find_iter(text).enumerate() {
+            if i % CHECK_EVERY == 0 {
+                c.check()?;
+            }
+            if out.len() >= MAX_ITEMS {
+                return Err(format!("the text has more than {MAX_ITEMS} numbers").into());
+            }
+            let s = m.as_str();
+            let v = if s.contains(['.', 'e', 'E']) {
+                s.parse::<FLOAT>().ok().map(Dynamic::from_float)
+            } else {
+                s.parse::<INT>().ok().map(Dynamic::from_int)
+            };
+            out.extend(v);
+        }
+        Ok(out)
     });
     // As in JavaScript, these give the new text (Rhai's change it in place
     // and give nothing).

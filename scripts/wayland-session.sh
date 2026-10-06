@@ -33,7 +33,10 @@ focus_follows_mouse no
 EOF
 
 cleanup() {
-  [ -n "${sway_pid:-}" ] && kill "$sway_pid" 2>/dev/null || true
+  # sway's pid is written by the session below (it is started in there).
+  if [ -s "$XDG_RUNTIME_DIR/sway.pid" ]; then
+    kill "$(cat "$XDG_RUNTIME_DIR/sway.pid")" 2>/dev/null || true
+  fi
   rm -rf "$XDG_RUNTIME_DIR"
 }
 trap cleanup EXIT

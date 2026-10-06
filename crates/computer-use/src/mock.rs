@@ -482,10 +482,29 @@ impl Backend for MockBackend {
             WindowOp::SetBounds(r) => {
                 // Like real apps: a minimum size.
                 let r = Rect::new(r.x, r.y, r.width.max(200.0), r.height.max(150.0));
+                let (dx, dy) = (r.x - a.windows[i].bounds.x, r.y - a.windows[i].bounds.y);
                 a.windows[i].bounds = r;
                 let root = a.windows[i].root;
-                if let Some(e) = a.elements.iter_mut().find(|e| e.handle == root) {
-                    e.bounds = r;
+                // What's in the window goes with it.
+                let parents: HashMap<ElementHandle, Option<ElementHandle>> =
+                    a.elements.iter().map(|e| (e.handle, e.parent)).collect();
+                let in_window = |mut h: ElementHandle| {
+                    for _ in 0..parents.len() {
+                        match parents.get(&h).copied().flatten() {
+                            Some(p) if p == root => return true,
+                            Some(p) => h = p,
+                            None => return false,
+                        }
+                    }
+                    false
+                };
+                for e in &mut a.elements {
+                    if e.handle == root {
+                        e.bounds = r;
+                    } else if in_window(e.handle) {
+                        e.bounds.x += dx;
+                        e.bounds.y += dy;
+                    }
                 }
             }
             WindowOp::Close => {

@@ -136,30 +136,57 @@ fn cut(s: &str, max: usize) -> String {
 
 impl<B: Backend> Engine<B> {
     /// The settings key as the user knows it ("Ctrl+Alt+J"), if there is one.
-    fn settings_key_name(&self) -> Option<String> {
+    pub(super) fn settings_key_name(&self) -> Option<String> {
         let k = self.store.config.control.settings_hotkey.trim();
         (!k.is_empty()).then(|| crate::overlay::helper::pretty_key(k))
     }
 
     /// What to tell the model when there is no decision model.
     fn not_set_up(&self) -> String {
-        match self.settings_key_name() {
-            Some(k) => decision::NOT_SET_UP.replace("Ctrl+Alt+J", &k),
-            None => "no decision model is set up. decide setup=\"open\" opens a page in the user's browser where they add one (TypeSafe's Jev, or any OpenAI-compatible model) and its API key, which then never goes through the chat.".into(),
+        decision::not_set_up(self.settings_key_name().as_deref())
+    }
+
+    /// The settings file, when hot reload is off and the file changed
+    /// since it was last read (an empty one is taken as half-written).
+    fn changed_without_hot_reload(&self) -> Option<std::path::PathBuf> {
+        let path = self.store.path.as_deref()?;
+        (!self.store.config.hot_reload
+            && file_mtime(path) != self.config_mtime
+            && std::fs::metadata(path).is_ok_and(|m| m.len() > 0))
+        .then(|| path.to_path_buf())
+    }
+
+    /// The decision model's settings as they are now. Without hot reload,
+    /// settings saved on the page since the file was last read are read
+    /// from it.
+    pub(super) fn decision_settings(&self) -> crate::config::DecisionConfig {
+        self.changed_without_hot_reload()
+            .and_then(|p| ConfigStore::load(Some(&p)).ok())
+            .map(|s| s.config.decision)
+            .unwrap_or_else(|| self.store.config.decision.clone())
+    }
+
+    /// Without hot reload, take up the decision model saved on the page
+    /// (only the file's `[decision]` settings), so the tool list,
+    /// `decision.auto` and the model's record follow it. Before each call.
+    pub(super) fn sync_decision_settings(&mut self) {
+        let Some(path) = self.changed_without_hot_reload() else {
+            return;
+        };
+        self.config_mtime = file_mtime(&path);
+        let Ok(store) = ConfigStore::load(Some(&path)) else {
+            return;
+        };
+        if store.config.decision != self.store.config.decision {
+            // Another model: the old one's failures and answers aren't its.
+            self.judge.forget();
+            self.store.config.decision = store.config.decision;
         }
     }
 
     pub(super) fn decider(&self) -> Result<Decider> {
-        // Without hot reload, settings saved on the page since the start are
-        // read from the file.
-        let fresh = (!self.store.config.hot_reload)
-            .then_some(self.store.path.as_deref())
-            .flatten()
-            .and_then(|p| ConfigStore::load(Some(p)).ok())
-            .map(|s| s.config.decision);
-        let settings = fresh.as_ref().unwrap_or(&self.store.config.decision);
-        match Decider::from_config(settings) {
-            Ok(Some(d)) => Ok(d),
+        match Decider::from_config(&self.decision_settings()) {
+            Ok(Some(d)) => Ok(d.with_settings_key(self.settings_key_name())),
             Ok(None) => Err(Error::ActionFailed(self.not_set_up())),
             Err(e) => Err(Error::ActionFailed(format!(
                 "the decision model's settings are incomplete: {e}"
@@ -281,6 +308,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn decide(&mut self, args: DecideArgs) -> Result<ToolOutput> {
+        self.sync_decision_settings();
         if let Some(setup) = args.setup.clone() {
             return self.decision_setup(setup);
         }
@@ -547,7 +575,14 @@ impl<B: Backend> Engine<B> {
         // final round.
         let parts: Vec<&[(u32, String)]> = cands.chunks(PICK_CHUNK).collect();
         let mut finalists: Vec<(u32, String)> = Vec::new();
-        let answer = if parts.len() == 1 {
+        let answer = if let [(only, _)] = cands.as_slice() {
+            // Nothing to choose between (a choice needs two options).
+            Some(Answer::Choice {
+                choice: only.to_string(),
+                confidence: None,
+                probabilities: Vec::new(),
+            })
+        } else if parts.len() == 1 {
             let (mut a, _) = self.judged_one(
                 decider,
                 Use::Asked,
@@ -556,9 +591,11 @@ impl<B: Backend> Engine<B> {
             )?;
             a.pop().map(|(_, a)| a)
         } else {
+            // A last part of one element is no choice: it goes on as it is.
             let qs: Vec<Question> = parts
                 .iter()
                 .enumerate()
+                .filter(|(_, p)| p.len() > 1)
                 .map(|(i, p)| choice(p, &format!("part{}", i + 1)))
                 .collect();
             let (answers, _) = self.judged_one(decider, Use::Asked, &context, &qs)?;
@@ -568,6 +605,9 @@ impl<B: Backend> Engine<B> {
                 {
                     finalists.push(c.clone());
                 }
+            }
+            if !finalists.is_empty() {
+                finalists.extend(parts.iter().filter(|p| p.len() == 1).map(|p| p[0].clone()));
             }
             finalists.dedup();
             match finalists.len() {
@@ -695,34 +735,40 @@ impl<B: Backend> Engine<B> {
             Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "" | "status" => Ok(ToolOutput::text(self.decision_status())),
                 "open" | "page" | "settings" => {
-                    let (url, browser) = decision::page::open(self.store.path.clone())?;
+                    // Never its address: it carries the page's secret, and
+                    // the page is the user's alone.
+                    let (_, browser) = decision::page::open(self.store.path.clone())?;
                     Ok(ToolOutput::text(match browser {
-                        // Not its address: it carries the page's secret, and
-                        // the page is the user's alone.
                         Ok(()) => format!(
                             "Opened the decision model's settings page in the user's browser. Ask them to choose the model, paste its API key and press Save there; it is used at once.{}",
                             key.map(|k| format!(" ({k} opens it too.)"))
                                 .unwrap_or_default()
                         ),
-                        Err(e) => format!(
-                            "Couldn't open the browser ({e}). Ask the user to open {url} (on this computer) to set up the decision model."
-                        ),
+                        // The command names this server's settings file:
+                        // without it, the page would save to the default
+                        // one, which this server may not read.
+                        Err(e) => match &self.store.path {
+                            Some(p) => format!(
+                                "Couldn't open the browser ({e}). Ask the user to run `computer-use-mcp settings --no-browser --config \"{}\"` in a terminal on this computer: it shows the address of the page where they set up the decision model.",
+                                p.display()
+                            ),
+                            None => format!(
+                                "Couldn't open the browser ({e}). This server keeps its settings in memory, so no page can save them: the decision model can be given here with decide setup={{provider, base_url, model, api_key}}."
+                            ),
+                        },
                     }))
                 }
-                "test" => {
-                    let d = self.store.config.decision.clone();
-                    if d.provider.trim().is_empty() {
-                        return Err(Error::ActionFailed(self.not_set_up()));
-                    }
-                    decision::page::try_model(&d)
-                        .map(ToolOutput::text)
-                        .map_err(Error::ActionFailed)
-                }
+                "test" => decision::page::try_decider(&self.decider()?, &self.halt_watch())
+                    .map(ToolOutput::text)
+                    .map_err(Error::ActionFailed),
                 "remove" | "clear" | "delete" => {
                     if let Some(path) = self.store.path.clone() {
                         decision::page::remove_settings(&path)?;
                     }
                     self.store.config.decision = crate::config::DecisionConfig::default();
+                    // Set here first, so the reload sees no change: the old
+                    // model's failures and answers are forgotten now.
+                    self.judge.forget();
                     self.reload_now();
                     Ok(ToolOutput::text("Removed the decision model and its key."))
                 }
@@ -738,7 +784,7 @@ impl<B: Backend> Engine<B> {
     }
 
     fn decision_status(&self) -> String {
-        let d = &self.store.config.decision;
+        let d = &self.decision_settings();
         let key = self.settings_key_name();
         let how = match &key {
             Some(k) => format!("The user changes it on the page {k} opens."),
@@ -785,7 +831,9 @@ impl<B: Backend> Engine<B> {
                 .and_then(Value::as_str)
                 .map(|s| s.trim().to_string())
         };
-        let mut d = self.store.config.decision.clone();
+        // What the file holds now: never write back settings the user
+        // saved on the page since.
+        let mut d = self.decision_settings();
         let (was_provider, was_url) = (d.provider.clone(), d.base_url.clone());
         if let Some(p) = field("provider") {
             let p = decision::Provider::parse(&p).ok_or_else(|| {
@@ -831,15 +879,23 @@ impl<B: Backend> Engine<B> {
             None => "kept for this session".into(),
         };
         self.store.config.decision = d.clone();
+        // Set here first, so the reload sees no change: the old model's
+        // failures and answers are forgotten now.
+        self.judge.forget();
         self.reload_now();
-        let label = Decider::from_config(&d)
+        let decider = Decider::from_config(&d)
             .ok()
             .flatten()
-            .map(|x| x.label())
-            .unwrap_or_default();
-        let test = match decision::page::try_model(&d) {
-            Ok(t) => format!("Test: {t}"),
-            Err(e) => format!("But the test failed: {e}"),
+            .map(|x| x.with_settings_key(self.settings_key_name()));
+        let label = decider.as_ref().map(Decider::label).unwrap_or_default();
+        let halted = self.halt_watch();
+        let test = match decider
+            .as_ref()
+            .map(|d| decision::page::try_decider(d, &halted))
+        {
+            Some(Ok(t)) => format!("Test: {t}"),
+            Some(Err(e)) => format!("But the test failed: {e}"),
+            None => String::new(),
         };
         Ok(ToolOutput::text(format!(
             "Decision model set: {label} (key {}; {saved}). {test}{}",
@@ -1010,11 +1066,14 @@ mod tests {
     fn engine(decision: DecisionConfig) -> Engine<MockBackend> {
         let mut backend = MockBackend::new();
         backend.add_app(MockBackend::text_editor(4242));
-        let cfg = Config {
-            decision,
-            ..Config::default()
-        };
-        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+        let mut e = engine_with(backend);
+        e.store.config.decision = decision;
+        e
+    }
+
+    fn engine_with(backend: MockBackend) -> Engine<MockBackend> {
+        Engine::new(backend, ConfigStore::in_memory(Config::default()))
+            .with_time(Instant::now, |_| {})
     }
 
     fn jev(url: &str) -> DecisionConfig {
@@ -1161,6 +1220,62 @@ mod tests {
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("It reads: \"Hello\""), "{}", out.text);
+    }
+
+    /// An editor whose window holds `n` buttons and nothing else to pick.
+    fn buttons(n: u32) -> Engine<MockBackend> {
+        use crate::mock::MockElement;
+        use crate::types::Rect;
+        let mut app = MockBackend::text_editor(4242);
+        app.elements = vec![MockElement::new(1, "window", "", app.windows[0].bounds)];
+        for k in 0..n {
+            let at = Rect::new(
+                f64::from(k % 30) * 25.0,
+                f64::from(k / 30) * 25.0,
+                20.0,
+                20.0,
+            );
+            app.elements.push(
+                MockElement::new(2 + u64::from(k), "button", &format!("Button {k}"), at)
+                    .child_of(1)
+                    .with_actions(&["AXPress"]),
+            );
+        }
+        let mut backend = MockBackend::new();
+        backend.add_app(app);
+        engine_with(backend)
+    }
+
+    #[test]
+    fn a_pick_with_a_lone_element_left_over_still_works() {
+        // Button 0 when it is among the options, else the first one.
+        let f = system_one(|_, q| {
+            let crit = q["criteria"].as_object().unwrap();
+            let idx = crit
+                .iter()
+                .find(|(_, line)| line.as_str().unwrap().contains("\"Button 0\""))
+                .or_else(|| crit.iter().next())
+                .map(|(i, _)| i.clone())
+                .unwrap();
+            json!({"type": "choice", "choice": idx, "confidence": 0.9})
+        });
+        // 65: a part of 64 and a part of one, which goes to the final round.
+        let mut e = buttons(65);
+        e.store.config.decision = jev(&f.url);
+        let out = e.call_tool(
+            "decide",
+            json!({"app": "TextEdit", "pick": "the first button"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("\"Button 0\""), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 2, "two rounds");
+        // One element in all: it, without asking.
+        let mut e = buttons(1);
+        e.store.config.decision = jev(&f.url);
+        let out = e.call_tool("decide", json!({"app": "TextEdit", "pick": "the button"}));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("\"Button 0\""), "{}", out.text);
+        assert_eq!(f.seen.lock().unwrap().len(), 2, "not asked");
     }
 
     #[test]
@@ -1464,6 +1579,103 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    #[test]
+    fn a_model_set_from_the_chat_starts_with_a_clean_record() {
+        let down = fake(|_| (500, json!({"error": {"message": "down"}}).to_string()));
+        let mut e = engine(jev(&down.url));
+        for _ in 0..3 {
+            let _ = e.call_tool(
+                "get_app_state",
+                json!({"app": "TextEdit", "about": "formatting"}),
+            );
+        }
+        let status = e.call_tool("decide", json!({"setup": "status"}));
+        assert!(status.text.contains("judges by itself"), "{}", status.text);
+        // The old model's failures aren't the new one's.
+        let up = system_one(|_, _| json!({"type": "noul", "noul": 1.0}));
+        let out = e.call_tool("decide", json!({"setup": {"base_url": up.url}}));
+        assert!(!out.is_error, "{}", out.text);
+        let asked = up.seen.lock().unwrap().len();
+        // The server asks the new one on its own at once (no rest for the
+        // old one's failures).
+        let out = e.call_tool(
+            "get_app_state",
+            json!({"app": "TextEdit", "about": "formatting"}),
+        );
+        assert!(!out.text.contains("words matched"), "{}", out.text);
+        assert_eq!(up.seen.lock().unwrap().len(), asked + 1);
+    }
+
+    #[test]
+    fn without_hot_reload_what_the_page_saved_is_used_and_kept() {
+        let dir = std::env::temp_dir().join(format!("cu-decide-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let file = |url: &str, key: &str| {
+            format!(
+                "hot_reload = false\n[decision]\nprovider = \"openai\"\nbase_url = \"{url}\"\nmodel = \"m1\"\napi_key = \"{key}\"\n"
+            )
+        };
+        // Models that answer at once (the test after a change asks one).
+        let old = fake(|_| (500, "{}".into()));
+        let new = fake(|_| (500, "{}".into()));
+        std::fs::write(&path, file(&old.url, "sk-old-1111")).unwrap();
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {});
+        // The user saves another model on the page.
+        std::fs::write(&path, file(&new.url, "sk-new-2222")).unwrap();
+        let status = e.call_tool("decide", json!({"setup": "status"}));
+        assert!(
+            status.text.contains("2222") && !status.text.contains("1111"),
+            "{}",
+            status.text
+        );
+        // Another model name from the chat keeps the rest the user saved.
+        let out = e.call_tool("decide", json!({"setup": {"model": "m2"}}));
+        assert!(out.text.contains("Decision model set"), "{}", out.text);
+        let saved = ConfigStore::load(Some(&path)).unwrap().config.decision;
+        assert_eq!(saved.base_url, new.url);
+        assert_eq!(saved.api_key, "sk-new-2222");
+        assert_eq!(saved.model, "m2");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_hot_reload_a_model_saved_on_the_page_is_taken_up_once() {
+        let dir = std::env::temp_dir().join(format!("cu-decide-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let file = |model: &str, auto: bool| {
+            format!(
+                "hot_reload = false\n[decision]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:9/v1\"\nmodel = \"{model}\"\napi_key = \"k\"\nauto = {auto}\n"
+            )
+        };
+        std::fs::write(&path, file("m1", true)).unwrap();
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
+            .with_time(Instant::now, |_| {});
+        assert!(e.auto_decider().is_some());
+        // The page saves another model that the server mustn't ask on its own.
+        std::fs::write(&path, file("m2", false)).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(e.changed_without_hot_reload().is_some());
+        e.sync_decision_settings();
+        assert_eq!(e.store.config.decision.model, "m2");
+        assert!(e.auto_decider().is_none());
+        // Read once: not again until the file changes.
+        assert!(e.changed_without_hot_reload().is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

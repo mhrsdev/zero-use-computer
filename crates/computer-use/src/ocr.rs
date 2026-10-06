@@ -6,6 +6,7 @@
 //! numbered like any other element and clickable by index (the engine
 //! clicks at their position).
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -222,7 +223,14 @@ pub fn tesseract_both(
         };
         (big, small)
     });
-    Ok(merge(small?, big?))
+    // The reading as it is decides whether Tesseract works; a failed
+    // enlarged one only leaves its share out.
+    let small = small?;
+    let big = big.unwrap_or_else(|e| {
+        log::debug!("enlarged OCR reading failed: {e}");
+        Vec::new()
+    });
+    Ok(merge(small, big))
 }
 
 /// A copy of a picture without the thin straight lines that cross most of
@@ -230,7 +238,9 @@ pub fn tesseract_both(
 /// pixels is painted like its neighbour. Text and shapes stay.
 pub fn without_lines(cap: &Capture) -> Capture {
     let (w, h) = (cap.width as usize, cap.height as usize);
-    if w < 8 || h < 8 {
+    // Too small to hold lines, or a buffer that isn't its size (reading it
+    // then reports the mismatch).
+    if w < 8 || h < 8 || cap.rgba.len() != w * h * 4 {
         return cap.clone();
     }
     let mut out = cap.clone();
@@ -283,7 +293,8 @@ pub fn without_lines(cap: &Capture) -> Capture {
 }
 
 /// Whether a line is a ruler's numbers (0 100 200 300…): three or more
-/// numbers an equal step apart, and nothing else.
+/// numbers an equal, round step apart (a multiple of 5), and nothing else.
+/// Counting (1 2 3 4 5 of a page list, 2024 2025 2026) is text.
 pub fn ruler(line: &OcrLine) -> bool {
     let nums: Vec<f64> = line
         .text
@@ -293,12 +304,17 @@ pub fn ruler(line: &OcrLine) -> bool {
         .unwrap_or_default();
     nums.len() >= 3 && {
         let step = nums[1] - nums[0];
-        step != 0.0 && nums.windows(2).all(|p| (p[1] - p[0] - step).abs() < 1e-6)
+        step != 0.0
+            && step.fract() == 0.0
+            && step % 5.0 == 0.0
+            && nums.windows(2).all(|p| (p[1] - p[0] - step).abs() < 1e-6)
     }
 }
 
 /// Lines from two readings of the same picture: where they overlap, the
-/// one read with more confidence.
+/// reading with more confidence there. Lines that overlap each other,
+/// directly or through others, are one place ("Hello world" in one reading
+/// against "Hello" and "world" in the other), kept whole from one reading.
 pub fn merge(a: Vec<OcrLine>, b: Vec<OcrLine>) -> Vec<OcrLine> {
     let overlap = |x: &Rect, y: &Rect| {
         let w = (x.x + x.width).min(y.x + y.width) - x.x.max(y.x);
@@ -309,15 +325,44 @@ pub fn merge(a: Vec<OcrLine>, b: Vec<OcrLine>) -> Vec<OcrLine> {
         let smaller = (x.width * x.height).min(y.width * y.height).max(1e-9);
         w * h >= 0.5 * smaller
     };
-    let mut out: Vec<OcrLine> = Vec::with_capacity(a.len() + b.len());
-    for line in a.into_iter().chain(b) {
-        match out.iter_mut().find(|o| overlap(&o.bounds, &line.bounds)) {
-            Some(o) if line.confidence > o.confidence => *o = line,
-            Some(_) => {}
-            None => out.push(line),
+    // Places: groups of lines joined by overlaps between the readings
+    // (lines 0.. are a's, then b's).
+    let n = a.len();
+    let mut place: Vec<usize> = (0..n + b.len()).collect();
+    fn root(place: &mut [usize], mut i: usize) -> usize {
+        while place[i] != i {
+            place[i] = place[place[i]];
+            i = place[i];
+        }
+        i
+    }
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            if overlap(&x.bounds, &y.bounds) {
+                let (ri, rj) = (root(&mut place, i), root(&mut place, n + j));
+                place[ri] = rj;
+            }
         }
     }
-    out
+    // Each reading's confidence at each place: the sum and count of its lines.
+    let mut sums: HashMap<usize, [(f32, usize); 2]> = HashMap::new();
+    for (i, line) in a.iter().chain(&b).enumerate() {
+        let r = root(&mut place, i);
+        let side = &mut sums.entry(r).or_default()[usize::from(i >= n)];
+        *side = (side.0 + line.confidence, side.1 + 1);
+    }
+    let mean = |(sum, count): (f32, usize)| sum / count.max(1) as f32;
+    a.into_iter()
+        .chain(b)
+        .enumerate()
+        .filter(|(i, _)| {
+            let [x, y] = sums[&root(&mut place, *i)];
+            // A place only one reading saw keeps it; otherwise the surer
+            // reading (a, the picture as it is, on a tie).
+            x.1 == 0 || y.1 == 0 || (*i >= n) == (mean(y) > mean(x))
+        })
+        .map(|(_, line)| line)
+        .collect()
 }
 
 /// Whether a line read off a picture is likely text: mostly letters or
@@ -696,6 +741,11 @@ mod tests {
         assert!(!ruler(&line("Order 58213")));
         assert!(!ruler(&line("1 2 5")));
         assert!(!ruler(&line("2026 2026 2026")));
+        // Counting is text: digits, a page list, years.
+        assert!(!ruler(&line("7 8 9")));
+        assert!(!ruler(&line("1 2 3 4 5")));
+        assert!(!ruler(&line("2024 2025 2026")));
+        assert!(ruler(&line("-50 -25 0 25 50")));
     }
 
     #[test]
@@ -724,6 +774,50 @@ mod tests {
         let merged = merge(small, big);
         let texts: Vec<&str> = merged.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, ["DELTA", "ECHO", "GOLF"]);
+    }
+
+    #[test]
+    fn one_line_against_two_keeps_one_reading_of_the_place() {
+        let line = |text: &str, x: f64, w: f64, conf: f32| OcrLine {
+            text: text.into(),
+            bounds: Rect::new(x, 0.0, w, 20.0),
+            confidence: conf,
+        };
+        let texts =
+            |lines: Vec<OcrLine>| -> Vec<String> { lines.into_iter().map(|l| l.text).collect() };
+        // The joined line is surer: the two halves go, and no half stays.
+        let small = vec![
+            line("Hello", 0.0, 50.0, 0.9),
+            line("world", 60.0, 50.0, 0.9),
+        ];
+        let big = vec![line("Hello world", 0.0, 110.0, 0.95)];
+        assert_eq!(texts(merge(small, big)), ["Hello world"]);
+        // The halves are less sure on the whole (though one is surer): the
+        // joined line stays, and no half of it is lost.
+        let small = vec![line("Hello world", 0.0, 110.0, 0.8)];
+        let big = vec![
+            line("Hello", 0.0, 50.0, 0.6),
+            line("world", 60.0, 50.0, 0.9),
+        ];
+        assert_eq!(texts(merge(small, big)), ["Hello world"]);
+        let small = vec![line("He1lo wor1d", 0.0, 110.0, 0.5)];
+        let big = vec![
+            line("Hello", 0.0, 50.0, 0.6),
+            line("world", 60.0, 50.0, 0.9),
+        ];
+        // The halves are surer: both stay.
+        assert_eq!(texts(merge(small, big)), ["Hello", "world"]);
+    }
+
+    #[test]
+    fn a_short_buffer_is_left_as_it_is() {
+        let cap = Capture {
+            width: 20,
+            height: 20,
+            rgba: vec![255; 40],
+            bounds: Rect::new(0.0, 0.0, 20.0, 20.0),
+        };
+        assert_eq!(without_lines(&cap).rgba, cap.rgba);
     }
 
     #[test]

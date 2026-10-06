@@ -5,7 +5,9 @@
   forms. It searches every element, including folded and cut ones.
 - `wait_for(app, role/name/text, state, timeout_ms)`: after something slow
   (loading, a dialog opening), wait for an element (`present`, `visible`,
-  `enabled`, `focused`, `gone`…) instead of polling. At most two minutes.
+  `enabled`, `focused` or `checked`) instead of polling. At most two
+  minutes. To wait for something to go, put `expect: "gone"` on the action
+  that makes it go (below).
   With a decision model, `until: "Have the results loaded?"` waits for a
   yes about the whole window instead (see [decisions.md](decisions.md)).
 - `decide(question, …)`: typed answers from the decision model about text,

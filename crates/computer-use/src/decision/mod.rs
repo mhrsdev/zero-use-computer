@@ -321,6 +321,9 @@ pub struct Decider {
     max_state: usize,
     /// Requests at once when several states are judged.
     pub parallel: usize,
+    /// The key that opens the settings page, as the user knows it (`None`:
+    /// there is none).
+    settings_key: Option<String>,
 }
 
 impl std::fmt::Debug for Decider {
@@ -341,8 +344,32 @@ pub const SETTINGS_KEY: &str = if cfg!(target_os = "macos") {
     "Ctrl+Alt+J"
 };
 
-/// How to reach the decision model when none is set up.
-pub const NOT_SET_UP: &str = "no decision model is set up. Ask the user to press Ctrl+Alt+J: a page opens in their browser where they add one (TypeSafe's Jev, or any OpenAI-compatible model) and its API key, which then never goes through the chat. Or decide setup=\"open\" opens that page for them.";
+macro_rules! not_set_up {
+    ($key:expr) => {
+        concat!(
+            "no decision model is set up. Ask the user to press ",
+            $key,
+            ": a page opens in their browser where they add one (TypeSafe's Jev, or any OpenAI-compatible model) and its API key, which then never goes through the chat. Or decide setup=\"open\" opens that page for them."
+        )
+    };
+}
+
+/// How to reach the decision model when none is set up, where the
+/// settings key isn't known ([`not_set_up`] says it when it is).
+pub const NOT_SET_UP: &str = if cfg!(target_os = "macos") {
+    not_set_up!("the settings key (Ctrl+Option+J unless it was changed)")
+} else {
+    not_set_up!("the settings key (Ctrl+Alt+J unless it was changed)")
+};
+
+/// How to reach the decision model when none is set up, with the settings
+/// key as the user knows it (`None`: there is none).
+pub fn not_set_up(settings_key: Option<&str>) -> String {
+    match settings_key {
+        Some(k) => format!(not_set_up!("{}"), k),
+        None => "no decision model is set up. decide setup=\"open\" opens a page in the user's browser where they add one (TypeSafe's Jev, or any OpenAI-compatible model) and its API key, which then never goes through the chat.".into(),
+    }
+}
 
 impl Decider {
     /// The decision model the settings name (`None` when there is none).
@@ -394,7 +421,25 @@ impl Decider {
             timeout: Duration::from_millis(c.timeout_ms.clamp(100, 600_000)),
             max_state: c.max_state_chars.clamp(100, 1_000_000),
             parallel: c.parallel.clamp(1, 64),
+            settings_key: Some(SETTINGS_KEY.into()),
         }))
+    }
+
+    /// The same model, its errors naming this settings key (as the user
+    /// knows it; `None`: there is none).
+    pub fn with_settings_key(mut self, key: Option<String>) -> Self {
+        self.settings_key = key;
+        self
+    }
+
+    /// Where the user fixes the settings, for an error.
+    fn fix_it(&self) -> String {
+        match &self.settings_key {
+            Some(k) => format!("The user can fix it on the settings page ({k})."),
+            None => {
+                "The user can fix it on the settings page (decide setup=\"open\" opens it).".into()
+            }
+        }
     }
 
     pub fn provider(&self) -> Provider {
@@ -412,9 +457,11 @@ impl Decider {
             .split("://")
             .nth(1)
             .unwrap_or(&self.url)
-            .split('/')
+            .split(['/', '?', '#'])
             .next()
             .unwrap_or_default();
+        // Never a user name and password given in the address.
+        let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
         format!("{} at {host}", self.model)
     }
 
@@ -942,12 +989,14 @@ fn check_status(code: u16, text: &str, d: &Decider) -> Result<()> {
     let detail: String = detail.chars().take(400).collect();
     Err(Error::ActionFailed(match code {
         401 | 403 => format!(
-            "the decision model ({}) refused the API key (HTTP {code}: {detail}). The user can fix it on the settings page ({SETTINGS_KEY}).",
-            d.label()
+            "the decision model ({}) refused the API key (HTTP {code}: {detail}). {}",
+            d.label(),
+            d.fix_it()
         ),
         404 => format!(
-            "the decision model ({}) wasn't found (HTTP 404: {detail}): the address or the model name is wrong. The user can fix it on the settings page ({SETTINGS_KEY}).",
-            d.label()
+            "the decision model ({}) wasn't found (HTTP 404: {detail}): the address or the model name is wrong. {}",
+            d.label(),
+            d.fix_it()
         ),
         422 | 400 => format!("the decision model rejected the request (HTTP {code}): {detail}"),
         429 => format!(
@@ -1244,10 +1293,27 @@ fn parse_chat(v: &Value, questions: &[Question]) -> Result<Answers> {
             Kind::Choice => {
                 let pick = match a {
                     Value::String(s) => option_named(q, s),
-                    Value::Number(n) => n
-                        .as_u64()
-                        .and_then(|i| q.options.get(i as usize))
-                        .map(|(l, _)| l.clone()),
+                    // An option named by that number (an element's index
+                    // when picking one), else the option in that place.
+                    // Not when the options are all numbers: another number
+                    // is then none of them (an element that wasn't
+                    // offered), never the one that happens to be there.
+                    Value::Number(n) => {
+                        let said = n.to_string();
+                        let numbers = q
+                            .options
+                            .iter()
+                            .all(|(l, _)| l.trim().parse::<f64>().is_ok());
+                        q.options
+                            .iter()
+                            .find(|(l, _)| l.trim() == said)
+                            .or_else(|| {
+                                n.as_u64()
+                                    .filter(|_| !numbers)
+                                    .and_then(|i| q.options.get(i as usize))
+                            })
+                            .map(|(l, _)| l.clone())
+                    }
                     _ => None,
                 }
                 .ok_or_else(|| {

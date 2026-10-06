@@ -299,7 +299,12 @@ struct CancelState {
     running: Option<Value>,
     /// The client cancelled it.
     running_cancelled: bool,
-    /// Cancelled before they started (most recent last), and when: a
+    /// Passed on to be answered, not started yet (a request can wait a
+    /// long time behind a call).
+    queued: Vec<Value>,
+    /// Of those, the ones cancelled: kept until they would start.
+    queued_cancelled: Vec<Value>,
+    /// Cancelled before they were seen (most recent last), and when: a
     /// cancel for a request that had already ended would otherwise skip a
     /// later one that reuses its id (another client without a session).
     early: Vec<(Value, std::time::Instant)>,
@@ -309,6 +314,9 @@ struct CancelState {
 
 /// An early cancel waits this long, at most, for its request.
 const EARLY_CANCEL_KEPT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Requests remembered as waiting to start, at most (the oldest is
+/// forgotten first: one that never started can't stay for good).
+const MAX_QUEUED: usize = 1024;
 
 impl Cancels {
     /// The client cancelled `key`: end it if it runs, else skip it later.
@@ -317,6 +325,12 @@ impl Cancels {
         if st.running.as_ref() == Some(&key) {
             st.running_cancelled = true;
             engine_cancel.store(true, Ordering::SeqCst);
+        } else if st.queued.contains(&key) {
+            // Waiting behind another call: skipped when its turn comes,
+            // however long that takes.
+            if !st.queued_cancelled.contains(&key) {
+                st.queued_cancelled.push(key);
+            }
         } else {
             let now = std::time::Instant::now();
             st.early
@@ -325,6 +339,28 @@ impl Cancels {
             if st.early.len() > 64 {
                 st.early.remove(0);
             }
+        }
+    }
+
+    /// `key` is passed on to be answered (after the calls before it): a
+    /// cancel for it is kept until it starts.
+    pub fn queued(&self, key: Value) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.queued.push(key);
+        if st.queued.len() > MAX_QUEUED {
+            let gone = st.queued.remove(0);
+            forget_cancel(&mut st, &gone);
+        }
+    }
+
+    /// `key` was passed on but won't be answered after all (its client
+    /// left before its turn).
+    #[cfg(feature = "http")]
+    pub fn forget(&self, key: &Value) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = st.queued.iter().position(|q| q == key) {
+            st.queued.remove(i);
+            forget_cancel(&mut st, key);
         }
     }
 
@@ -341,6 +377,13 @@ impl Cancels {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.closed {
             return false;
+        }
+        if let Some(i) = st.queued.iter().position(|q| q == key) {
+            st.queued.remove(i);
+            if let Some(i) = st.queued_cancelled.iter().position(|c| c == key) {
+                st.queued_cancelled.remove(i);
+                return false;
+            }
         }
         let now = std::time::Instant::now();
         st.early
@@ -361,6 +404,14 @@ impl Cancels {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         st.running = None;
         std::mem::take(&mut st.running_cancelled)
+    }
+}
+
+/// A cancel kept for a queued `key` goes with it, unless another request
+/// with that key is still waiting.
+fn forget_cancel(st: &mut CancelState, key: &Value) {
+    if !st.queued.contains(key) {
+        st.queued_cancelled.retain(|c| c != key);
     }
 }
 
@@ -417,4 +468,69 @@ pub(crate) fn instructions() -> String {
      skill: an exact spec first, the most exact method the app has, a check \
      after every pass (screenshot grid/palette/pick)."
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// As if `secs` had gone by for the cancels kept for a while.
+    fn age(cancels: &Cancels, secs: u64) {
+        let mut st = cancels.state.lock().unwrap();
+        for (_, at) in &mut st.early {
+            *at = at
+                .checked_sub(std::time::Duration::from_secs(secs))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_cancel_for_a_request_waiting_its_turn_is_kept_until_it_starts() {
+        let (cancels, engine_cancel) = (Cancels::default(), AtomicBool::new(false));
+        cancels.queued(json!(7));
+        cancels.cancel(json!(7), &engine_cancel);
+        // It waited behind a call longer than an early cancel is kept.
+        age(&cancels, 60);
+        assert!(!cancels.begin(&json!(7), &engine_cancel));
+        // Used up: a later request with that id runs.
+        cancels.queued(json!(7));
+        assert!(cancels.begin(&json!(7), &engine_cancel));
+        assert!(!cancels.end());
+    }
+
+    #[test]
+    fn a_cancel_for_a_request_never_seen_expires() {
+        let (cancels, engine_cancel) = (Cancels::default(), AtomicBool::new(false));
+        cancels.cancel(json!(1), &engine_cancel);
+        cancels.cancel(json!(2), &engine_cancel);
+        age(&cancels, 60);
+        cancels.cancel(json!(2), &engine_cancel);
+        assert!(cancels.begin(&json!(1), &engine_cancel));
+        cancels.end();
+        assert!(!cancels.begin(&json!(2), &engine_cancel));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_request_that_never_starts_takes_its_cancel_with_it() {
+        let (cancels, engine_cancel) = (Cancels::default(), AtomicBool::new(false));
+        cancels.queued(json!(3));
+        cancels.cancel(json!(3), &engine_cancel);
+        cancels.forget(&json!(3));
+        let st = cancels.state.lock().unwrap();
+        assert!(st.queued.is_empty() && st.queued_cancelled.is_empty());
+    }
+
+    #[test]
+    fn past_the_limit_the_oldest_waiting_is_forgotten_with_its_cancel() {
+        let (cancels, engine_cancel) = (Cancels::default(), AtomicBool::new(false));
+        cancels.queued(json!(4));
+        cancels.cancel(json!(4), &engine_cancel);
+        for i in 0..MAX_QUEUED {
+            cancels.queued(json!(["other", i]));
+        }
+        let st = cancels.state.lock().unwrap();
+        assert_eq!(st.queued.len(), MAX_QUEUED);
+        assert!(st.queued_cancelled.is_empty());
+    }
 }

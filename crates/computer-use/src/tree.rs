@@ -37,9 +37,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// Role and name, the name on one line with its quotes escaped as in
+    /// the tree.
     pub fn label(&self) -> String {
         match &self.name {
-            Some(n) if !n.is_empty() => format!("{} \"{}\"", self.role, truncate(n, 60)),
+            Some(n) if !n.trim().is_empty() => format!("{} \"{}\"", self.role, clean_text(n, 60)),
             _ => self.role.clone(),
         }
     }
@@ -108,7 +110,7 @@ fn has_text(s: &Option<String>) -> bool {
     s.as_deref().is_some_and(|t| !t.trim().is_empty())
 }
 
-/// Collapse whitespace runs, escape quotes, and cap length.
+/// Collapse whitespace runs, escape quotes and backslashes, and cap length.
 pub fn clean_text(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max + 16));
     let mut prev_space = false;
@@ -120,6 +122,12 @@ pub fn clean_text(s: &str, max: usize) -> String {
             c if crate::text::is_bidi_control(c) => {}
             '\n' => {
                 out.push_str("\\n");
+                prev_space = false;
+            }
+            // A backslash too, so a name ending in one (a drive, C:\)
+            // still closes its quotes.
+            '\\' => {
+                out.push_str("\\\\");
                 prev_space = false;
             }
             '"' => {
@@ -321,7 +329,8 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
         if !candidate[i] || node.role != "text" || !node.actions.is_empty() {
             continue;
         }
-        let mut p = node.parent;
+        // Only earlier nodes are parents (a loop in a bad tree ends).
+        let mut p = node.parent.filter(|p| *p < i);
         while let Some(pi) = p {
             if candidate[pi] {
                 if raw[pi].name.is_some() && raw[pi].name == node.name {
@@ -329,7 +338,7 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
                 }
                 break;
             }
-            p = raw[pi].parent;
+            p = raw[pi].parent.filter(|pp| *pp < pi);
         }
     }
 
@@ -636,9 +645,15 @@ fn plan_runs(nodes: &[Node], hidden: &[bool], end: &[usize]) -> HashMap<usize, R
                 };
                 if cols >= 2 && cells.len() >= 2 * cols {
                     let common = shared_suffix(nodes, &cells);
+                    // On the header's one line, its separators not in them.
                     let names: Vec<String> = headers
                         .iter()
-                        .filter_map(|&h| nodes[h].name.as_deref().map(|t| truncate(t, 24)))
+                        .filter_map(|&h| {
+                            nodes[h]
+                                .name
+                                .as_deref()
+                                .map(|t| clean_text(t, 24).replace('|', "¦").replace(';', ","))
+                        })
                         .collect();
                     let mut head = String::from("cells, a row a line");
                     if names.len() == cols {
@@ -685,9 +700,16 @@ fn plan_runs(nodes: &[Node], hidden: &[bool], end: &[usize]) -> HashMap<usize, R
                 continue;
             }
             let slots = first.len();
-            // What every element at the same place of each record shares.
+            // What every element at the same place of each record shares,
+            // for a role found once in a record (the header names it by role).
             let common: Vec<Option<&str>> = (0..slots)
-                .map(|s| shared_suffix(nodes, &members.iter().map(|&m| m + s).collect::<Vec<_>>()))
+                .map(|s| {
+                    let once = first.iter().filter(|(_, r)| *r == first[s].1).count() == 1;
+                    once.then(|| {
+                        shared_suffix(nodes, &members.iter().map(|&m| m + s).collect::<Vec<_>>())
+                    })
+                    .flatten()
+                })
                 .collect();
             let roles: Vec<&str> = first.iter().map(|(_, r)| *r).collect();
             let mut head = format!("{} × {}", members.len(), roles.join(" › "));
@@ -1075,8 +1097,6 @@ pub fn diff(old: &[Node], new: &[Node]) -> Diff {
     d
 }
 
-/// Number of elements added, changed or removed between two snapshots,
-/// without building the diff.
 /// Whether `changes` to a tree of `len` elements make a big change (a new
 /// screen, the whole tree sent): `ratio` of them, and more than one line
 /// replaced, so a small window (a painted app's few lines read off the
@@ -1085,6 +1105,8 @@ pub fn big_change(changes: usize, len: usize, ratio: f64) -> bool {
     changes as f64 >= (ratio * len.max(1) as f64).max(3.0)
 }
 
+/// Number of elements added, changed or removed between two snapshots,
+/// without building the diff.
 pub fn change_count(old: &[Node], new: &[Node]) -> usize {
     let old_by_key: HashMap<u64, &str> = old.iter().map(|n| (n.key, n.line.as_str())).collect();
     let mut matched = 0usize;
@@ -1431,6 +1453,57 @@ mod tests {
     }
 
     #[test]
+    fn a_role_twice_in_a_record_keeps_its_own_actions() {
+        let mut raw = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
+        for name in ["One", "Two", "Three"] {
+            let item = raw.len();
+            raw.push(node(Some(1), "list item", ""));
+            raw.push(node(Some(item), "text", name));
+            let mut flag = node(Some(item), "text", &format!("{name} flag"));
+            flag.actions = vec![ActionDesc::new("edit", "edit")];
+            raw.push(flag);
+        }
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let text = render_full_within(&p.nodes, 1, compact_budget());
+        assert!(text.contains("3 × list item › text › text:"), "{text}");
+        let expanded = expand(&text);
+        assert!(expanded.contains("text \"One\"\n"), "{expanded}");
+        assert!(
+            expanded.contains("text \"One flag\" actions=[edit]"),
+            "{expanded}"
+        );
+    }
+
+    #[test]
+    fn column_names_stay_on_the_header_line() {
+        let mut raw = vec![node(None, "window", "Shop"), node(Some(0), "table", "")];
+        for h in ["SKU\nid", "Price | net"] {
+            raw.push(node(Some(1), "table column header", h));
+        }
+        for r in 0..3 {
+            for (c, v) in [format!("K-{r}"), format!("{r}.00")].iter().enumerate() {
+                let mut cell = node(Some(1), "cell", v);
+                cell.bounds = Some(Rect::new(
+                    c as f64 * 50.0,
+                    20.0 + r as f64 * 20.0,
+                    50.0,
+                    20.0,
+                ));
+                raw.push(cell);
+            }
+        }
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let text = render_full_within(&p.nodes, 1, compact_budget());
+        assert!(
+            text.contains("cells, a row a line (SKU\\nid | Price ¦ net):"),
+            "{text}"
+        );
+        assert!(expand(&text).contains("cell \"K-1\""), "{text}");
+    }
+
+    #[test]
     fn diffs_group_what_was_added_and_range_what_was_removed() {
         let mut raw = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
         for i in 0..10 {
@@ -1617,5 +1690,21 @@ mod tests {
     fn text_cleanup() {
         assert_eq!(clean_text("  a\n\"b\"   c ", 100), "a\\n\\\"b\\\" c");
         assert_eq!(truncate("abcdef", 3), "abc… (+3 chars)");
+    }
+
+    #[test]
+    fn a_name_ending_in_a_backslash_still_closes_its_quotes() {
+        assert_eq!(clean_text("C:\\", 100), "C:\\\\");
+        let row = format!("5 \"{}\" | 6 \"x\"", clean_text("C:\\", 100));
+        assert_eq!(
+            split_outside_quotes(&row, " | "),
+            vec!["5 \"C:\\\\\"", "6 \"x\""]
+        );
+    }
+
+    #[test]
+    fn a_label_keeps_a_name_on_one_line() {
+        let p = prune(&[node(None, "button", "Line1\nLine2 \"x\"")], None, &cfg());
+        assert_eq!(p.nodes[0].label(), "button \"Line1\\nLine2 \\\"x\\\"\"");
     }
 }

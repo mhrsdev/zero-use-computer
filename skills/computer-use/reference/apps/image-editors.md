@@ -17,6 +17,10 @@ x/y only to draw on it. `cmd+` below is Cmd on a Mac, Ctrl elsewhere.
   size; `d` default colours, `x` swap them.
 - Text: Text tool, click the canvas, `type_text`, commit (Photoshop
   `cmd+Return`).
-- Slow filters show a progress bar: `wait_for` it to go, don't click again.
+- Slow filters show a progress bar: the filter dialog closes as soon as OK
+  is pressed and the filter goes on running (GIMP's status bar, Photoshop's
+  Progress window). Look again (`screenshot` or `get_app_state`) until the
+  bar is gone before the next step; with a decision model,
+  `wait_for(until="Has the filter finished?")`. Don't press OK again.
 - Cloud features (Generative Fill, online filters) upload the image and may
   need sign-in or credits: only when asked.

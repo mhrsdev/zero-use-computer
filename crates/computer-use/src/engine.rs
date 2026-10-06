@@ -45,6 +45,11 @@ mod system;
 pub(crate) use drawing::draw_shapes;
 pub use progress::{Progress, ProgressSink};
 
+/// Areas of a window the tree says nothing about, as last found: the
+/// picture's fingerprint, where the window was, the areas and the text
+/// read in them.
+type BlindRead = (PixelSig, Option<Rect>, Vec<Rect>, Vec<OcrLine>);
+
 /// Cached state for one app between tool calls.
 #[derive(Default)]
 struct AppState {
@@ -72,16 +77,16 @@ struct AppState {
     /// Screen areas of private data in the latest snapshot ([privacy]).
     private: Vec<Rect>,
     /// The last text read off the window (OCR), with the picture it was
-    /// read from, so an unchanged picture isn't read again.
-    ocr_cache: Option<(PixelSig, Vec<OcrLine>)>,
+    /// read from and where the window was then, so an unchanged picture
+    /// isn't read again (its lines move with the window).
+    ocr_cache: Option<(PixelSig, Option<Rect>, Vec<OcrLine>)>,
     /// Lines of OCR text in the latest snapshot.
     ocr_lines: usize,
     /// Areas of the window the tree says nothing about ([ocr]
     /// blind_regions), in the latest snapshot (screen coordinates).
     blind: Vec<Rect>,
-    /// The last picture those areas were found and read in: its
-    /// fingerprint, the areas and the text read in them.
-    blind_cache: Option<(PixelSig, Vec<Rect>, Vec<OcrLine>)>,
+    /// The last picture those areas were found and read in.
+    blind_cache: Option<BlindRead>,
     /// The text last read in each blind area, by its place and a hash of
     /// its exact pixels: an area that didn't change isn't read again when
     /// another part of the window did (a caret, a clock).
@@ -446,6 +451,9 @@ pub(super) struct SeenBefore {
     /// it has, and the icons it was shown (a look inside a batch or a
     /// script, whose result the model never sees, mustn't count).
     shown: HashMap<u32, (Option<String>, HashSet<u64>)>,
+    /// What each design and scene looked like in the last answer the model
+    /// got (one a step or a script made isn't seen).
+    drafts: HashMap<String, DraftSeen>,
 }
 
 /// Host-level settings forced on top of the config file.
@@ -463,8 +471,12 @@ pub struct Shown {
     /// Per app: the screen the model knows, and the screenshot coordinates
     /// it works from.
     apps: HashMap<u32, (Option<Screen>, Option<CoordMap>)>,
+    /// Per app: the header and the icons it has been shown.
+    seen: HashMap<u32, (Option<String>, HashSet<u64>)>,
     screen_shot: Option<ScreenShot>,
     partial: Option<(u32, u32, u64, usize)>,
+    /// How many other agents it has been told about.
+    agents_told: usize,
 }
 
 impl Hints {
@@ -589,6 +601,7 @@ impl<B: Backend> Engine<B> {
     /// UI state is kept.
     pub fn reload_if_changed(&mut self) {
         if !self.store.config.hot_reload {
+            self.sync_decision_settings();
             return;
         }
         let Some(path) = self.store.path.clone() else {
@@ -681,6 +694,15 @@ impl<B: Backend> Engine<B> {
         // Another model: the old one's failures and answers aren't its.
         if store.config.decision != self.store.config.decision {
             self.judge.forget();
+        }
+        // Another hub (or none): leave this one, as a reload does.
+        let hub_changed = {
+            let (old, new) = (&self.store.config.hub, &store.config.hub);
+            old.enabled != new.enabled || old.port != new.port
+        };
+        if hub_changed && self.overlay.take().is_some() {
+            self.hub_losses = 0;
+            self.agents_told = 0;
         }
         self.store = store;
         self.scripts.set_dir(self.store.config.script.library());
@@ -855,6 +877,47 @@ impl<B: Backend> Engine<B> {
             return 0;
         }
         imaging::redact(cap, &rects, self.store.config.privacy.style)
+    }
+
+    /// Read the window of `app`'s latest snapshot again, so the places of
+    /// its elements and private areas are where the window is now (after
+    /// it moved). Text read off the screen is reused, moved with the window
+    /// (a window of another size is read again). If it can't be read
+    /// (closed, minimized), its elements have no place to click.
+    fn reobserve(&mut self, app: &AppInfo) {
+        let Some(wid) = self.states.get(&app.pid).and_then(|s| s.window_id) else {
+            return;
+        };
+        let window = self
+            .list_windows(app, true)
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.id == wid && !w.minimized));
+        let reuse = std::mem::replace(&mut self.ctx.ocr_reuse, true);
+        let read = window.is_some_and(|w| self.observe(app, &w, true).is_ok());
+        self.ctx.ocr_reuse = reuse;
+        if !read && let Some(st) = self.states.get_mut(&app.pid) {
+            st.bounds.clear();
+        }
+    }
+
+    /// Before a screen or region capture is redacted: the private areas
+    /// of every app, where its window is now (the user or the page may
+    /// have moved them since the app was looked at).
+    fn refresh_private_areas(&mut self) {
+        if !crate::privacy::active(&self.store.config.privacy) {
+            return;
+        }
+        let pids: Vec<u32> = self
+            .states
+            .iter()
+            .filter(|(_, s)| s.stamped && !s.private.is_empty())
+            .map(|(pid, _)| *pid)
+            .collect();
+        for pid in pids {
+            if let Ok(app) = self.resolve_app(&pid.to_string()) {
+                self.reobserve(&app);
+            }
+        }
     }
 
     /// The part of `r` (screen coordinates) that is on a display, so a
@@ -1843,7 +1906,7 @@ impl<B: Backend> Engine<B> {
             "ok": !out.is_error,
             // Estimated tokens the result costs the model (text + image).
             "tokens": out.estimated_tokens(),
-            "summary": out.text.lines().next().unwrap_or("").chars().take(160).collect::<String>(),
+            "summary": audit_summary(out.text.lines().next().unwrap_or("")),
         });
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -1864,6 +1927,23 @@ impl<B: Backend> Engine<B> {
             let _ = writeln!(f, "{record}");
         }
     }
+}
+
+/// The first line of a result as the audit log keeps it: metadata only.
+/// Quotes inside a value aren't escaped, so nothing from the first quote on
+/// is kept (a value set or typed, text selected or waited for, a name), nor
+/// an `expect` note (it repeats what was expected); codes are masked.
+fn audit_summary(line: &str) -> String {
+    let cut = [line.find('"'), line.find(" Expected ")]
+        .into_iter()
+        .flatten()
+        .min();
+    let out = match cut {
+        Some(at) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    };
+    let out = crate::privacy::mask_codes(&out).unwrap_or(out);
+    out.chars().take(160).collect()
 }
 
 /// What the coordinates on a screenshot's grid (and `pick` points) are.

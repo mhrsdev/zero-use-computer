@@ -232,9 +232,12 @@ impl<'a> Wm<'a> {
         None
     }
 
-    /// The client window inside a window manager's frame (or the frame).
+    /// The client window inside a window manager's frame (or the frame):
+    /// the one that says its pid, or that the window manager manages (ICCCM
+    /// `WM_STATE`, as many Xt apps say no pid).
     fn client_in(&self, frame: Window) -> Window {
-        if self.pid_of(frame).is_some() {
+        let client = |w: Window| self.pid_of(w).is_some() || self.wm_state(w).is_some();
+        if client(frame) {
             return frame;
         }
         let mut level = vec![frame];
@@ -244,7 +247,7 @@ impl<'a> Wm<'a> {
                 let Some(tree) = self.conn.query_tree(w).ok().and_then(|c| c.reply().ok()) else {
                     continue;
                 };
-                if let Some(c) = tree.children.iter().find(|c| self.pid_of(**c).is_some()) {
+                if let Some(c) = tree.children.iter().find(|c| client(**c)) {
                     return *c;
                 }
                 next.extend(tree.children);
@@ -283,7 +286,7 @@ impl<'a> Wm<'a> {
         let win = self.client_in(top);
         Some(Front::Window {
             win,
-            pid: self.pid_of(win),
+            pid: self.owner_pid(win),
         })
     }
 
@@ -423,6 +426,20 @@ impl<'a> Wm<'a> {
         }
     }
 
+    /// A client window's ICCCM `WM_STATE`, which the window manager sets on
+    /// the windows it manages.
+    fn wm_state(&self, win: Window) -> Option<u32> {
+        self.atom("WM_STATE")
+            .and_then(|kind| self.prop32(win, "WM_STATE", kind))
+            .and_then(|v| v.first().copied())
+    }
+
+    /// Whether the window is iconic (minimized) by its ICCCM `WM_STATE`.
+    fn iconic(&self, win: Window) -> bool {
+        const ICONIC_STATE: u32 = 3;
+        self.wm_state(win) == Some(ICONIC_STATE)
+    }
+
     fn set_bounds(&self, win: Window, r: Rect) -> Result<()> {
         if self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
             || self.state_has(win, "_NET_WM_STATE_MAXIMIZED_HORZ")
@@ -521,7 +538,16 @@ impl<'a> Wm<'a> {
     }
 
     pub fn apply(&self, win: Window, op: &WindowOp) -> Result<()> {
-        let before = self.geometry(win);
+        // Setting the bounds of a maximized window un-maximizes it first,
+        // which changes its size whether or not the move is then done: only
+        // the bounds asked for count as done then (as when there is no
+        // geometry to compare with).
+        let maximized = self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
+            || self.state_has(win, "_NET_WM_STATE_MAXIMIZED_HORZ");
+        let before = match op {
+            WindowOp::SetBounds(_) if maximized => None,
+            _ => self.geometry(win),
+        };
         self.request(win, op)?;
         self.check_done(win, op, before)
     }
@@ -556,15 +582,19 @@ impl<'a> Wm<'a> {
                     .filter(|v| v.len() >= 4)
                     .unwrap_or_else(|| vec![0; 4]);
                 let [l, rt, t, b] = [e[0], e[1], e[2], e[3]].map(f64::from);
+                let (sw, sh) =
+                    size_slack(self.prop32(win, "WM_NORMAL_HINTS", AtomEnum::WM_SIZE_HINTS));
                 let near = |g: Rect| {
                     (g.x - (r.x + l)).abs() <= 16.0
                         && (g.y - (r.y + t)).abs() <= 16.0
-                        && (g.width - (r.width - l - rt)).abs() <= 16.0
-                        && (g.height - (r.height - t - b)).abs() <= 16.0
+                        && (g.width - (r.width - l - rt)).abs() <= sw
+                        && (g.height - (r.height - t - b)).abs() <= sh
                 };
+                // Near enough, or changed at all (a window manager can round
+                // a size to the app's increments, a terminal's cells).
                 let moved = until(&|| {
-                    self.geometry(win)
-                        .is_some_and(|g| near(g) || Some(g) != before)
+                    let now = self.geometry(win);
+                    now.is_some_and(near) || changed(now, before)
                 });
                 if !moved {
                     return refused("move or resize the window");
@@ -573,14 +603,22 @@ impl<'a> Wm<'a> {
             WindowOp::Maximize if self.supports("_NET_WM_STATE_MAXIMIZED_VERT") => {
                 let done = until(&|| {
                     self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
-                        || self.geometry(win) != before
+                        || changed(self.geometry(win), before)
                 });
                 if !done {
                     return refused("maximize the window");
                 }
             }
             WindowOp::Minimize => {
-                if !until(&|| !self.viewable(win)) {
+                // Unmapped, or (a window manager that keeps minimized
+                // windows mapped, to show their thumbnails) marked hidden or
+                // iconic.
+                let hidden = || {
+                    !self.viewable(win)
+                        || self.state_has(win, "_NET_WM_STATE_HIDDEN")
+                        || self.iconic(win)
+                };
+                if !until(&hidden) {
                     return refused("minimize the window");
                 }
             }
@@ -819,9 +857,59 @@ fn work_area(v: &[u32], current: u32) -> Option<[u32; 4]> {
     at(current as usize).or_else(|| at(0))
 }
 
+/// How far a window's size may end up from the one asked for, across and
+/// down: 16 px, or more for an app with resize increments (a terminal's
+/// cells, from its `WM_NORMAL_HINTS`), which a window manager rounds to.
+fn size_slack(hints: Option<Vec<u32>>) -> (f64, f64) {
+    const P_RESIZE_INC: u32 = 1 << 6;
+    let inc = |i: usize| {
+        hints
+            .as_ref()
+            .filter(|h| h.len() > 10 && h[0] & P_RESIZE_INC != 0)
+            .map_or(0, |h| h[i])
+    };
+    (f64::from(inc(9).max(16)), f64::from(inc(10).max(16)))
+}
+
+/// Whether a window's geometry is known now and differs from what it was
+/// (`before`, if known).
+fn changed(now: Option<Rect>, before: Option<Rect>) -> bool {
+    matches!((now, before), (Some(n), Some(b)) if n != b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resized_window_may_be_off_by_its_resize_increments() {
+        assert_eq!(size_slack(None), (16.0, 16.0));
+        // WM_SIZE_HINTS: flags, 4 unused, min, max, increments (9, 10).
+        let mut hints = vec![0u32; 18];
+        hints[9] = 18;
+        hints[10] = 36;
+        // Increments not flagged as set: ignored.
+        assert_eq!(size_slack(Some(hints.clone())), (16.0, 16.0));
+        hints[0] = 1 << 6;
+        assert_eq!(size_slack(Some(hints.clone())), (18.0, 36.0));
+        // Smaller ones than 16 px leave 16.
+        hints[9] = 7;
+        hints[10] = 15;
+        assert_eq!(size_slack(Some(hints)), (16.0, 16.0));
+        // Too short to hold them.
+        assert_eq!(size_slack(Some(vec![1 << 6; 5])), (16.0, 16.0));
+    }
+
+    #[test]
+    fn a_window_counts_as_changed_only_against_a_known_geometry() {
+        let a = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let b = Rect::new(10.0, 0.0, 100.0, 100.0);
+        assert!(changed(Some(b), Some(a)));
+        assert!(!changed(Some(a), Some(a)));
+        // Nothing to compare with: only the bounds asked for count.
+        assert!(!changed(Some(b), None));
+        assert!(!changed(None, Some(a)));
+    }
 
     #[test]
     fn a_window_manager_that_quit_is_not_running() {

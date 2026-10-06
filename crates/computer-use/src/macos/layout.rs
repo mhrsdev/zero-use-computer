@@ -88,6 +88,8 @@ pub struct Stroke {
     pub code: u16,
     pub shift: bool,
     pub option: bool,
+    /// A dead key: pressed on its own it starts an accent, typing nothing.
+    pub dead: bool,
 }
 
 /// The key for `c` in a layout's `entries`. For a `shortcut` (⌘ or ⌃
@@ -121,6 +123,7 @@ pub fn pick(entries: &[Entry], c: char, shortcut: bool) -> Option<Stroke> {
         code: best.code,
         shift: extra_shift || best.level == Level::Shift,
         option: best.level == Level::Option,
+        dead: best.dead,
     })
 }
 
@@ -368,6 +371,7 @@ mod tests {
             code,
             shift,
             option,
+            dead: false,
         })
     }
 
@@ -404,7 +408,13 @@ mod tests {
         assert_eq!(pick(&t, '^', false), stroke(30, true, false));
         // A dead key is still used when it is the only one.
         let only_dead: Vec<Entry> = t.into_iter().filter(|e| e.code != 30).collect();
-        assert_eq!(pick(&only_dead, '^', false), stroke(33, false, false));
+        let dead = Stroke {
+            code: 33,
+            shift: false,
+            option: false,
+            dead: true,
+        };
+        assert_eq!(pick(&only_dead, '^', false), Some(dead));
     }
 
     #[test]

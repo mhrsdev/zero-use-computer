@@ -872,7 +872,8 @@ Build with the `http` feature to serve MCP over HTTP for a remote agent:
 
 ```bash
 cargo build --release -p computer-use-mcp --features http
-computer-use-mcp serve --http 127.0.0.1:8787 --http-token "$TOKEN"
+export COMPUTER_USE_HTTP_TOKEN="$(openssl rand -hex 24)"   # not --http-token: `ps` shows it
+computer-use-mcp serve --http 127.0.0.1:8787
 # or put it in settings: server.http_addr / server.http_token
 ```
 

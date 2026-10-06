@@ -61,7 +61,8 @@ prompt, and automatic caching of the growing conversation.
 **Scripted** (`--scripted`): a fixed way through each task, calling the
 tools as a careful agent would, using only what earlier results showed.
 Two ways through: `--plan step` (default; one action a call, as an agent
-on v3.2 would) and `--plan batch` (v3.6: what is known done in one batch
+on v3.2 would, though pressing Open sends `expect` and, where the server
+reports expectations, needs it confirmed; servers before v3.6 ignore it) and `--plan batch` (v3.6: what is known done in one batch
 of lines, clicks by name, `expect` on the step that opens a dialog). No
 model, no key, and the same numbers every time, so it shows what a change
 did to the tools' results. Its token figures are **estimates** (text ≈ 4
@@ -78,7 +79,7 @@ real ones.
 | `--max-turns N` | give up after this many model requests (default 40) |
 | `--config FILE` | the server's settings for the run (default: built-in defaults, never your own `config.toml`) |
 | `--plan step\|batch` | scripted runs: one action a call, or v3.6's batches |
-| `--preset codex` | the way Codex's computer use behaves, simulated as in `examples/compare.rs` (a screenshot with every look, no screen memory, no picture dedupe, no change report). A simulation, not Codex itself |
+| `--preset codex` | the way Codex's computer use behaves, simulated as in `examples/compare.rs` (a screenshot with every look, no screen memory, no picture dedupe, whole-window pictures, no change report, every tool listed, no blind areas or adaptive pictures). A simulation, not Codex itself |
 | `--label NAME` | the folder the results go in |
 | `--out DIR` | where (default `target/bench`) |
 | `--python PY` | a Python with GTK 3 (default: the first that imports it) |
@@ -144,7 +145,11 @@ bench/run.sh --runs 5 --label v3.6-manager --config bench/configs/manager.toml
 (v3.5's blind areas alone), `lean.toml` (every opt-in that saves tokens:
 lean schemas, relevant-change reports, quiet volatile elements, adaptive
 pictures, `locate` without its picture, blind areas, paint steps when
-asked) and `manager.toml` (the same with the tool manager).
+asked) and `manager.toml` (the same with the tool manager). All of that is
+the default now, so these files no longer differ from the defaults: they
+are kept as what `results/` was measured with. To measure one of them
+today, run it off against the defaults, e.g. with a file holding
+`[tools]` `manager = "off"` or `[ocr]` `blind_regions = false`.
 
 ## The design board
 

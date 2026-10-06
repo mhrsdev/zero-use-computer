@@ -16,6 +16,7 @@ use objc2::rc::{Allocated, Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSArray, NSRect, NSString};
 
+use super::ffi::nsstring_text;
 use crate::error::{Error, Result};
 use crate::types::{Capture, OcrLine};
 
@@ -99,7 +100,7 @@ fn pick_languages(preferred: &[String], supported: &[String]) -> (Vec<String>, V
 /// An `NSArray<NSString>` as strings.
 fn strings(array: &NSArray<NSString>) -> Vec<String> {
     (0..array.count())
-        .map(|i| array.objectAtIndex(i).to_string())
+        .map(|i| nsstring_text(&array.objectAtIndex(i)))
         .collect()
 }
 
@@ -111,7 +112,7 @@ unsafe fn describe(error: *mut AnyObject) -> Option<String> {
     // SAFETY: as the caller promises; `localizedDescription` is NSError's.
     let error = unsafe { error.as_ref() }?;
     let text: Retained<NSString> = unsafe { msg_send![error, localizedDescription] };
-    Some(text.to_string())
+    Some(nsstring_text(&text))
 }
 
 /// The languages to recognize when none are configured: the user's
@@ -260,7 +261,7 @@ fn read(cap: &Capture, image: &CGImage, languages: &[String], auto: bool) -> Res
             let b: NSRect = msg_send![&*obs, boundingBox];
             let (iw, ih) = (w as f64, h as f64);
             out.push(OcrLine {
-                text: text.to_string(),
+                text: nsstring_text(&text),
                 bounds: crate::ocr::to_screen(
                     cap,
                     b.origin.x * iw,

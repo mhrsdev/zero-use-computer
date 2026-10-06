@@ -1765,9 +1765,9 @@ fn thin(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
     left
 }
 
-/// Temporary export files: in the system's temp folder, deleted when this
-/// is dropped (the server stops), and old or too many ones from any run
-/// cleared before each new one.
+/// Temporary export files: in a folder of this user's in the system's
+/// temp folder, deleted when this is dropped (the server stops), and old
+/// or too many ones from any run cleared before each new one.
 pub struct TempFiles {
     dir: std::path::PathBuf,
     mine: Vec<std::path::PathBuf>,
@@ -1777,7 +1777,7 @@ pub struct TempFiles {
 impl Default for TempFiles {
     fn default() -> Self {
         TempFiles {
-            dir: std::env::temp_dir().join("computer-use-exports"),
+            dir: std::env::temp_dir().join(Self::folder_name()),
             mine: Vec::new(),
             max_bytes: Self::MAX_BYTES,
         }
@@ -1789,6 +1789,55 @@ impl TempFiles {
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
     /// And the folder is kept under this size, oldest first.
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
+
+    /// The folder's name: one per user, as the temp folder may be shared
+    /// (/tmp), so others can neither read the exports nor make the folder
+    /// first.
+    fn folder_name() -> String {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            // SAFETY: getuid has no preconditions and can't fail.
+            format!("computer-use-exports-{}", unsafe { libc::getuid() })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            "computer-use-exports".to_string()
+        }
+    }
+
+    /// Make the folder, open to this user only. One made by someone else
+    /// (or a link in its place) is refused.
+    fn make_dir(&self) -> Result<(), String> {
+        let cant = |e: &dyn std::fmt::Display| {
+            format!(
+                "can't make the temporary folder {}: {e}",
+                self.dir.display()
+            )
+        };
+        #[allow(unused_mut)] // set only on Unix
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            b.mode(0o700);
+        }
+        b.create(&self.dir).map_err(|e| cant(&e))?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let meta = std::fs::symlink_metadata(&self.dir).map_err(|e| cant(&e))?;
+            // SAFETY: as in `folder_name`.
+            if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+                return Err(cant(&"it belongs to another user"));
+            }
+            if meta.mode() & 0o077 != 0 {
+                std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|e| cant(&e))?;
+            }
+        }
+        Ok(())
+    }
 
     #[cfg(test)]
     pub fn in_dir(dir: std::path::PathBuf, max_bytes: u64) -> Self {
@@ -1807,12 +1856,7 @@ impl TempFiles {
         ext: &str,
         bytes: &[u8],
     ) -> Result<std::path::PathBuf, String> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| {
-            format!(
-                "can't make the temporary folder {}: {e}",
-                self.dir.display()
-            )
-        })?;
+        self.make_dir()?;
         self.prune(bytes.len() as u64);
         let safe: String = stem
             .chars()
@@ -1826,11 +1870,14 @@ impl TempFiles {
             .collect();
         for n in 1..10_000 {
             let path = self.dir.join(format!("{safe}-{n}.{ext}"));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(mut f) => {
                     use std::io::Write;
                     f.write_all(bytes)
@@ -2231,6 +2278,34 @@ mod tests {
         assert!(c.exists());
         drop(files);
         assert!(!dir.exists(), "the folder is gone with its files");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn exports_are_kept_in_a_folder_only_this_user_can_open() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let name = TempFiles::folder_name();
+        assert!(name.starts_with("computer-use-exports-"), "{name}");
+        let dir = std::env::temp_dir().join(format!("cu-design-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // A folder left open to everyone is closed again.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let mut files = TempFiles::in_dir(dir.clone(), 1 << 20);
+        let a = files.write("d", "png", &[1u8; 10]).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&a), 0o600);
+        drop(files);
+        // A link in the folder's place is refused.
+        let target = std::env::temp_dir().join(format!("cu-design-target-{}", std::process::id()));
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &dir).unwrap();
+        let mut files = TempFiles::in_dir(dir.clone(), 1 << 20);
+        assert!(files.write("d", "png", &[1u8; 10]).is_err());
+        drop(files);
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_dir_all(&target);
     }
 }
 

@@ -68,7 +68,7 @@ pub fn recent() -> Result<Vec<Notification>> {
         .map(|i| running.objectAtIndex(i))
         .find(|a| {
             a.bundleIdentifier()
-                .is_some_and(|b| b.to_string() == BUNDLE)
+                .is_some_and(|b| ffi::nsstring_text(&b) == BUNDLE)
         })
         .map(|a| a.processIdentifier())
         .ok_or_else(|| Error::Unsupported("Notification Center is not running".into()))?;

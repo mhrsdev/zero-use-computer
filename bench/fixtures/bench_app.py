@@ -189,7 +189,10 @@ def build_table(win, state):
         query["text"] = entry.get_text()
         filtered.refilter()
 
-    search.connect("search-changed", on_search)
+    # "changed" rather than "search-changed": GTK3 delays the latter 150 ms
+    # after the last keystroke, so a set_value could report before the table
+    # was refiltered.
+    search.connect("changed", on_search)
     bar.pack_start(search, True, True, 0)
     status = Gtk.Label(label="")
     opener = Gtk.Button(label="Open")

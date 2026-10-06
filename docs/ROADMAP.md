@@ -32,6 +32,7 @@ v3.5, v3.6, … are steps; v4.0 is the stable release of what they proved.
 | v3.8.2 | stable across systems: the fixes from a review of each system and the core (layouts, Store and Electron apps, administrator apps, Wayland without the usual tools, headless sessions, broken settings files), no hangs | done (checked by CI on Windows and macOS, not on the hardware) |
 | v3.8.3 | faster only: 38% fewer accessibility calls for a window read again (Linux), "nothing changed" sooner for apps that show changes at once, OCR's enlargement in milliseconds | done: −15% server time on the benchmark, the same results |
 | v3.8.5 | the protocol and the code: one MCP core for stdio and HTTP; batches, progress, per-tool annotations, results as data (off); Streamable HTTP (sessions, event streams, cancels that reach the call); engine.rs in parts, a call's state reset whole after a panic | done (tests over stdio and a socket; no real HTTP client) |
+| v3.9.7 | a debugging release: the whole project read twice line by line; ~150 problems fixed (the HTTP server could be stopped without the token, OCR text from private fields, values in the audit log, script sandbox escapes, clicks after a window moved) | done (tests for each fix that can run without a desktop; Windows and macOS by CI, not on desktops) |
 | v3.9.6 | the stop key on a Mac named Control+Option+Esc everywhere ("Ctrl" was read as Cmd: Cmd+Option+Esc is Force Quit) | done (tests; not seen on a Mac) |
 | v3.9.5 | Windows: the overlay and the stop key no longer go away during a session (the hub connection dropped every 3 quiet seconds since v3.9.0) | done (a new live test on Windows runners: v3.9.4 fails it, v3.9.5 passes; not yet seen on the reporter's Windows 11 desktop) |
 | v3.9.4 | screenshots by need: left out when the tree says what changed, sent after x/y and an unmet expect; the model sets them per app; which apps needed pixels kept (`doctor`); a painted app no longer sends a whole picture per change | done (tests, a new painted-app task: −51% result tokens, 4 pictures → 1; not measured with a real model) |
@@ -57,7 +58,8 @@ left.
 
 - **Real-model runs** (5 or more per scenario, `bench/run.sh --runs 5`)
   of v3.2, v3.6 with its defaults, `bench/configs/lean.toml` and
-  `manager.toml`, with `--plan` left to the model; `--calibrate` to check
+  `manager.toml` (against v3.6: from v3.7 on, both files equal the
+  defaults), with `--plan` left to the model; `--calibrate` to check
   the token estimate (Persian and other non-Latin text especially).
   Every number so far is a scripted estimate.
 - **Defaults from those runs**: `ocr.blind_regions`, `tree.report`,

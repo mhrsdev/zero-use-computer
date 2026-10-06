@@ -231,28 +231,51 @@ fn scripted_form(s: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
+/// The SKU's cell after the filter was set: from what the tools showed
+/// since `mark` (`seen.len()` before setting it), never from an older
+/// result, whose indices may name a row the filter replaced. Not there:
+/// wait for the cell, as a model would after "nothing changed".
+fn sku_cell(s: &mut Session, mark: usize, sku: &str) -> Result<u32, String> {
+    let quoted = format!("\"{sku}\"");
+    if let Some(i) = s.index_since(mark, |l| l.contains(&quoted) && !l.contains("value=")) {
+        return Ok(i);
+    }
+    let app = s.app.clone();
+    let found = s.call(
+        "wait_for",
+        json!({"app": app, "role": "cell", "name": sku, "timeout_ms": 5000}),
+    )?;
+    need(found_index(&found), sku)
+}
+
+/// The index wait_for found ("Found after waiting: <index> <line>").
+fn found_index(text: &str) -> Option<u32> {
+    let rest = &text[text.find("Found after waiting: ")? + "Found after waiting: ".len()..];
+    rest.split(' ').next()?.parse().ok()
+}
+
+/// Pressing Open is checked, not taken on trust: the app says
+/// "Opened <sku>", and the action's answer must say it saw that. A server
+/// before v3.6 ignores `expect` and reports no expectation: nothing to
+/// check there, and the scenario's own check still judges the run.
+fn opened_confirmed(text: &str, sku: &str) -> Result<(), String> {
+    if !text.contains("Expected ") || text.contains(&format!("Expected Opened {sku}: confirmed")) {
+        Ok(())
+    } else {
+        Err(format!("opening {sku} wasn't confirmed: {text}"))
+    }
+}
+
 /// Filter the table to one SKU, select its row and press Open.
 fn open_sku(s: &mut Session, sku: &str) -> Result<(), String> {
     let app = s.app.clone();
     let filter = need(s.index(|l| l.contains("\"Filter\"")), "filter field")?;
+    let mark = s.seen.len();
     s.call(
         "set_value",
         json!({"app": app, "element_index": filter, "value": sku}),
     )?;
-    let quoted = format!("\"{sku}\"");
-    let cell = match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
-        Some(i) => i,
-        None => {
-            // Not in the change report: look again. GTK 3 can keep a
-            // filtered table's old cell text over AT-SPI while the picture
-            // shows the one row left; that row's first cell is the one.
-            s.call("get_app_state", json!({"app": app}))?;
-            match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
-                Some(i) => i,
-                None => need(s.index(|l| l.starts_with("cell \"K-")), sku)?,
-            }
-        }
-    };
+    let cell = sku_cell(s, mark, sku)?;
     // A GTK table cell's accessibility action doesn't select its row: a
     // double click with the mouse does (and an agent learns that after
     // "nothing changed").
@@ -261,8 +284,11 @@ fn open_sku(s: &mut Session, sku: &str) -> Result<(), String> {
         json!({"app": app, "element_index": cell, "click_count": 2}),
     )?;
     let open = need(s.index(|l| l.starts_with("button \"Open\"")), "Open")?;
-    s.call("click", json!({"app": app, "element_index": open}))?;
-    Ok(())
+    let out = s.call(
+        "click",
+        json!({"app": app, "element_index": open, "expect": format!("Opened {sku}")}),
+    )?;
+    opened_confirmed(&out, sku)
 }
 
 fn scripted_table(s: &mut Session) -> Result<(), String> {
@@ -452,26 +478,20 @@ fn batched_open(s: &mut Session, sku: &str, clear: bool) -> Result<(), String> {
             json!({"app": app, "element_index": filter, "value": ""}),
         )?;
     }
+    let mark = s.seen.len();
     s.call(
         "set_value",
         json!({"app": app, "element_index": filter, "value": sku}),
     )?;
-    let quoted = format!("\"{sku}\"");
-    let cell = match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
-        Some(i) => i,
-        None => {
-            s.call("get_app_state", json!({"app": app}))?;
-            match s.index(|l| l.contains(&quoted) && !l.contains("value=")) {
-                Some(i) => i,
-                None => need(s.index(|l| l.starts_with("cell \"K-")), sku)?,
-            }
-        }
-    };
-    s.call(
+    let cell = sku_cell(s, mark, sku)?;
+    let out = s.call(
         "batch",
-        json!({"app": app, "steps": [format!("double {cell}"), "click \"Open\""]}),
+        json!({"app": app, "steps": [
+            format!("double {cell}"),
+            format!("click \"Open\" expect \"Opened {sku}\""),
+        ]}),
     )?;
-    Ok(())
+    opened_confirmed(&out, sku)
 }
 
 fn batched_table(s: &mut Session) -> Result<(), String> {
@@ -520,4 +540,31 @@ fn batched_orders(s: &mut Session) -> Result<(), String> {
         ]}),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_index_wait_for_found_is_read_from_its_answer() {
+        assert_eq!(
+            found_index("Found after waiting: 42 cell \"K-0137\""),
+            Some(42)
+        );
+        assert_eq!(found_index("timed out after 5000ms"), None);
+    }
+
+    #[test]
+    fn an_open_counts_only_when_its_expectation_was_confirmed() {
+        let sku = "K-0137";
+        assert!(opened_confirmed("Clicked 7. Expected Opened K-0137: confirmed.", sku).is_ok());
+        assert!(opened_confirmed("Clicked 7. Expected Opened K-0137: not seen.", sku).is_err());
+        assert!(opened_confirmed("Clicked 7. Expected Opened K-0012: confirmed.", sku).is_err());
+    }
+
+    #[test]
+    fn an_open_on_a_server_without_expectations_is_not_failed() {
+        assert!(opened_confirmed("Clicked 7.\nChanged: label \"Opened K-0137\"", "K-0137").is_ok());
+    }
 }

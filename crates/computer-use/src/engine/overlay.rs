@@ -145,7 +145,10 @@ impl<B: Backend> Engine<B> {
     pub(super) fn overlay_reconfigure(&mut self) {
         let cfg = self.store.config.overlay.clone();
         let keys = self.global_keys();
-        if !cfg.enabled && keys == crate::overlay::Keys::default() {
+        // As in `overlay`: the hub needs the connection too (dropping it
+        // would give up this agent's turn and number).
+        if !cfg.enabled && keys == crate::overlay::Keys::default() && !self.store.config.hub.enabled
+        {
             self.overlay = None;
         } else if let Some(o) = &self.overlay {
             o.configure(&cfg, &keys);

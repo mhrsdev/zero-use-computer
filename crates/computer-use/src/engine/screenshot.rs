@@ -45,6 +45,9 @@ impl<B: Backend> Engine<B> {
                 "canvas needs a window screenshot (app)".into(),
             ));
         }
+        if mode != ScreenshotMode::Window {
+            self.refresh_private_areas();
+        }
         let (capture, marks, label) = match mode {
             ScreenshotMode::Auto | ScreenshotMode::Full => (
                 self.capture_clean(|b| b.capture_screen(None))?,
@@ -186,8 +189,13 @@ impl<B: Backend> Engine<B> {
             };
             let (x, y) = z.xy();
             let at = to_capture(&capture, &map, x, y)?;
-            let per_x = to_capture(&capture, &map, x + 1.0, y)?.0 - at.0;
-            let per_y = to_capture(&capture, &map, x, y + 1.0)?.1 - at.1;
+            // Capture pixels per screenshot pixel (not by probing x + 1,
+            // which is past the edge for a point on the last column).
+            let per_x = map.bounds.width / f64::from(map.width.max(1)) * f64::from(capture.width)
+                / capture.bounds.width.max(1e-9);
+            let per_y = map.bounds.height / f64::from(map.height.max(1))
+                * f64::from(capture.height)
+                / capture.bounds.height.max(1e-9);
             if at.0 < 0.0
                 || at.1 < 0.0
                 || at.0 >= f64::from(capture.width)

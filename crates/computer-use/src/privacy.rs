@@ -132,6 +132,12 @@ pub fn mask_card_numbers(s: &str) -> Option<String> {
 /// a code, PIN or password. It doesn't depend on the language of the text
 /// around it; English words only widen it to 4-digit codes.
 pub fn mask_codes(s: &str) -> Option<String> {
+    mask_codes_near(s, "")
+}
+
+/// [`mask_codes`] where a code, PIN or password may be mentioned in
+/// `near` instead (a notification's title, for its body).
+pub fn mask_codes_near(s: &str, near: &str) -> Option<String> {
     const WORDS: [&str; 8] = [
         "code",
         "otp",
@@ -143,7 +149,7 @@ pub fn mask_codes(s: &str) -> Option<String> {
         "2fa",
     ];
     // Whole words only: "shipping" and "barcode" mention no PIN or code.
-    let low = s.to_lowercase();
+    let low = format!("{s} {near}").to_lowercase();
     let mentioned = low
         .split(|c: char| !c.is_alphanumeric())
         .any(|word| WORDS.contains(&word));
@@ -153,7 +159,12 @@ pub fn mask_codes(s: &str) -> Option<String> {
     let mut changed = false;
     let mut i = 0;
     while i < chars.len() {
-        if is_digit(chars[i]) && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+        let starts = i == 0 || !chars[i - 1].is_alphanumeric();
+        if starts && let Some(len) = iso_date_len(&chars[i..]) {
+            // A date (2024-10-06) is no code: left as it is.
+            out.extend(&chars[i..i + len]);
+            i += len;
+        } else if is_digit(chars[i]) && starts {
             // A run of digits, allowing one space or dash inside.
             let mut j = i;
             let mut digits = 0;
@@ -187,6 +198,30 @@ pub fn mask_codes(s: &str) -> Option<String> {
         }
     }
     changed.then_some(out)
+}
+
+/// Length of the ISO date (YYYY-MM-DD, a year 1900–2099 and a real month
+/// and day) `s` starts with, not followed by another digit.
+fn iso_date_len(s: &[char]) -> Option<usize> {
+    let date = s.get(..10)?;
+    let shape = date.iter().enumerate().all(|(k, c)| {
+        if k == 4 || k == 7 {
+            *c == '-'
+        } else {
+            c.is_ascii_digit()
+        }
+    });
+    if !shape || s.get(10).is_some_and(|c| is_digit(*c)) {
+        return None;
+    }
+    let num = |a: usize, b: usize| -> u32 {
+        date[a..b]
+            .iter()
+            .fold(0, |n, c| n * 10 + c.to_digit(10).unwrap_or(0))
+    };
+    let (year, month, day) = (num(0, 4), num(5, 7), num(8, 10));
+    ((1900..=2099).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day))
+        .then_some(10)
 }
 
 fn masked(v: &str) -> String {
@@ -295,6 +330,8 @@ mod tests {
         assert_eq!(mask_codes("Shipping in 2024"), None);
         assert_eq!(mask_codes("Your opinion matters since 1998"), None);
         assert!(mask_codes("Your PIN: 4821").is_some());
+        assert_eq!(mask_codes("4821"), None);
+        assert!(mask_codes_near("4821", "Your bank PIN").is_some());
     }
     use crate::types::NodeStates;
 
@@ -316,6 +353,24 @@ mod tests {
         assert_eq!(mask_codes("Meeting at 1530 in room 4"), None);
         assert_eq!(mask_codes("code v2.1 released"), None);
         assert_eq!(mask_codes("Order 123456789 code"), None, "too long");
+    }
+
+    #[test]
+    fn iso_dates_are_not_masked_but_codes_beside_them_are() {
+        assert_eq!(mask_codes("Meeting on 2024-10-06"), None);
+        assert_eq!(mask_codes("Due 2024-10-06T09:30, room 12"), None);
+        assert_eq!(
+            mask_codes("Your code 482913, sent 2024-10-06").as_deref(),
+            Some("Your code ••••••, sent 2024-10-06")
+        );
+        // Not a date: still masked as a code.
+        assert_eq!(
+            mask_codes("Sign-in: 2024-13").as_deref(),
+            Some("Sign-in: ••••-••")
+        );
+        assert!(mask_codes("Code 1234-56-78").is_some(), "no real year");
+        assert!(mask_codes("Code 2024-99-01").is_some(), "no real month");
+        assert!(mask_codes("Code 2024-10-067").is_some(), "a digit follows");
     }
 
     #[test]

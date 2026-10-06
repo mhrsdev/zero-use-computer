@@ -1,3 +1,26 @@
+# Upgrading to v3.9.7
+
+Nothing to change. What may look different:
+
+- The HTTP server no longer answers "503 too many requests": a request
+  waits for a free slot. A request that stops arriving (its head or body)
+  for 10 s is ended. `config show` shows only the end of `server.http_token`,
+  and the settings file is made readable by its owner only on the next save.
+- `trace_image`'s `path`: `~` is the home folder, and a relative path is
+  taken there (it was the server's working folder).
+- Scripts: `fetch` and `download` no longer read `~/.curlrc`; a path that
+  goes up (`..`) out of a folder that doesn't exist yet is refused; a
+  saved script whose `params` aren't a schema is refused; very large regular
+  expression results, CSVs and number lists stop with an error.
+- A number row read off the screen ("1 2 3") counts as a ruler only if its
+  step is a multiple of 5.
+- The audit log's `summary` keeps only the start of a result's first line.
+- Linux: a shortcut with a modifier the keyboard layout lacks is an error
+  (it was sent without the modifier).
+- Windows: a console program started with `launch_app` gets its own window;
+  text a password manager marks as concealed is not read from the
+  clipboard.
+
 # Upgrading to v3.9.6
 
 Nothing to change. On a Mac the stop key is named Control+Option+Esc (it
@@ -249,4 +272,6 @@ real-model benchmark has measured them ([roadmap](ROADMAP.md)).
 | `ocr.blind_regions` | `false` | read and watch what the tree says nothing about (v3.5) |
 
 `bench/configs/lean.toml` turns on every one that saves tokens, for an
-A/B run.
+A/B run. Since v3.7 they are all on by default, so on v3.7 and later the
+file equals the defaults; it is kept as what `bench/results/v3.6-lean` was
+measured with.

@@ -211,7 +211,9 @@ impl<B: Backend> Engine<B> {
             .filter(|s| s.is_finite())
             .unwrap_or(DRAW_SPEED)
             .clamp(50.0, 5000.0);
-        let secs = plan.length / speed;
+        // Each stroke also waits about 36 ms (the backends pause 12 ms
+        // before the button goes down, after, and before it comes up).
+        let secs = plan.length / speed + plan.strokes.len() as f64 * 0.036;
         if secs > DRAW_MAX_SECS {
             return Err(Error::InvalidArgs(format!(
                 "this drawing would take about {secs:.0} s at {speed:.0} pixels per second; raise speed or draw it in parts"
@@ -319,8 +321,11 @@ impl<B: Backend> Engine<B> {
             }
             owed += d / speed;
             if owed >= 0.004 {
-                sleep(Duration::from_secs_f64(owed.min(0.25)));
-                owed = 0.0;
+                // At most a quarter second at once (the stop key is looked
+                // at in between); the rest is owed to the next steps.
+                let slept = owed.min(0.25);
+                sleep(Duration::from_secs_f64(slept));
+                owed -= slept;
             }
             Ok(())
         };
@@ -493,9 +498,11 @@ impl<B: Backend> Engine<B> {
                 ));
             }
             (Some(path), None) => {
-                let p = std::path::Path::new(path.trim());
-                let meta = std::fs::metadata(p)
-                    .map_err(|e| Error::InvalidArgs(format!("can't read {path}: {e}")))?;
+                let user = dirs::home_dir().unwrap_or_default();
+                let p = &picture_path(path.trim(), &user);
+                let meta = std::fs::metadata(p).map_err(|e| {
+                    Error::InvalidArgs(format!("can't read {path} ({}): {e}", p.display()))
+                })?;
                 if !meta.is_file() {
                     return Err(Error::InvalidArgs(format!("{path} is not a regular file")));
                 }
@@ -1204,6 +1211,24 @@ impl<B: Backend> Engine<B> {
     }
 }
 
+/// A picture file as the model names it: `~` (`~/…`, `~\…`) is the user's
+/// home, and a relative path is taken in it too, never in the folder the
+/// host happened to start the server in (which differs from host to host).
+fn picture_path(path: &str, user: &std::path::Path) -> std::path::PathBuf {
+    let expanded = if path == "~" {
+        user.to_path_buf()
+    } else if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        user.join(rest)
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    if expanded.is_relative() {
+        user.join(expanded)
+    } else {
+        expanded
+    }
+}
+
 /// A `draw` stroke as the drawing module takes it: one shape, or several
 /// (axes and ticks, repeated copies).
 pub(crate) fn draw_shapes(
@@ -1487,5 +1512,34 @@ impl PathPosition {
             .get(i)
             .or_else(|| self.points.last())
             .map(|(_, p)| *p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::picture_path;
+
+    #[test]
+    fn a_picture_path_is_taken_in_the_users_home() {
+        let user = Path::new("/home/ann");
+        assert_eq!(picture_path("~", user), user);
+        assert_eq!(
+            picture_path("~/Pictures/cat.png", user),
+            user.join("Pictures/cat.png")
+        );
+        assert_eq!(picture_path("cat.png", user), user.join("cat.png"));
+        if cfg!(unix) {
+            assert_eq!(
+                picture_path("/tmp/cat.png", user),
+                Path::new("/tmp/cat.png")
+            );
+        }
+        // `~ann` is no home folder of ours: a name in the home like any other.
+        assert_eq!(
+            picture_path("~ann/cat.png", user),
+            user.join("~ann/cat.png")
+        );
     }
 }

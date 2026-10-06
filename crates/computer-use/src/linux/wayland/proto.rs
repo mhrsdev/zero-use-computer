@@ -1039,9 +1039,10 @@ impl Wl {
         self.roundtrip()
     }
 
-    /// Press a key combination: its modifiers go down (as keys and as
-    /// modifier state), the key is pressed and released, the modifiers come
-    /// up. A character key means that character whatever the user's layout.
+    /// Press a key combination: its modifiers are set as modifier state
+    /// (no modifier key is pressed: the state is what apps and the
+    /// compositor's shortcuts read), the key is pressed and released, the
+    /// state is cleared. A character key means that character whatever the user's layout.
     /// It goes to the window with the keyboard focus, like a real
     /// keyboard's, and the compositor's own shortcuts see it first.
     pub fn press(&mut self, combo: &KeyCombo) -> Result<()> {
@@ -1171,7 +1172,13 @@ impl ShmBuffer {
         let file = File::from(memfd(c"cu-screencopy")?);
         file.set_len(size)
             .map_err(|e| Error::Platform(format!("cannot size the screenshot buffer: {e}")))?;
-        // SAFETY: the file is ours alone (a fresh memfd) and stays this size.
+        // SAFETY: the memfd is fresh and shared only with the compositor
+        // (through the pool below), which writes the screenshot into it while
+        // the copy is under way; the mapping is read only after the frame
+        // reports it ready, when the compositor no longer writes. Nothing
+        // here resizes the file, and wl_shm gives the compositor no reason to
+        // (one that truncated it anyway would fault the read, as it would
+        // any wl_shm client's).
         let map = unsafe { memmap2::Mmap::map(&file) }
             .map_err(|e| Error::Platform(format!("cannot map the screenshot buffer: {e}")))?;
         let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());

@@ -116,11 +116,13 @@ pub fn click(
         post(pid, &mv);
     }
     for i in 1..=count.max(1) as i64 {
+        // Build the release before pressing, so a failure never leaves the
+        // button held.
         let d = mouse_event(&src, down, at, cg_btn, window)?;
-        d.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
-        post(pid, &d);
         let u = mouse_event(&src, up, at, cg_btn, window)?;
+        d.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
         u.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
+        post(pid, &d);
         post(pid, &u);
     }
     Ok(())
@@ -133,9 +135,11 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
         post(pid, &e);
     }
     std::thread::sleep(DRAG_STEP);
-    if let Ok(e) = mk(CGEventType::LeftMouseDown, from) {
-        post(pid, &e);
-    }
+    // A press that can't be made is an error, not a silent no-op. A spare
+    // release is made with it, so the button is never left held.
+    let down = mk(CGEventType::LeftMouseDown, from)?;
+    let spare_up = mk(CGEventType::LeftMouseUp, from)?;
+    post(pid, &down);
     std::thread::sleep(DRAG_STEP);
     for step in 1..=8 {
         let p = CGPoint {
@@ -147,10 +151,16 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
         }
         std::thread::sleep(DRAG_STEP);
     }
-    if let Ok(e) = mk(CGEventType::LeftMouseUp, to) {
-        post(pid, &e);
+    match mk(CGEventType::LeftMouseUp, to) {
+        Ok(up) => {
+            post(pid, &up);
+            Ok(())
+        }
+        Err(e) => {
+            post(pid, &spare_up);
+            Err(e)
+        }
     }
-    Ok(())
 }
 
 /// Tell the app the pointer is at `at` (posted to its process: the user's
@@ -308,7 +318,14 @@ pub fn type_text(pid: u32, text: &str) -> Result<()> {
 
 pub fn press(pid: u32, combo: &KeyCombo) -> Result<()> {
     let src = source()?;
-    match keycode(combo) {
+    // A dead key pressed on its own only starts an accent, typing nothing:
+    // the character is typed as text instead. With a modifier it is a
+    // shortcut, which doesn't compose, so the key is right there.
+    let key = match key_stroke(combo) {
+        Some((_, _, true)) if !combo.modifiers.any() => None,
+        k => k.map(|(code, extra, _)| (code, extra)),
+    };
+    match key {
         Some((code, extra)) => {
             let mut mods = combo.modifiers;
             mods.shift |= extra.shift;
@@ -780,14 +797,19 @@ fn redraw(image: &CGImage) -> Result<Vec<u8>> {
 /// or for a shortcut on a character the layout doesn't type (a Latin
 /// letter on a Cyrillic layout).
 pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
+    key_stroke(combo).map(|(code, extra, _)| (code, extra))
+}
+
+/// `keycode`, and whether the key is a dead key on this layout.
+fn key_stroke(combo: &KeyCombo) -> Option<(u16, Modifiers, bool)> {
     let plain = Modifiers::default();
     let c = match combo.key {
-        Key::Named(n) => return named_keycode(n).map(|code| (code, plain)),
-        Key::Char(' ') => return Some((49, plain)),
+        Key::Named(n) => return named_keycode(n).map(|code| (code, plain, false)),
+        Key::Char(' ') => return Some((49, plain, false)),
         Key::Char(c) => c,
     };
     let shortcut = combo.modifiers.meta || combo.modifiers.ctrl;
-    let us = || char_keycode(c).map(|(code, shift)| (code, Modifiers { shift, ..plain }));
+    let us = || char_keycode(c).map(|(code, shift)| (code, Modifiers { shift, ..plain }, false));
     let Some(table) = layout::current() else {
         return us();
     };
@@ -799,6 +821,7 @@ pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
                 alt: k.option,
                 ..plain
             },
+            k.dead,
         )),
         None if shortcut => us(),
         None => None,

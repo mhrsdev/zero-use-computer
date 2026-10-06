@@ -193,13 +193,22 @@ impl LinuxBackend {
         wayland_session() && self.wl().is_ok_and(|w| w.can_capture())
     }
 
-    /// The compositor's window behind a window handle, or else the one of
-    /// `pid` titled `title` (looked up afresh).
+    /// The compositor's window behind a window handle, or else (looked up
+    /// afresh) the one with the compositor's id a bare window was listed
+    /// under, or the one of `pid` titled `title`.
     fn toplevel(&self, handle: ElementHandle, pid: u32, title: &str) -> Option<Toplevel> {
         if let Some(t) = self.toplevels.get(&handle) {
             return Some(t.clone());
         }
         let tops = self.comp.as_ref()?.toplevels().ok()?;
+        // Several of an app's windows can have the same title (terminals).
+        if let Some(id) = self
+            .bare
+            .get(&handle)
+            .and_then(|b| b.key.strip_prefix("wl:"))
+        {
+            return tops.into_iter().find(|t| t.id == id);
+        }
         let mine: Vec<&Toplevel> = tops.iter().filter(|t| t.pid == Some(pid)).collect();
         match mine.as_slice() {
             [only] => Some((*only).clone()),
@@ -376,9 +385,13 @@ impl LinuxBackend {
         // Apps that quit take their handles with them.
         let live = &self.app_refs;
         self.window_handles.retain(|_, (p, _)| live.contains_key(p));
+        // Apps not on the bus keep their (bare) windows until they exit.
+        self.bare.retain(|_, b| process_alive(b.pid));
         let windows: std::collections::HashSet<ElementHandle> =
             self.window_handles.values().map(|(_, h)| *h).collect();
-        self.toplevels.retain(|h, _| windows.contains(h));
+        let bare = &self.bare;
+        self.toplevels
+            .retain(|h, _| windows.contains(h) || bare.contains_key(h));
         self.handles.retain(|_, (p, _)| live.contains_key(p));
         self.app_names.retain(|p, _| live.contains_key(p));
         self.scales.retain(|p, _| live.contains_key(p));

@@ -1,5 +1,96 @@
 # Changelog
 
+## v3.9.7
+
+A debugging release: the whole project read twice, line by line, and what
+was wrong fixed ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.6...v3.9.7)).
+The first read found about 100 problems, the second (of the fixed code)
+about 50 more, some of them in the first read's fixes. Most are small; the
+ones that matter:
+
+### Security and privacy
+
+- **Anyone who could reach the HTTP port could stop the server**, without
+  the token: a request declaring a huge body made the HTTP library
+  allocate that much and abort, and requests that never sent their body
+  could hold every slot for good. The HTTP library (tiny_http 0.12) is now
+  a patched copy in `vendor/` (each change in `vendor/tiny_http/PATCHED.md`):
+  unread bodies are drained within limits, header lines are capped, and a
+  request that stops arriving times out after 10 s. A body left unread is
+  no longer read as the next request.
+- **Text read off the screen inside a private field reached the model**
+  (a verification code in a field whose value the app doesn't expose):
+  the screenshot was blacked out, the tree still had it. OCR lines inside
+  private areas are left out, also after the window moves.
+- **The audit log kept values**: the first line of a `set_value` result
+  holds the value set, passwords included. The log keeps only what comes
+  before any quoted text or expectation.
+- **Scripts**: a path going up (`..`) out of a folder not made yet got past
+  the private-folder check (with `[script] files = "all"` a script could
+  rewrite the server's settings); a script importing itself crashed the
+  server; regular expressions, CSV and numbers could use up all memory or
+  run past the time limit; a failed download deleted the file it was to
+  replace; `elements()`, `colors()` and `page()` ignored tools switched off.
+- A settings file that holds the HTTP token is now readable by its owner
+  only, and `config show` / `config get` show only the token's end.
+- Exports go to a folder only the user can open (`computer-use-exports-<uid>`
+  on Linux and macOS), not a shared one.
+- Windows: text a password manager marks as concealed is not read from
+  the clipboard (as on macOS).
+
+### Wrong results
+
+- After `window` moved a window, a click by element index landed where
+  the element used to be (perhaps in another app), and full-screen
+  screenshots blacked out private areas at their old places.
+- Text read off a window (OCR) was reused at its old place after the window
+  moved; it now moves with the window.
+- `decide pick`: a number in the model's answer was taken as a position
+  (the 57th option, not element 57), and 65, 129, … candidates made the
+  whole pick fail.
+- The two OCR readings were merged badly when they split words differently
+  (a word lost or doubled); "7 8 9" and "1 2 3 4 5" were taken for a ruler
+  and dropped; a lone digit read unsurely was kept as text.
+- macOS: text with a broken emoji (a lone half of a pair) crashed reading a
+  window or the clipboard. Windows: such text was dropped.
+- Windows: a console program launched with `launch_app` shared the
+  server's (often hidden) console instead of getting its own window.
+- Linux: windows of apps without accessibility could be confused (two
+  terminals titled "~"); a missing modifier key (no Super on the layout)
+  was silently left out of a shortcut; a hung session bus could switch
+  accessibility off for good; minimize on window managers that keep
+  minimized windows mapped was reported as refused.
+- Wayland overlay: a cursor moved to another monitor went invisible.
+- The hub: a working stop key could be reported as not working, and an
+  agent could miss that its key was replaced; a stop could undo the user's
+  "continue" a moment after it.
+- `press_key "ctrl + s"` (with spaces) failed; a batch step written as
+  `{"tool": "get_app_state", "app": "Safari"}` dropped the app; a zoom on the
+  last column of a screenshot was refused; a notification's code was not
+  masked when only its title said "PIN".
+- The `long` bench scenario's rare failure: the test app filtered its table
+  150 ms late, and the scripted run reused an old element number.
+- Two servers writing `apps.json` at once lost counts; new apps were never
+  kept once 200 were recorded.
+- CI could publish a release with failing tests; it now waits for them.
+
+### Not fixed
+
+- On Hyprland with `force_zero_scaling` and a scaled monitor, element
+  positions in X11 apps may be off (needs that desktop to fix safely).
+- A client with the token that stops reading answers can still slow the
+  other sessions (the HTTP library gives no write timeout).
+- The hub doesn't prove to an agent that it is the real one (a protocol
+  change).
+
+### Checked
+
+- 501 tests in the library, 55 in the server (each fix with a test where it
+  can run without a desktop); clippy on Linux, Windows and macOS; Rust 1.88;
+  the live Linux tests under Xvfb (10 of 10); the scripted `long` and `table`
+  benchmark 40 of 40 runs. The Windows and macOS fixes were checked by
+  reading and by CI (the Windows overlay live test), not on real desktops.
+
 ## v3.9.6
 
 The stop key on a Mac, named so it is pressed

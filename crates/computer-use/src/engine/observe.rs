@@ -33,7 +33,19 @@ impl<B: Backend> Engine<B> {
     /// The text on a window (OCR), reusing the last result when the picture
     /// hasn't changed (or, while settling, without looking again).
     fn read_screen_text(&mut self, app: &AppInfo, window: &WindowInfo) -> Vec<OcrLine> {
-        let cached = self.states.get(&app.pid).and_then(|s| s.ocr_cache.clone());
+        // Lines read where the window was are moved to where it is now; a
+        // window of another size is read again.
+        let cached = self
+            .states
+            .get(&app.pid)
+            .and_then(|s| s.ocr_cache.clone())
+            .and_then(|(sig, at, mut lines)| {
+                let (dx, dy) = moved_by(at, window.bounds)?;
+                for l in &mut lines {
+                    l.bounds = shifted(l.bounds, dx, dy);
+                }
+                Some((sig, lines))
+            });
         if self.ctx.ocr_reuse
             && let Some((_, lines)) = &cached
         {
@@ -56,7 +68,8 @@ impl<B: Backend> Engine<B> {
                 lines
             }
         };
-        self.states.entry(app.pid).or_default().ocr_cache = Some((sig, lines.clone()));
+        self.states.entry(app.pid).or_default().ocr_cache =
+            Some((sig, window.bounds, lines.clone()));
         self.ctx.last_capture = Some((app.pid, window.id, self.epoch, cap));
         lines
     }
@@ -167,18 +180,15 @@ impl<B: Backend> Engine<B> {
         };
         if !lines.is_empty() {
             let cfg = &self.store.config.ocr;
+            // Shapes read as glyphs, and rulers' numbers, aren't text
+            // (judged with the confidence each line was read with).
+            let lines: Vec<OcrLine> = lines
+                .into_iter()
+                .filter(|l| crate::ocr::plausible(l) && !crate::ocr::ruler(l))
+                .collect();
             let mut extra = crate::ocr::nodes(&lines, cfg.min_confidence, cfg.max_lines);
-            // Leave out glyph noise and what the tree already says there.
+            // Leave out what the tree already says there.
             extra.retain(|o| {
-                let line = OcrLine {
-                    text: o.name.clone().unwrap_or_default(),
-                    bounds: o.bounds.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
-                    confidence: 1.0,
-                };
-                // Shapes read as glyphs, and rulers' numbers, aren't text.
-                if !crate::ocr::plausible(&line) || crate::ocr::ruler(&line) {
-                    return false;
-                }
                 let text = crate::ocr::words(o.name.as_deref().unwrap_or(""));
                 crate::ocr::enough_text(&text)
                     && !raw.iter().any(|n| {
@@ -208,6 +218,19 @@ impl<B: Backend> Engine<B> {
         } else {
             Vec::new()
         };
+        // OCR read the picture before it was blacked out: text read inside
+        // a private area (a code in a field that shows no value) is left
+        // out of the tree too.
+        if !private.is_empty() {
+            let before = raw.len();
+            raw.retain(|n| {
+                !crate::ocr::is_ocr(n.handle)
+                    || !n
+                        .bounds
+                        .is_some_and(|b| private.iter().any(|p| p.intersects(&b)))
+            });
+            ocr_lines = ocr_lines.saturating_sub(before - raw.len());
+        }
         let pruned = tree::prune(&raw, window.bounds, &self.store.config.tree);
         drop(raw);
         let mut nodes = pruned.nodes;
@@ -312,10 +335,21 @@ impl<B: Backend> Engine<B> {
         if candidates.is_empty() {
             return Default::default();
         }
+        // As for the text (see `read_screen_text`): moved with the window.
         let cached = self
             .states
             .get(&app.pid)
-            .and_then(|s| s.blind_cache.clone());
+            .and_then(|s| s.blind_cache.clone())
+            .and_then(|(sig, at, mut areas, mut lines)| {
+                let (dx, dy) = moved_by(at, Some(bounds))?;
+                for a in &mut areas {
+                    *a = shifted(*a, dx, dy);
+                }
+                for l in &mut lines {
+                    l.bounds = shifted(l.bounds, dx, dy);
+                }
+                Some((sig, areas, lines))
+            });
         if self.ctx.ocr_reuse
             && let Some((_, areas, lines)) = &cached
         {
@@ -381,7 +415,7 @@ impl<B: Backend> Engine<B> {
             }
         };
         self.states.entry(app.pid).or_default().blind_cache =
-            Some((sig, areas.clone(), lines.clone()));
+            Some((sig, Some(bounds), areas.clone(), lines.clone()));
         self.ctx.last_capture = Some((app.pid, window.id, self.epoch, cap));
         (areas, lines)
     }
@@ -750,6 +784,23 @@ pub(super) fn reads_as_start_of(read: &str, label: &str) -> bool {
         prev = cur;
     }
     prev[b.len()] <= (a.len() / 6).max(usize::from(a.len() >= 6))
+}
+
+/// How far a window moved since text was read off it at `then`: `None`
+/// when that reading can't be used where it is `now` (another size, or a
+/// place known only once).
+fn moved_by(then: Option<Rect>, now: Option<Rect>) -> Option<(f64, f64)> {
+    match (then, now) {
+        (None, None) => Some((0.0, 0.0)),
+        (Some(a), Some(b)) if a.width == b.width && a.height == b.height => {
+            Some((b.x - a.x, b.y - a.y))
+        }
+        _ => None,
+    }
+}
+
+fn shifted(r: Rect, dx: f64, dy: f64) -> Rect {
+    Rect::new(r.x + dx, r.y + dy, r.width, r.height)
 }
 
 /// A hash of a picture's exact pixels (and size).

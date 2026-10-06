@@ -100,6 +100,9 @@ pub struct Env {
     pub app_tools: Vec<String>,
     /// The decision model, for decide(), ask(), choose() and score().
     pub decision: crate::config::DecisionConfig,
+    /// The settings key as the user knows it ("Ctrl+Alt+J"; `None`: there
+    /// is none), for the decision model's errors.
+    pub settings_key: Option<String>,
     /// Never read or written by a script, whatever `[script] files` says:
     /// the server's folder (its settings, with the decision model's key,
     /// the hub's token, the memory) and the settings file. The scripts'
@@ -195,6 +198,9 @@ fn describe_parse(e: &rhai::ParseError, code: &str) -> String {
     msg
 }
 
+/// Longest error message kept (a script may throw any text).
+const MAX_ERROR: usize = 8_000;
+
 /// A runtime error, with the line of `code` (whose source name is
 /// `source`) where it happened.
 fn describe_error(e: &EvalAltResult, code: &str, source: Option<&str>) -> String {
@@ -214,6 +220,13 @@ fn describe_error(e: &EvalAltResult, code: &str, source: Option<&str>) -> String
         }
     }
     let mut msg = e.to_string();
+    // Cut by characters (not bytes), so a message that is short enough but
+    // not ASCII is kept whole.
+    if let Some((end, _)) = msg.char_indices().nth(MAX_ERROR) {
+        let all = msg.chars().count();
+        msg.truncate(end);
+        msg.push_str(&format!("… ({all} characters in all)"));
+    }
     if matches!(cur, EvalAltResult::ErrorFunctionNotFound(..)) {
         msg.push_str(". script(help=true) lists every function; maths on whole numbers works, and sin(1) is sin(1.0)");
     }

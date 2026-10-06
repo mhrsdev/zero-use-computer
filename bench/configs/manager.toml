@@ -1,3 +1,5 @@
+# Now the defaults, all of it: a run with this file is a default run. Kept
+# as the file results/v3.6-manager was measured with.
 # v3.6: lean.toml with the tool manager: the base tools and find_tools; the
 # rest are found and run through use_tool (bench/README.md, "A/B").
 [tools]

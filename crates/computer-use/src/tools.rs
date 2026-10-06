@@ -1322,10 +1322,31 @@ impl<'de> Deserialize<'de> for BatchStep {
                 tool: String,
                 #[serde(default)]
                 arguments: Value,
+                // Arguments written next to `tool` instead of inside
+                // `arguments` (`{"tool":"get_app_state","app":"Safari"}`):
+                // taken as arguments, not dropped.
+                #[serde(flatten)]
+                beside: serde_json::Map<String, Value>,
             },
         }
         match Repr::deserialize(d)? {
-            Repr::Full { tool, arguments } => Ok(BatchStep { tool, arguments }),
+            Repr::Full {
+                tool,
+                mut arguments,
+                beside,
+            } => {
+                if !beside.is_empty() {
+                    if arguments.is_null() {
+                        arguments = Value::Object(serde_json::Map::new());
+                    }
+                    if let Value::Object(args) = &mut arguments {
+                        for (k, v) in beside {
+                            args.entry(k).or_insert(v);
+                        }
+                    }
+                }
+                Ok(BatchStep { tool, arguments })
+            }
             Repr::Line(line) => parse_step(&line).map_err(serde::de::Error::custom),
         }
     }
@@ -2084,7 +2105,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "list_apps".into(),
             title: "List apps".into(),
-            description: "List running desktop apps with their ids, pids and window counts. Use it to find the exact app to pass to other tools.".into(),
+            description: "List running desktop apps with their ids and pids. Use it to find the exact app to pass to other tools.".into(),
             input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
             annotations: read_only("List apps"),
         },
@@ -2259,7 +2280,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "An image file (PNG or JPEG) the user gave."},
+                    "path": {"type": "string", "description": "An image file (PNG or JPEG) the user gave: a full path, or one in the home folder (~/...)."},
                     "app": {"type": "string", "description": "Or trace what this app's window shows."},
                     "window": {"type": "string", "description": "Window id or title substring."},
                     "box": {"type": "array", "items": {"type": "number"}, "description": "The part of the window: [left, top, right, bottom] in screenshot pixels."},
@@ -2548,7 +2569,7 @@ fn build_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "decide".into(),
             title: "Decide fast".into(),
-            description: "Typed answers from a decision model (TypeSafe's Jev, or a fast OpenAI-compatible model the user added with Ctrl+Alt+J), in well under a second and without reading the thing yourself: a yes/no question (the probability of yes), a choice among options, or a score on a scale, about a state: text or JSON you pass, each of many items (judged in parallel: reviews, results, rows), or an app's window (app: its elements as text). pick=\"what you look for\" (with app) returns the element_index that fits. Use it to classify, score, filter or check many things, and to find the element meant by a description. Several questions at once: questions={\"name\": {\"type\": \"yes_no\"|\"choice\"|\"score\", \"question\", \"options\" or \"scale\"}}. setup: \"status\", \"open\" (opens the settings page in the user's browser), \"test\", \"remove\", or {provider: \"jev\"|\"openai\", base_url, model, api_key} when the user gives these in the chat."
+            description: "Typed answers from a decision model (TypeSafe's Jev, or a fast OpenAI-compatible model the user added on its settings page: the settings key, Ctrl+Alt+J unless changed), in well under a second and without reading the thing yourself: a yes/no question (the probability of yes), a choice among options, or a score on a scale, about a state: text or JSON you pass, each of many items (judged in parallel: reviews, results, rows), or an app's window (app: its elements as text). pick=\"what you look for\" (with app) returns the element_index that fits. Use it to classify, score, filter or check many things, and to find the element meant by a description. Several questions at once: questions={\"name\": {\"type\": \"yes_no\"|\"choice\"|\"score\", \"question\", \"options\" or \"scale\"}}. setup: \"status\", \"open\" (opens the settings page in the user's browser), \"test\", \"remove\", or {provider: \"jev\"|\"openai\", base_url, model, api_key} when the user gives these in the chat."
                 .replace("Ctrl+Alt+J", crate::decision::SETTINGS_KEY).into(),
             input_schema: json!({
                 "type": "object",
@@ -3134,6 +3155,20 @@ mod tests {
         assert_eq!(args.strokes[0].ellipse, Some([100.0, 100.0, 40.0, 40.0]));
         assert_eq!(args.strokes[0].fill, Some(6.0));
         assert_eq!(args.strokes[1].rect, Some(vec![1.0, 2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn batch_step_arguments_beside_the_tool_are_kept() {
+        let step: BatchStep =
+            serde_json::from_value(json!({"tool": "get_app_state", "app": "Safari"})).unwrap();
+        assert_eq!(step.arguments, json!({"app": "Safari"}));
+        let step: BatchStep = serde_json::from_value(
+            json!({"tool": "click", "arguments": {"element_index": 3}, "app": "Safari"}),
+        )
+        .unwrap();
+        assert_eq!(step.arguments, json!({"element_index": 3, "app": "Safari"}));
+        let step: BatchStep = serde_json::from_value(json!({"tool": "look"})).unwrap();
+        assert_eq!(step.arguments, Value::Null);
     }
 
     #[test]

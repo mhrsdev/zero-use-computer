@@ -547,53 +547,6 @@ impl<B: Backend> Engine<B> {
                 is_error: false,
             });
         }
-        // Only the part that changed, when the model has this design's
-        // picture at this size and with the same marks, and the change is
-        // a small part of it: a colour, a move, a few layers.
-        let part = prev
-            .as_ref()
-            .filter(|_| cfg.scope == crate::config::ShotScope::Auto)
-            .filter(|p| p.marks == Some(extras))
-            .and_then(|p| p.shot.as_deref())
-            .and_then(|old| imaging::diff_box(old, &picture, 2))
-            .map(|area| imaging::widen(area, 16, 96, picture.width, picture.height))
-            .filter(|&(_, _, w, h)| {
-                f64::from(w) * f64::from(h)
-                    <= 0.5 * f64::from(picture.width) * f64::from(picture.height)
-            });
-        if let Some((px, py, pw, ph)) = part {
-            let scale = f64::from(picture.width) / d.width.max(1e-9);
-            let u = |v: u32| f64::from(v) / scale;
-            let span = crate::cells::Span {
-                x0: u(px),
-                x1: u(px + pw),
-                y0: u(py),
-                y1: u(py + ph),
-            };
-            let at = format!(
-                "x {:.0}–{:.0}, y {:.0}–{:.0} ({})",
-                span.x0,
-                span.x1,
-                span.y0,
-                span.y1,
-                d.cells().covering(span)
-            );
-            let long = format!(
-                "\nThe picture changed only at {at}: that part is shown, {pw}×{ph} px at the same scale as your last picture of it; the rest is as before."
-            );
-            let short = format!("\nOnly the part that changed: {at}.");
-            let note = self.explain("design-part", &long, &short).to_string();
-            text.push_str(&note);
-            seen.picture = hash;
-            seen.shot = Some(std::sync::Arc::new(picture.clone()));
-            self.drafts_seen.insert(seen_key, seen);
-            let (img, _) = imaging::encode(imaging::crop(&picture, (px, py, pw, ph)), &cfg)?;
-            return Ok(ToolOutput {
-                text,
-                image: Some(img),
-                is_error: false,
-            });
-        }
         // The cells are as they were: said with the first picture only.
         let described = d.cells().describe();
         if cells && prev.as_ref().is_none_or(|p| p.cells != described) {

@@ -64,7 +64,7 @@ impl<B: Backend> Engine<B> {
         if crate::launch::is_url(&args.app) {
             crate::launch::open_url(&args.app)?;
             return Ok(ToolOutput::text(format!(
-                "Opened {} in the default browser. Call list_apps, then get_app_state on the browser, to see it.",
+                "Opened \"{}\" in the default browser. Call list_apps, then get_app_state on the browser, to see it.",
                 args.app
             )));
         }
@@ -397,7 +397,11 @@ impl<B: Backend> Engine<B> {
                 }
                 _ => self.capture_clean(|b| b.capture(&app, &window)),
             };
-            if let Ok(cap) = cap {
+            if let Ok(mut cap) = cap {
+                // Compared with the last picture as it was sent: private
+                // areas blacked out (covering them again later is no
+                // change).
+                self.redact_capture(&mut cap);
                 if self.change_in_tree(app.pid, r.screen, &cap, &r.touched) {
                     want = false;
                     if let Some(st) = self.states.get_mut(&app.pid) {

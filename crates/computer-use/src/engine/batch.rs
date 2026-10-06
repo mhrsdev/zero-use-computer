@@ -166,8 +166,6 @@ impl<B: Backend> Engine<B> {
         Some((w.id, w.title))
     }
 
-    /// What the model has seen of each app, to put back after calls whose
-    /// trees it never saw (batch steps, a script's tool calls).
     /// What the model has been shown so far, to put back with
     /// [`Self::not_delivered`] if the answer to the next call never reaches
     /// it (the client cancelled the call).
@@ -179,8 +177,14 @@ impl<B: Backend> Engine<B> {
                 .iter()
                 .map(|(pid, st)| (*pid, (st.known.clone(), st.coord)))
                 .collect(),
+            seen: self
+                .states
+                .iter()
+                .map(|(pid, st)| (*pid, (st.header_seen.clone(), st.icons_shown.clone())))
+                .collect(),
             screen_shot: self.screen_shot.clone(),
             partial: self.partial_report,
+            agents_told: self.agents_told,
         }
     }
 
@@ -192,13 +196,20 @@ impl<B: Backend> Engine<B> {
         *self.hints.0.borrow_mut() = shown.hints;
         self.partial_report = shown.partial;
         self.screen_shot = shown.screen_shot;
+        self.agents_told = shown.agents_told;
+        let mut seen = shown.seen;
         for (pid, st) in self.states.iter_mut() {
             let (known, coord) = shown.apps.get(pid).cloned().unwrap_or_default();
             st.known = known;
             st.coord = coord;
+            let (header, icons) = seen.remove(pid).unwrap_or_default();
+            st.header_seen = header;
+            st.icons_shown = icons;
         }
     }
 
+    /// What the model has seen of each app, to put back after calls whose
+    /// trees it never saw (batch steps, a script's tool calls).
     pub(super) fn known_screens(&self) -> SeenBefore {
         SeenBefore {
             known: self
@@ -213,6 +224,7 @@ impl<B: Backend> Engine<B> {
                 .iter()
                 .map(|(pid, st)| (*pid, (st.header_seen.clone(), st.icons_shown.clone())))
                 .collect(),
+            drafts: self.drafts_seen.clone(),
         }
     }
 
@@ -222,8 +234,12 @@ impl<B: Backend> Engine<B> {
             memory,
             hints,
             mut shown,
+            drafts,
         } = seen;
         *self.hints.0.borrow_mut() = hints;
+        // A design the steps drew is compared, next time, with what the
+        // model last got of it.
+        self.drafts_seen = drafts;
         for (pid, st) in self.states.iter_mut() {
             let (header, icons) = shown.remove(pid).unwrap_or_default();
             st.header_seen = header;

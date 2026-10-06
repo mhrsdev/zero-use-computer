@@ -47,7 +47,9 @@ struct Common {
     #[arg(long, global = true)]
     http: Option<String>,
 
-    /// Override server.http_token (or set $COMPUTER_USE_HTTP_TOKEN).
+    /// Override server.http_token. Other users of this computer can read a
+    /// command line (`ps`): prefer $COMPUTER_USE_HTTP_TOKEN or the settings
+    /// file.
     #[arg(long, global = true)]
     http_token: Option<String>,
 
@@ -362,10 +364,14 @@ fn run() -> Result<()> {
     }
 }
 
-/// The settings as they may be shown: an API key only by its end.
+/// The settings as they may be shown: an API key and the HTTP token only
+/// by their ends.
 fn shown(mut cfg: Config) -> Config {
     if !cfg.decision.api_key.is_empty() {
         cfg.decision.api_key = config::masked_key(&cfg.decision.api_key);
+    }
+    if !cfg.server.http_token.is_empty() {
+        cfg.server.http_token = config::masked_key(&cfg.server.http_token);
     }
     cfg
 }
@@ -559,6 +565,11 @@ fn state(
     Ok(())
 }
 
+/// The apps `list_apps` listed (one `- ` line each; a note may follow).
+fn listed_apps(text: &str) -> usize {
+    text.lines().filter(|l| l.starts_with("- ")).count()
+}
+
 fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
     println!(
         "computer-use-mcp {} (mhrsdev/zero-use-computer)",
@@ -652,8 +663,7 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             }
             match engine.call_tool("list_apps", json!({})) {
                 out if !out.is_error => {
-                    let n = out.text.lines().count().saturating_sub(1);
-                    println!("apps:     {n} visible");
+                    println!("apps:     {} visible", listed_apps(&out.text));
                 }
                 out => println!("apps:     error: {}", out.text),
             }
@@ -709,4 +719,28 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
         Err(e) => println!("decision: ✗ {e}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_note_after_the_apps_is_not_counted_as_one() {
+        let text = "2 running apps:\n- Files (id: files, pid: 1)\n- Text (id: text, pid: 2) [frontmost]\n\nNote: on Wayland, windows can't be moved.";
+        assert_eq!(listed_apps(text), 2);
+        assert_eq!(listed_apps("No GUI apps are currently running."), 0);
+    }
+
+    #[test]
+    fn the_http_token_is_shown_only_by_its_end() {
+        let mut cfg = Config::default();
+        cfg.server.http_token = "0123456789abcdef".into();
+        cfg.decision.api_key = "sk-0123456789".into();
+        let cfg = shown(cfg);
+        assert_eq!(cfg.server.http_token, "••••cdef");
+        assert_eq!(cfg.decision.api_key, "••••6789");
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!text.contains("0123456789abcdef"), "{text}");
+    }
 }

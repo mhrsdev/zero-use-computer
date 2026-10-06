@@ -3,6 +3,7 @@
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 
+use super::ffi::nsstring_text;
 use crate::error::{Error, Result};
 
 /// The marker type (nspasteboard.org) password managers put on what they
@@ -16,7 +17,7 @@ const MAX_BYTES: usize = 1 << 20;
 pub fn get() -> Result<String> {
     let pb = NSPasteboard::generalPasteboard();
     if let Some(types) = pb.types()
-        && (0..types.count()).any(|i| CONCEALED.contains(&&*types.objectAtIndex(i).to_string()))
+        && (0..types.count()).any(|i| CONCEALED.contains(&&*nsstring_text(&types.objectAtIndex(i))))
     {
         return Err(Error::Blocked(
             "reading the clipboard".into(),
@@ -29,7 +30,7 @@ pub fn get() -> Result<String> {
             .types()
             .map(|t| {
                 (0..t.count())
-                    .map(|i| t.objectAtIndex(i).to_string())
+                    .map(|i| nsstring_text(&t.objectAtIndex(i)))
                     .collect()
             })
             .unwrap_or_default();
@@ -38,7 +39,8 @@ pub fn get() -> Result<String> {
             None => Ok(String::new()),
         };
     };
-    let mut text = s.to_string();
+    // Read as UTF-16: what another app copied may hold a lone surrogate.
+    let mut text = nsstring_text(&s);
     if text.len() > MAX_BYTES {
         let total = text.chars().count();
         let mut cut = MAX_BYTES;

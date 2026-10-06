@@ -294,16 +294,12 @@ impl X11 {
                 self.keymap.entry(shifted).or_insert((keycode, true));
             }
         }
-        // Modifier keycodes by keysym.
-        self.shift = self.keymap.get(&0xffe1).map(|k| k.0).unwrap_or(0); // Shift_L
-        self.ctrl = self.keymap.get(&0xffe3).map(|k| k.0).unwrap_or(0); // Control_L
-        self.alt = self
-            .keymap
-            .get(&0xffe9)
-            .or_else(|| self.keymap.get(&0xff7e)) // Alt_L / ISO_Level3? fall back
-            .map(|k| k.0)
-            .unwrap_or(0);
-        self.meta = self.keymap.get(&0xffeb).map(|k| k.0).unwrap_or(0); // Super_L
+        // Modifier keycodes by keysym, the left key's else the right's.
+        self.shift = modifier_code(&self.keymap, &[0xffe1, 0xffe2]); // Shift_L/R
+        self.ctrl = modifier_code(&self.keymap, &[0xffe3, 0xffe4]); // Control_L/R
+        // Alt_L/R, else Meta_L/R (on the Alt keys of some layouts).
+        self.alt = modifier_code(&self.keymap, &[0xffe9, 0xffea, 0xffe7, 0xffe8]);
+        self.meta = modifier_code(&self.keymap, &[0xffeb, 0xffec]); // Super_L/R
         Ok(())
     }
 
@@ -614,17 +610,22 @@ impl X11 {
         let (keycode, shift_from_key) = self.resolve_key(combo.key)?;
         let m = combo.modifiers;
         let mut down: Vec<u8> = Vec::new();
-        if (m.shift || shift_from_key) && self.shift != 0 {
-            down.push(self.shift);
-        }
-        if m.ctrl && self.ctrl != 0 {
-            down.push(self.ctrl);
-        }
-        if m.alt && self.alt != 0 {
-            down.push(self.alt);
-        }
-        if m.meta && self.meta != 0 {
-            down.push(self.meta);
+        for (wanted, code, name) in [
+            (m.shift || shift_from_key, self.shift, "Shift"),
+            (m.ctrl, self.ctrl, "Ctrl"),
+            (m.alt, self.alt, "Alt"),
+            (m.meta, self.meta, "Super"),
+        ] {
+            if !wanted {
+                continue;
+            }
+            // Without it the key would be sent alone (super+l as l).
+            if code == 0 {
+                return Err(Error::ActionFailed(format!(
+                    "the keyboard layout has no {name} key, so the key combination can't be sent"
+                )));
+            }
+            down.push(code);
         }
         for kc in &down {
             self.fake(KEY_PRESS, *kc, 0, 0)?;
@@ -873,6 +874,15 @@ impl X11 {
     }
 }
 
+/// The keycode of the first of `keysyms` (a modifier's) on the keyboard,
+/// or 0 when there is none.
+fn modifier_code(keymap: &HashMap<u32, (u8, bool)>, keysyms: &[u32]) -> u8 {
+    keysyms
+        .iter()
+        .find_map(|k| keymap.get(k))
+        .map_or(0, |k| k.0)
+}
+
 /// Connect to the X server `$DISPLAY` names (and the screen number), giving
 /// up after [`CONNECT_TIMEOUT`] instead of hanging on one that doesn't
 /// answer.
@@ -951,6 +961,19 @@ fn within<T: Send + 'static>(
     const RUNNING: u8 = 0;
     const DONE: u8 = 1;
     const ABANDONED: u8 = 2;
+    /// Marks the attempt ended, however it ends (a panic too), and uncounts
+    /// it if it was given up on.
+    struct Ending {
+        state: Arc<AtomicU8>,
+        unanswered: &'static AtomicIsize,
+    }
+    impl Drop for Ending {
+        fn drop(&mut self) {
+            if self.state.swap(DONE, Ordering::SeqCst) == ABANDONED {
+                self.unanswered.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
     if unanswered.load(Ordering::SeqCst) > 0 {
         return Err(Error::Platform(
             "the X server hasn't answered an earlier connection attempt".into(),
@@ -958,19 +981,24 @@ fn within<T: Send + 'static>(
     }
     let state = Arc::new(AtomicU8::new(RUNNING));
     let (tx, rx) = std::sync::mpsc::channel();
-    let st = state.clone();
+    let ending = Ending {
+        state: state.clone(),
+        unanswered,
+    };
     std::thread::Builder::new()
         .name("x11-connect".into())
         .spawn(move || {
+            let _ending = ending;
             let _ = tx.send(f());
-            if st.swap(DONE, Ordering::SeqCst) == ABANDONED {
-                unanswered.fetch_sub(1, Ordering::SeqCst);
-            }
         })
         .map_err(|e| Error::Platform(format!("cannot connect to the X server: {e}")))?;
     match rx.recv_timeout(timeout) {
         Ok(r) => r,
-        Err(_) => {
+        // The attempt ended without a result (it panicked).
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Error::Platform(
+            "cannot connect to the X server: the connection attempt failed".into(),
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             unanswered.fetch_add(1, Ordering::SeqCst);
             if state
                 .compare_exchange(RUNNING, ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
@@ -1500,6 +1528,20 @@ mod tests {
     }
 
     #[test]
+    fn a_modifier_falls_back_to_its_other_keys_but_never_to_mode_switch() {
+        let keymap: HashMap<u32, (u8, bool)> =
+            [(0xffea, (108, false)), (0xff7e, (203, false))].into();
+        // Alt_R when there is no Alt_L; Mode_switch is not Alt.
+        assert_eq!(
+            modifier_code(&keymap, &[0xffe9, 0xffea, 0xffe7, 0xffe8]),
+            108
+        );
+        let keymap: HashMap<u32, (u8, bool)> = [(0xff7e, (203, false))].into();
+        assert_eq!(modifier_code(&keymap, &[0xffe9, 0xffea, 0xffe7, 0xffe8]), 0);
+        assert_eq!(modifier_code(&keymap, &[0xffeb, 0xffec]), 0);
+    }
+
+    #[test]
     fn a_connection_attempt_that_hangs_is_given_up_on() {
         static PENDING: AtomicIsize = AtomicIsize::new(0);
         let (go, wait) = std::sync::mpsc::channel::<()>();
@@ -1523,6 +1565,21 @@ mod tests {
         assert_eq!(
             within(Duration::from_secs(5), &PENDING, || Ok(3)).unwrap(),
             3
+        );
+    }
+
+    #[test]
+    fn a_connection_attempt_that_panics_doesnt_block_the_next() {
+        static PENDING: AtomicIsize = AtomicIsize::new(0);
+        let t = Instant::now();
+        let r: Result<u32> = within(Duration::from_secs(5), &PENDING, || panic!("broken"));
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("failed"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(PENDING.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            within(Duration::from_secs(5), &PENDING, || Ok(1)).unwrap(),
+            1
         );
     }
 
