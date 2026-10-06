@@ -155,16 +155,23 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
             kept_alive = Instant::now();
             lock(&shared.streams).retain_mut(|(_, s)| s.comment().is_ok());
         }
+        // Past the limit, requests wait their turn (in tiny_http's queue).
+        // This thread never answers one itself: answering a refused request
+        // reads what is left of its body, which a client can hold up.
+        // (Only this thread adds to the count, so it can't pass the limit.)
+        if shared.reading.load(Ordering::SeqCst) >= MAX_READING {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        }
         let request = match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(r)) => r,
             Ok(None) => continue,
-            Err(_) => continue,
+            Err(e) => {
+                log::warn!("http recv error: {e}");
+                continue;
+            }
         };
-        if shared.reading.fetch_add(1, Ordering::SeqCst) >= MAX_READING {
-            shared.reading.fetch_sub(1, Ordering::SeqCst);
-            refuse(request, 503, "too many requests at once");
-            continue;
-        }
+        shared.reading.fetch_add(1, Ordering::SeqCst);
         let (ours, tx) = (shared.clone(), tx.clone());
         let spawned = std::thread::Builder::new()
             .name("http-request".into())
@@ -1262,8 +1269,9 @@ mod tests {
                 .collect();
             std::thread::sleep(Duration::from_millis(500));
             // Those past the limit were refused (503), before the fix, by
-            // the thread taking requests, which then waited on them.
-            let last = stalled.split_off(MAX_READING);
+            // the thread taking requests, which then waited on them. Half
+            // the others go: room enough for the rest, and for a ping.
+            let last = stalled.split_off(MAX_READING / 2);
             drop(stalled);
             let r = post(addr, None, json!({"jsonrpc":"2.0","id":7,"method":"ping"}));
             assert_eq!(r.json()["id"], 7);
