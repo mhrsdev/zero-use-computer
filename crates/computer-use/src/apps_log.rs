@@ -113,7 +113,7 @@ impl AppsLog {
         }
         // Another server writing now is waited for; if it takes too long,
         // this write is left for the next flush (the last one still writes).
-        let lock: Option<WriteLock> = None;
+        let lock = WriteLock::take(path);
         if lock.is_none() && now.is_some() {
             return;
         }

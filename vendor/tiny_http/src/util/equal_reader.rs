@@ -87,7 +87,9 @@ where
         while remaining_to_read > 0 {
             let len = remaining_to_read.min(buf.len());
 
-            match self.reader.read(&mut buf[..len]) {
+            let r = self.reader.read(&mut buf[..len]);
+            eprintln!("DBG drain read {:?}", r.as_ref().map_err(|e| e.kind()));
+            match r {
                 Err(e) => {
                     self.last_read_signal.send(Err(e)).ok();
                     break;
