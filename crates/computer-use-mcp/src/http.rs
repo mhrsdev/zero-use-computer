@@ -1297,8 +1297,13 @@ mod tests {
     #[test]
     fn clients_holding_back_their_bodies_hold_up_requests_only_until_they_time_out() {
         serving("stalled", |addr| {
+            // One at a time: tiny_http's pool may leave a burst of
+            // connections waiting for a thread, unread.
             let stalled: Vec<TcpStream> = (0..MAX_READING + MAX_REFUSING + 10)
-                .map(|_| declaring(addr, &[JSON], 2000, ""))
+                .map(|_| {
+                    std::thread::sleep(Duration::from_millis(5));
+                    declaring(addr, &[JSON], 2000, "")
+                })
                 .collect();
             std::thread::sleep(Duration::from_millis(500));
             let r = post(addr, None, json!({"jsonrpc":"2.0","id":7,"method":"ping"}));
