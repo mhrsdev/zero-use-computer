@@ -113,7 +113,10 @@ impl AppsLog {
         }
         // Another server writing now is waited for; if it takes too long,
         // this write is left for the next flush (the last one still writes).
-        let lock = WriteLock::take(path);
+        // The last write waits longer: past the time a lock counts as left
+        // behind, so it never writes beside another server.
+        let wait = if now.is_some() { 1 } else { 6 };
+        let lock = WriteLock::take(path, Duration::from_secs(wait));
         if lock.is_none() && now.is_some() {
             return;
         }
@@ -173,12 +176,13 @@ impl Drop for AppsLog {
 struct WriteLock(PathBuf);
 
 impl WriteLock {
-    /// Waits up to about a second for another server's write. A lock left
-    /// by a server that stopped mid-write (a write takes milliseconds) is
-    /// taken over after a few seconds.
-    fn take(path: &Path) -> Option<Self> {
+    /// Waits up to `wait` for another server's write. A lock left by a
+    /// server that stopped mid-write (a write takes milliseconds) is taken
+    /// over after a few seconds.
+    fn take(path: &Path, wait: Duration) -> Option<Self> {
         let lock = path.with_extension("json.lock");
-        for _ in 0..100 {
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)

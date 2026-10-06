@@ -95,6 +95,18 @@ impl Connection {
         }
     }
 
+    /// Patched (computer-use-mcp): see `READ_TIMEOUT` in lib.rs.
+    pub(crate) fn set_read_timeout(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.set_read_timeout(timeout),
+            #[cfg(unix)]
+            Self::Unix(s) => s.set_read_timeout(timeout),
+        }
+    }
+
     pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
         match self {
             Self::Tcp(s) => s.try_clone().map(Self::from),

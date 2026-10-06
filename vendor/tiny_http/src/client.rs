@@ -6,6 +6,8 @@ use std::io::{BufReader, BufWriter, ErrorKind, Read};
 
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::common::{HTTPVersion, Method};
 use crate::util::RefinedTcpStream;
@@ -34,6 +36,10 @@ pub struct ClientConnection {
 
     // true if the connection goes through SSL
     secure: bool,
+
+    // Patched (computer-use-mcp): set when a request's body was left
+    // (partly) unread; what follows it is then not read as a request.
+    body_left_unread: Arc<AtomicBool>,
 }
 
 /// Error that can happen when reading a request.
@@ -65,6 +71,7 @@ impl ClientConnection {
             next_header_source: first_header,
             no_more_requests: false,
             secure,
+            body_left_unread: Arc::default(),
         }
     }
 
@@ -91,6 +98,15 @@ impl ClientConnection {
                 None => return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF")),
             };
 
+            // Patched (computer-use-mcp): a byte here means the previous
+            // request's body reader was dropped, so the flag is final.
+            if self.body_left_unread.load(Ordering::Relaxed) {
+                return Err(IoError::new(
+                    ErrorKind::ConnectionAborted,
+                    "Body left unread",
+                ));
+            }
+
             if byte == b'\n' && prev_byte_was_cr {
                 buf.pop(); // removing the '\r'
                 return AsciiString::from_ascii(buf)
@@ -102,7 +118,10 @@ impl ClientConnection {
             // Patched (computer-use-mcp): a line that never ends no longer
             // grows without bound.
             if buf.len() >= MAX_LINE {
-                return Err(IoError::new(ErrorKind::InvalidInput, "Header line too long"));
+                return Err(IoError::new(
+                    ErrorKind::InvalidInput,
+                    "Header line too long",
+                ));
             }
             buf.push(byte);
         }
@@ -169,6 +188,7 @@ impl ClientConnection {
             *self.remote_addr.as_ref().unwrap(),
             data_source,
             writer,
+            self.body_left_unread.clone(),
         )
         .map_err(|e| {
             use crate::request;

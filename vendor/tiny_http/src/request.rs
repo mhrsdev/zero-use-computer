@@ -5,7 +5,9 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use crate::util::{EqualReader, FusedReader};
 use crate::{HTTPVersion, Header, Method, Response, StatusCode};
@@ -135,6 +137,7 @@ pub fn new_request<R, W>(
     remote_addr: Option<SocketAddr>,
     mut source_data: R,
     writer: W,
+    body_left_unread: Arc<AtomicBool>,
 ) -> Result<Request, RequestCreationError>
 where
     R: Read + Send + 'static,
@@ -212,7 +215,8 @@ where
 
             Box::new(Cursor::new(buffer)) as Box<dyn Read + Send + 'static>
         } else {
-            let (data_reader, _) = EqualReader::new(source_data, content_length); // TODO:
+            // Patched (computer-use-mcp): `body_left_unread`.
+            let (data_reader, _) = EqualReader::new(source_data, content_length, body_left_unread); // TODO:
             Box::new(FusedReader::new(data_reader)) as Box<dyn Read + Send + 'static>
         }
     } else if transfer_encoding.is_some() {

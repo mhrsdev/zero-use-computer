@@ -171,7 +171,7 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
                 continue;
             }
         };
-        eprintln!("DBG take {:?} reading={}", request.body_length(), shared.reading.fetch_add(1, Ordering::SeqCst));
+        shared.reading.fetch_add(1, Ordering::SeqCst);
         let (ours, tx) = (shared.clone(), tx.clone());
         let spawned = std::thread::Builder::new()
             .name("http-request".into())
@@ -706,10 +706,7 @@ fn respond(request: Request, status: u16, body: Value, headers: &[(&str, &str)])
         }
     }
     let send = move || {
-        let t = Instant::now();
-        let st = request.body_length();
         let _ = request.respond(response);
-        eprintln!("DBG respond {st:?} took {:?} {:?}", t.elapsed(), std::thread::current().name());
     };
     // A refused request may still be sending its body, which tiny_http
     // reads to the end (up to a megabyte: see vendor/tiny_http) once it is

@@ -109,6 +109,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+/// Patched (computer-use-mcp): how long a read from a client may wait.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 use client::ClientConnection;
 use connection::Connection;
 use util::MessagesQueue;
@@ -297,6 +300,13 @@ impl Server {
                 let new_client = match server.accept() {
                     Ok((sock, _)) => {
                         use util::RefinedTcpStream;
+                        // Patched (computer-use-mcp): a client that stops
+                        // sending (a request's head, or a body the server
+                        // reads to its end) no longer holds a thread for
+                        // good; an idle connection is closed after as long.
+                        if sock.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
+                            continue;
+                        }
                         let (read_closable, write_closable) = match ssl {
                             None => RefinedTcpStream::new(sock),
                             #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
