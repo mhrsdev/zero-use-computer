@@ -1626,8 +1626,16 @@ mod tests {
         backend.add_app(MockBackend::text_editor(4242));
         let mut e = Engine::new(backend, ConfigStore::load(Some(&path)).unwrap())
             .with_time(Instant::now, |_| {});
-        // The user saves another model on the page.
+        // The user saves another model on the page (later: on Windows two
+        // writes this close can have the same time).
         std::fs::write(&path, file(&new.url, "sk-new-2222")).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
         let status = e.call_tool("decide", json!({"setup": "status"}));
         assert!(
             status.text.contains("2222") && !status.text.contains("1111"),
