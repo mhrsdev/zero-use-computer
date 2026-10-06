@@ -45,6 +45,11 @@ mod system;
 pub(crate) use drawing::draw_shapes;
 pub use progress::{Progress, ProgressSink};
 
+/// Areas of a window the tree says nothing about, as last found: the
+/// picture's fingerprint, where the window was, the areas and the text
+/// read in them.
+type BlindRead = (PixelSig, Option<Rect>, Vec<Rect>, Vec<OcrLine>);
+
 /// Cached state for one app between tool calls.
 #[derive(Default)]
 struct AppState {
@@ -80,10 +85,8 @@ struct AppState {
     /// Areas of the window the tree says nothing about ([ocr]
     /// blind_regions), in the latest snapshot (screen coordinates).
     blind: Vec<Rect>,
-    /// The last picture those areas were found and read in: its
-    /// fingerprint, where the window was, the areas and the text read in
-    /// them.
-    blind_cache: Option<(PixelSig, Option<Rect>, Vec<Rect>, Vec<OcrLine>)>,
+    /// The last picture those areas were found and read in.
+    blind_cache: Option<BlindRead>,
     /// The text last read in each blind area, by its place and a hash of
     /// its exact pixels: an area that didn't change isn't read again when
     /// another part of the window did (a caret, a clock).
@@ -598,6 +601,7 @@ impl<B: Backend> Engine<B> {
     /// UI state is kept.
     pub fn reload_if_changed(&mut self) {
         if !self.store.config.hot_reload {
+            self.sync_decision_settings();
             return;
         }
         let Some(path) = self.store.path.clone() else {

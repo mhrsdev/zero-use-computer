@@ -346,10 +346,7 @@ impl<B: Backend> Engine<B> {
                 Default::default()
             },
             // As the engine's own decision errors name it.
-            settings_key: {
-                let k = self.store.config.control.settings_hotkey.trim();
-                (!k.is_empty()).then(|| crate::overlay::helper::pretty_key(k))
-            },
+            settings_key: self.settings_key_name(),
             private: {
                 // The server's folder, unless it is the user's whole home
                 // (or holds it): then only the settings file.

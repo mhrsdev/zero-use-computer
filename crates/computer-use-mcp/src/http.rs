@@ -171,7 +171,7 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
                 continue;
             }
         };
-        eprintln!("DBG take {} reading={}", request.url(), shared.reading.fetch_add(1, Ordering::SeqCst));
+        eprintln!("DBG take {:?} reading={}", request.body_length(), shared.reading.fetch_add(1, Ordering::SeqCst));
         let (ours, tx) = (shared.clone(), tx.clone());
         let spawned = std::thread::Builder::new()
             .name("http-request".into())

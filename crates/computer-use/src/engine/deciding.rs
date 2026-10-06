@@ -136,7 +136,7 @@ fn cut(s: &str, max: usize) -> String {
 
 impl<B: Backend> Engine<B> {
     /// The settings key as the user knows it ("Ctrl+Alt+J"), if there is one.
-    fn settings_key_name(&self) -> Option<String> {
+    pub(super) fn settings_key_name(&self) -> Option<String> {
         let k = self.store.config.control.settings_hotkey.trim();
         (!k.is_empty()).then(|| crate::overlay::helper::pretty_key(k))
     }
