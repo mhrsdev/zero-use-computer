@@ -5486,3 +5486,194 @@ fn how_often_an_app_needed_pixels_is_kept() {
     assert_eq!(r["pictures_left_out"], 1, "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn text_read_inside_a_private_field_is_left_out_of_the_tree() {
+    let win = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let mut elements = vec![
+        MockElement::new(1, "window", "Login", win),
+        // A field labelled like a secret that exposes no value.
+        MockElement::new(
+            2,
+            "text field",
+            "Verification code",
+            Rect::new(20.0, 20.0, 200.0, 30.0),
+        )
+        .child_of(1)
+        .editable(),
+    ];
+    for e in &mut elements {
+        e.states.enabled = true;
+    }
+    let app = MockApp {
+        info: AppInfo {
+            name: "Bank".into(),
+            id: "bank".into(),
+            pid: 91,
+            exe: None,
+            frontmost: true,
+            hidden: false,
+        },
+        windows: vec![MockWindow {
+            id: 3,
+            title: "Login".into(),
+            bounds: win,
+            root: 1,
+            focused: true,
+        }],
+        elements,
+    };
+    let mut backend = MockBackend::new();
+    backend.add_app(app);
+    backend.ocr_text = Some(vec![
+        line("482913", 25.0, 25.0),
+        line("Welcome back", 20.0, 200.0),
+    ]);
+    let mut cfg = Config::default();
+    cfg.ocr.tesseract_path = "/nonexistent/tesseract".into();
+    let mut e = Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});
+    let out = e.call_tool("get_app_state", serde_json::json!({"app": "Bank"}));
+    assert!(!out.text.contains("482913"), "{}", out.text);
+    assert!(out.text.contains("Welcome back"), "{}", out.text);
+}
+
+#[test]
+fn a_lone_digit_read_unsurely_is_not_text() {
+    let mut e = canvas_engine(Some(vec![
+        // A text-sized box: only the confidence tells them apart.
+        OcrLine {
+            bounds: Rect::new(100.0, 100.0, 14.0, 20.0),
+            confidence: 0.85,
+            ..line("7", 0.0, 0.0)
+        },
+        OcrLine {
+            bounds: Rect::new(200.0, 100.0, 14.0, 20.0),
+            confidence: 0.95,
+            ..line("8", 0.0, 0.0)
+        },
+    ]));
+    let out = e.call_tool("get_app_state", serde_json::json!({"app": "Game"}));
+    assert!(!out.text.contains("ocr text \"7\""), "{}", out.text);
+    assert!(out.text.contains("ocr text \"8\""), "{}", out.text);
+}
+
+#[test]
+fn an_element_click_after_the_window_moved_lands_where_it_is_now() {
+    let mut e = engine();
+    let out = state_of(&mut e, serde_json::json!({}));
+    let bold = index_of_name(&out.text, "\"Bold\"");
+    let before = e
+        .backend_mut()
+        .app_mut(4242)
+        .unwrap()
+        .elements
+        .iter()
+        .find(|el| el.name.as_deref() == Some("Bold"))
+        .unwrap()
+        .bounds;
+    let moved = e.call_tool(
+        "window",
+        serde_json::json!({"app": "TextEdit", "action": "move", "x": 300, "y": 200}),
+    );
+    assert!(!moved.is_error, "{}", moved.text);
+    let now = e
+        .backend_mut()
+        .app_mut(4242)
+        .unwrap()
+        .elements
+        .iter()
+        .find(|el| el.name.as_deref() == Some("Bold"))
+        .unwrap()
+        .bounds;
+    assert_ne!(before.x, now.x);
+    let c = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "element_index": bold, "button": "right"}),
+    );
+    assert!(!c.is_error, "{}", c.text);
+    let at = e
+        .backend()
+        .events
+        .iter()
+        .rev()
+        .find_map(|ev| match ev {
+            Event::Click(_, p, ..) => Some(*p),
+            _ => None,
+        })
+        .unwrap();
+    assert!(now.contains(at), "clicked at {at:?}, the button is at {now:?}");
+}
+
+#[test]
+fn the_audit_log_keeps_no_value_that_was_set() {
+    let dir = std::env::temp_dir().join(format!("cu-audit-values-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("audit.log");
+    let mut e = engine();
+    let mut cfg = e.store().config.clone();
+    cfg.audit.enabled = true;
+    cfg.tree.compact = false;
+    cfg.audit.path = Some(path.clone());
+    e.set_config(ConfigStore::in_memory(cfg));
+    let out = state_of(&mut e, serde_json::json!({}));
+    let doc = index_of_name(&out.text, "\"Document\"");
+    let set = e.call_tool(
+        "set_value",
+        serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "s3cret-PIN-9911"}),
+    );
+    assert!(!set.is_error, "{}", set.text);
+    let log = std::fs::read_to_string(&path).unwrap();
+    assert!(!log.contains("s3cret"), "{log}");
+    assert!(log.contains("\"tool\":\"set_value\""), "{log}");
+    assert_eq!(
+        super::audit_summary("Set text area \"Code\" to \"4821\". Code 482913 sent."),
+        "Set text area \"…\" to \"…\". Code •••••• sent."
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_look_that_never_arrived_leaves_the_full_header_for_the_next() {
+    let mut e = engine();
+    let shown = e.shown();
+    let first = state_of(&mut e, serde_json::json!({}));
+    assert!(first.text.contains("pid 4242"), "{}", first.text);
+    e.not_delivered(shown);
+    let again = state_of(&mut e, serde_json::json!({}));
+    assert!(again.text.contains("pid 4242"), "{}", again.text);
+}
+
+#[test]
+fn a_zoom_on_the_last_column_of_the_screenshot_is_taken() {
+    let mut e = engine();
+    let out = state_of(&mut e, serde_json::json!({"screenshot": true}));
+    let size = out
+        .text
+        .split("Screenshot #")
+        .nth(1)
+        .and_then(|t| t.split(':').nth(1))
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    let w: f64 = size.split_once('x').unwrap().0.parse().unwrap();
+    let z = e.call_tool(
+        "screenshot",
+        serde_json::json!({"app": "TextEdit", "zoom": [w - 0.5, 100]}),
+    );
+    assert!(!z.is_error, "{}", z.text);
+}
+
+#[test]
+fn a_value_that_is_not_a_finite_number_is_compared_as_text() {
+    let mut e = engine();
+    let out = state_of(&mut e, serde_json::json!({}));
+    let doc = index_of_name(&out.text, "\"Document\"");
+    for value in ["NaN", "inf", "007"] {
+        let set = e.call_tool(
+            "set_value",
+            serde_json::json!({"app": "TextEdit", "element_index": doc, "value": value}),
+        );
+        assert!(!set.is_error, "{value}: {}", set.text);
+        assert!(!set.text.contains("now shows"), "{value}: {}", set.text);
+    }
+}

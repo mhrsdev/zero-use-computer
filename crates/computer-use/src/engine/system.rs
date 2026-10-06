@@ -162,6 +162,11 @@ impl<B: Backend> Engine<B> {
         self.backend.window_op(&app, &window, &op)?;
         self.settle();
 
+        // The window's elements and private areas are somewhere else now:
+        // an element click right after must not land where it was.
+        if op != WindowOp::Close {
+            self.reobserve(&app);
+        }
         // The window's screenshot no longer lines up: the next
         // get_app_state takes a fresh one.
         if let Some(st) = self.states.get_mut(&app.pid) {
@@ -235,7 +240,9 @@ impl<B: Backend> Engine<B> {
         let limit = args.limit.unwrap_or(10).max(1);
         let skip = shown.len().saturating_sub(limit);
         let privacy = &self.store.config.privacy;
-        let clean = |s: &str| -> String {
+        // `near`: the rest of the notification, which may be what says
+        // the number is a code (title "Your PIN", body "4821").
+        let clean = |s: &str, near: &str| -> String {
             let mut s = s.to_string();
             if privacy.redact_card_numbers
                 && let Some(m) = crate::privacy::mask_card_numbers(&s)
@@ -243,7 +250,7 @@ impl<B: Backend> Engine<B> {
                 s = m;
             }
             if cfg.mask_codes
-                && let Some(m) = crate::privacy::mask_codes(&s)
+                && let Some(m) = crate::privacy::mask_codes_near(&s, near)
             {
                 s = m;
             }
@@ -270,8 +277,8 @@ impl<B: Backend> Engine<B> {
             } else {
                 n.app.as_str()
             };
-            let body = clean(&n.body);
-            out.push_str(&format!("- [{when}] {app} — {}", clean(&n.title)));
+            let body = clean(&n.body, &n.title);
+            out.push_str(&format!("- [{when}] {app} — {}", clean(&n.title, &n.body)));
             if !body.is_empty() {
                 out.push_str(&format!(": {body}"));
             }

@@ -575,13 +575,23 @@ impl<B: Backend> Engine<B> {
             return Some(c == truthy(want));
         }
         let got = n.value.as_deref()?;
-        if let (Ok(a), Ok(b)) = (got.trim().parse::<f64>(), want.trim().parse::<f64>()) {
+        let role = n.role.to_lowercase();
+        let ranged = ["slider", "spin", "scroll bar", "progress", "dial", "level"]
+            .iter()
+            .any(|r| role.contains(r));
+        // In a text field leading zeros are part of the value (a code, a
+        // postcode): "007" shown as "7" is not what was set.
+        let zeros = |s: &str| {
+            let s = s.trim().trim_start_matches(['-', '+']);
+            s.len() > 1 && s.starts_with('0') && s.as_bytes()[1].is_ascii_digit()
+        };
+        if let (Ok(a), Ok(b)) = (got.trim().parse::<f64>(), want.trim().parse::<f64>())
+            && a.is_finite()
+            && b.is_finite()
+            && (ranged || !(zeros(got) || zeros(want)))
+        {
             // A slider or spin button snaps to its steps: near is taken.
             // A field holds what was typed: 2004 is not 2024.
-            let role = n.role.to_lowercase();
-            let ranged = ["slider", "spin", "scroll bar", "progress", "dial", "level"]
-                .iter()
-                .any(|r| role.contains(r));
             let tolerance = if ranged {
                 1e-6_f64.max(b.abs() * 0.01)
             } else {

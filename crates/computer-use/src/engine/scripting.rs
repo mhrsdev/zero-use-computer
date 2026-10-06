@@ -30,6 +30,8 @@ pub(super) struct ToolsKey {
     decisions: bool,
     clipboard: bool,
     notifications: bool,
+    /// The hub is on (the `agents` tool).
+    agents: bool,
     /// The saved scripts' generation, when they are tools.
     scripts: Option<u64>,
     active: Vec<&'static str>,
@@ -77,6 +79,7 @@ impl<B: Backend> Engine<B> {
             decisions: !cfg.decision.provider.trim().is_empty(),
             clipboard: cfg.clipboard,
             notifications: cfg.notifications.enabled,
+            agents: cfg.hub.enabled,
             scripts: scripts_as_tools.then(|| self.scripts.generation()),
             active,
         };
@@ -338,7 +341,7 @@ impl<B: Backend> Engine<B> {
             // A decision model the user turned off ([tools]) is none for
             // scripts too.
             decision: if self.store.config.tools.is_enabled("decide") {
-                self.store.config.decision.clone()
+                self.decision_settings()
             } else {
                 Default::default()
             },
@@ -540,17 +543,24 @@ impl<B: Backend> Engine<B> {
                 text,
                 editable,
                 max,
-            } => self
-                .script_elements(&app, window.as_deref(), role, name, text, editable, max)
-                .map_err(|e| e.to_string()),
+            } => {
+                self.script_may("elements", &["get_app_state", "find_element"])?;
+                self.script_elements(&app, window.as_deref(), role, name, text, editable, max)
+                    .map_err(|e| e.to_string())
+            }
             Request::Colors {
                 app,
                 window,
                 points,
-            } => self
-                .script_colors(&app, window.as_deref(), &points)
-                .map_err(|e| e.to_string()),
-            Request::Design { name } => self.design_info(&name),
+            } => {
+                self.script_may("colors", &["screenshot", "locate"])?;
+                self.script_colors(&app, window.as_deref(), &points)
+                    .map_err(|e| e.to_string())
+            }
+            Request::Design { name } => {
+                self.script_may("page", &["design"])?;
+                self.design_info(&name)
+            }
             Request::Show { image } => match images.get(image as usize) {
                 Some(Some(_)) => {
                     *shown = Some(image as usize);
@@ -618,6 +628,26 @@ impl<B: Backend> Engine<B> {
                 Ok(Value::Null)
             }
         }
+    }
+
+    /// A script reads what one of `tools` shows: not when the settings
+    /// ([tools]) switch them all off, as calling them would be refused.
+    fn script_may(&self, what: &str, tools: &[&str]) -> std::result::Result<(), String> {
+        let on = &self.store.config.tools;
+        if tools.iter().any(|t| on.is_enabled(t)) {
+            return Ok(());
+        }
+        Err(Error::Blocked(
+            what.into(),
+            format!(
+                "{} disabled in settings ([tools])",
+                match tools {
+                    [one] => format!("the {one} tool is"),
+                    _ => format!("the {} tools are", tools.join(" and ")),
+                }
+            ),
+        )
+        .to_string())
     }
 
     /// A design's size, cells, layers and paint steps, for a script.
@@ -747,5 +777,59 @@ impl<B: Backend> Engine<B> {
                 })
                 .collect(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::mock::MockBackend;
+
+    fn engine(disabled: &[&str]) -> Engine<MockBackend> {
+        let mut backend = MockBackend::new();
+        backend.add_app(MockBackend::text_editor(4242));
+        let mut cfg = Config::default();
+        cfg.tools.disabled = disabled.iter().map(|s| s.to_string()).collect();
+        Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {})
+    }
+
+    fn run(e: &mut Engine<MockBackend>, code: &str) -> ToolOutput {
+        e.call_tool("script", json!({ "code": code }))
+    }
+
+    #[test]
+    fn scripts_read_nothing_the_settings_switched_off() {
+        let elements = r#"print(elements("TextEdit").len())"#;
+        let mut e = engine(&["get_app_state", "find_element"]);
+        let out = run(&mut e, elements);
+        assert!(
+            out.is_error && out.text.contains("disabled in settings"),
+            "{}",
+            out.text
+        );
+        // One of them is enough: what it shows is open to the agent anyway.
+        let mut e = engine(&["get_app_state"]);
+        let out = run(&mut e, elements);
+        assert!(!out.is_error, "{}", out.text);
+
+        let mut e = engine(&["screenshot", "locate"]);
+        let out = run(&mut e, r#"print(colors("TextEdit", [[10, 10]]))"#);
+        assert!(
+            out.is_error && out.text.contains("disabled in settings"),
+            "{}",
+            out.text
+        );
+        let mut e = engine(&["design"]);
+        for code in [r#"page("t")"#, r#"page("t", 50, 50).info()"#] {
+            let out = run(&mut e, code);
+            assert!(
+                out.is_error && out.text.contains("disabled in settings"),
+                "{code}: {}",
+                out.text
+            );
+        }
     }
 }

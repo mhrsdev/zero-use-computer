@@ -138,6 +138,8 @@ jobs:
   package:
     name: Package ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # Nothing is packaged (or released) unless every test job passed.
+    needs: [lint-test-linux, msrv, cross-check, live-linux, live-wayland, live-windows]
     # softprops/action-gh-release creates the release and uploads assets.
     permissions:
       contents: write
@@ -199,6 +201,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: computer-use-mcp-${{ matrix.name }}
+          # .claude-plugin/plugin.json and .mcp.json are hidden files.
+          include-hidden-files: true
           path: dist/
       - uses: actions/upload-artifact@v4
         with:

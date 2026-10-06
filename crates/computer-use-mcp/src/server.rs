@@ -241,6 +241,19 @@ fn read_loop<R: BufRead, W: Write>(
                 },
             },
         };
+        // Waiting from here (maybe behind a long call): a cancel for one of
+        // these is kept until its turn comes.
+        let messages: Vec<&Incoming> = match &input {
+            Input::One(msg) => vec![msg],
+            Input::Batch(items) => items.iter().flatten().collect(),
+        };
+        for msg in messages {
+            if msg.method.is_some()
+                && let Some(id) = &msg.id
+            {
+                cancels.queued(id.clone());
+            }
+        }
         if tx.send(Ok(input)).is_err() {
             return;
         }

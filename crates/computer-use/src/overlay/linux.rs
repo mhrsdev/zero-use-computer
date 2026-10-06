@@ -621,8 +621,18 @@ impl X11Surface {
 
     fn raise_all(&self) {
         let above = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
-        for w in self.layers.values().filter(|w| w.shown) {
-            let _ = self.conn.configure_window(w.id, &above);
+        // In paint order (each raise goes on top), as on Windows: edges,
+        // then labels, then cursors last, so a cursor is never under a
+        // label or a glow (it was the map's order, any of them).
+        let mut shown: Vec<(&Layer, Window)> = self
+            .layers
+            .iter()
+            .filter(|(_, w)| w.shown)
+            .map(|(l, w)| (l, w.id))
+            .collect();
+        shown.sort_by_key(|(l, _)| (l.part as u8, l.agent));
+        for (_, id) in shown {
+            let _ = self.conn.configure_window(id, &above);
         }
     }
 
@@ -724,7 +734,7 @@ impl X11Surface {
                 // stop key's grab went with it. Exit with an error, so the
                 // engine starts a new helper on the new server.
                 eprintln!("overlay: lost the X server connection: {e}");
-                std::process::exit(2);
+                super::hub::exit_now(2);
             }
         }
     }

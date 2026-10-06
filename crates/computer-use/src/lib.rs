@@ -171,6 +171,9 @@ impl Backend for Box<dyn Backend> {
     fn input_needs_front(&self) -> bool {
         (**self).input_needs_front()
     }
+    fn session_note(&mut self) -> Option<String> {
+        (**self).session_note()
+    }
     fn user_idle(&mut self) -> Option<std::time::Duration> {
         (**self).user_idle()
     }
@@ -272,5 +275,30 @@ impl Backend for Box<dyn Backend> {
     }
     fn type_text(&mut self, target: &types::InputTarget, text: &str) -> Result<()> {
         (**self).type_text(target, text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The names of the `fn`s between `start` and the `}` that closes it.
+    fn fns_in(source: &str, start: &str) -> std::collections::BTreeSet<String> {
+        let body = &source[source.find(start).expect(start)..];
+        let body = &body[..body.find("\n}\n").expect("end of block")];
+        body.split("fn ")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_boxed_backend_passes_every_method_on() {
+        let declared = fns_in(include_str!("backend.rs"), "pub trait Backend");
+        let forwarded = fns_in(include_str!("lib.rs"), "impl Backend for Box<dyn Backend>");
+        let missing: Vec<_> = declared.difference(&forwarded).collect();
+        assert!(missing.is_empty(), "not passed on: {missing:?}");
     }
 }

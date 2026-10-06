@@ -546,9 +546,11 @@ pub fn press(combo: &KeyCombo) -> Result<()> {
         && !c.is_control()
         && !combo.modifiers.any()
     {
-        // With Caps Lock on, a key plus Shift gives the other case ("a"
-        // came out "A"): the character itself then, typed as text.
-        if caps_lock_on() && c.is_alphabetic() {
+        // With Caps Lock on, a key can type something else: a letter's
+        // other case ("a" came out "A"), and on some layouts other keys too
+        // (AZERTY's number row gives digits). The character itself then,
+        // typed as text.
+        if caps_lock_on() {
             return type_text(&c.to_string());
         }
         match plain_char_key(c, layout) {

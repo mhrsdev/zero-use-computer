@@ -476,6 +476,11 @@ pub fn try_model(d: &DecisionConfig) -> std::result::Result<String, String> {
     let decider = Decider::from_config(d)
         .map_err(|e| e.to_string())?
         .ok_or("choose a kind of model first")?;
+    try_decider(&decider)
+}
+
+/// Ask this model one easy question; what to show the user.
+pub fn try_decider(decider: &Decider) -> std::result::Result<String, String> {
     let q = [Question::yes_no("sky", "Is the sky in this text blue?")];
     let (answers, took) = decider
         .ask("The sky over the sea is clear and blue today.", &q, &|| {

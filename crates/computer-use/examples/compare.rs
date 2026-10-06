@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use computer_use::config::{AttachMode, Config, ConfigStore, ShotScope};
+use computer_use::config::{AttachMode, Config, ConfigStore, ShotScope, ToolManager};
 use computer_use::engine::Engine;
 use serde_json::{Value, json};
 
@@ -84,12 +84,19 @@ fn press(engine: &mut Eng, t: &mut Totals, app: &str, name: &str) {
 fn session(app: &str, forward: &str, back: &str, cycles: usize, codex: bool) -> Totals {
     let mut cfg = Config::default();
     cfg.audit.enabled = false;
+    // The same settings as agent_bench's `--preset codex`
+    // (examples/agent_bench/session.rs): change both together.
     if codex {
         cfg.screenshot.attach = AttachMode::Always;
         cfg.screenshot.scope = ShotScope::Full;
         cfg.cache.enabled = false;
         cfg.cache.dedupe_screenshots = false;
         cfg.tree.report_changes = false;
+        // And none of what this server adds on top: every tool listed, no
+        // reading of what the tree doesn't have, no pictures held back.
+        cfg.tools.manager = ToolManager::Off;
+        cfg.ocr.blind_regions = false;
+        cfg.screenshot.adaptive = false;
     }
     let backend = computer_use::platform_backend().expect("backend");
     let mut engine = Engine::new(backend, ConfigStore::in_memory(cfg));

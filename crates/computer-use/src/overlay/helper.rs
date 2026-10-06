@@ -696,6 +696,11 @@ impl Machine {
         self.badge = badge.to_string();
     }
 
+    /// The stop key the label names (another took its place).
+    pub fn set_hotkey(&mut self, hotkey: &str) {
+        self.hotkey = hotkey.to_string();
+    }
+
     /// What should be on screen now.
     pub fn scene(&self, now: Instant) -> Scene {
         if self.phase == Phase::Off || !self.cfg.enabled {
@@ -1106,6 +1111,44 @@ fn reply(r: &Reply) {
     }
 }
 
+/// Register `key` as the global key `which` with `set` (the surface's
+/// `set_hotkey`), `slot` holding the key registered before and whether the
+/// system took it: whether `key` is the one that works.
+pub(super) fn register_key(
+    set: &mut dyn FnMut(Hotkey, Option<crate::keys::KeyCombo>) -> bool,
+    slot: &mut Option<(String, bool)>,
+    which: Hotkey,
+    key: &str,
+) -> bool {
+    let key = key.trim();
+    if key.is_empty() {
+        return false;
+    }
+    // The same key, registered: nothing to do. A key that failed, or
+    // another (the user changed it), is registered anew: the last asked for
+    // wins.
+    if let Some((k, true)) = slot
+        && k.eq_ignore_ascii_case(key)
+    {
+        return true;
+    }
+    let combo = crate::keys::parse_combo(key).ok();
+    if set(which, combo) {
+        *slot = Some((key.to_string(), true));
+        return true;
+    }
+    // Registering drops the key before; one that worked is put back, so a
+    // key the system refuses never leaves the desktop with none.
+    match slot.take() {
+        Some((k, true)) => {
+            let again = set(which, crate::keys::parse_combo(&k).ok());
+            *slot = Some((k, again));
+        }
+        _ => *slot = Some((key.to_string(), false)),
+    }
+    false
+}
+
 /// Entry point of `computer-use-mcp overlay [--parent PID] [--demo]`.
 pub fn run(args: &[String]) -> i32 {
     let parent = args
@@ -1186,8 +1229,9 @@ pub fn run(args: &[String]) -> i32 {
     let mut font_path = String::new();
     let mut painter = Painter::default();
     let mut hidden = false;
-    let mut hotkey_now = String::new();
-    let mut settings_now = String::new();
+    // The keys as registered, and whether the system took them.
+    let mut stop_key: Option<(String, bool)> = None;
+    let mut settings_now: Option<(String, bool)> = None;
     /// Within this of the previous one, a key press is key repeat.
     const HOTKEY_QUIET: Duration = Duration::from_millis(400);
     let mut last_hotkey: Option<Instant> = None;
@@ -1249,40 +1293,41 @@ pub fn run(args: &[String]) -> i32 {
                     }
                     hidden = false;
                 }
-                other => {
+                mut other => {
                     if let Cmd::Config {
                         config,
                         hotkey,
                         settings_key,
                         ..
-                    } = &other
+                    } = &mut other
                     {
                         if config.font != font_path {
                             font_path = config.font.clone();
                             fonts = Fonts::load(&font_path);
                         }
-                        if *hotkey != hotkey_now {
-                            hotkey_now = hotkey.clone();
-                            let combo = crate::keys::parse_combo(hotkey.trim()).ok();
-                            let ok = surface.set_hotkey(Hotkey::Stop, combo);
-                            if !hotkey.trim().is_empty() {
-                                reply(&Reply::Hotkey {
-                                    key: hotkey.clone(),
-                                    ok,
-                                });
+                        // As the hub does: a key the system refuses keeps
+                        // the one that works, and one that failed is tried
+                        // again. No key at all (the user cleared it) drops it.
+                        let mut set = |w, c| surface.set_hotkey(w, c);
+                        for (which, key, slot) in [
+                            (Hotkey::Stop, &*hotkey, &mut stop_key),
+                            (Hotkey::Settings, &*settings_key, &mut settings_now),
+                        ] {
+                            if key.trim().is_empty() {
+                                if slot.take().is_some() {
+                                    set(which, None);
+                                }
+                                continue;
                             }
+                            let ok = register_key(&mut set, slot, which, key);
+                            let key = key.clone();
+                            reply(&match which {
+                                Hotkey::Stop => Reply::Hotkey { key, ok },
+                                Hotkey::Settings => Reply::SettingsKey { key, ok },
+                            });
                         }
-                        if *settings_key != settings_now {
-                            settings_now = settings_key.clone();
-                            let combo = crate::keys::parse_combo(settings_key.trim()).ok();
-                            let ok = surface.set_hotkey(Hotkey::Settings, combo);
-                            if !settings_key.trim().is_empty() {
-                                reply(&Reply::SettingsKey {
-                                    key: settings_key.clone(),
-                                    ok,
-                                });
-                            }
-                        }
+                        // The label names the stop key that works.
+                        *hotkey = stop_key.clone().map(|k| k.0).unwrap_or_default();
                         // Redraw everything with the new settings.
                         painter.redraw();
                     }
@@ -1435,6 +1480,26 @@ fn demo_script(tx: mpsc::Sender<Input>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_key_keeps_the_working_one_and_a_failed_one_is_tried_again() {
+        // A system that refuses `taken` (another program has it).
+        fn register(slot: &mut Option<(String, bool)>, key: &str, taken: &str) -> bool {
+            let refused = crate::keys::parse_combo(taken).ok();
+            let mut set = |_: Hotkey, c: Option<crate::keys::KeyCombo>| c.is_some() && c != refused;
+            register_key(&mut set, slot, Hotkey::Stop, key)
+        }
+        let mut slot = None;
+        assert!(register(&mut slot, "ctrl+alt+f12", "ctrl+alt+escape"));
+        assert!(!register(&mut slot, "ctrl+alt+escape", "ctrl+alt+escape"));
+        assert_eq!(slot, Some(("ctrl+alt+f12".into(), true)));
+        // A key that failed is tried again (once the other program let go).
+        let mut failed = None;
+        assert!(!register(&mut failed, "ctrl+alt+escape", "ctrl+alt+escape"));
+        assert_eq!(failed, Some(("ctrl+alt+escape".into(), false)));
+        assert!(register(&mut failed, "ctrl+alt+escape", ""));
+        assert_eq!(failed, Some(("ctrl+alt+escape".into(), true)));
+    }
 
     fn cfg() -> OverlayConfig {
         OverlayConfig {

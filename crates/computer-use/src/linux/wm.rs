@@ -283,7 +283,7 @@ impl<'a> Wm<'a> {
         let win = self.client_in(top);
         Some(Front::Window {
             win,
-            pid: self.pid_of(win),
+            pid: self.owner_pid(win),
         })
     }
 
@@ -423,6 +423,15 @@ impl<'a> Wm<'a> {
         }
     }
 
+    /// Whether the window is iconic (minimized) by its ICCCM `WM_STATE`.
+    fn iconic(&self, win: Window) -> bool {
+        const ICONIC_STATE: u32 = 3;
+        self.atom("WM_STATE")
+            .and_then(|kind| self.prop32(win, "WM_STATE", kind))
+            .and_then(|v| v.first().copied())
+            == Some(ICONIC_STATE)
+    }
+
     fn set_bounds(&self, win: Window, r: Rect) -> Result<()> {
         if self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
             || self.state_has(win, "_NET_WM_STATE_MAXIMIZED_HORZ")
@@ -521,7 +530,16 @@ impl<'a> Wm<'a> {
     }
 
     pub fn apply(&self, win: Window, op: &WindowOp) -> Result<()> {
-        let before = self.geometry(win);
+        // Setting the bounds of a maximized window un-maximizes it first,
+        // which changes its size whether or not the move is then done: only
+        // the bounds asked for count as done then (as when there is no
+        // geometry to compare with).
+        let maximized = self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
+            || self.state_has(win, "_NET_WM_STATE_MAXIMIZED_HORZ");
+        let before = match op {
+            WindowOp::SetBounds(_) if maximized => None,
+            _ => self.geometry(win),
+        };
         self.request(win, op)?;
         self.check_done(win, op, before)
     }
@@ -562,9 +580,11 @@ impl<'a> Wm<'a> {
                         && (g.width - (r.width - l - rt)).abs() <= 16.0
                         && (g.height - (r.height - t - b)).abs() <= 16.0
                 };
+                // Near enough, or changed at all (a window manager can round
+                // a size to the app's increments, a terminal's cells).
                 let moved = until(&|| {
-                    self.geometry(win)
-                        .is_some_and(|g| near(g) || Some(g) != before)
+                    let now = self.geometry(win);
+                    now.is_some_and(near) || changed(now, before)
                 });
                 if !moved {
                     return refused("move or resize the window");
@@ -573,14 +593,22 @@ impl<'a> Wm<'a> {
             WindowOp::Maximize if self.supports("_NET_WM_STATE_MAXIMIZED_VERT") => {
                 let done = until(&|| {
                     self.state_has(win, "_NET_WM_STATE_MAXIMIZED_VERT")
-                        || self.geometry(win) != before
+                        || changed(self.geometry(win), before)
                 });
                 if !done {
                     return refused("maximize the window");
                 }
             }
             WindowOp::Minimize => {
-                if !until(&|| !self.viewable(win)) {
+                // Unmapped, or (a window manager that keeps minimized
+                // windows mapped, to show their thumbnails) marked hidden or
+                // iconic.
+                let hidden = || {
+                    !self.viewable(win)
+                        || self.state_has(win, "_NET_WM_STATE_HIDDEN")
+                        || self.iconic(win)
+                };
+                if !until(&hidden) {
                     return refused("minimize the window");
                 }
             }
@@ -819,9 +847,26 @@ fn work_area(v: &[u32], current: u32) -> Option<[u32; 4]> {
     at(current as usize).or_else(|| at(0))
 }
 
+/// Whether a window's geometry is known now and differs from what it was
+/// (`before`, if known).
+fn changed(now: Option<Rect>, before: Option<Rect>) -> bool {
+    matches!((now, before), (Some(n), Some(b)) if n != b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_counts_as_changed_only_against_a_known_geometry() {
+        let a = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let b = Rect::new(10.0, 0.0, 100.0, 100.0);
+        assert!(changed(Some(b), Some(a)));
+        assert!(!changed(Some(a), Some(a)));
+        // Nothing to compare with: only the bounds asked for count.
+        assert!(!changed(Some(b), None));
+        assert!(!changed(None, Some(a)));
+    }
 
     #[test]
     fn a_window_manager_that_quit_is_not_running() {

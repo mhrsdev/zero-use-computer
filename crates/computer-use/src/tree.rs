@@ -321,7 +321,8 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
         if !candidate[i] || node.role != "text" || !node.actions.is_empty() {
             continue;
         }
-        let mut p = node.parent;
+        // Only earlier nodes are parents (a loop in a bad tree ends).
+        let mut p = node.parent.filter(|p| *p < i);
         while let Some(pi) = p {
             if candidate[pi] {
                 if raw[pi].name.is_some() && raw[pi].name == node.name {
@@ -329,7 +330,7 @@ pub fn prune(raw: &[RawNode], viewport: Option<Rect>, cfg: &TreeConfig) -> Prune
                 }
                 break;
             }
-            p = raw[pi].parent;
+            p = raw[pi].parent.filter(|pp| *pp < pi);
         }
     }
 
@@ -636,9 +637,15 @@ fn plan_runs(nodes: &[Node], hidden: &[bool], end: &[usize]) -> HashMap<usize, R
                 };
                 if cols >= 2 && cells.len() >= 2 * cols {
                     let common = shared_suffix(nodes, &cells);
+                    // On the header's one line, its separators not in them.
                     let names: Vec<String> = headers
                         .iter()
-                        .filter_map(|&h| nodes[h].name.as_deref().map(|t| truncate(t, 24)))
+                        .filter_map(|&h| {
+                            nodes[h]
+                                .name
+                                .as_deref()
+                                .map(|t| clean_text(t, 24).replace('|', "¦").replace(';', ","))
+                        })
                         .collect();
                     let mut head = String::from("cells, a row a line");
                     if names.len() == cols {
@@ -685,9 +692,16 @@ fn plan_runs(nodes: &[Node], hidden: &[bool], end: &[usize]) -> HashMap<usize, R
                 continue;
             }
             let slots = first.len();
-            // What every element at the same place of each record shares.
+            // What every element at the same place of each record shares,
+            // for a role found once in a record (the header names it by role).
             let common: Vec<Option<&str>> = (0..slots)
-                .map(|s| shared_suffix(nodes, &members.iter().map(|&m| m + s).collect::<Vec<_>>()))
+                .map(|s| {
+                    let once = first.iter().filter(|(_, r)| *r == first[s].1).count() == 1;
+                    once.then(|| {
+                        shared_suffix(nodes, &members.iter().map(|&m| m + s).collect::<Vec<_>>())
+                    })
+                    .flatten()
+                })
                 .collect();
             let roles: Vec<&str> = first.iter().map(|(_, r)| *r).collect();
             let mut head = format!("{} × {}", members.len(), roles.join(" › "));
@@ -1428,6 +1442,57 @@ mod tests {
             },
         );
         assert_eq!(off, plain);
+    }
+
+    #[test]
+    fn a_role_twice_in_a_record_keeps_its_own_actions() {
+        let mut raw = vec![node(None, "window", "Mail"), node(Some(0), "list", "Inbox")];
+        for name in ["One", "Two", "Three"] {
+            let item = raw.len();
+            raw.push(node(Some(1), "list item", ""));
+            raw.push(node(Some(item), "text", name));
+            let mut flag = node(Some(item), "text", &format!("{name} flag"));
+            flag.actions = vec![ActionDesc::new("edit", "edit")];
+            raw.push(flag);
+        }
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let text = render_full_within(&p.nodes, 1, compact_budget());
+        assert!(text.contains("3 × list item › text › text:"), "{text}");
+        let expanded = expand(&text);
+        assert!(expanded.contains("text \"One\"\n"), "{expanded}");
+        assert!(
+            expanded.contains("text \"One flag\" actions=[edit]"),
+            "{expanded}"
+        );
+    }
+
+    #[test]
+    fn column_names_stay_on_the_header_line() {
+        let mut raw = vec![node(None, "window", "Shop"), node(Some(0), "table", "")];
+        for h in ["SKU\nid", "Price | net"] {
+            raw.push(node(Some(1), "table column header", h));
+        }
+        for r in 0..3 {
+            for (c, v) in [format!("K-{r}"), format!("{r}.00")].iter().enumerate() {
+                let mut cell = node(Some(1), "cell", v);
+                cell.bounds = Some(Rect::new(
+                    c as f64 * 50.0,
+                    20.0 + r as f64 * 20.0,
+                    50.0,
+                    20.0,
+                ));
+                raw.push(cell);
+            }
+        }
+        let mut p = prune(&raw, None, &cfg());
+        IndexAllocator::default().assign_fresh(&mut p.nodes);
+        let text = render_full_within(&p.nodes, 1, compact_budget());
+        assert!(
+            text.contains("cells, a row a line (SKU\\nid | Price ¦ net):"),
+            "{text}"
+        );
+        assert!(expand(&text).contains("cell \"K-1\""), "{text}");
     }
 
     #[test]

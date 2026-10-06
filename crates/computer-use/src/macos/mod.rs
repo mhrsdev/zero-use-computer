@@ -199,7 +199,7 @@ fn app_name(pid: u32) -> String {
     autoreleasepool(|_| {
         NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
             .and_then(|a| a.localizedName())
-            .map(|n| n.to_string())
+            .map(|n| ffi::nsstring_text(&n))
     })
     .unwrap_or_else(|| format!("the app (pid {pid})"))
 }
@@ -538,13 +538,13 @@ impl Backend for MacBackend {
                 }
                 let name = app
                     .localizedName()
-                    .map(|s| s.to_string())
+                    .map(|s| ffi::nsstring_text(&s))
                     .unwrap_or_else(|| format!("pid {pid}"));
-                let bundle = app.bundleIdentifier().map(|s| s.to_string());
+                let bundle = app.bundleIdentifier().map(|s| ffi::nsstring_text(&s));
                 let exe = app
                     .executableURL()
                     .and_then(|u| u.path())
-                    .map(|s| s.to_string());
+                    .map(|s| ffi::nsstring_text(&s));
                 out.push(AppInfo {
                     id: bundle.unwrap_or_else(|| name.clone()),
                     name,
@@ -952,7 +952,7 @@ fn bundle_id_of(query: &str) -> Option<String> {
         let bundle: Option<Retained<AnyObject>> = msg_send![class, bundleWithPath: &*path];
         msg_send![&*bundle?, bundleIdentifier]
     };
-    let id = id?.to_string();
+    let id = ffi::nsstring_text(&*id?);
     (!id.is_empty()).then_some(id)
 }
 

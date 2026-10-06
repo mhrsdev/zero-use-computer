@@ -6,7 +6,7 @@
 //! accessible is addressed by `(bus_name, object_path)`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use zbus::blocking::Connection;
@@ -248,30 +248,45 @@ fn counts_paths(toolkit: &str) -> bool {
     toolkit.trim().eq_ignore_ascii_case("gtk")
 }
 
-/// A connection made on a thread of its own, given up after a while: the
+/// How long connecting to a bus may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether an attempt to connect to the session bus was given up on and
+/// hasn't ended yet.
+static SESSION_UNANSWERED: AtomicBool = AtomicBool::new(false);
+/// The same for the accessibility bus.
+static A11Y_UNANSWERED: AtomicBool = AtomicBool::new(false);
+
+/// A connection made on a thread of its own, given up after `timeout`: the
 /// method timeout covers calls, not connecting (the handshake and Hello),
 /// and a bus daemon that hangs with its socket still there would hang the
-/// server. While an earlier attempt is still unanswered, none is started.
-fn connect_within(
+/// server. An attempt given up on is noted in `unanswered` (one flag per
+/// bus) until it ends, and no new one to that bus starts meanwhile.
+fn connect_within<T: Send + 'static>(
     what: &'static str,
-    make: impl FnOnce() -> Result<Connection> + Send + 'static,
-) -> Result<Connection> {
-    static UNANSWERED: AtomicBool = AtomicBool::new(false);
-    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-    if UNANSWERED.load(Ordering::SeqCst) {
+    unanswered: &'static AtomicBool,
+    timeout: Duration,
+    make: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    const RUNNING: u8 = 0;
+    const DONE: u8 = 1;
+    const ABANDONED: u8 = 2;
+    if unanswered.load(Ordering::SeqCst) {
         return Err(Error::Platform(format!(
             "the {what} hasn't answered an earlier connection attempt"
         )));
     }
+    let state = std::sync::Arc::new(AtomicU8::new(RUNNING));
+    let st = state.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("a11y-connect".into())
         .spawn(move || {
-            let r = make();
-            // Only one attempt is ever left waiting: it clears the flag
-            // when it ends, however late.
-            if tx.send(r).is_err() {
-                UNANSWERED.store(false, Ordering::SeqCst);
+            let _ = tx.send(make());
+            // An attempt given up on clears the flag when it ends, however
+            // late.
+            if st.swap(DONE, Ordering::SeqCst) == ABANDONED {
+                unanswered.store(false, Ordering::SeqCst);
             }
         });
     if let Err(e) = spawned {
@@ -279,14 +294,23 @@ fn connect_within(
             "cannot connect to the {what}: {e}"
         )));
     }
-    match rx.recv_timeout(CONNECT_TIMEOUT) {
+    match rx.recv_timeout(timeout) {
         Ok(r) => r,
         Err(_) => {
-            UNANSWERED.store(true, Ordering::SeqCst);
-            drop(rx);
+            unanswered.store(true, Ordering::SeqCst);
+            if state
+                .compare_exchange(RUNNING, ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                // It ended just now.
+                unanswered.store(false, Ordering::SeqCst);
+                if let Ok(r) = rx.try_recv() {
+                    return r;
+                }
+            }
             Err(Error::Platform(format!(
                 "the {what} didn't answer in {}s",
-                CONNECT_TIMEOUT.as_secs()
+                timeout.as_secs()
             )))
         }
     }
@@ -294,8 +318,8 @@ fn connect_within(
 
 /// The session bus, with a timeout on calls: a hung bus launcher must not
 /// hang the server.
-fn session() -> Result<Connection> {
-    connect_within("session bus", || {
+pub(super) fn session() -> Result<Connection> {
+    connect_within("session bus", &SESSION_UNANSWERED, CONNECT_TIMEOUT, || {
         zbus::blocking::connection::Builder::session()
             .map_err(bus_err)?
             .method_timeout(METHOD_TIMEOUT)
@@ -424,13 +448,18 @@ impl AtspiConnection {
         // async (`fetch_many`, `walk`, `pids_of`) alike; connecting has a
         // limit of its own.
         let addr = addr.to_string();
-        connect_within("accessibility bus", move || {
-            zbus::blocking::connection::Builder::address(addr.as_str())
-                .map_err(bus_err)?
-                .method_timeout(METHOD_TIMEOUT)
-                .build()
-                .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))
-        })
+        connect_within(
+            "accessibility bus",
+            &A11Y_UNANSWERED,
+            CONNECT_TIMEOUT,
+            move || {
+                zbus::blocking::connection::Builder::address(addr.as_str())
+                    .map_err(bus_err)?
+                    .method_timeout(METHOD_TIMEOUT)
+                    .build()
+                    .map_err(|e| Error::Platform(format!("cannot connect to the a11y bus: {e}")))
+            },
+        )
     }
 
     /// Whether the connection broke (the bus went away): reconnect.
@@ -1284,6 +1313,39 @@ mod tests {
         assert_eq!(
             Fail::worst(&[Fail::Timeout, Fail::Disconnected]),
             Fail::Disconnected
+        );
+    }
+
+    #[test]
+    fn a_bus_that_hangs_blocks_only_itself_until_its_attempt_ends() {
+        static HUNG: AtomicBool = AtomicBool::new(false);
+        static OTHER: AtomicBool = AtomicBool::new(false);
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let t = Instant::now();
+        let r = connect_within("hung bus", &HUNG, Duration::from_millis(100), move || {
+            let _ = wait.recv();
+            Ok(1)
+        });
+        assert!(r.is_err());
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // No second attempt to it while that one is still waiting...
+        let t = Instant::now();
+        assert!(connect_within("hung bus", &HUNG, Duration::from_secs(5), || Ok(2)).is_err());
+        assert!(t.elapsed() < Duration::from_secs(1));
+        // ...but another bus is still reached.
+        assert_eq!(
+            connect_within("other bus", &OTHER, Duration::from_secs(5), || Ok(3)).unwrap(),
+            3
+        );
+        // Once it ends, connecting to it works again.
+        go.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while HUNG.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            connect_within("hung bus", &HUNG, Duration::from_secs(5), || Ok(4)).unwrap(),
+            4
         );
     }
 }

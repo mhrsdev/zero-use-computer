@@ -9,7 +9,8 @@ target="${1:-}"
 tflag=(); rel=target/release
 if [ -n "$target" ]; then tflag=(--target "$target"); rel="target/$target/release"; fi
 
-cargo build --release -p computer-use-mcp --features http "${tflag[@]}"
+# ${tflag[@]+…}: an empty array is "unbound" under set -u in bash 3.2 (macOS).
+cargo build --release -p computer-use-mcp --features http ${tflag[@]+"${tflag[@]}"}
 
 os="$(uname -s | tr 'A-Z' 'a-z')"; arch="$(uname -m)"
 case "$target" in

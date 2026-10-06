@@ -122,8 +122,9 @@ pub fn config(file: Option<&Path>, preset: &str, scripts: &Path) -> Result<Confi
     match preset {
         "default" => {}
         // The way Codex's computer use behaves, as examples/compare.rs
-        // simulates it: a screenshot with every look, no screen memory, no
-        // picture dedupe, whole-window pictures, no change report.
+        // simulates it (the same settings there: change both together): a
+        // screenshot with every look, no screen memory, no picture dedupe,
+        // whole-window pictures, no change report.
         "codex" => {
             cfg.screenshot.attach = computer_use::config::AttachMode::Always;
             cfg.screenshot.scope = computer_use::config::ShotScope::Full;
@@ -282,7 +283,14 @@ impl Session {
     /// `pred` accepts (lines of trees, diffs and find_element results:
     /// `[+~] <index> <role> "<name>" …`).
     pub fn index(&self, pred: impl Fn(&str) -> bool) -> Option<u32> {
-        for text in self.seen.iter().rev() {
+        self.index_since(0, pred)
+    }
+
+    /// The same, only in the results from `mark` on (`mark` is
+    /// `seen.len()` before an action): an index read from a result older
+    /// than the action may name an element the action replaced.
+    pub fn index_since(&self, mark: usize, pred: impl Fn(&str) -> bool) -> Option<u32> {
+        for text in self.seen.get(mark..).unwrap_or_default().iter().rev() {
             // Records (look-alike siblings on one line) one a line.
             let text = computer_use::tree::expand(text);
             for line in text.lines().rev() {

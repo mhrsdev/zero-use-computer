@@ -340,3 +340,49 @@ fn long_states_keep_start_and_end() {
     assert!(c.chars().count() <= 300);
     assert!(c.starts_with("abc") && c.ends_with(&s[s.len() - 10..]));
 }
+
+#[test]
+fn a_number_answer_is_the_option_of_that_name_before_the_one_in_that_place() {
+    // Picking an element: the options are element indices.
+    let q = [Question::choice("element", "Which one", &["3", "8", "57"])];
+    let reply = |content: &str| json!({"choices": [{"message": {"content": content}}]});
+    let chosen = |content: &str| match parse_chat(&reply(content), &q).unwrap().pop() {
+        Some((_, Answer::Choice { choice, .. })) => choice,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(chosen(r#"{"element": 57}"#), "57");
+    assert_eq!(chosen(r#"{"element": 8}"#), "8");
+    // No option of that name: the option in that place.
+    assert_eq!(chosen(r#"{"element": 1}"#), "8");
+    assert!(parse_chat(&reply(r#"{"element": 99}"#), &q).is_err());
+}
+
+#[test]
+fn the_label_never_shows_a_name_and_password_from_the_address() {
+    let d = decider("openai", "https://ann:hunter2@models.example/v1", "k");
+    assert_eq!(d.label(), "fast-1 at models.example");
+    let d = decider("openai", "http://127.0.0.1:8080/v1", "k");
+    assert_eq!(d.label(), "fast-1 at 127.0.0.1:8080");
+}
+
+#[test]
+fn errors_name_the_settings_key_the_user_has() {
+    let f = fake(|_| (401, r#"{"detail":"invalid api key"}"#.into()));
+    let ask = |d: Decider| {
+        d.ask("x", &[Question::yes_no("a", "is it?")], &never)
+            .unwrap_err()
+            .to_string()
+    };
+    let e = ask(decider("jev", &f.url, "bad").with_settings_key(Some("Ctrl+Shift+F9".into())));
+    assert!(
+        e.contains("(Ctrl+Shift+F9)") && !e.contains(SETTINGS_KEY),
+        "{e}"
+    );
+    let e = ask(decider("jev", &f.url, "bad").with_settings_key(None));
+    assert!(
+        e.contains("setup=\"open\"") && !e.contains(SETTINGS_KEY),
+        "{e}"
+    );
+    assert!(not_set_up(Some("F9")).contains("press F9:"));
+    assert!(!not_set_up(None).contains("press"));
+}

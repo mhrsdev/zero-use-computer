@@ -597,7 +597,7 @@ impl Overlay {
             .name("overlay-reader".into())
             .spawn(move || {
                 let mut reader = reader;
-                let mut buf = String::new();
+                let mut buf = Vec::new();
                 while let Some(line) = next_line(&mut reader, &mut buf) {
                     let Ok(r) = serde_json::from_str::<Reply>(&line) else {
                         continue;
@@ -910,14 +910,16 @@ impl Overlay {
 /// set for the hello stayed on the reader's handle when it was cleared on
 /// another, and every quiet 3 s read as the hub gone (the overlay then went
 /// for good after a few model turns). What a timed-out read got stays in
-/// `buf` for the next.
-pub(crate) fn next_line<R: BufRead + ?Sized>(reader: &mut R, buf: &mut String) -> Option<String> {
+/// `buf` for the next, as bytes: it may end in half a character, which
+/// `read_line` would have thrown away (and the rest then read as invalid).
+pub(crate) fn next_line<R: BufRead + ?Sized>(reader: &mut R, buf: &mut Vec<u8>) -> Option<String> {
     use std::io::ErrorKind;
     loop {
-        match reader.read_line(buf) {
+        match reader.read_until(b'\n', buf) {
             Ok(0) => return None,
             Ok(_) => {
                 let line = std::mem::take(buf);
+                let line = String::from_utf8_lossy(&line);
                 return Some(line.trim_end_matches(['\r', '\n']).to_string());
             }
             Err(e)
@@ -1028,7 +1030,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
         let mut reader = BufReader::new(stream);
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         // A line cut by a timeout comes whole.
         assert_eq!(
             next_line(&mut reader, &mut buf).as_deref(),
@@ -1038,6 +1040,31 @@ mod tests {
         hub.join().unwrap();
         // The other end gone: the end.
         assert_eq!(next_line(&mut reader, &mut buf), None);
+    }
+
+    #[test]
+    fn a_character_split_by_a_read_timeout_comes_whole() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hub = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let e = "é".as_bytes();
+            s.write_all(b"caf").unwrap();
+            s.write_all(&e[..1]).unwrap();
+            s.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            s.write_all(&e[1..]).unwrap();
+            s.write_all(b"\nnext\n").unwrap();
+        });
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut buf = Vec::new();
+        assert_eq!(next_line(&mut reader, &mut buf).as_deref(), Some("café"));
+        assert_eq!(next_line(&mut reader, &mut buf).as_deref(), Some("next"));
+        hub.join().unwrap();
     }
 
     #[test]

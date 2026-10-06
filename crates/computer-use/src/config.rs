@@ -1504,7 +1504,8 @@ pub fn edit_file_many(path: &Path, edits: &[(&str, Edit)]) -> Result<()> {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::Config(format!("{}: {e}", dir.display())))?;
     }
-    let private = !config.decision.api_key.trim().is_empty();
+    let private =
+        !config.decision.api_key.trim().is_empty() || !config.server.http_token.trim().is_empty();
     write_atomic(path, &text, private)
 }
 
@@ -1610,12 +1611,16 @@ pub fn masked_key(key: &str) -> String {
 /// Write `text` to `path` all at once: a reader (the server reloading its
 /// settings) sees the old file or the new one, never half of it.
 /// A settings file that is a link is written where it points (the link
-/// stays), and keeps its permissions (it may hold `server.http_token`);
-/// `private` (it holds an API key) makes it readable by its owner only,
-/// from the moment it is created.
+/// stays, even before what it points to exists), and keeps its
+/// permissions; `private` (it holds an API key or the HTTP token) makes it
+/// readable by its owner only, from the moment it is created.
 fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
     let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
+        // A link to a file not made yet: write that file.
+        Ok(to) => path.parent().map(|dir| dir.join(&to)).unwrap_or(to),
+        Err(_) => path.to_path_buf(),
+    });
     // Unique per save: two saves at once (the settings page and a tool)
     // never share a temporary file.
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1888,6 +1893,43 @@ mod tests {
         );
         let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_with_the_http_token_is_its_owners_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("cu-edit-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        edit_file(&path, "server.http_token", Edit::Set("123456789".into())).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_file_not_made_yet_stays_a_link() {
+        let dir = std::env::temp_dir().join(format!("cu-edit-dangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("config.toml");
+        std::os::unix::fs::symlink("real.toml", &link).unwrap();
+        edit_file(&link, "tree.max_nodes", Edit::Set("300".into())).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(dir.join("real.toml"))
+                .unwrap()
+                .contains("max_nodes = 300")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

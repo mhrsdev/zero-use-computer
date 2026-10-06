@@ -304,12 +304,14 @@ impl WaylandSurface {
         if s.state.outputs.values().all(|o| o.rect().is_none()) {
             return Err("the compositor reported no outputs".into());
         }
-        // Every layer gets its surface now, while it is still transparent:
-        // whatever animation the compositor plays on a new surface plays
-        // unseen, and never again.
+        // Every layer gets its surface now, mapped with a transparent
+        // buffer (no image yet): whatever animation the compositor plays on
+        // a new surface plays unseen, and never again.
         for layer in LAYERS {
-            if let Some(out) = s.main_output() {
-                let _ = s.surf(layer, out, (1, 1));
+            if let Some(out) = s.main_output()
+                && s.surf(layer, out, (1, 1)).is_some()
+            {
+                s.present(layer);
             }
         }
         s.sync();
@@ -379,7 +381,7 @@ impl WaylandSurface {
                     if !matches!(e, wayland_client::backend::WaylandError::Io(ref io) if io.kind() == std::io::ErrorKind::WouldBlock)
                     {
                         eprintln!("overlay: lost the Wayland connection: {e}");
-                        std::process::exit(2);
+                        super::hub::exit_now(2);
                     }
                 }
             } else {
@@ -657,21 +659,24 @@ impl Surface for WaylandSurface {
             let _ = self.conn.flush();
             return;
         }
-        let Some(pixels) = self
+        let Some((image, output)) = self
             .surfs
             .get(&layer)
-            .and_then(|s| s.image.as_ref().map(|(_, w, h)| (*w, *h)))
+            .and_then(|s| s.image.clone().map(|image| (image, s.output)))
         else {
             return;
         };
-        let output = self.surfs.get(&layer).map(|s| s.output);
-        if !self.place(layer, x, y, pixels) {
+        if !self.place(layer, x, y, (image.1, image.2)) {
             return;
         }
-        // Moved to another output: a new surface, so the image again.
-        if self.surfs.get(&layer).map(|s| s.output) != output
-            || self.surfs.get(&layer).is_some_and(|s| s.buffers.is_empty())
-        {
+        // Moved to another output: a new surface (made without an image),
+        // so the image again.
+        if self.surfs.get(&layer).is_some_and(|s| s.output != output) {
+            if let Some(s) = self.surfs.get_mut(&layer) {
+                s.image = Some(image);
+            }
+            self.present(layer);
+        } else if self.surfs.get(&layer).is_some_and(|s| s.buffers.is_empty()) {
             self.present(layer);
         } else if let Some(s) = self.surfs.get(&layer) {
             s.layer.set_margin(s.margin.1, 0, 0, s.margin.0);

@@ -33,10 +33,52 @@ impl Saved {
             Value::Object(m) => json!({"type": "object", "properties": m}),
             _ => json!({"type": "object", "properties": {}}),
         };
-        if schema.get("properties").is_none() {
-            schema["properties"] = json!({});
+        // A file written by hand (or saved before params were checked) may
+        // hold anything there: what isn't a schema is left out, as one bad
+        // tool makes clients refuse the whole list.
+        match schema.get_mut("properties") {
+            Some(Value::Object(props)) => props.retain(|_, v| v.is_object()),
+            _ => schema["properties"] = json!({}),
+        }
+        if schema.get("required").is_some_and(|r| !names(r))
+            && let Value::Object(m) = &mut schema
+        {
+            m.remove("required");
         }
         schema
+    }
+}
+
+/// Whether `v` is a list of names (a schema's `required`).
+fn names(v: &Value) -> bool {
+    v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
+}
+
+/// What is wrong with `params` as the script's arguments, if anything:
+/// they are JSON-schema properties (a map of maps), or a whole object
+/// schema whose `properties` are.
+fn check_params(params: &Value) -> Result<(), String> {
+    const HOW: &str = "params are the script's arguments as JSON-schema properties: {\"size\": {\"type\": \"number\"}}";
+    let props = match params {
+        Value::Null => return Ok(()),
+        Value::Object(m) if m.get("type") == Some(&json!("object")) => {
+            if m.get("required").is_some_and(|r| !names(r)) {
+                return Err(format!("{HOW}; required is a list of their names"));
+            }
+            match m.get("properties") {
+                Some(p) => p,
+                None => return Ok(()),
+            }
+        }
+        Value::Object(_) => params,
+        _ => return Err(HOW.into()),
+    };
+    let Value::Object(props) = props else {
+        return Err(HOW.into());
+    };
+    match props.iter().find(|(_, v)| !v.is_object()) {
+        Some((k, v)) => Err(format!("{HOW}; \"{k}\" is described by {v}, not by a map")),
+        None => Ok(()),
     }
 }
 
@@ -119,12 +161,7 @@ impl Library {
         params: &Value,
     ) -> Result<PathBuf, String> {
         valid_name(name)?;
-        if !matches!(params, Value::Object(_) | Value::Null) {
-            return Err(
-                "params are the script's arguments as JSON-schema properties: {\"size\": {\"type\": \"number\"}}"
-                    .into(),
-            );
-        }
+        check_params(params)?;
         let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
         if description.is_empty() {
             return Err(
@@ -243,5 +280,66 @@ fn strip_header(code: &str) -> &str {
             return rest;
         }
         rest = &rest[line_end..];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(params: Value) -> Saved {
+        Saved {
+            name: "s".into(),
+            description: "d".into(),
+            params,
+            code: String::new(),
+            path: PathBuf::new(),
+        }
+    }
+
+    /// One tool with a bad input schema makes clients refuse every tool,
+    /// so params that aren't a schema are never saved.
+    #[test]
+    fn params_that_are_not_a_schema_are_not_saved() {
+        let dir = std::env::temp_dir().join(format!("cu-lib-params-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut lib = Library::new(dir.clone());
+        for bad in [
+            json!(5),
+            json!({"type": "object", "properties": 5}),
+            json!({"type": "object", "properties": {"size": 5}}),
+            json!({"type": "object", "required": "size"}),
+            json!({"size": "number"}),
+        ] {
+            assert!(lib.save("s", "1", "d", &bad).is_err(), "{bad}");
+        }
+        assert!(!dir.join("s.rhai").exists());
+        for good in [
+            Value::Null,
+            json!({}),
+            json!({"size": {"type": "number"}}),
+            json!({"type": "object", "properties": {"size": {}}, "required": ["size"]}),
+        ] {
+            assert!(lib.save("s", "1", "d", &good).is_ok(), "{good}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Files saved before params were checked (or written by hand) still
+    /// list: what isn't a schema is left out.
+    #[test]
+    fn a_bad_schema_in_an_old_file_is_left_out() {
+        let schema =
+            saved(json!({"type": "object", "properties": 5, "required": 1})).input_schema();
+        assert_eq!(schema, json!({"type": "object", "properties": {}}));
+        let schema = saved(json!({"size": {"type": "number"}, "bad": 5})).input_schema();
+        assert_eq!(
+            schema,
+            json!({"type": "object", "properties": {"size": {"type": "number"}}})
+        );
+        assert_eq!(
+            saved(json!([1])).input_schema(),
+            json!({"type": "object", "properties": {}})
+        );
     }
 }

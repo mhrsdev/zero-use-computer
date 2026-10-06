@@ -216,10 +216,10 @@ fn put(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
         return;
     }
     let i = ((y as u32 * w + x as u32) * 4) as usize;
-    buf[i] = rgb[0];
-    buf[i + 1] = rgb[1];
-    buf[i + 2] = rgb[2];
-    buf[i + 3] = 255;
+    // A buffer shorter than its size says: what isn't there isn't drawn.
+    if let Some(px) = buf.get_mut(i..i + 4) {
+        px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
 }
 
 fn draw_rect_outline(cap: &mut Capture, r: Rect, rgb: [u8; 3]) {
@@ -295,6 +295,9 @@ pub fn diff_box(old: &Capture, new: &Capture, tolerance: u8) -> Option<(u32, u32
         return None;
     }
     let w = new.width as usize;
+    if w == 0 {
+        return None;
+    }
     let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
     let rows = old
         .rgba
@@ -325,7 +328,12 @@ pub fn diff_box(old: &Capture, new: &Capture, tolerance: u8) -> Option<(u32, u32
 
 /// Cut a pixel rectangle (x, y, width, height) out of a capture.
 pub fn crop(cap: &Capture, px: (u32, u32, u32, u32)) -> Capture {
-    if cap.width == 0 || cap.height == 0 {
+    // A buffer shorter than its size says is given back as it is (encoding
+    // or reading it then reports the mismatch).
+    if cap.width == 0
+        || cap.height == 0
+        || cap.rgba.len() < cap.width as usize * cap.height as usize * 4
+    {
         return cap.clone();
     }
     let x = px.0.min(cap.width - 1);
@@ -410,6 +418,12 @@ pub fn encode_part(
 pub fn redact(cap: &mut Capture, rects: &[Rect], style: crate::config::RedactStyle) -> usize {
     if cap.bounds.width <= 0.0 || cap.bounds.height <= 0.0 {
         return 0;
+    }
+    // A buffer shorter than its size says can't be covered area by area:
+    // all of it goes.
+    if !rects.is_empty() && cap.rgba.len() < cap.width as usize * cap.height as usize * 4 {
+        cap.rgba.fill(128);
+        return rects.len();
     }
     let sx = f64::from(cap.width) / cap.bounds.width;
     let sy = f64::from(cap.height) / cap.bounds.height;
@@ -646,9 +660,11 @@ pub fn blend(cap: &mut Capture, x: i64, y: i64, rgb: [u8; 3], share: f64) {
     }
     let i = ((y as u32 * cap.width + x as u32) * 4) as usize;
     let s = share.clamp(0.0, 1.0);
-    for (k, c) in rgb.iter().enumerate() {
-        cap.rgba[i + k] =
-            (f64::from(cap.rgba[i + k]) * (1.0 - s) + f64::from(*c) * s).round() as u8;
+    let Some(px) = cap.rgba.get_mut(i..i + 3) else {
+        return;
+    };
+    for (p, c) in px.iter_mut().zip(rgb) {
+        *p = (f64::from(*p) * (1.0 - s) + f64::from(c) * s).round() as u8;
     }
 }
 
@@ -658,8 +674,11 @@ fn tint(buf: &mut [u8], w: u32, h: u32, x: i64, y: i64, rgb: [u8; 3]) {
         return;
     }
     let i = ((y as u32 * w + x as u32) * 4) as usize;
-    for (k, c) in rgb.iter().enumerate() {
-        buf[i + k] = ((u16::from(buf[i + k]) * 55 + u16::from(*c) * 45) / 100) as u8;
+    let Some(px) = buf.get_mut(i..i + 3) else {
+        return;
+    };
+    for (p, c) in px.iter_mut().zip(rgb) {
+        *p = ((u16::from(*p) * 55 + u16::from(c) * 45) / 100) as u8;
     }
 }
 
@@ -682,12 +701,22 @@ pub fn nice_step(span: f64, lines: f64) -> f64 {
 }
 
 /// A grid label: whole numbers as such, fractions with just the decimals
-/// the step needs.
+/// the step needs (0.125 needs three).
 pub fn grid_label(v: f64, step: f64) -> String {
+    // A digit past the step's first (labels needn't be multiples of it),
+    // and at least as many as the step itself has.
+    let exact = (0..=6)
+        .find(|&d| {
+            let scaled = step * 10f64.powi(d);
+            (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
+        })
+        .unwrap_or(6) as usize;
     let decimals = if step.fract() == 0.0 {
         0
     } else {
-        ((-step.log10()).ceil().max(0.0) as usize + 1).min(6)
+        ((-step.log10()).ceil().max(0.0) as usize + 1)
+            .max(exact)
+            .min(6)
     };
     let text = format!("{v:.decimals$}");
     let text = if text.contains('.') {
@@ -1139,6 +1168,10 @@ mod tests {
         assert_eq!(grid_label(-1.5, 0.5), "-1.5");
         assert_eq!(grid_label(2.0, 0.5), "2");
         assert_eq!(grid_label(-0.0, 1.0), "0");
+        // A step with more decimals than its size suggests keeps them all.
+        assert_eq!(grid_label(0.375, 0.125), "0.375");
+        assert_eq!(grid_label(0.0375, 0.0125), "0.0375");
+        assert_eq!(grid_label(0.3000000000000001, 0.1), "0.3");
         assert_eq!(nice_step(1280.0, 10.0), 100.0);
         assert_eq!(nice_step(6.0, 10.0), 0.5);
         // Only inside the clip: nothing drawn outside it.
@@ -1328,5 +1361,31 @@ mod tests {
             ..cap
         };
         assert_eq!(redact(&mut cap2, &[field], RedactStyle::Pixelate), 1);
+    }
+
+    #[test]
+    fn a_buffer_shorter_than_its_size_does_not_panic() {
+        use crate::config::RedactStyle;
+        let mut cap = Capture {
+            width: 20,
+            height: 10,
+            rgba: vec![0; 20 * 4],
+            bounds: Rect::new(0.0, 0.0, 20.0, 10.0),
+        };
+        assert_eq!(crop(&cap, (2, 2, 5, 5)).rgba.len(), 20 * 4);
+        blend(&mut cap, 10, 8, [255, 0, 0], 0.5);
+        draw_rect_outline(&mut cap, Rect::new(1.0, 1.0, 15.0, 7.0), [255, 0, 0]);
+        // What can't be covered area by area is covered whole.
+        let field = Rect::new(2.0, 5.0, 4.0, 2.0);
+        assert_eq!(redact(&mut cap, &[field], RedactStyle::Fill), 1);
+        assert!(cap.rgba.iter().all(|&v| v == 128));
+        // No width: nothing to compare.
+        let empty = Capture {
+            width: 0,
+            height: 5,
+            rgba: Vec::new(),
+            bounds: Rect::new(0.0, 0.0, 0.0, 5.0),
+        };
+        assert_eq!(diff_box(&empty, &empty.clone(), 0), None);
     }
 }

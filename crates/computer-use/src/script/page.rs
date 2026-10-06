@@ -198,6 +198,10 @@ pub fn cell_map(c: &Cells, col: usize, row: usize) -> Value {
 
 /// The cell at a point, or "" outside the cells.
 pub fn cell_at(c: &Cells, x: f64, y: f64) -> String {
+    // NaN is no point (and would be read as the first cell).
+    if !(x.is_finite() && y.is_finite()) {
+        return String::new();
+    }
     let (col, row) = c.at(x, y);
     if col < 0 || row < 0 || col as usize >= c.cols || row as usize >= c.rows {
         String::new()
@@ -254,4 +258,18 @@ pub fn cells_from(opts: &Map<String, Value>) -> Result<Cells, String> {
 /// A cell's box as a `rect` [x, y, w, h] (y down pages).
 pub fn rect_of(s: Span) -> [f64; 4] {
     [s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_point_that_is_not_a_number_is_in_no_cell() {
+        let c = Cells::new(0.0, 100.0, 0.0, 100.0, false, None);
+        assert_eq!(cell_at(&c, 1.0, 1.0), "A1");
+        assert_eq!(cell_at(&c, f64::NAN, 1.0), "");
+        assert_eq!(cell_at(&c, 1.0, f64::NAN), "");
+        assert_eq!(cell_at(&c, f64::INFINITY, 1.0), "");
+    }
 }

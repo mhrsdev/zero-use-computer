@@ -11,7 +11,7 @@ can read.
 The calls come 4 s apart, as a model's do: the server must keep its hub
 (it used to read every 3 quiet seconds as the hub gone, and gave the
 overlay up after a few turns). Exits 1 if it lost the hub or no overlay
-window showed after a call.
+window showed after a call (visible and not cloaked by DWM).
 """
 import ctypes, ctypes.wintypes as wt, glob, json, os, subprocess, sys, tempfile, threading, time
 
@@ -34,11 +34,13 @@ def windows():
 
 def info(h):
     r = wt.RECT(); user32.GetWindowRect(h, ctypes.byref(r))
+    # DWMWA_CLOAKED (14): a window DWM hides is "visible" but not seen.
+    # None when it can't be read; that alone never fails the test.
     cloaked = ctypes.c_int(0)
-    dwm.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)
+    hr = dwm.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)
     pid = wt.DWORD(); user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
     ex = user32.GetWindowLongW(h, -20) & 0xFFFFFFFF
-    return dict(visible=bool(user32.IsWindowVisible(h)), cloaked=cloaked.value,
+    return dict(visible=bool(user32.IsWindowVisible(h)), cloaked=cloaked.value if hr == 0 else None,
                 rect=(r.left, r.top, r.right - r.left, r.bottom - r.top), pid=pid.value, ex=hex(ex))
 
 samples, stop = [], threading.Event()
@@ -49,7 +51,8 @@ def sampler():
         ov = [(i, h) for i, (h, c) in enumerate(ws) if c == "ComputerUseOverlay"]
         note = [i for i, (h, c) in enumerate(ws) if c == "Notepad"]
         shown = [(i, info(h)) for i, h in ov]
-        samples.append((round(time.time() - t0, 2), len(ov), [s for s in shown if s[1]["visible"]], note[:1]))
+        seen = [s for s in shown if s[1]["visible"] and not s[1]["cloaked"]]
+        samples.append((round(time.time() - t0, 2), len(ov), seen, note[:1]))
         time.sleep(0.1)
 
 home = tempfile.mkdtemp()
@@ -73,7 +76,7 @@ def tool(name, args):
 
 print(call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "diag", "version": "1"}})["result"]["serverInfo"])
 threading.Thread(target=sampler, daemon=True).start()
-after = []  # visible overlay windows in the second after each call
+after = []  # visible, uncloaked overlay windows in the second after each call
 def step(name, args, pause=4.0):
     tool(name, args)
     t0 = len(samples); time.sleep(1.0)
@@ -92,10 +95,10 @@ last = None
 for t, count, vis, note in samples:
     key = (count, [(i, v["rect"], v["cloaked"]) for i, v in vis], note)
     if key != last:
-        print(t, count, [(i, v["rect"], "cloaked=%d" % v["cloaked"], v["ex"]) for i, v in vis], "notepad z:", note)
+        print(t, count, [(i, v["rect"], "cloaked=%s" % v["cloaked"], v["ex"]) for i, v in vis], "notepad z:", note)
         last = key
-print("max visible overlay windows at once:", max((len(v) for _, _, v, _ in samples), default=0))
-print("visible overlay windows after each call:", after)
+print("max visible (uncloaked) overlay windows at once:", max((len(v) for _, _, v, _ in samples), default=0))
+print("visible (uncloaked) overlay windows after each call:", after)
 p.stdin.close(); time.sleep(2)
 log = open(os.path.join(home, "server.err"), errors="replace").read()
 print("\n== server.err ==\n" + log[-6000:])

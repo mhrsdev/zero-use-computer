@@ -45,7 +45,7 @@ const MAX_REFUSING: usize = 16;
 /// Sessions remembered (the oldest is forgotten first).
 const MAX_SESSIONS: usize = 64;
 /// Requests read at once, at most (each on a thread of its own, so one
-/// sent slowly holds up no other).
+/// sent slowly holds up no other); the next waits its turn.
 const MAX_READING: usize = 64;
 /// Event streams open at once (GET), at most.
 const MAX_STREAMS: usize = 16;
@@ -55,6 +55,9 @@ const KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// JSON-RPC: the request was cancelled (no answer was wanted, but HTTP
 /// needs one).
 const REQUEST_CANCELLED: i64 = -32800;
+/// The version of a request with no session that names none
+/// (`MCP-Protocol-Version`): the one the MCP spec says to assume.
+const ASSUMED_PROTOCOL: &str = "2025-03-26";
 
 /// Serve MCP over HTTP until the process is stopped. `token` is required.
 pub fn serve<B: Backend>(engine: Engine<B>, addr: &str, token: &str) -> anyhow::Result<()> {
@@ -100,6 +103,8 @@ struct Job {
     session: Option<String>,
     /// The session `initialize` starts, sent back as `Mcp-Session-Id`.
     new_session: Option<String>,
+    /// The version the client named (`MCP-Protocol-Version`).
+    protocol: Option<&'static str>,
     /// Answer with an event stream (the client takes one and asked for
     /// progress).
     stream: bool,
@@ -153,27 +158,25 @@ fn accept_loop(server: &Server, shared: &Arc<Shared>, tx: &Sender<Job>, stop: Op
         let request = match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(r)) => r,
             Ok(None) => continue,
-            Err(e) => {
-                log::warn!("http recv error: {e}");
-                continue;
-            }
+            Err(_) => continue,
         };
         if shared.reading.fetch_add(1, Ordering::SeqCst) >= MAX_READING {
             shared.reading.fetch_sub(1, Ordering::SeqCst);
             refuse(request, 503, "too many requests at once");
             continue;
         }
-        let (shared, tx) = (shared.clone(), tx.clone());
+        let (ours, tx) = (shared.clone(), tx.clone());
         let spawned = std::thread::Builder::new()
             .name("http-request".into())
             .spawn(move || {
-                if let Some(job) = triage(request, &shared) {
+                if let Some(job) = triage(request, &ours) {
                     let _ = tx.send(job);
                 }
-                shared.reading.fetch_sub(1, Ordering::SeqCst);
+                ours.reading.fetch_sub(1, Ordering::SeqCst);
             });
         if spawned.is_err() {
             log::warn!("no thread for a request");
+            shared.reading.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -192,8 +195,10 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
         refuse(request, 403, "the Host header must name this machine");
         return None;
     }
+    let protocol = header(&request, "MCP-Protocol-Version")
+        .and_then(|v| PROTOCOL_VERSIONS.iter().find(|p| **p == v.trim()).copied());
     if let Some(v) = header(&request, "MCP-Protocol-Version")
-        && !PROTOCOL_VERSIONS.contains(&v.trim())
+        && protocol.is_none()
     {
         let msg = format!(
             "unsupported MCP-Protocol-Version {v}: this server speaks {}",
@@ -298,6 +303,7 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
             batch,
             session,
             new_session: None,
+            protocol,
             stream: false,
         });
     }
@@ -326,20 +332,37 @@ fn triage(mut request: Request, shared: &Shared) -> Option<Job> {
     let stream = wants_progress
         && accepts(&request, "text/event-stream")
         && *request.http_version() >= tiny_http::HTTPVersion(1, 1);
+    let session = new_session.clone().or(session);
+    // Waiting from here (maybe behind a long call): a cancel for one of
+    // these is kept until its turn comes.
+    for msg in items.iter().flatten().filter(|m| is_request(m)) {
+        shared.cancels.queued(job_key(&session, &msg.id));
+    }
     Some(Job {
         request: Some(request),
         items,
         batch,
-        session: new_session.clone().or(session),
+        session,
         new_session,
+        protocol,
         stream,
     })
 }
 
+/// How [`Cancels`] knows a request of a job: its session and id.
+fn job_key(session: &Option<String>, id: &Option<Value>) -> Value {
+    json!([session, id.clone().unwrap_or(Value::Null)])
+}
+
 /// Answer a job's requests with the engine, in order.
 fn answer<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
-    // This session's protocol version, not the last client's.
-    core.set_protocol(job.session.as_deref().and_then(|s| shared.protocol_of(s)));
+    // This session's protocol version, not the last client's. Without a
+    // session, the one the client names, else the one the MCP spec says to
+    // assume (not the newest: a client of an older version names none).
+    core.set_protocol(match &job.session {
+        Some(s) => shared.protocol_of(s),
+        None => Some(job.protocol.unwrap_or(ASSUMED_PROTOCOL)),
+    });
     let session = job.session.clone();
     let new_session = job.new_session.is_some();
     answer_job(core, shared, job);
@@ -358,12 +381,17 @@ fn answer_job<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
         .iter()
         .map(|(k, v)| (*k, v.as_str()))
         .collect();
-    let key = |id: &Option<Value>| json!([job.session, id.clone().unwrap_or(Value::Null)]);
+    let key = |id: &Option<Value>| job_key(&job.session, id);
     let sse = match job.request {
         Some(request) if job.stream => match Sse::start(request, Some(&headers)) {
             Ok(sse) => Some(Arc::new(Mutex::new(sse))),
             Err(e) => {
                 log::debug!("the client left before its answer: {e}");
+                for msg in job.items.iter().flatten() {
+                    if msg.method.is_some() && msg.id.is_some() {
+                        shared.cancels.forget(&key(&msg.id));
+                    }
+                }
                 return;
             }
         },
@@ -413,8 +441,16 @@ fn answer_job<B: Backend>(core: &mut Core<B>, shared: &Shared, job: Job) {
     for item in job.items {
         let answer = match item {
             Ok(msg) => {
-                let k = key(&msg.id);
-                core.handle(msg, &shared.cancels, &k, notify.as_ref())
+                let (id, k) = (msg.id.clone(), key(&msg.id));
+                let request = msg.method.is_some();
+                match core.handle(msg, &shared.cancels, &k, notify.as_ref()) {
+                    // The stream ends once each request is answered, a
+                    // cancelled one too: the client waits for them all.
+                    None if request => {
+                        id.map(|id| RpcResponse::err(id, REQUEST_CANCELLED, "request cancelled"))
+                    }
+                    answer => answer,
+                }
             }
             Err(r) => Some(*r),
         };
@@ -666,9 +702,11 @@ fn respond(request: Request, status: u16, body: Value, headers: &[(&str, &str)])
         let _ = request.respond(response);
     };
     // A refused request may still be sending its body, which tiny_http
-    // reads to the end once it is answered: that happens on a thread of its
-    // own, so a client sending gigabytes can't hold up the others. At most
-    // a few such threads at once; past that, refusals wait their turn.
+    // reads to the end (up to a megabyte: see vendor/tiny_http) once it is
+    // answered: that happens on a thread of its own, so a client sending
+    // slowly can't hold up the others. At most a few such threads at once;
+    // past that, the thread that read the request sends it (never the one
+    // accepting requests).
     static REFUSING: AtomicUsize = AtomicUsize::new(0);
     if status >= 400 && REFUSING.fetch_add(1, Ordering::SeqCst) < MAX_REFUSING {
         let spawned = std::thread::Builder::new()
@@ -1134,6 +1172,132 @@ mod tests {
             let mut head = String::new();
             BufReader::new(s).read_line(&mut head).unwrap();
             assert!(head.contains(" 505 "), "{head}");
+        });
+    }
+
+    /// A request with no session is served as the version it names, else
+    /// as the one the MCP spec says to assume (2025-03-26: no results as
+    /// data).
+    #[test]
+    fn without_a_session_the_version_the_client_names_is_used() {
+        serving("no-session", |addr| {
+            let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_apps","arguments":{}}})
+                .to_string();
+            let r = send(addr, "POST", &[AUTH, JSON], &call).json();
+            assert!(r["result"].get("structuredContent").is_none(), "{r}");
+            let named = ("MCP-Protocol-Version", "2025-06-18");
+            let r = send(addr, "POST", &[AUTH, JSON, named], &call).json();
+            assert_eq!(
+                r["result"]["structuredContent"]["apps"][0]["name"], "TextEdit",
+                "{r}"
+            );
+        });
+    }
+
+    /// A raw request that declares `length` bytes of body and sends `sent`.
+    /// The connection is kept for more unless `headers` say otherwise.
+    fn declaring(addr: SocketAddr, headers: &[(&str, &str)], length: u64, sent: &str) -> TcpStream {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut req = format!("POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {length}\r\n");
+        for (k, v) in headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str("\r\n");
+        req.push_str(sent);
+        s.write_all(req.as_bytes()).unwrap();
+        s
+    }
+
+    fn status_of(s: TcpStream) -> u16 {
+        read_head(&mut BufReader::new(s)).0
+    }
+
+    /// tiny_http 0.12.0, on dropping a request whose body wasn't read,
+    /// allocated as much as the body was declared to be, which aborted the
+    /// server: refusals leave bodies unread.
+    #[test]
+    fn a_huge_declared_body_does_not_bring_the_server_down() {
+        serving("huge", |addr| {
+            let huge = 1_000_000_000_000_000;
+            let close = ("Connection", "close");
+            assert_eq!(status_of(declaring(addr, &[JSON, close], huge, "{")), 401);
+            assert_eq!(
+                status_of(declaring(addr, &[AUTH, JSON, close], huge, "{")),
+                413
+            );
+            // A body that is read to its end (through a small buffer), so
+            // the connection serves the next request.
+            let mut s = declaring(addr, &[JSON], 300_000, &"x".repeat(300_000));
+            let ping = json!({"jsonrpc":"2.0","id":5,"method":"ping"}).to_string();
+            write!(
+                s,
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{ping}",
+                ping.len()
+            )
+            .unwrap();
+            let mut r = BufReader::new(s);
+            let (status, headers) = read_head(&mut r);
+            assert_eq!(status, 401);
+            let len: usize = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap();
+            r.read_exact(&mut vec![0; len]).unwrap();
+            assert_eq!(read_head(&mut r).0, 200);
+            let r = post(addr, None, json!({"jsonrpc":"2.0","id":6,"method":"ping"}));
+            assert_eq!(r.json()["id"], 6);
+        });
+    }
+
+    /// Clients that declare a body and never send it hold the threads that
+    /// refuse them, never the one taking requests: once most of them go,
+    /// the server serves again, while the rest still hold back.
+    #[test]
+    fn clients_holding_back_their_bodies_never_hold_up_taking_requests() {
+        serving("stalled", |addr| {
+            let mut stalled: Vec<TcpStream> = (0..MAX_READING + MAX_REFUSING + 10)
+                .map(|_| declaring(addr, &[JSON], 2000, ""))
+                .collect();
+            std::thread::sleep(Duration::from_millis(500));
+            // Those past the limit were refused (503), before the fix, by
+            // the thread taking requests, which then waited on them.
+            let last = stalled.split_off(MAX_READING);
+            drop(stalled);
+            let r = post(addr, None, json!({"jsonrpc":"2.0","id":7,"method":"ping"}));
+            assert_eq!(r.json()["id"], 7);
+            drop(last);
+        });
+    }
+
+    #[test]
+    fn a_call_cancelled_on_a_stream_is_answered() {
+        serving("stream-cancel", |addr| {
+            let session = initialize(addr);
+            let s = session.clone();
+            let call = std::thread::spawn(move || {
+                post(
+                    addr,
+                    Some(&s),
+                    json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{
+                        "name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"},
+                        "_meta":{"progressToken":1}}}),
+                )
+            });
+            std::thread::sleep(Duration::from_millis(400));
+            let r = post(
+                addr,
+                Some(&session),
+                json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9}}),
+            );
+            assert_eq!(r.status, 202);
+            let r = call.join().unwrap();
+            assert_eq!(r.header("Content-Type"), Some("text/event-stream"));
+            let events = r.events();
+            let last = events.last().expect("an answer");
+            assert_eq!(last["id"], 9, "{}", r.body);
+            assert_eq!(last["error"]["code"], REQUEST_CANCELLED, "{}", r.body);
         });
     }
 }

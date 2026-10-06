@@ -12,6 +12,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_bin="$here/computer-use-mcp"
 no_register=0
+uninstall=0
 scope=user
 name=computer-use
 
@@ -20,14 +21,23 @@ while [ $# -gt 0 ]; do
     --scope) scope="${2:?--scope needs local|project|user}"; shift 2 ;;
     --name) name="${2:?--name needs a value}"; shift 2 ;;
     --no-register) no_register=1; shift ;;
-    --uninstall)
-      command -v claude >/dev/null || { echo "claude (Claude Code) is not on PATH" >&2; exit 1; }
-      claude mcp remove "$name" --scope "$scope" || true
-      echo "Removed '$name'."; exit 0 ;;
+    --uninstall) uninstall=1; shift ;;
     -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# After every option is read, so `--uninstall --scope project` removes the
+# project one.
+if [ "$uninstall" = 1 ]; then
+  command -v claude >/dev/null || { echo "claude (Claude Code) is not on PATH" >&2; exit 1; }
+  if claude mcp remove "$name" --scope "$scope"; then
+    echo "Removed '$name' ($scope scope)."
+    exit 0
+  fi
+  echo "Nothing removed: '$name' wasn't found in the $scope scope (see claude mcp list)." >&2
+  exit 1
+fi
 
 [ -x "$source_bin" ] || { echo "computer-use-mcp not found next to this script ($source_bin)" >&2; exit 1; }
 

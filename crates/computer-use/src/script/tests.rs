@@ -614,6 +614,15 @@ fn scripts_never_read_the_servers_settings_or_proc() {
     let mut backend = MockBackend::new();
     backend.add_app(MockBackend::text_editor(4242));
     let mut e = Engine::new(backend, store).with_time(std::time::Instant::now, |_| {});
+    // Up out of a folder still to be made: writing would make it, and the
+    // `..` would then climb to the settings.
+    let climb = dir
+        .join("lib/files/nope/../../../config.toml")
+        .display()
+        .to_string();
+    let out = run(&mut e, &format!("write_text({climb:?}, \"x\")"));
+    assert!(out.is_error && out.text.contains("goes up"), "{}", out.text);
+    assert!(!dir.join("lib/files/nope").exists());
     for code in [
         format!("read_text({:?})", settings.display().to_string()),
         format!("write_text({:?}, \"x\")", settings.display().to_string()),
@@ -681,4 +690,105 @@ fn huge_regex_results_are_refused_before_they_are_built() {
     );
     let out = run(&mut e, r#"regex_replace("a-b", "-", "+")"#);
     assert!(out.text.contains("Result: a+b"), "{}", out.text);
+}
+
+/// A saved script that imports itself (or one that imports it) used to go
+/// round until the stack overflowed and ended the whole server.
+#[test]
+fn a_script_that_imports_itself_is_refused() {
+    let dir = library("import-cycle");
+    let mut e = engine_with(&dir, |_| {});
+    for (name, code) in [
+        ("me", "import \"me\" as m; 1"),
+        ("ping", "import \"pong\" as m; 1"),
+        ("pong", "import \"ping\" as m; 1"),
+    ] {
+        let saved = e.call_tool(
+            "script",
+            json!({"save": name, "code": code, "description": "d"}),
+        );
+        assert!(!saved.is_error, "{}", saved.text);
+    }
+    let out = run(&mut e, "import \"me\" as m; 2");
+    assert!(
+        out.is_error && out.text.contains("imports itself"),
+        "{}",
+        out.text
+    );
+    let out = run(&mut e, "import \"ping\" as m; 2");
+    assert!(
+        out.is_error && out.text.contains("ping > pong > ping"),
+        "{}",
+        out.text
+    );
+    // The same script imported twice side by side is no cycle.
+    let saved = e.call_tool(
+        "script",
+        json!({"save": "lib", "code": "fn one() { 1 }", "description": "d"}),
+    );
+    assert!(!saved.is_error, "{}", saved.text);
+    let out = run(
+        &mut e,
+        "import \"lib\" as a; import \"lib\" as b; a::one() + b::one()",
+    );
+    assert!(out.text.contains("Result: 2"), "{}", out.text);
+}
+
+/// Matches that copy no text are still values: a pattern of empty groups
+/// filled the memory.
+#[test]
+fn regex_results_of_too_many_values_are_refused() {
+    let dir = library("regex-values");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"let t = "a"; for i in 0..15 { t += t; } let p = ""; for i in 0..100 { p += "()"; } regex_groups(t, p).len()"#,
+    );
+    assert!(
+        out.is_error && out.text.contains("more than 2000000 values"),
+        "{}",
+        out.text
+    );
+    let out = run(
+        &mut e,
+        r#"let t = "1 "; for i in 0..21 { t += t; } numbers(t).len()"#,
+    );
+    assert!(
+        out.is_error && out.text.contains("more than 2000000 numbers"),
+        "{}",
+        out.text
+    );
+    let out = run(
+        &mut e,
+        r#"[regex_groups("a1 b2", "(\\w)(\\d)"), numbers("x 1, 2.5")]"#,
+    );
+    assert!(
+        out.text
+            .contains(r#"Result: [[["a1","a","1"],["b2","b","2"]],[1,2.5]]"#),
+        "{}",
+        out.text
+    );
+    let out = run(
+        &mut e,
+        r#"let t = ","; for i in 0..22 { t += t; } parse_csv(t).len()"#,
+    );
+    assert!(
+        out.is_error && out.text.contains("more than 2000000 cells"),
+        "{}",
+        out.text
+    );
+}
+
+/// A script may throw a text of any size; the error shows its start.
+#[test]
+fn a_huge_error_is_cut_short() {
+    let dir = library("huge-error");
+    let mut e = engine_with(&dir, |_| {});
+    let out = run(
+        &mut e,
+        r#"let s = "x"; for i in 0..24 { s += s; } throw s;"#,
+    );
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.len() < 20_000, "{} bytes", out.text.len());
+    assert!(out.text.contains("characters in all"), "{}", out.text);
 }

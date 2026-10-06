@@ -167,18 +167,15 @@ impl<B: Backend> Engine<B> {
         };
         if !lines.is_empty() {
             let cfg = &self.store.config.ocr;
+            // Shapes read as glyphs, and rulers' numbers, aren't text
+            // (judged with the confidence each line was read with).
+            let lines: Vec<OcrLine> = lines
+                .into_iter()
+                .filter(|l| crate::ocr::plausible(l) && !crate::ocr::ruler(l))
+                .collect();
             let mut extra = crate::ocr::nodes(&lines, cfg.min_confidence, cfg.max_lines);
-            // Leave out glyph noise and what the tree already says there.
+            // Leave out what the tree already says there.
             extra.retain(|o| {
-                let line = OcrLine {
-                    text: o.name.clone().unwrap_or_default(),
-                    bounds: o.bounds.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
-                    confidence: 1.0,
-                };
-                // Shapes read as glyphs, and rulers' numbers, aren't text.
-                if !crate::ocr::plausible(&line) || crate::ocr::ruler(&line) {
-                    return false;
-                }
                 let text = crate::ocr::words(o.name.as_deref().unwrap_or(""));
                 crate::ocr::enough_text(&text)
                     && !raw.iter().any(|n| {
@@ -208,6 +205,19 @@ impl<B: Backend> Engine<B> {
         } else {
             Vec::new()
         };
+        // OCR read the picture before it was blacked out: text read inside
+        // a private area (a code in a field that shows no value) is left
+        // out of the tree too.
+        if !private.is_empty() {
+            let before = raw.len();
+            raw.retain(|n| {
+                !crate::ocr::is_ocr(n.handle)
+                    || !n
+                        .bounds
+                        .is_some_and(|b| private.iter().any(|p| p.intersects(&b)))
+            });
+            ocr_lines = ocr_lines.saturating_sub(before - raw.len());
+        }
         let pruned = tree::prune(&raw, window.bounds, &self.store.config.tree);
         drop(raw);
         let mut nodes = pruned.nodes;

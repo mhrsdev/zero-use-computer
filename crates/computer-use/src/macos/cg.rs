@@ -116,11 +116,13 @@ pub fn click(
         post(pid, &mv);
     }
     for i in 1..=count.max(1) as i64 {
+        // Build the release before pressing, so a failure never leaves the
+        // button held.
         let d = mouse_event(&src, down, at, cg_btn, window)?;
-        d.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
-        post(pid, &d);
         let u = mouse_event(&src, up, at, cg_btn, window)?;
+        d.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
         u.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i);
+        post(pid, &d);
         post(pid, &u);
     }
     Ok(())
@@ -133,9 +135,11 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
         post(pid, &e);
     }
     std::thread::sleep(DRAG_STEP);
-    if let Ok(e) = mk(CGEventType::LeftMouseDown, from) {
-        post(pid, &e);
-    }
+    // A press that can't be made is an error, not a silent no-op. A spare
+    // release is made with it, so the button is never left held.
+    let down = mk(CGEventType::LeftMouseDown, from)?;
+    let spare_up = mk(CGEventType::LeftMouseUp, from)?;
+    post(pid, &down);
     std::thread::sleep(DRAG_STEP);
     for step in 1..=8 {
         let p = CGPoint {
@@ -147,10 +151,16 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
         }
         std::thread::sleep(DRAG_STEP);
     }
-    if let Ok(e) = mk(CGEventType::LeftMouseUp, to) {
-        post(pid, &e);
+    match mk(CGEventType::LeftMouseUp, to) {
+        Ok(up) => {
+            post(pid, &up);
+            Ok(())
+        }
+        Err(e) => {
+            post(pid, &spare_up);
+            Err(e)
+        }
     }
-    Ok(())
 }
 
 /// Tell the app the pointer is at `at` (posted to its process: the user's
@@ -778,7 +788,8 @@ fn redraw(image: &CGImage) -> Result<Vec<u8>> {
 /// keyboard layout, so `cmd+a` hits the key that types "a" on AZERTY too;
 /// the US layout's keys only without layout data (off the main thread),
 /// or for a shortcut on a character the layout doesn't type (a Latin
-/// letter on a Cyrillic layout).
+/// letter on a Cyrillic layout). `None` for a character only a dead key
+/// gives, unless it is a shortcut.
 pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
     let plain = Modifiers::default();
     let c = match combo.key {
@@ -792,6 +803,10 @@ pub(crate) fn keycode(combo: &KeyCombo) -> Option<(u16, Modifiers)> {
         return us();
     };
     match layout::pick(&table, c, shortcut) {
+        // A dead key pressed on its own only starts an accent: no key, so
+        // `press` types the character instead. (A shortcut doesn't compose,
+        // so there the key is right.)
+        Some(k) if k.dead && !shortcut => None,
         Some(k) => Some((
             k.code,
             Modifiers {

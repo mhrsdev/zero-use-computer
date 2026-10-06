@@ -171,7 +171,9 @@ fn main() {
     println!("benchmark: app={app} window={window:?} iterations={iters}\n");
 
     let full = tools::model_visible_len(&tools::definitions());
-    let compact = tools::model_visible_len(&tools::definitions_for(&engine.store().config.tools));
+    // What the engine lists, as agent_bench counts it: after the tool
+    // manager and the settings that leave tools out.
+    let compact = tools::model_visible_len(&engine.tool_definitions());
     println!(
         "tool definitions (sent with every model request): full {} chars (~{} tok), configured {} chars (~{} tok)\n",
         full,

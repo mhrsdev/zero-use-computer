@@ -36,7 +36,11 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
         None => PathBuf::from(path),
     };
     let checked = |p: PathBuf| -> Result<PathBuf, String> {
-        if private(env, &p) {
+        if real(&p).is_none() {
+            Err(format!(
+                "\"{path}\" goes up (..) out of a folder that doesn't exist: give the path without .."
+            ))
+        } else if private(env, &p) {
             Err(format!(
                 "\"{path}\" is the server's own (its settings and keys): scripts never use it"
             ))
@@ -87,8 +91,10 @@ pub fn resolve(env: &Env, path: &str, write: bool) -> Result<PathBuf, String> {
 }
 
 /// Where a path really leads: its deepest existing folder resolved (links,
-/// `..`), the rest as written.
-fn real(p: &Path) -> PathBuf {
+/// `..`), the rest as written. None when a `..` comes after a folder that
+/// doesn't exist yet: writing makes that folder, and the `..` then leads
+/// wherever it climbs to, not where the path seemed to stay.
+fn real(p: &Path) -> Option<PathBuf> {
     let mut base = p.to_path_buf();
     let mut rest = Vec::new();
     while !base.as_os_str().is_empty() {
@@ -97,31 +103,40 @@ fn real(p: &Path) -> PathBuf {
             for part in rest.iter().rev() {
                 out.push(part);
             }
-            return out;
+            return Some(out);
         }
         match (base.file_name().map(|n| n.to_os_string()), base.parent()) {
             (Some(name), Some(parent)) => {
                 rest.push(name);
                 base = parent.to_path_buf();
             }
+            // A name ending in `..` has none: it is still to be resolved.
             _ => break,
         }
     }
-    p.to_path_buf()
+    if p.components().any(|c| c == Component::ParentDir) {
+        None
+    } else {
+        Some(p.to_path_buf())
+    }
 }
 
 /// Whether `p` is the server's own: its folder (but the scripts' files in
 /// it), its settings file, or, on Linux, a process's own details in /proc
 /// (its environment holds the key `api_key_env` names).
 fn private(env: &Env, p: &Path) -> bool {
-    let p = real(p);
+    let Some(p) = real(p) else {
+        return true;
+    };
     if cfg!(target_os = "linux") && p.starts_with("/proc") {
         return true;
     }
-    if p.starts_with(real(&env.workspace())) {
+    if real(&env.workspace()).is_some_and(|ws| p.starts_with(ws)) {
         return false;
     }
-    env.private.iter().any(|x| p.starts_with(real(x)))
+    env.private
+        .iter()
+        .any(|x| p.starts_with(real(x).unwrap_or_else(|| x.clone())))
 }
 
 pub fn read_text(env: &Env, path: &str) -> Result<String, String> {
@@ -254,7 +269,10 @@ fn curl(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<Command,
         .clamp(1.0, 600.0)
         .min(left.max(1.0));
     let mut cmd = Command::new("curl");
-    cmd.args(["-sS", "-L", "--max-redirs", "5"])
+    // `-q` first (curl takes it only there): the user's ~/.curlrc never
+    // changes what a script's request does. `-g`: `[]` and `{}` in an
+    // address are its own, not ranges of addresses.
+    cmd.args(["-q", "-g", "-sS", "-L", "--max-redirs", "5"])
         .args(["--proto", "=http,https", "--proto-redir", "=http,https"])
         .args(["--max-time", &format!("{secs:.0}")])
         .args(["--max-filesize", &MAX_FETCH.to_string()])
@@ -352,7 +370,9 @@ fn run_curl(env: &Env, mut cmd: Command, body: Option<&str>) -> Result<(Vec<u8>,
         .parse()
         .unwrap_or(0);
     out.truncate(cut);
-    if !status.success() && code == 0 {
+    // A failed transfer (time out, too big, cut off) failed, even when
+    // curl got a status first: the body is only part of the answer.
+    if !status.success() {
         let err = err.trim().trim_start_matches("curl: ").to_string();
         return Err(if err.is_empty() {
             format!(
@@ -384,21 +404,43 @@ pub fn fetch(env: &Env, url: &str, req: &Fetch, deadline: Instant) -> Result<Str
 pub fn download(env: &Env, url: &str, path: &str, deadline: Instant) -> Result<PathBuf, String> {
     let p = resolve(env, path, true)?;
     writable(&p)?;
+    let name = p
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file name", p.display()))?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
     }
+    // Into a file of its own first: a download that fails leaves the file
+    // that was there as it was.
+    let tmp = p.with_file_name(format!(
+        ".{}.{}.download",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
     let mut cmd = curl(env, url, &Fetch::default(), deadline)?;
     cmd.arg("-o")
-        .arg(&p)
+        .arg(&tmp)
         .args(["-w", "\n%{http_code}"])
         .arg(url.trim());
-    let (_, code) = run_curl(env, cmd, None).inspect_err(|_| {
-        let _ = std::fs::remove_file(&p);
-    })?;
-    if code >= 400 {
-        let _ = std::fs::remove_file(&p);
-        return Err(format!("HTTP {code} from {url}"));
+    match run_curl(env, cmd, None) {
+        Ok((_, code)) if code >= 400 => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("HTTP {code} from {url}"));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        Ok(_) => {}
     }
+    // An empty answer may leave no file at all.
+    if !tmp.exists() {
+        std::fs::write(&tmp, b"").map_err(|e| format!("can't write {}: {e}", p.display()))?;
+    }
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("can't write {}: {e}", p.display())
+    })?;
     Ok(p)
 }
 
@@ -447,9 +489,13 @@ pub fn remember(env: &Env, key: &str, value: Value) -> Result<(), String> {
 
 // -- CSV -----------------------------------------------------------------
 
+/// Most cells a CSV text may hold (each becomes a value: a text of commas
+/// alone would fill the memory).
+const MAX_CELLS: usize = 2_000_000;
+
 /// Rows of CSV (or semicolon- or tab-separated) text. Numbers become
 /// numbers.
-pub fn parse_csv(text: &str) -> Vec<Vec<Value>> {
+pub fn parse_csv(text: &str) -> Result<Vec<Vec<Value>>, String> {
     let first = text.lines().next().unwrap_or("");
     let sep = [',', ';', '\t']
         .into_iter()
@@ -460,6 +506,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<Value>> {
     let mut row = Vec::new();
     let mut field = String::new();
     let mut quoted = false;
+    let mut cells = 0usize;
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
     while let Some(c) = chars.next() {
         if quoted {
@@ -477,11 +524,16 @@ pub fn parse_csv(text: &str) -> Vec<Vec<Value>> {
         }
         match c {
             '"' if field.is_empty() => quoted = true,
-            c if c == sep => row.push(cell(std::mem::take(&mut field))),
             '\r' => {}
-            '\n' => {
+            c if c == sep || c == '\n' => {
                 row.push(cell(std::mem::take(&mut field)));
-                rows.push(std::mem::take(&mut row));
+                if c == '\n' {
+                    rows.push(std::mem::take(&mut row));
+                }
+                cells += 1;
+                if cells > MAX_CELLS {
+                    return Err(format!("the CSV has more than {MAX_CELLS} cells"));
+                }
             }
             c => field.push(c),
         }
@@ -490,7 +542,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<Value>> {
         row.push(cell(field));
         rows.push(row);
     }
-    rows
+    Ok(rows)
 }
 
 fn cell(s: String) -> Value {
@@ -577,6 +629,59 @@ mod tests {
         let ws = e.workspace();
         assert_eq!(resolve(&e, "a/b.txt", true), Ok(ws.join("a/b.txt")));
         assert!(resolve(&e, "../b.txt", true).is_err());
+    }
+
+    /// `<scripts' folder>/nope/../../x` looked as if it stayed in the
+    /// folder, but writing makes `nope` and the `..` then climbs out of it
+    /// (to the server's settings).
+    #[test]
+    fn a_climb_out_of_a_folder_still_to_be_made_is_refused() {
+        let dir = std::env::temp_dir().join(format!("cu-io-climb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = env(dir.join("lib").to_str().unwrap());
+        e.files = ScriptFiles::All;
+        let settings = dir.join("config.toml");
+        e.private = vec![settings.clone()];
+        let ws = e.workspace();
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(&settings, "[script]\n").unwrap();
+        let climb = ws
+            .join("nope")
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("config.toml");
+        let r = resolve(&e, climb.to_str().unwrap(), true);
+        assert!(r.as_ref().is_err_and(|e| e.contains("goes up")), "{r:?}");
+        assert!(write_text(&e, climb.to_str().unwrap(), "x", false).is_err());
+        assert!(!ws.join("nope").exists());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[script]\n");
+        // Through folders that exist, `..` is resolved and checked as ever.
+        let up = ws.join("..").join("..").join("config.toml");
+        let r = resolve(&e, up.to_str().unwrap(), true);
+        assert!(
+            r.as_ref().is_err_and(|e| e.contains("server's own")),
+            "{r:?}"
+        );
+        // A new folder without `..` is fine.
+        let new = ws.join("nope").join("x.txt");
+        assert_eq!(resolve(&e, new.to_str().unwrap(), true), Ok(new));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn csv_with_too_many_cells_is_refused() {
+        assert_eq!(
+            parse_csv("a,b\n1,2\n"),
+            Ok(vec![
+                vec![Value::from("a"), Value::from("b")],
+                vec![Value::from(1), Value::from(2)]
+            ])
+        );
+        let commas = ",".repeat(MAX_CELLS + 1);
+        assert!(parse_csv(&commas).is_err_and(|e| e.contains("more than")));
+        let lines = "\n".repeat(MAX_CELLS + 1);
+        assert!(parse_csv(&lines).is_err());
     }
 
     /// `\Windows\x` and `C:x` are "relative" on Windows, but joined to the

@@ -13,8 +13,9 @@ use core_foundation::array::CFArray;
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeID, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::number::CFNumber;
-use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::string::{CFString, CFStringGetCharacters, CFStringGetLength, CFStringRef};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use objc2_foundation::NSString;
 
 pub type AXUIElementRef = CFTypeRef;
 pub type AXValueRef = CFTypeRef;
@@ -313,7 +314,7 @@ pub fn action_names(element: AXUIElementRef) -> Result<Vec<String>, AXError> {
         .filter(|raw| !raw.is_null())
         // SAFETY: a non-null item of the array, retained while wrapped.
         .filter_map(|raw| unsafe { CFType::wrap_under_get_rule(raw) }.downcast::<CFString>())
-        .map(|s| s.to_string())
+        .map(|s| cfstring_text(&s))
         .collect())
 }
 
@@ -490,10 +491,40 @@ pub fn window_id(element: AXUIElementRef) -> Option<u32> {
     (err == kAXErrorSuccess && id != 0).then_some(id)
 }
 
+/// A CFString's text, read as UTF-16. Other apps can put a lone surrogate in
+/// a title or a value; it becomes U+FFFD here, where `CFString`'s `Display`
+/// panics (it converts to strict UTF-8 and asserts every character made it).
+pub fn cfstring_text(s: &CFString) -> String {
+    utf16_text(s.as_concrete_TypeRef())
+}
+
+/// An NSString's text, read as UTF-16 like [`cfstring_text`]: its `Display`
+/// goes through `UTF8String`, which is NULL for a lone surrogate (and objc2
+/// then makes a slice from that NULL).
+pub fn nsstring_text(s: &NSString) -> String {
+    // NSString is toll-free bridged with CFString.
+    utf16_text((s as *const NSString).cast())
+}
+
+fn utf16_text(s: CFStringRef) -> String {
+    // SAFETY: `s` is a live CFString (the callers borrow it), and the buffer
+    // holds the `len` UTF-16 units asked for.
+    let len = unsafe { CFStringGetLength(s) };
+    let mut units = vec![0u16; usize::try_from(len).unwrap_or(0)];
+    if !units.is_empty() {
+        let range = core_foundation::base::CFRange {
+            location: 0,
+            length: len,
+        };
+        unsafe { CFStringGetCharacters(s, range, units.as_mut_ptr()) };
+    }
+    String::from_utf16_lossy(&units)
+}
+
 /// Convert a CFType (string, number or boolean) to a display string.
 pub fn cftype_to_string(v: &CFType) -> Option<String> {
     if let Some(s) = v.downcast::<CFString>() {
-        return Some(s.to_string());
+        return Some(cfstring_text(&s));
     }
     if let Some(n) = v.downcast::<CFNumber>() {
         if let Some(i) = n.to_i64() {
@@ -608,5 +639,33 @@ mod tests {
         }
         assert_eq!(describe(kAXErrorSuccess), None);
         assert_eq!(describe(-1), None);
+    }
+
+    /// A CFString of these UTF-16 units, as another app could hand over.
+    fn utf16_cfstring(units: &[u16]) -> CFString {
+        // SAFETY: the buffer holds `units.len()` units; +1, owned by the wrapper.
+        unsafe {
+            CFString::wrap_under_create_rule(core_foundation::string::CFStringCreateWithCharacters(
+                core_foundation::base::kCFAllocatorDefault,
+                units.as_ptr(),
+                units.len() as isize,
+            ))
+        }
+    }
+
+    #[test]
+    fn a_lone_surrogate_is_read_as_a_replacement_character() {
+        let s = utf16_cfstring(&[0x61, 0xD800, 0x62]);
+        assert_eq!(cfstring_text(&s), "a\u{FFFD}b");
+        // SAFETY: CFString and NSString are toll-free bridged.
+        let ns = unsafe { &*(s.as_concrete_TypeRef() as *const NSString) };
+        assert_eq!(nsstring_text(ns), "a\u{FFFD}b");
+    }
+
+    #[test]
+    fn ordinary_text_is_read_whole() {
+        let s = CFString::new("héllo 👋");
+        assert_eq!(cfstring_text(&s), "héllo 👋");
+        assert_eq!(cfstring_text(&CFString::new("")), "");
     }
 }

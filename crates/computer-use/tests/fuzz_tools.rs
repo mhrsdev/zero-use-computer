@@ -64,7 +64,12 @@ fn no_tool_panics_on_odd_arguments() {
     }));
     let mut cfg = Config::default();
     cfg.tools.manager = computer_use::config::ToolManager::Off;
-    let defs = computer_use::tools::definitions_from(&cfg);
+    // The tools behind a setting run their real path, not "turned off".
+    cfg.notifications.enabled = true;
+    cfg.clipboard = true;
+    // Every tool with its full schema: the settings' list leaves some out
+    // (decide, get_notifications) and lean schemas drop arguments (window).
+    let defs = computer_use::tools::definitions();
     let mut backend = MockBackend::new();
     backend.add_app(MockBackend::text_editor(4242));
     let mut e = Engine::new(backend, ConfigStore::in_memory(cfg)).with_time(Instant::now, |_| {});

@@ -463,8 +463,12 @@ pub struct Shown {
     /// Per app: the screen the model knows, and the screenshot coordinates
     /// it works from.
     apps: HashMap<u32, (Option<Screen>, Option<CoordMap>)>,
+    /// Per app: the header and the icons it has been shown.
+    seen: HashMap<u32, (Option<String>, HashSet<u64>)>,
     screen_shot: Option<ScreenShot>,
     partial: Option<(u32, u32, u64, usize)>,
+    /// How many other agents it has been told about.
+    agents_told: usize,
 }
 
 impl Hints {
@@ -855,6 +859,46 @@ impl<B: Backend> Engine<B> {
             return 0;
         }
         imaging::redact(cap, &rects, self.store.config.privacy.style)
+    }
+
+    /// Read the window of `app`'s latest snapshot again, so the places of
+    /// its elements and private areas are where the window is now (after
+    /// it moved). Text read off the screen is reused. If it can't be read
+    /// (closed, minimized), its elements have no place to click.
+    fn reobserve(&mut self, app: &AppInfo) {
+        let Some(wid) = self.states.get(&app.pid).and_then(|s| s.window_id) else {
+            return;
+        };
+        let window = self
+            .list_windows(app, true)
+            .ok()
+            .and_then(|ws| ws.into_iter().find(|w| w.id == wid && !w.minimized));
+        let reuse = std::mem::replace(&mut self.ctx.ocr_reuse, true);
+        let read = window.is_some_and(|w| self.observe(app, &w, true).is_ok());
+        self.ctx.ocr_reuse = reuse;
+        if !read && let Some(st) = self.states.get_mut(&app.pid) {
+            st.bounds.clear();
+        }
+    }
+
+    /// Before a screen or region capture is redacted: the private areas
+    /// of every app, where its window is now (the user or the page may
+    /// have moved them since the app was looked at).
+    fn refresh_private_areas(&mut self) {
+        if !crate::privacy::active(&self.store.config.privacy) {
+            return;
+        }
+        let pids: Vec<u32> = self
+            .states
+            .iter()
+            .filter(|(_, s)| s.stamped && !s.private.is_empty())
+            .map(|(pid, _)| *pid)
+            .collect();
+        for pid in pids {
+            if let Ok(app) = self.resolve_app(&pid.to_string()) {
+                self.reobserve(&app);
+            }
+        }
     }
 
     /// The part of `r` (screen coordinates) that is on a display, so a
@@ -1843,7 +1887,7 @@ impl<B: Backend> Engine<B> {
             "ok": !out.is_error,
             // Estimated tokens the result costs the model (text + image).
             "tokens": out.estimated_tokens(),
-            "summary": out.text.lines().next().unwrap_or("").chars().take(160).collect::<String>(),
+            "summary": audit_summary(out.text.lines().next().unwrap_or("")),
         });
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -1864,6 +1908,26 @@ impl<B: Backend> Engine<B> {
             let _ = writeln!(f, "{record}");
         }
     }
+}
+
+/// The first line of a result as the audit log keeps it: metadata only,
+/// so what is in quotes (a value set or typed, text selected or waited
+/// for, a name) is left out, and so are codes.
+fn audit_summary(line: &str) -> String {
+    let mut out = String::new();
+    let mut quoted = false;
+    for c in line.chars() {
+        if c == '"' {
+            if !quoted {
+                out.push_str("\"…\"");
+            }
+            quoted = !quoted;
+        } else if !quoted {
+            out.push(c);
+        }
+    }
+    let out = crate::privacy::mask_codes(&out).unwrap_or(out);
+    out.chars().take(160).collect()
 }
 
 /// What the coordinates on a screenshot's grid (and `pick` points) are.

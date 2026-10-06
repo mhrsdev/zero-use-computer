@@ -195,6 +195,9 @@ fn describe_parse(e: &rhai::ParseError, code: &str) -> String {
     msg
 }
 
+/// Longest error message kept (a script may throw any text).
+const MAX_ERROR: usize = 8_000;
+
 /// A runtime error, with the line of `code` (whose source name is
 /// `source`) where it happened.
 fn describe_error(e: &EvalAltResult, code: &str, source: Option<&str>) -> String {
@@ -214,6 +217,10 @@ fn describe_error(e: &EvalAltResult, code: &str, source: Option<&str>) -> String
         }
     }
     let mut msg = e.to_string();
+    if msg.len() > MAX_ERROR {
+        let cut: String = msg.chars().take(MAX_ERROR).collect();
+        msg = format!("{cut}… ({} characters in all)", msg.chars().count());
+    }
     if matches!(cur, EvalAltResult::ErrorFunctionNotFound(..)) {
         msg.push_str(". script(help=true) lists every function; maths on whole numbers works, and sin(1) is sin(1.0)");
     }

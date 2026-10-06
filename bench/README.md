@@ -144,7 +144,11 @@ bench/run.sh --runs 5 --label v3.6-manager --config bench/configs/manager.toml
 (v3.5's blind areas alone), `lean.toml` (every opt-in that saves tokens:
 lean schemas, relevant-change reports, quiet volatile elements, adaptive
 pictures, `locate` without its picture, blind areas, paint steps when
-asked) and `manager.toml` (the same with the tool manager).
+asked) and `manager.toml` (the same with the tool manager). All of that is
+the default now, so these files no longer differ from the defaults: they
+are kept as what `results/` was measured with. To measure one of them
+today, run it off against the defaults, e.g. with a file holding
+`[tools]` `manager = "off"` or `[ocr]` `blind_regions = false`.
 
 ## The design board
 

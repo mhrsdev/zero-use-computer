@@ -331,28 +331,68 @@ fn overlay_is_left_out_of_screenshots_and_the_mouse_stays_put() {
         return;
     };
     let mut e = engine().with_overlay(computer_use::overlay::Launcher::helper(bin));
+    // The helper up first (a debug build takes a moment to start and load
+    // its fonts), as in the stop key test: a screenshot taken before it
+    // draws anything would pass whether or not the overlay is left out.
+    e.arm();
+    std::thread::sleep(Duration::from_millis(2500));
     let app = wait_for_app(&mut e);
+    let (conn, screen) = x11rb::connect(None).expect("X");
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let root = x11rb::connection::Connection::setup(&conn).roots[screen].root;
+    let glow = |px: [u8; 3]| {
+        let blue = px[2] > 150 && px[0] < 120;
+        let gold = px[0] > 150 && px[2] < 80;
+        blue || gold
+    };
+    // The screen's own pixel at the left edge, beside the window's middle.
+    let on_screen = |c: &x11rb::rust_connection::RustConnection, y: i16| {
+        let r = c
+            .get_image(
+                x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
+                root,
+                2,
+                y,
+                1,
+                1,
+                !0,
+            )
+            .unwrap()
+            .reply()
+            .unwrap();
+        // 24-bit depth: B, G, R, pad.
+        [r.data[2], r.data[1], r.data[0]]
+    };
 
     // The screen glow (blue while working) runs along the left screen edge,
-    // over the fixture window at x = 0; the engine's screenshot must not show it.
+    // over the fixture window at x = 0: a call shows it, so it is on the
+    // screen now ...
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": app, "window": "CU Test"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut px = on_screen(&conn, 160);
+    while !glow(px) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        px = on_screen(&conn, 160);
+    }
+    assert!(glow(px), "the overlay never showed on the screen: {px:?}");
+
+    // ... and the engine's screenshot must not show it.
     let out = e.call_tool(
         "get_app_state",
         serde_json::json!({"app": app, "window": "CU Test", "screenshot": true}),
     );
     assert!(!out.is_error, "{}", out.text);
-    std::thread::sleep(Duration::from_millis(400));
     let img = image::load_from_memory(&out.image.expect("screenshot").data)
         .expect("decode")
         .to_rgb8();
     let px = img.get_pixel(2, img.height() / 2).0;
-    let blue = px[2] > 150 && px[0] < 120;
-    let gold = px[0] > 150 && px[2] < 80;
-    assert!(!blue && !gold, "overlay captured in the screenshot: {px:?}");
+    assert!(!glow(px), "overlay captured in the screenshot: {px:?}");
 
     // A coordinate click puts the real pointer back.
-    let (conn, screen) = x11rb::connect(None).expect("X");
-    use x11rb::protocol::xproto::ConnectionExt as _;
-    let root = x11rb::connection::Connection::setup(&conn).roots[screen].root;
     let pointer = |c: &x11rb::rust_connection::RustConnection| {
         let r = c.query_pointer(root).unwrap().reply().unwrap();
         (r.root_x, r.root_y)

@@ -23,7 +23,7 @@ below is Cmd on a Mac, Ctrl elsewhere.
 
 ## Leave alone unless the user asked
 
-- The integrated terminal (`ctrl+backquote`), Run / Debug and tasks run
+- The integrated terminal (`ctrl+grave`), Run / Debug and tasks run
   commands: they count as a terminal (security rule 2).
 - Workspace-trust prompts, installing extensions, sign-in (GitHub,
   Microsoft): the user's decision.

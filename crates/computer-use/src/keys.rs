@@ -91,11 +91,33 @@ impl std::fmt::Display for KeyCombo {
     }
 }
 
-/// Parse one combo or a space-separated sequence of combos.
+/// Parse one combo or a space-separated sequence of combos. A combo may be
+/// written with spaces around its `+` ("ctrl + s"): a `+` after modifiers
+/// joins them to what follows.
 pub fn parse_sequence(input: &str) -> Result<Vec<KeyCombo>> {
-    let combos: Vec<KeyCombo> = input
-        .split_whitespace()
-        .map(parse_combo)
+    // Modifiers only, as in "ctrl" or "ctrl+shift".
+    let mods_only = |s: &str| {
+        !s.is_empty()
+            && s.split('+')
+                .all(|m| apply_modifier(&mut Modifiers::default(), m))
+    };
+    let mut words: Vec<String> = Vec::new();
+    for word in input.split_whitespace() {
+        if let Some(last) = words.last_mut() {
+            let joins = match last.strip_suffix('+') {
+                Some(mods) => mods_only(mods),
+                None => word.starts_with('+') && mods_only(last),
+            };
+            if joins {
+                last.push_str(word);
+                continue;
+            }
+        }
+        words.push(word.to_string());
+    }
+    let combos: Vec<KeyCombo> = words
+        .iter()
+        .map(|w| parse_combo(w))
         .collect::<Result<_>>()?;
     if combos.is_empty() {
         return Err(Error::InvalidArgs("`key` must not be empty".into()));
@@ -133,29 +155,37 @@ pub fn parse_combo(input: &str) -> Result<KeyCombo> {
 
     let mut modifiers = Modifiers::default();
     for m in mod_parts {
-        match normalize(m.trim()).as_str() {
-            "shift" => modifiers.shift = true,
-            "ctrl" | "control" | "ctl" => modifiers.ctrl = true,
-            "alt" | "option" | "opt" => modifiers.alt = true,
-            // The Windows/Super key only when named as such: models write
-            // "cmd+s" meaning "save", and on Windows Win+L locks the screen
-            // and Win+R opens Run.
-            "meta" | "super" | "win" | "windows" => modifiers.meta = true,
-            // The platform's primary shortcut modifier: Cmd on a Mac, Ctrl
-            // elsewhere.
-            "cmd" | "command" | "primary" | "mod" | "cmdorctrl" => {
-                if cfg!(target_os = "macos") {
-                    modifiers.meta = true
-                } else {
-                    modifiers.ctrl = true
-                }
-            }
-            other => return Err(bad(&format!("unknown modifier `{other}`"))),
+        if !apply_modifier(&mut modifiers, m) {
+            return Err(bad(&format!("unknown modifier `{}`", m.trim())));
         }
     }
 
     let key = parse_key(key_part).ok_or_else(|| bad(&format!("unknown key `{key_part}`")))?;
     Ok(KeyCombo { modifiers, key })
+}
+
+/// Add the modifier named `m` to `modifiers`; false if it names none.
+fn apply_modifier(modifiers: &mut Modifiers, m: &str) -> bool {
+    match normalize(m.trim()).as_str() {
+        "shift" => modifiers.shift = true,
+        "ctrl" | "control" | "ctl" => modifiers.ctrl = true,
+        "alt" | "option" | "opt" => modifiers.alt = true,
+        // The Windows/Super key only when named as such: models write
+        // "cmd+s" meaning "save", and on Windows Win+L locks the screen
+        // and Win+R opens Run.
+        "meta" | "super" | "win" | "windows" => modifiers.meta = true,
+        // The platform's primary shortcut modifier: Cmd on a Mac, Ctrl
+        // elsewhere.
+        "cmd" | "command" | "primary" | "mod" | "cmdorctrl" => {
+            if cfg!(target_os = "macos") {
+                modifiers.meta = true
+            } else {
+                modifiers.ctrl = true
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn normalize(s: &str) -> String {
@@ -309,6 +339,21 @@ mod tests {
         let seq = parse_sequence("Down Down ctrl+Return").unwrap();
         assert_eq!(seq.len(), 3);
         assert!(seq[2].modifiers.ctrl);
+        // A combo written with spaces is one combo.
+        for spaced in ["ctrl + s", "ctrl+ s", "ctrl +s", "Ctrl + Shift + s"] {
+            let seq = parse_sequence(spaced).unwrap();
+            assert_eq!(seq.len(), 1, "{spaced}");
+            assert!(
+                seq[0].modifiers.ctrl && seq[0].key == Key::Char('s'),
+                "{spaced}"
+            );
+        }
+        assert_eq!(
+            parse_sequence("ctrl + +").unwrap(),
+            vec![parse_combo("ctrl++").unwrap()]
+        );
+        // Keys that aren't modifiers stay separate presses.
+        assert_eq!(parse_sequence("a + b").unwrap().len(), 3);
     }
 
     #[test]

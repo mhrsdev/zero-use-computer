@@ -168,7 +168,9 @@ impl Var {
             if p.is_null() {
                 return None;
             }
-            let s = p.to_string().ok();
+            // Lossy: a lone surrogate in an app's text isn't worth losing
+            // the whole value over.
+            let s = Some(String::from_utf16_lossy(p.as_wide()));
             CoTaskMemFree(Some(p.0 as *const std::ffi::c_void));
             s
         }
@@ -1498,7 +1500,7 @@ const SHELL_OPEN_WAIT: Duration = Duration::from_secs(30);
 /// Explorer does. Never called with anything the agent typed.
 fn shell_open(file: &std::path::Path) -> Result<()> {
     let what = file.display().to_string();
-    shell_run(file.as_os_str().to_owned(), false, &what).map_err(|e| match e {
+    shell_run(file.as_os_str().to_owned(), &what).map_err(|e| match e {
         ShellError::Failed(e) => Error::ActionFailed(format!("could not open {what}: {e}")),
         ShellError::Other(e) => e,
     })
@@ -1509,7 +1511,7 @@ fn shell_open(file: &std::path::Path) -> Result<()> {
 /// none of this process's handles: its input and output are its console.
 fn shell_open_console(exe: &std::path::Path) -> Result<()> {
     let what = exe.display().to_string();
-    shell_run(exe.as_os_str().to_owned(), true, &what).map_err(|e| match e {
+    shell_run(exe.as_os_str().to_owned(), &what).map_err(|e| match e {
         ShellError::Failed(e) => Error::ActionFailed(format!("could not start {what}: {e}")),
         ShellError::Other(e) => e,
     })
@@ -1518,7 +1520,7 @@ fn shell_open_console(exe: &std::path::Path) -> Result<()> {
 /// Open a web address (already checked to be http or https, one line) in
 /// the user's default browser.
 pub(crate) fn open_url(url: &str) -> Result<()> {
-    shell_run(url.into(), false, url).map_err(|e| match e {
+    shell_run(url.into(), url).map_err(|e| match e {
         ShellError::Failed(e) => Error::Platform(format!(
             "couldn't open the browser ({e}); open {url} yourself"
         )),
@@ -1539,11 +1541,7 @@ enum ShellError {
 /// need a single-threaded apartment, which the backend's thread isn't: it
 /// runs on a short-lived STA thread of its own (left to finish on its own
 /// after a timeout).
-fn shell_run(
-    target: std::ffi::OsString,
-    new_console: bool,
-    what: &str,
-) -> std::result::Result<(), ShellError> {
+fn shell_run(target: std::ffi::OsString, what: &str) -> std::result::Result<(), ShellError> {
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoUninitialize,
     };
@@ -1555,7 +1553,7 @@ fn shell_run(
             // before it ends.
             let init =
                 unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
-            let r = shell_execute(&target, new_console);
+            let r = shell_execute(&target);
             if init.is_ok() {
                 // SAFETY: balances the successful CoInitializeEx above.
                 unsafe { CoUninitialize() };
@@ -1581,23 +1579,20 @@ fn shell_run(
     }
 }
 
-fn shell_execute(target: &std::ffi::OsStr, new_console: bool) -> windows::core::Result<()> {
+fn shell_execute(target: &std::ffi::OsStr) -> windows::core::Result<()> {
     use windows::Win32::UI::Shell::{
-        SEE_MASK_FLAG_NO_UI, SEE_MASK_NO_CONSOLE, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-        ShellExecuteExW,
+        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
     };
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{HSTRING, PCWSTR};
     let verb = HSTRING::from("open");
     let wfile = HSTRING::from(target);
-    let mut mask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
-    if new_console {
-        // A console of its own, not this process's (CREATE_NEW_CONSOLE).
-        mask |= SEE_MASK_NO_CONSOLE;
-    }
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: mask,
+        // No SEE_MASK_NO_CONSOLE: that makes a console program share this
+        // process's console. Without it, one gets a console of its own (as
+        // with CREATE_NEW_CONSOLE).
+        fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
         lpVerb: PCWSTR(verb.as_ptr()),
         lpFile: PCWSTR(wfile.as_ptr()),
         nShow: SW_SHOWNORMAL.0,

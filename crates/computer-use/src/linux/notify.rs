@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt as _;
-use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
 use crate::error::{Error, Result};
@@ -198,15 +197,19 @@ fn listen(
     seen: &Mutex<VecDeque<Notification>>,
     keep: &AtomicUsize,
     running: &AtomicBool,
-) -> zbus::Result<()> {
-    let conn = Connection::session()?;
+) -> Result<()> {
+    // With time limits on connecting and on the call: a session bus that
+    // doesn't answer is reported, instead of leaving the listener waiting
+    // for ever (and seeming to run).
+    let conn = super::atspi::session()?;
     conn.call_method(
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus.Monitoring"),
         "BecomeMonitor",
         &(RULES.to_vec(), 0u32),
-    )?;
+    )
+    .map_err(|e| Error::Platform(format!("cannot become a monitor: {e}")))?;
     let mut stream = zbus::MessageStream::from(conn.inner());
     loop {
         if !running.load(Ordering::SeqCst) {

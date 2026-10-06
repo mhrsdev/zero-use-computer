@@ -565,6 +565,7 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("hub: cannot write the token: {e}");
         return 1;
     }
+    let _ = WRITTEN.set((token_path(&home, port), token.clone()));
     #[cfg(target_os = "macos")]
     super::macos::start_watchdog(None);
     let surface = match super::helper::open_surface() {
@@ -576,19 +577,39 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     serve(listener, token.clone(), surface);
-    // Only its own: a hub started since (after this one let the port go)
-    // may have written another.
-    let path = token_path(&home, port);
-    if std::fs::read_to_string(&path).is_ok_and(|t| t.trim() == token) {
-        let _ = std::fs::remove_file(path);
-    }
+    remove_token(&token_path(&home, port), &token);
     #[cfg(target_os = "macos")]
     super::macos::input_closed();
     0
 }
 
-/// A token no one can guess: 256 bits from the standard library's
-/// randomly keyed hasher.
+/// The token file this hub wrote, and its token.
+static WRITTEN: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+
+/// Remove the token file at `path` if it is still `token`: a hub started
+/// since (after this one let the port go) may have written another.
+fn remove_token(path: &Path, token: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|t| t.trim() == token) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Exit at once (the display went away under the surface), removing the
+/// hub's token file first, if this process is a hub: it would be left
+/// naming a port no hub listens on.
+#[cfg(target_os = "linux")]
+pub(super) fn exit_now(code: i32) -> ! {
+    if let Some((path, token)) = WRITTEN.get() {
+        remove_token(path, token);
+    }
+    std::process::exit(code)
+}
+
+/// A token no one can guess, from the standard library's randomly keyed
+/// hasher: 64 hex digits, but as random as its key, which the system's
+/// random source gives once per thread (128 bits; each hasher after the
+/// first only counts up from it). Plenty for a token read from a file only
+/// this user can read.
 fn new_token() -> String {
     use std::hash::{BuildHasher, Hasher};
     let nanos = std::time::SystemTime::now()
@@ -662,13 +683,13 @@ fn accept(listener: TcpListener, token: &str, tx: &mpsc::Sender<Event>) {
         let conn = next;
         let token = token.to_string();
         let tx = tx.clone();
-        let greeting = greeting.clone();
+        let waiting = greeting.clone();
         let spawned = std::thread::Builder::new()
             .name("hub-conn".into())
-            .spawn(move || connection(stream, conn, &token, &tx, &greeting));
+            .spawn(move || connection(stream, conn, &token, &tx, &waiting));
         if spawned.is_err() {
-            // Not started, so not waiting.
-            continue;
+            // Not started, so not waiting (its slot would be gone for good).
+            greeting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 }
@@ -779,7 +800,7 @@ fn connection(
     if tx.send(Event::Joined { conn, hello, out }).is_err() {
         return;
     }
-    let mut buf = String::new();
+    let mut buf = Vec::new();
     while let Some(line) = super::next_line(&mut reader, &mut buf) {
         let Ok(cmd) = serde_json::from_str::<Cmd>(&line) else {
             continue;
@@ -820,6 +841,8 @@ struct Hub {
     /// system took them.
     hotkey: Option<(String, bool)>,
     settings_key: Option<(String, bool)>,
+    /// The stop key each agent asked for last.
+    asked: HashMap<u32, String>,
     stopped: bool,
     last_hotkey: Option<Instant>,
     last_settings: Option<Instant>,
@@ -849,6 +872,7 @@ impl Hub {
             hidden: false,
             hotkey: None,
             settings_key: None,
+            asked: HashMap::new(),
             stopped: false,
             last_hotkey: None,
             last_settings: None,
@@ -997,6 +1021,7 @@ impl Hub {
                 };
                 self.outs.remove(&agent);
                 self.hiders.remove(&agent);
+                self.asked.remove(&agent);
                 self.told.retain(|a, _| *a != agent);
                 if let Some(mut look) = self.looks.remove(&agent)
                     && let Some(s) = self.surface.as_mut()
@@ -1076,7 +1101,10 @@ impl Hub {
                 }
             }
             Cmd::Hide { id } => {
-                let shown = self.looks.values().any(|l| l.painter.showing()) && !self.hidden;
+                // Shown even when another agent hides it already: that hide
+                // may be too recent to be off the screen yet, so this one
+                // waits too (it used to take its picture at once).
+                let shown = self.looks.values().any(|l| l.painter.showing());
                 self.hiders.insert(agent, now);
                 self.update_hidden();
                 self.reply(agent, &Reply::Hidden { id, shown });
@@ -1100,10 +1128,15 @@ impl Hub {
                     self.font_path = Some(config.font.clone());
                     self.fonts = Fonts::load(&config.font);
                 }
+                let before = self.hotkey.clone();
                 let ok = self.register(Hotkey::Stop, &hotkey);
                 if !hotkey.trim().is_empty() {
+                    self.asked.insert(agent, hotkey.trim().to_string());
                     self.reply(agent, &Reply::Hotkey { key: hotkey, ok });
+                } else {
+                    self.asked.remove(&agent);
                 }
+                self.stop_key_replaced(before);
                 let ok = self.register(Hotkey::Settings, &settings_key);
                 if !settings_key.trim().is_empty() {
                     self.reply(
@@ -1127,6 +1160,12 @@ impl Hub {
                     look.painter.redraw();
                 }
             }
+            // An agent stopped by itself (a call made while stopped shows
+            // it again) when the others go on: the stop key is everyone's,
+            // so all stop, and its next press lets them all continue (it
+            // used to stop them, as the hub didn't know). One that goes on
+            // by itself leaves the others stopped.
+            Cmd::Stopped { on: true } if !self.stopped => self.stop(true),
             other => {
                 if let Some(look) = self.looks.get_mut(&agent) {
                     look.machine.apply(other, now);
@@ -1135,49 +1174,46 @@ impl Hub {
         }
     }
 
+    /// The stop key registered before `before` is no longer it (another
+    /// agent asked for another key, and it worked): the agents that asked
+    /// for the old one are told theirs no longer works, and every label
+    /// names the one that does.
+    fn stop_key_replaced(&mut self, before: Option<(String, bool)>) {
+        let (Some((old, true)), Some((new, true))) = (before, self.hotkey.clone()) else {
+            return;
+        };
+        if old.eq_ignore_ascii_case(&new) {
+            return;
+        }
+        let stale: Vec<(u32, String)> = self
+            .asked
+            .iter()
+            .filter(|(_, k)| k.eq_ignore_ascii_case(&old))
+            .map(|(a, k)| (*a, k.clone()))
+            .collect();
+        for (agent, key) in stale {
+            self.reply(agent, &Reply::Hotkey { key, ok: false });
+        }
+        for look in self.looks.values_mut() {
+            look.machine.set_hotkey(&new);
+            look.painter.redraw();
+        }
+    }
+
     /// Register a global key, the first time one is asked for: whether
     /// `key` is the one that works.
     fn register(&mut self, which: Hotkey, key: &str) -> bool {
-        let key = key.trim();
         let slot = match which {
             Hotkey::Stop => &mut self.hotkey,
             Hotkey::Settings => &mut self.settings_key,
         };
-        if key.is_empty() {
-            return false;
-        }
-        // The same key, registered: nothing to do. A key that failed, or
-        // another (the user changed it), is registered anew: the last
-        // asked for wins.
-        if let Some((k, true)) = slot
-            && k.eq_ignore_ascii_case(key)
-        {
-            return true;
-        }
-        let combo = crate::keys::parse_combo(key).ok();
-        let previous = slot.clone();
-        let ok = self
-            .surface
-            .as_mut()
-            .is_some_and(|s| s.set_hotkey(which, combo));
-        if ok {
-            *slot = Some((key.to_string(), true));
-            return true;
-        }
-        // Registering drops the key before; one that worked is put back,
-        // so a key the system refuses never leaves the desktop with none.
-        match previous {
-            Some((k, true)) => {
-                let back = crate::keys::parse_combo(&k).ok();
-                let again = self
-                    .surface
-                    .as_mut()
-                    .is_some_and(|s| s.set_hotkey(which, back));
-                *slot = Some((k, again));
-            }
-            _ => *slot = Some((key.to_string(), false)),
-        }
-        false
+        let surface = &mut self.surface;
+        super::helper::register_key(
+            &mut |w, c| surface.as_mut().is_some_and(|s| s.set_hotkey(w, c)),
+            slot,
+            which,
+            key,
+        )
     }
 
     /// The stop key: every agent stops (or may go on).
@@ -1453,6 +1489,111 @@ mod tests {
             },
         );
         assert!(hub.stopped);
+    }
+
+    fn joined(hub: &mut Hub, conn: u64) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        hub.event(Event::Joined {
+            conn,
+            hello: Cmd::Hello {
+                token: String::new(),
+                client: "codex".into(),
+                pid: 1,
+                want: None,
+                screen: None,
+                proto: HUB_PROTO,
+            },
+            out: tx,
+        });
+        rx
+    }
+
+    fn config(hotkey: &str) -> Cmd {
+        Cmd::Config {
+            config: Box::default(),
+            hotkey: hotkey.into(),
+            settings_key: String::new(),
+            stopped: false,
+        }
+    }
+
+    fn replies(rx: &mpsc::Receiver<String>) -> Vec<Reply> {
+        rx.try_iter()
+            .filter_map(|l| serde_json::from_str(&l).ok())
+            .collect()
+    }
+
+    #[test]
+    fn an_agent_whose_stop_key_was_replaced_is_told_it_no_longer_works() {
+        let display = Display {
+            taken: "ctrl+alt+escape",
+            keys: Vec::new(),
+        };
+        let mut hub = Hub::new(Some(Box::new(display)));
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        hub.command(1, config("ctrl+alt+f12"));
+        assert!(
+            replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Hotkey { key, ok: true } if key == "ctrl+alt+f12"))
+        );
+        // The second asks for another key, which works: it is the stop key
+        // now, and the first is told its own no longer is.
+        hub.command(2, config("ctrl+alt+f11"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+f11".into(), true)));
+        assert!(
+            replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Hotkey { key, ok: false } if key == "ctrl+alt+f12"))
+        );
+        assert!(
+            !replies(&second)
+                .iter()
+                .any(|r| matches!(r, Reply::Hotkey { ok: false, .. }))
+        );
+        // A key the system refuses changes nothing for anyone.
+        hub.command(1, config("ctrl+alt+escape"));
+        assert_eq!(hub.hotkey, Some(("ctrl+alt+f11".into(), true)));
+        assert!(
+            !replies(&second)
+                .iter()
+                .any(|r| matches!(r, Reply::Hotkey { ok: false, .. }))
+        );
+    }
+
+    #[test]
+    fn an_agent_that_shows_itself_stopped_stops_the_hub_too() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let _second = joined(&mut hub, 2);
+        hub.command(2, Cmd::Stopped { on: true });
+        assert!(hub.stopped);
+        assert!(
+            replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Stop { on: true }))
+        );
+        // One going on by itself leaves the others stopped.
+        hub.command(2, Cmd::Stopped { on: false });
+        assert!(hub.stopped);
+        assert!(
+            !replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Stop { on: false }))
+        );
+    }
+
+    #[test]
+    fn only_the_hubs_own_token_file_is_removed() {
+        let home = std::env::temp_dir().join(format!("cu-hub-own-{}", std::process::id()));
+        write_token(&home, 2, "mine").unwrap();
+        let path = token_path(&home, 2);
+        remove_token(&path, "another");
+        assert!(path.exists());
+        remove_token(&path, "mine");
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     // -- the hub over its socket, without a display --------------------

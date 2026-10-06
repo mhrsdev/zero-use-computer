@@ -132,6 +132,12 @@ pub fn mask_card_numbers(s: &str) -> Option<String> {
 /// a code, PIN or password. It doesn't depend on the language of the text
 /// around it; English words only widen it to 4-digit codes.
 pub fn mask_codes(s: &str) -> Option<String> {
+    mask_codes_near(s, "")
+}
+
+/// [`mask_codes`] where a code, PIN or password may be mentioned in
+/// `near` instead (a notification's title, for its body).
+pub fn mask_codes_near(s: &str, near: &str) -> Option<String> {
     const WORDS: [&str; 8] = [
         "code",
         "otp",
@@ -143,7 +149,7 @@ pub fn mask_codes(s: &str) -> Option<String> {
         "2fa",
     ];
     // Whole words only: "shipping" and "barcode" mention no PIN or code.
-    let low = s.to_lowercase();
+    let low = format!("{s} {near}").to_lowercase();
     let mentioned = low
         .split(|c: char| !c.is_alphanumeric())
         .any(|word| WORDS.contains(&word));
@@ -295,6 +301,8 @@ mod tests {
         assert_eq!(mask_codes("Shipping in 2024"), None);
         assert_eq!(mask_codes("Your opinion matters since 1998"), None);
         assert!(mask_codes("Your PIN: 4821").is_some());
+        assert_eq!(mask_codes("4821"), None);
+        assert!(mask_codes_near("4821", "Your bank PIN").is_some());
     }
     use crate::types::NodeStates;
 
