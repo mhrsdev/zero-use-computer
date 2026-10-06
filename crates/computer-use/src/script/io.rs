@@ -657,8 +657,14 @@ mod tests {
             .join("..")
             .join("..")
             .join("config.toml");
+        // (Windows resolves the `..` before looking, so it is refused as
+        // the server's own instead.)
         let r = resolve(&e, climb.to_str().unwrap(), true);
-        assert!(r.as_ref().is_err_and(|e| e.contains("goes up")), "{r:?}");
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("goes up") || e.contains("server's own")),
+            "{r:?}"
+        );
         assert!(write_text(&e, climb.to_str().unwrap(), "x", false).is_err());
         assert!(!ws.join("nope").exists());
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[script]\n");

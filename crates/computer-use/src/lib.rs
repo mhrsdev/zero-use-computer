@@ -282,6 +282,8 @@ impl Backend for Box<dyn Backend> {
 mod tests {
     /// The names of the `fn`s between `start` and the `}` that closes it.
     fn fns_in(source: &str, start: &str) -> std::collections::BTreeSet<String> {
+        // (A Windows checkout may have CRLF line ends.)
+        let source = source.replace("\r\n", "\n");
         let body = &source[source.find(start).expect(start)..];
         let body = &body[..body.find("\n}\n").expect("end of block")];
         body.split("fn ")

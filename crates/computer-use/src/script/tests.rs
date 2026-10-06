@@ -621,7 +621,12 @@ fn scripts_never_read_the_servers_settings_or_proc() {
         .display()
         .to_string();
     let out = run(&mut e, &format!("write_text({climb:?}, \"x\")"));
-    assert!(out.is_error && out.text.contains("goes up"), "{}", out.text);
+    // (Windows resolves the `..` before looking: refused as the server's.)
+    assert!(
+        out.is_error && (out.text.contains("goes up") || out.text.contains("server's own")),
+        "{}",
+        out.text
+    );
     assert!(!dir.join("lib/files/nope").exists());
     for code in [
         format!("read_text({:?})", settings.display().to_string()),

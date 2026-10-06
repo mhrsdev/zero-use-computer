@@ -145,7 +145,7 @@ impl AppsLog {
             static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
-            let saved = std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_ok();
+            let saved = std::fs::write(&tmp, text).is_ok() && replace(&tmp, path);
             if saved {
                 self.added.clear();
             } else {
@@ -189,7 +189,12 @@ impl WriteLock {
                 .open(&lock)
             {
                 Ok(_) => return Some(Self(lock)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // (On Windows a lock file being deleted is "access
+                // denied" for a moment, not "already there".)
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        || (cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied) =>
+                {
                     let stale = std::fs::metadata(&lock)
                         .and_then(|m| m.modified())
                         .ok()
@@ -212,6 +217,22 @@ impl Drop for WriteLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// Put `tmp` in place of `path`. Windows refuses to replace a file another
+/// program has open for a moment (an antivirus scan, another server
+/// reading it): tried a few times.
+fn replace(tmp: &Path, path: &Path) -> bool {
+    for _ in 0..20 {
+        match std::fs::rename(tmp, path) {
+            Ok(()) => return true,
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn read(path: &Path) -> BTreeMap<String, AppRecord> {
