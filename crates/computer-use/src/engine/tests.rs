@@ -5601,7 +5601,10 @@ fn an_element_click_after_the_window_moved_lands_where_it_is_now() {
             _ => None,
         })
         .unwrap();
-    assert!(now.contains(at), "clicked at {at:?}, the button is at {now:?}");
+    assert!(
+        now.contains(at),
+        "clicked at {at:?}, the button is at {now:?}"
+    );
 }
 
 #[test]

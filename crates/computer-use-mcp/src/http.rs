@@ -1258,6 +1258,34 @@ mod tests {
         });
     }
 
+    /// A header line that never ends ends the connection once it is long,
+    /// instead of growing in memory for as long as the client sends it.
+    #[test]
+    fn a_header_line_that_never_ends_is_cut_off() {
+        serving("long-line", |addr| {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            write!(s, "POST /mcp HTTP/1.1\r\nX-Long: ").unwrap();
+            // Sent until the server stops reading (or a megabyte went).
+            let chunk = vec![b'a'; 16 * 1024];
+            for _ in 0..64 {
+                if s.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+            let mut rest = Vec::new();
+            let read = s.read_to_end(&mut rest);
+            assert!(
+                read.is_ok()
+                    || read.is_err_and(|e| e.kind() != std::io::ErrorKind::WouldBlock
+                        && e.kind() != std::io::ErrorKind::TimedOut),
+                "the connection stayed open"
+            );
+            let r = post(addr, None, json!({"jsonrpc":"2.0","id":8,"method":"ping"}));
+            assert_eq!(r.json()["id"], 8);
+        });
+    }
+
     /// Clients that declare a body and never send it hold the threads that
     /// refuse them, never the one taking requests: once most of them go,
     /// the server serves again, while the rest still hold back.

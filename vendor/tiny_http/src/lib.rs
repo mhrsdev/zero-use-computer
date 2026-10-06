@@ -90,6 +90,9 @@
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
 #![allow(clippy::match_like_matches_macro)]
+// Patched (computer-use-mcp): built as a path dependency, so its warnings
+// would fail a build with `-D warnings`; the code itself is as published.
+#![allow(unused_imports, dead_code)]
 
 #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
 use zeroize::Zeroizing;

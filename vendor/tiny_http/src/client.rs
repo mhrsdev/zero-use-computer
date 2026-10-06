@@ -78,6 +78,8 @@ impl ClientConnection {
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
     fn read_next_line(&mut self) -> IoResult<AsciiString> {
+        /// The longest request or header line read (patched).
+        const MAX_LINE: usize = 16 * 1024;
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
 
@@ -97,6 +99,11 @@ impl ClientConnection {
 
             prev_byte_was_cr = byte == b'\r';
 
+            // Patched (computer-use-mcp): a line that never ends no longer
+            // grows without bound.
+            if buf.len() >= MAX_LINE {
+                return Err(IoError::new(ErrorKind::InvalidInput, "Header line too long"));
+            }
             buf.push(byte);
         }
     }
@@ -104,6 +111,8 @@ impl ClientConnection {
     /// Reads a request from the stream.
     /// Blocks until the header has been read.
     fn read(&mut self) -> Result<Request, ReadError> {
+        /// The most header lines read for a request (patched).
+        const MAX_HEADERS: usize = 256;
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
@@ -123,6 +132,13 @@ impl ClientConnection {
                     if line.is_empty() {
                         break;
                     };
+                    // Patched (computer-use-mcp): and no endless headers.
+                    if headers.len() >= MAX_HEADERS {
+                        return Err(ReadError::ReadIoError(IoError::new(
+                            ErrorKind::InvalidInput,
+                            "Too many headers",
+                        )));
+                    }
                     headers.push(match FromStr::from_str(line.as_str().trim()) {
                         // TODO: remove this conversion
                         Ok(h) => h,
