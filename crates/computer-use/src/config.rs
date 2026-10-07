@@ -468,6 +468,10 @@ pub struct OverlayConfig {
     pub cursor_color: String,
     /// Name tag shown beside the agent cursor ("" = none).
     pub cursor_tag: String,
+    /// The agent cursor's look: "random" (one of the pictures, another for
+    /// each agent working at once), "classic" (the drawn arrow), or a
+    /// picture: crystal, gold, glass, frost, chrome, orbit.
+    pub cursor_style: String,
     /// No new action for this long after the last one: done (green), then hidden.
     pub done_after_ms: u64,
     /// How long "done" stays on screen before everything disappears.
@@ -519,6 +523,7 @@ impl Default for OverlayConfig {
             color_stopped: "#FF6D00".into(),
             cursor_color: "#9C27B0".into(),
             cursor_tag: "Zero".into(),
+            cursor_style: "random".into(),
             done_after_ms: 20_000,
             done_linger_ms: 1_500,
             error_hold_ms: 2_500,
@@ -1156,6 +1161,14 @@ impl Config {
                     "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
                 ));
             }
+        }
+        let style = o.cursor_style.trim().to_ascii_lowercase();
+        if !crate::overlay::draw::CURSOR_STYLES.contains(&style.as_str()) {
+            return Err(format!(
+                "overlay.cursor_style must be one of {} (got \"{}\")",
+                crate::overlay::draw::CURSOR_STYLES.join(", "),
+                o.cursor_style
+            ));
         }
         if !(0.0..=1.0).contains(&self.ocr.min_confidence) {
             return Err(format!(

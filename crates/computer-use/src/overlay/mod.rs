@@ -366,9 +366,6 @@ pub struct Overlay {
     /// The same for the settings key.
     settings_key: Arc<Mutex<Option<(String, bool)>>>,
     excluded: bool,
-    /// The helper has answered a `Hide` in time once: it is up (until then
-    /// it may still be starting, and the first pictures wait for it).
-    hide_answered: bool,
     /// Whether the helper says when the cursor arrives: unknown until it
     /// is first asked.
     arrivals: Option<bool>,
@@ -670,7 +667,6 @@ impl Overlay {
             hotkey: hotkey_state,
             settings_key: settings_state,
             excluded: false,
-            hide_answered: false,
             arrivals: None,
             next_id: 0,
             hub,
@@ -891,15 +887,15 @@ impl Overlay {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&Cmd::Hide { id });
-        // A helper that has just started can take longer to answer than
-        // one that is up: a picture taken meanwhile would have it in it
-        // (and its label read as the app's text).
-        let wait = if self.hide_answered { 150 } else { 1000 };
+        // Until it answers, the overlay may still be on the screen: a
+        // picture taken meanwhile would have it in it (and its label read
+        // as the app's text). A helper busy drawing (a glide, a fade) can
+        // take longer than a moment, so this waits up to a second, not
+        // 150 ms: that let the border into one capture in two on X11.
         let r = self.wait_for(
-            Duration::from_millis(wait),
+            Duration::from_millis(1000),
             |r| matches!(r, Reply::Hidden { id: i, .. } if *i == id),
         );
-        self.hide_answered |= r.is_some();
         Some(matches!(r, Some(Reply::Hidden { shown: true, .. })))
     }
 }

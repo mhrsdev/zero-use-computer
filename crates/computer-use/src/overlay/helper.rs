@@ -240,6 +240,12 @@ impl Colors {
     }
 }
 
+/// The look a `cursor_style` setting names; "random" (or anything else)
+/// picks a picture, avoiding `taken`.
+fn style_for(setting: &str, taken: &[draw::CursorStyle]) -> draw::CursorStyle {
+    draw::CursorStyle::named(setting).unwrap_or_else(|| draw::CursorStyle::random(taken))
+}
+
 struct Glide {
     from: (f64, f64),
     to: (f64, f64),
@@ -328,13 +334,20 @@ pub struct Machine {
     hotkey: String,
     /// Put before the label ("2 · "): which of the hub's agents it is.
     badge: String,
+    /// The pointer's look, and the setting it came from ("random" picks
+    /// once, so the pointer stays the same through the session).
+    style: draw::CursorStyle,
+    style_setting: String,
 }
 
 impl Machine {
     pub fn new(cfg: OverlayConfig, now: Instant) -> Self {
         let colors = Colors::from(&cfg);
         let start = colors.working;
+        let style_setting = cfg.cursor_style.trim().to_ascii_lowercase();
         Self {
+            style: style_for(&style_setting, &[]),
+            style_setting,
             colors,
             cfg,
             phase: Phase::Off,
@@ -356,6 +369,21 @@ impl Machine {
             hotkey: String::new(),
             badge: String::new(),
         }
+    }
+
+    /// The pointer's look.
+    pub fn style(&self) -> draw::CursorStyle {
+        self.style
+    }
+
+    /// Whether the look was picked at random (and may be picked again).
+    pub fn style_random(&self) -> bool {
+        draw::CursorStyle::named(&self.style_setting).is_none()
+    }
+
+    /// Pick a random look other than those in `taken` (other agents').
+    pub fn pick_style(&mut self, taken: &[draw::CursorStyle]) {
+        self.style = draw::CursorStyle::random(taken);
     }
 
     /// Whether the agent is stopped (the stop key toggles this).
@@ -460,6 +488,11 @@ impl Machine {
                 ..
             } => {
                 self.colors = Colors::from(&config);
+                let setting = config.cursor_style.trim().to_ascii_lowercase();
+                if setting != self.style_setting {
+                    self.style = style_for(&setting, &[]);
+                    self.style_setting = setting;
+                }
                 self.cfg = *config;
                 self.hotkey = hotkey;
                 if !self.cfg.enabled {
@@ -720,6 +753,7 @@ impl Machine {
                     ring: color,
                     body: self.colors.cursor,
                     ripple,
+                    style: self.style,
                 })
             } else {
                 None
@@ -738,6 +772,7 @@ pub struct CursorLook {
     pub ring: Color,
     pub body: Color,
     pub ripple: Option<f32>,
+    pub style: draw::CursorStyle,
 }
 
 /// What is on screen.
@@ -762,7 +797,7 @@ type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 type LabelKey = (String, [u8; 4], u8, i64, i64, u32);
 /// What the cursor image was drawn with: ring, body, ripple, opacity, tag,
 /// and the scale (per cent) of the monitor it is on.
-type CursorKey = ([u8; 4], [u8; 4], i32, u8, String, u32);
+type CursorKey = ([u8; 4], [u8; 4], i32, u8, String, u32, draw::CursorStyle);
 
 /// Turns scenes into surface calls, redrawing only what changed.
 #[derive(Default)]
@@ -812,7 +847,15 @@ impl Painter {
         if self.tag != tag {
             self.tag = tag;
             if self.cursor_img.is_some() {
-                self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
+                self.cursor_img = Some((
+                    [0; 4],
+                    [0; 4],
+                    i32::MIN,
+                    0,
+                    String::new(),
+                    0,
+                    draw::CursorStyle::Classic,
+                ));
             }
         }
     }
@@ -1044,10 +1087,12 @@ impl Painter {
                     ak,
                     tag.to_string(),
                     (cursor_scale * 100.0).round() as u32,
+                    c.style,
                 );
                 let redraw = self.cursor_img.as_ref() != Some(&key);
-                let art = redraw
-                    .then(|| draw::cursor(fonts, tag, cursor_scale, c.body, c.ring, c.ripple));
+                let art = redraw.then(|| {
+                    draw::cursor(fonts, tag, cursor_scale, c.body, c.ring, c.ripple, c.style)
+                });
                 if let Some(a) = &art {
                     self.cursor_hot = (
                         f64::from(a.hotspot.0) / f64::from(ppu),
@@ -1088,7 +1133,15 @@ impl Painter {
             self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN, 0));
         }
         if self.cursor_img.is_some() {
-            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
+            self.cursor_img = Some((
+                [0; 4],
+                [0; 4],
+                i32::MIN,
+                0,
+                String::new(),
+                0,
+                draw::CursorStyle::Classic,
+            ));
         }
     }
 

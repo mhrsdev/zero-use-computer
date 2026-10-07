@@ -858,6 +858,24 @@ struct Hub {
 }
 
 impl Hub {
+    /// An agent whose pointer is picked at random gets one no other agent
+    /// has, while there are pictures to go round.
+    fn own_pointer(&mut self, agent: u32) {
+        let taken: Vec<_> = self
+            .looks
+            .iter()
+            .filter(|(a, _)| **a != agent)
+            .map(|(_, l)| l.machine.style())
+            .collect();
+        if let Some(look) = self.looks.get_mut(&agent)
+            && look.machine.style_random()
+            && taken.contains(&look.machine.style())
+        {
+            look.machine.pick_style(&taken);
+            look.painter.redraw();
+        }
+    }
+
     fn new(mut surface: Option<Box<dyn Surface>>) -> Self {
         if let Some(s) = surface.as_mut() {
             // Each agent's fades are drawn: the surface's one opacity
@@ -1011,6 +1029,7 @@ impl Hub {
                         painter: Painter::for_agent(agent),
                     },
                 );
+                self.own_pointer(agent);
                 if self.stopped {
                     self.reply(agent, &Reply::Stop { on: true });
                 }
@@ -1167,6 +1186,7 @@ impl Hub {
                     );
                     look.painter.redraw();
                 }
+                self.own_pointer(agent);
             }
             // An agent stopped by itself (a call made while stopped shows
             // it again) when the others go on: the stop key is everyone's,
@@ -1703,6 +1723,43 @@ mod tests {
         hub.continued = Some(Instant::now() - CONTINUE_ECHO);
         hub.command(2, Cmd::Stopped { on: true });
         assert!(hub.stopped);
+    }
+
+    /// Agents working at once each get their own picture, and keep it as
+    /// their settings come and go; one that names a style gets that one.
+    #[test]
+    fn each_agent_gets_its_own_pointer() {
+        use crate::overlay::draw::CursorStyle;
+        let mut hub = Hub::new(None);
+        let _rx: Vec<_> = (1..=6).map(|c| joined(&mut hub, c)).collect();
+        let styles = |hub: &Hub| -> Vec<CursorStyle> {
+            hub.looks.values().map(|l| l.machine.style()).collect()
+        };
+        let first = styles(&hub);
+        assert_eq!(first.len(), 6);
+        for (i, s) in first.iter().enumerate() {
+            assert!(!first[..i].contains(s), "{first:?}");
+            assert_ne!(*s, CursorStyle::Classic);
+        }
+        for agent in hub.looks.keys().copied().collect::<Vec<_>>() {
+            hub.command(agent, config(""));
+        }
+        assert_eq!(styles(&hub), first);
+        let agent = *hub.looks.keys().next().unwrap();
+        let named = OverlayConfig {
+            cursor_style: "classic".into(),
+            ..OverlayConfig::default()
+        };
+        hub.command(
+            agent,
+            Cmd::Config {
+                config: Box::new(named),
+                hotkey: String::new(),
+                settings_key: String::new(),
+                stopped: false,
+            },
+        );
+        assert_eq!(hub.looks[&agent].machine.style(), CursorStyle::Classic);
     }
 
     #[test]

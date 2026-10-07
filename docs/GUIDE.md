@@ -505,9 +505,13 @@ whichever client started it:
   next ones are 2, 3… in the order they join. A number freed by an agent
   that left goes to the next one. The hub ends a few seconds after the
   last agent leaves.
-- **A cursor each.** One overlay draws every agent's purple cursor, tagged
-  with its number once there are two or more ("Zero" when alone), and its
-  glow and label ("2 · Zero is thinking…") in its own part of the screen.
+- **A cursor each.** One overlay draws every agent's cursor, tagged with
+  its number once there are two or more ("Zero" when alone), and its glow
+  and label ("2 · Zero is thinking…") in its own part of the screen. Each
+  agent gets a pointer picture none of the others has (six pictures:
+  crystal, gold, glass, frost, chrome, orbit), picked at random when it
+  starts; `overlay.cursor_style` names one instead, or `"classic"` for the
+  drawn arrow.
 - **One stop key** stops them all. (Before v3.9 a second server couldn't
   even register it: the system gives a key to one program.)
 - **The screen shared out:** halves for two, thirds for three, a 2×2 grid

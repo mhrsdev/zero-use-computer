@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.9.8
+
+New pointers for the agent, and the overlay kept out of screenshots on X11
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
+
+- **Six pointer pictures**: crystal, gold, glass, frost, chrome and orbit
+  (3D-rendered, cut out with their glow). Each session picks one at
+  random; agents working at once each get a different one while there
+  are pictures to go round. The state colour still glows behind the
+  pointer, the click ripple and the name tag are as before.
+  `overlay.cursor_style` names one (`"crystal"`, …), `"classic"` keeps the
+  drawn arrow, `"random"` is the default.
+- **The overlay could be in the agent's screenshots on X11** without a
+  compositor: the engine waited 150 ms for the overlay to say it was
+  hidden, and a helper busy drawing (a glide, a fade) answered later, so
+  the picture was taken with the border in it, about one time in two in
+  the live test. It now waits up to a second for that answer.
+
+### Checked
+
+- 504 tests in the library (new: the pictures load with their tip on the
+  pointer; agents at once get different pictures), 55 in the server;
+  clippy on Linux, Windows and macOS; Rust 1.88; the live Linux tests
+  10 of 10, the overlay test 10 runs of 10 (5 of 10 before); four agents
+  on one hub under Xvfb showed four different pictures. Not seen on a
+  Windows or macOS desktop.
+
 ## v3.9.7
 
 A debugging release: the whole project read twice, line by line, and what

@@ -211,6 +211,8 @@ color_paused = "#78909C"     # grey: waiting while you use the mouse/keyboard
 color_stopped = "#FF6D00"    # orange: stopped with the emergency stop key
 cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the state
 cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
+cursor_style = "random"      # "random" (a picture per session, another per agent at once), "classic" (the drawn arrow),
+                             # or one picture: "crystal", "gold", "glass", "frost", "chrome", "orbit"
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
 error_hold_ms = 2500

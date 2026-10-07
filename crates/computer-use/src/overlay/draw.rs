@@ -7,6 +7,8 @@ use tiny_skia::{
     Point, RadialGradient, Rect as SkRect, SpreadMode, Stroke, Transform,
 };
 
+use std::sync::OnceLock;
+
 use super::text::{self, Fonts};
 
 /// Side of the (square) cursor image at scale 1; the hotspot is its centre.
@@ -74,6 +76,114 @@ fn stroke(width: f32) -> Stroke {
     }
 }
 
+/// How the agent's pointer looks: the drawn arrow, or one of the pictures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CursorStyle {
+    Classic,
+    Crystal,
+    Gold,
+    Glass,
+    Frost,
+    Chrome,
+    Orbit,
+}
+
+/// What `overlay.cursor_style` takes: "random" (a picture picked for each
+/// agent) or a style's name.
+pub const CURSOR_STYLES: [&str; 8] = [
+    "random", "classic", "crystal", "gold", "glass", "frost", "chrome", "orbit",
+];
+
+impl CursorStyle {
+    /// The pictures, the ones "random" picks from.
+    pub const PICTURES: [CursorStyle; 6] = [
+        CursorStyle::Crystal,
+        CursorStyle::Gold,
+        CursorStyle::Glass,
+        CursorStyle::Frost,
+        CursorStyle::Chrome,
+        CursorStyle::Orbit,
+    ];
+
+    /// A style by its name; None for "random" (or an unknown name).
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "classic" => Self::Classic,
+            "crystal" => Self::Crystal,
+            "gold" => Self::Gold,
+            "glass" => Self::Glass,
+            "frost" => Self::Frost,
+            "chrome" => Self::Chrome,
+            "orbit" => Self::Orbit,
+            _ => return None,
+        })
+    }
+
+    /// One of the pictures, at random, preferring those not in `taken`
+    /// (other agents' pointers).
+    pub fn random(taken: &[CursorStyle]) -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        let free: Vec<CursorStyle> = Self::PICTURES
+            .into_iter()
+            .filter(|p| !taken.contains(p))
+            .collect();
+        let pool = if free.is_empty() {
+            Self::PICTURES.to_vec()
+        } else {
+            free
+        };
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        pool[(h.finish() % pool.len() as u64) as usize]
+    }
+
+    /// The picture, decoded once; None for the drawn arrow.
+    fn picture(self) -> Option<&'static Picture> {
+        static PICTURES: OnceLock<Vec<Option<Picture>>> = OnceLock::new();
+        let i = Self::PICTURES.iter().position(|p| *p == self)?;
+        PICTURES
+            .get_or_init(|| {
+                PICTURE_FILES
+                    .iter()
+                    .map(|(png, tip)| {
+                        Pixmap::decode_png(png)
+                            .ok()
+                            .map(|image| Picture { image, tip: *tip })
+                    })
+                    .collect()
+            })
+            .get(i)?
+            .as_ref()
+    }
+}
+
+/// A picture of a pointer and where its tip is in it (px).
+struct Picture {
+    image: Pixmap,
+    tip: (f32, f32),
+}
+
+/// The pictures, in the order of `CursorStyle::PICTURES`, all drawn at one
+/// scale (a 192 px tall picture is the tallest).
+const PICTURE_FILES: [(&[u8], (f32, f32)); 6] = [
+    (
+        include_bytes!("../../assets/cursors/crystal.png"),
+        (7.0, 6.0),
+    ),
+    (include_bytes!("../../assets/cursors/gold.png"), (4.0, 4.0)),
+    (include_bytes!("../../assets/cursors/glass.png"), (7.0, 5.0)),
+    (include_bytes!("../../assets/cursors/frost.png"), (7.0, 5.0)),
+    (
+        include_bytes!("../../assets/cursors/chrome.png"),
+        (6.0, 5.0),
+    ),
+    (include_bytes!("../../assets/cursors/orbit.png"), (6.0, 4.0)),
+];
+
 /// The agent's pointer, drawn with its hotspot (the arrow tip) at `hotspot`.
 pub struct CursorArt {
     pub image: Pixmap,
@@ -109,6 +219,8 @@ fn arrow_path(x: f32, y: f32, s: f32) -> Option<tiny_skia::Path> {
 /// white and outlined in the state colour `ring`, over a soft shadow and a
 /// glow in `ring`; beside it, a small name `tag` in the same colours. While
 /// `ripple` (0–1) runs, a click ring expands from the tip.
+/// With a picture `style`, the picture takes the arrow's place (the state
+/// colour glows behind it).
 pub fn cursor(
     fonts: &Fonts,
     tag: &str,
@@ -116,7 +228,11 @@ pub fn cursor(
     body: Color,
     ring: Color,
     ripple: Option<f32>,
+    style: CursorStyle,
 ) -> CursorArt {
+    if let Some(pic) = style.picture() {
+        return picture_cursor(fonts, tag, scale, body, ring, ripple, pic);
+    }
     // About the size of a system pointer, so it is easy to follow.
     let s = scale * 1.35;
     // Room around the tip for the glow and the ripple.
@@ -231,25 +347,139 @@ pub fn cursor(
         pm.stroke_path(&arrow, &fill, &stroke(1.2 * s), id, None);
     }
 
-    // The name tag.
-    if let Some(t) = tag_text {
-        let (x, y) = (c + tag_x, c + tag_y);
-        if let Some(pill) = rounded_rect(x, y, tag_w, tag_h, tag_h / 2.0) {
-            pm.fill_path(&pill, &paint(body), FillRule::Winding, id, None);
-            pm.stroke_path(&pill, &paint(ring), &stroke(1.5 * s), id, None);
-        }
-        if let Some(p) = &t.path {
-            pm.fill_path(
-                p,
-                &paint(Color::from_rgba8(255, 255, 255, 255)),
-                FillRule::Winding,
-                Transform::from_translate(
-                    x + (tag_w - t.width) / 2.0,
-                    y + (tag_h - t.height) / 2.0,
-                ),
+    if let Some(t) = &tag_text {
+        name_tag(
+            &mut pm,
+            t,
+            (c + tag_x, c + tag_y),
+            (tag_w, tag_h),
+            s,
+            body,
+            ring,
+        );
+    }
+
+    CursorArt {
+        image: pm,
+        hotspot: (c, c),
+    }
+}
+
+/// The name tag beside the pointer: a pill in `body`, edged in `ring`.
+fn name_tag(
+    pm: &mut Pixmap,
+    t: &text::TextPath,
+    (x, y): (f32, f32),
+    (tag_w, tag_h): (f32, f32),
+    s: f32,
+    body: Color,
+    ring: Color,
+) {
+    let id = Transform::identity();
+    if let Some(pill) = rounded_rect(x, y, tag_w, tag_h, tag_h / 2.0) {
+        pm.fill_path(&pill, &paint(body), FillRule::Winding, id, None);
+        pm.stroke_path(&pill, &paint(ring), &stroke(1.5 * s), id, None);
+    }
+    if let Some(p) = &t.path {
+        pm.fill_path(
+            p,
+            &paint(Color::from_rgba8(255, 255, 255, 255)),
+            FillRule::Winding,
+            Transform::from_translate(x + (tag_w - t.width) / 2.0, y + (tag_h - t.height) / 2.0),
+            None,
+        );
+    }
+}
+
+/// A picture pointer: the state colour glows behind it, the click ripple
+/// spreads from its tip, and the name tag sits by its lower right.
+fn picture_cursor(
+    fonts: &Fonts,
+    tag: &str,
+    scale: f32,
+    body: Color,
+    ring: Color,
+    ripple: Option<f32>,
+    pic: &Picture,
+) -> CursorArt {
+    let s = scale * 1.35;
+    // The tallest picture is about one and a half system pointers high.
+    let k = 38.0 * s / 192.0;
+    let (pw, ph) = (pic.image.width() as f32 * k, pic.image.height() as f32 * k);
+    let (tip_x, tip_y) = (pic.tip.0 * k, pic.tip.1 * k);
+    let pad = (CURSOR_BOX / 2.0) * s;
+    let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
+    let tag_text = tag_text.filter(|t| t.width > 0.0);
+    // Tag: beside the lower right of the pointer, off its tip.
+    let (tag_x, tag_y) = (pw * 0.74 - tip_x, ph * 0.88 - tip_y);
+    let (tag_w, tag_h) = tag_text.as_ref().map_or((0.0, 0.0), |t| {
+        (t.width + 12.0 * s, (t.height + 3.0 * s).max(16.0 * s))
+    });
+    let w = pad + pad.max(pw - tip_x).max(tag_x + tag_w + 4.0 * s);
+    let h = pad + pad.max(ph - tip_y).max(tag_y + tag_h + 4.0 * s);
+    let mut pm = canvas(w, h);
+    let (c, id) = (pad, Transform::identity());
+
+    // The state colour, glowing behind the body of the pointer.
+    let (gx, gy, glow_r) = (c + pw * 0.28, c + ph * 0.32, 22.0 * s);
+    if let (Some(p), Some(shader)) = (
+        PathBuilder::from_circle(gx, gy, glow_r),
+        RadialGradient::new(
+            Point::from_xy(gx, gy),
+            Point::from_xy(gx, gy),
+            glow_r,
+            vec![
+                GradientStop::new(0.0, with_alpha(ring, 0.55)),
+                GradientStop::new(0.55, with_alpha(ring, 0.22)),
+                GradientStop::new(1.0, with_alpha(ring, 0.0)),
+            ],
+            SpreadMode::Pad,
+            id,
+        ),
+    ) {
+        let glow = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        pm.fill_path(&p, &glow, FillRule::Winding, id, None);
+    }
+
+    if let Some(t) = ripple.filter(|t| (0.0..1.0).contains(t)) {
+        let r = (5.0 + 22.0 * t) * s;
+        if let Some(p) = PathBuilder::from_circle(c, c, r) {
+            pm.stroke_path(
+                &p,
+                &paint(with_alpha(ring, 1.0 - t)),
+                &stroke(3.0 * s * (1.0 - 0.5 * t)),
+                id,
                 None,
             );
         }
+    }
+
+    pm.draw_pixmap(
+        0,
+        0,
+        pic.image.as_ref(),
+        &tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bicubic,
+            ..tiny_skia::PixmapPaint::default()
+        },
+        Transform::from_scale(k, k).post_translate(c - tip_x, c - tip_y),
+        None,
+    );
+
+    if let Some(t) = &tag_text {
+        name_tag(
+            &mut pm,
+            t,
+            (c + tag_x, c + tag_y),
+            (tag_w, tag_h),
+            s,
+            body,
+            ring,
+        );
     }
 
     CursorArt {
@@ -471,7 +701,15 @@ mod tests {
         let body = parse_color("#8E24AA").unwrap();
         let ring = parse_color("#1E88E5").unwrap();
         let fonts = Fonts::load("");
-        let art = cursor(&Fonts::default(), "", 1.0, body, ring, Some(0.3));
+        let art = cursor(
+            &Fonts::default(),
+            "",
+            1.0,
+            body,
+            ring,
+            Some(0.3),
+            CursorStyle::Classic,
+        );
         let c = &art.image;
         let (hx, hy) = art.hotspot;
         assert!((hx - 43.2).abs() < 0.01 && hx == hy, "{:?}", art.hotspot);
@@ -480,7 +718,7 @@ mod tests {
         assert!(at(47, 51) > 200);
         assert_eq!(at(1, 1), 0);
         // A name tag widens the image to the right, the tip stays put.
-        let tagged = cursor(&fonts, "Zero", 1.0, body, ring, None);
+        let tagged = cursor(&fonts, "Zero", 1.0, body, ring, None, CursorStyle::Classic);
         if !fonts.is_empty() {
             assert!(tagged.image.width() > c.width());
         }
@@ -493,6 +731,47 @@ mod tests {
         assert!(e.pixel(5, 29).unwrap().alpha() < 20);
         let dark = edge(100, 30, parse_color("#000").unwrap(), 0, 3.0);
         assert!(dark.pixel(5, 3).unwrap().red() > 120, "light core on black");
+    }
+
+    #[test]
+    fn every_picture_loads_with_its_tip_on_the_pointer() {
+        let body = parse_color("#8E24AA").unwrap();
+        let ring = parse_color("#1E88E5").unwrap();
+        let fonts = Fonts::load("");
+        for style in CursorStyle::PICTURES {
+            let pic = style
+                .picture()
+                .unwrap_or_else(|| panic!("{style:?} didn't load"));
+            assert!(pic.image.height() >= 150, "{style:?}");
+            let art = cursor(&fonts, "Zero", 1.0, body, ring, None, style);
+            let (hx, hy) = (art.hotspot.0 as u32, art.hotspot.1 as u32);
+            // The pointer itself is drawn just inside its tip.
+            let a = art.image.pixel(hx + 2, hy + 3).unwrap().alpha();
+            assert!(a > 150, "{style:?}: {a} at the tip");
+            assert_eq!(
+                art.hotspot,
+                cursor(&fonts, "", 1.0, body, ring, None, style).hotspot
+            );
+        }
+    }
+
+    #[test]
+    fn styles_are_named_and_random_ones_go_round() {
+        assert_eq!(CursorStyle::named(" Crystal "), Some(CursorStyle::Crystal));
+        assert_eq!(CursorStyle::named("classic"), Some(CursorStyle::Classic));
+        assert_eq!(CursorStyle::named("random"), None);
+        for name in CURSOR_STYLES.iter().skip(1) {
+            assert!(CursorStyle::named(name).is_some(), "{name}");
+        }
+        // Each new agent gets a picture none of the others has.
+        let mut taken = Vec::new();
+        for _ in 0..CursorStyle::PICTURES.len() {
+            let p = CursorStyle::random(&taken);
+            assert!(!taken.contains(&p) && p != CursorStyle::Classic);
+            taken.push(p);
+        }
+        // Past six, any picture.
+        assert!(CursorStyle::PICTURES.contains(&CursorStyle::random(&taken)));
     }
 
     /// `OVERLAY_PREVIEW_DIR=/tmp/x cargo test -p computer-use preview -- --ignored`
@@ -516,14 +795,28 @@ mod tests {
         ];
         for (name, color, text_str) in states {
             let c = parse_color(color).unwrap();
-            cursor(&fonts, "Zero", 3.0, body, c, None)
+            cursor(&fonts, "Zero", 3.0, body, c, None, CursorStyle::Classic)
                 .image
                 .save_png(dir.join(format!("cursor-{name}.png")))
                 .unwrap();
-            cursor(&fonts, "Zero", 3.0, body, c, Some(0.35))
-                .image
-                .save_png(dir.join(format!("cursor-{name}-click.png")))
-                .unwrap();
+            for style in CursorStyle::PICTURES {
+                cursor(&fonts, "Zero", 3.0, body, c, None, style)
+                    .image
+                    .save_png(dir.join(format!("cursor-{name}-{style:?}.png")))
+                    .unwrap();
+            }
+            cursor(
+                &fonts,
+                "Zero",
+                3.0,
+                body,
+                c,
+                Some(0.35),
+                CursorStyle::Classic,
+            )
+            .image
+            .save_png(dir.join(format!("cursor-{name}-click.png")))
+            .unwrap();
             label(&fonts, text_str, 2.0, c)
                 .save_png(dir.join(format!("label-{name}.png")))
                 .unwrap();
