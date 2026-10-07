@@ -386,6 +386,10 @@ accent = "#1A73E8"          # the colour its palette is made from
 enabled = true
 check_after_mins = 5        # minutes after the server starts before the first look
 check_every_hours = 12      # then this often (shared by every server on the computer)
+check_every_mins = 0        # a shorter wait than hours allow (5 at least); 0 = use the hours
+channel = "stable"          # "stable", or "prerelease" (also releases GitHub marks as pre-releases)
+pin = ""                    # a version to stay on, such as "4.8.2"; "" = the newest
+skip_version = ""           # a version never to take
 install = "restart"         # "restart" (after the computer restarts), "start" (next server start), "manual"
 repo = "mhrsdev/zero-use-computer"
 

@@ -70,10 +70,11 @@ const changed = (e) => e.key in S.values && !same(S.values[e.key], e.default);
 function labelOf(e) { const k = e.key.split(".").pop().replace(/_/g, " "); return k.charAt(0).toUpperCase() + k.slice(1); }
 function shortKey(k) { return (E[k] ? labelOf(E[k]) : k) + " (" + k + ")"; }
 
-function confirmDialog(keys) {
+function confirmDialog(keys, text) {
   return new Promise((resolve) => {
     const body = $("dlg_b"); body.textContent = "";
-    body.append(h("div", {}, "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:"),
+    if (text) body.append(h("div", {}, text));
+    else body.append(h("div", {}, "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:"),
       h("ul", {}, keys.map((k) => h("li", {}, shortKey(k)))));
     const dlg = $("dlg"); const done = (v) => { dlg.close(); resolve(v); };
     $("dlg_yes").onclick = () => done(true); $("dlg_no").onclick = () => done(false);
@@ -85,8 +86,8 @@ function confirmDialog(keys) {
 // Calls a route; when the server says the change needs a yes, asks and repeats.
 async function ask(route, body) {
   let r = await post(route, { ...body, confirmed: false });
-  if (!r.ok && r.confirm) {
-    if (!(await confirmDialog(r.confirm))) return { ok: false, cancelled: true };
+  if (!r.ok && (r.confirm || r.confirm_text)) {
+    if (!(await confirmDialog(r.confirm, r.confirm_text))) return { ok: false, cancelled: true };
     r = await post(route, { ...body, confirmed: true });
   }
   return r;
@@ -456,15 +457,55 @@ async function importPage(main) {
       } }, "Import"))));
 }
 
+/* ---------- updates ---------- */
+function span(secs) {
+  if (secs < 90) return "under 2 minutes";
+  if (secs < 5400) return Math.round(secs / 60) + " minutes";
+  if (secs < 129600) return Math.round(secs / 3600) + " hours";
+  return Math.round(secs / 86400) + " days";
+}
+const PRESETS = [["Never", 0], ["5 min", 5], ["10 min", 10], ["30 min", 30], ["1 hour", 60], ["12 hours", 720], ["Daily", 1440]];
+async function updatesCard() {
+  const u = await post("update_status");
+  if (!u.ok) return h("div", { class: "empty" }, u.error);
+  const mins = u.enabled ? Math.round(u.every_secs / 60) : 0;
+  const act = (route, text) => async () => {
+    const r = await ask(route, {});
+    if (r.cancelled) return;
+    if (!r.ok) return snack(r.error, true);
+    snack(r.message || text); const st = await post("state"); S.values = st.values; render();
+  };
+  const preset = (label, m) => h("button", { class: "chip", "aria-pressed": String(mins === m), onclick: () => mins !== m && change(m === 0 ? [["update.enabled", false]] : [["update.enabled", true], ["update.check_every_mins", m]], m === 0 ? "It will not look for updates." : "It looks every " + label + ".") }, label);
+  const fact = (k, v) => h("li", {}, h("span", { class: "k" }, k), h("span", { class: "v" }, v));
+  return h("div", { class: "card" }, h("h3", {}, "Status and controls"),
+    h("div", { class: "preview" }, h("div", { class: "help" }, "How often it looks for a new release"),
+      h("div", { class: "chips2", role: "group", "aria-label": "How often it looks" }, PRESETS.map(([l, m]) => preset(l, m)))),
+    h("ul", { class: "facts" },
+      fact("This version", u.current),
+      fact("Looking", !u.enabled ? "Off. Nothing is looked for or downloaded." : "Every " + span(u.every_secs) + (u.last_check_secs_ago == null ? ", not yet" : "; last " + ago(u.last_check_secs_ago)) + (u.next_in_secs != null ? "; next in about " + span(u.next_in_secs) : "") + "."),
+      u.rate_limited_for_secs && fact("GitHub", "Asked us to slow down; looking again in about " + span(u.rate_limited_for_secs) + "."),
+      fact("Which", (u.pin ? "Staying on " + u.pin + "." : u.channel === "prerelease" ? "The newest, pre-releases included." : "The newest stable release.") + (u.skip_version ? " Never " + u.skip_version + "." : "")),
+      fact("Waiting", u.pending ? "Version " + u.pending.version + ", downloaded " + ago(u.pending.since_secs) + ". It goes in " + u.when + "." : "Nothing."),
+      fact("Can go back to", u.previous ? "Version " + u.previous.version + " (kept when the last update went in)." : "Nothing kept yet.")),
+    u.notes && h("div", { class: "preview" }, h("div", { class: "help" }, "What " + u.notes.version + " says about itself"),
+      h("pre", { class: "log", style: "padding:12px 0" }, u.notes.text || "(no notes)"), u.notes.page && h("a", { href: u.notes.page, target: "_blank", rel: "noopener noreferrer" }, u.notes.page)),
+    h("div", { class: "actions", style: "padding:0 24px 20px" },
+      h("button", { class: "btn filled", disabled: !u.can_update, onclick: async (ev) => { ev.target.disabled = true; snack("Looking…"); await act("update_check")(); } }, "Check now"),
+      h("button", { class: "btn", disabled: !u.pending, onclick: act("update_install") }, "Put it in place now"),
+      h("button", { class: "btn danger", disabled: !u.previous, onclick: act("update_rollback") }, "Go back" + (u.previous ? " to " + u.previous.version : ""))),
+    h("div", { class: "note" }, "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count)."));
+}
+
 /* ---------- pages made from the settings groups ---------- */
 function groupPage(g) {
-  return (main) => {
+  return async (main) => {
     const rows = schema.entries.filter((e) => e.group === g && e.type !== "custom" && visible(e));
     const lead = main.querySelector(".lead");
     if (g === "Decision model") main.append(decisionCard());
     if (g === "Pointer") { main.append(pointerPicker()); main.append(pathPreview("overlay.cursor_path", "How the pointer glides")); }
     if (g === "Real mouse") main.append(pathPreview("mouse_path", "How the real mouse goes"));
     if (g === "Overlay") main.append(overlayPreview());
+    if (g === "Updates") main.append(await updatesCard());
     if (g === "Screenshots") main.append(tokenCard());
     if (rows.length) main.append(h("div", { class: "card" }, rows.map(row)));
     else main.append(h("div", { class: "empty" }, view.changedOnly ? "Nothing in this group differs from its default." : "Nothing to show."));

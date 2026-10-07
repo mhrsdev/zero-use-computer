@@ -776,3 +776,144 @@ fn the_reports_answer() {
     up.alive.store(false, Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_updates_card_reports_what_is_known() {
+    let dir = temp("upd-status");
+    let path = config_with_port(
+        &dir,
+        "[update]\ncheck_every_mins = 10\nchannel = \"prerelease\"\nskip_version = \"9.9.9\"\n",
+    );
+    let up = start(Some(path), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let s = json_of(&post(host, token, "update_status", "{}"));
+    assert_eq!(s["ok"], true, "{s}");
+    assert_eq!(s["every_secs"], 600);
+    assert_eq!(s["channel"], "prerelease");
+    assert_eq!(s["skip_version"], "9.9.9");
+    assert!(s["pending"].is_null() && s["previous"].is_null());
+    assert_eq!(s["current"], env!("CARGO_PKG_VERSION"));
+    // Turned off: no next look.
+    post(
+        host,
+        token,
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"update.enabled","value":false}]}"#,
+    );
+    let s = json_of(&post(host, token, "update_status", "{}"));
+    assert!(s["next_in_secs"].is_null());
+    // Nothing waits, nothing is kept.
+    assert_eq!(
+        json_of(&post(host, token, "update_install", "{}"))["ok"],
+        false
+    );
+    assert_eq!(
+        json_of(&post(host, token, "update_rollback", "{}"))["ok"],
+        false
+    );
+    // A bad value is refused as a setting.
+    let r = json_of(&post(
+        host,
+        token,
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"update.check_every_mins","value":2}]}"#,
+    ));
+    assert_eq!(r["ok"], false, "{r}");
+    let r = json_of(&post(
+        host,
+        token,
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"update.pin","value":"latest"}]}"#,
+    ));
+    assert_eq!(r["ok"], false, "{r}");
+    let r = json_of(&post(
+        host,
+        token,
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"update.channel","value":"nightly"}]}"#,
+    ));
+    assert_eq!(r["ok"], false, "{r}");
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_update_goes_in_and_comes_out_only_when_the_user_says_so() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp("upd-install");
+    let path = config_with_port(&dir, "");
+    let exe = dir.join("the-program");
+    let script = |v: &str| format!("#!/bin/sh\necho computer-use-mcp {v}\n");
+    let put = |p: &Path, v: &str| {
+        std::fs::write(p, script(v)).unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    put(&exe, env!("CARGO_PKG_VERSION"));
+    // A downloaded update, as the updater leaves it.
+    let updates = dir.join("updates");
+    let waiting = updates.join("v99.0.0");
+    std::fs::create_dir_all(&waiting).unwrap();
+    put(&waiting.join(crate::update::BIN_NAME), "99.0.0");
+    std::fs::write(
+        updates.join("pending.json"),
+        serde_json::to_vec(&crate::update::Pending {
+            version: "99.0.0".into(),
+            dir: waiting,
+            downloaded: 1,
+            sha256: String::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let Bound::Mine(server) = Server::bind_with(Some(path.clone()), &dir, exe.clone()).unwrap()
+    else {
+        panic!("another panel answered");
+    };
+    let (host, token, alive) = (
+        server.page.host.clone(),
+        server.page.token.clone(),
+        server.page.alive.clone(),
+    );
+    std::thread::spawn(move || server.run());
+    let call = |route: &str, body: &str| json_of(&post(&host, &token, route, body));
+
+    let s = call("update_status", "{}");
+    assert_eq!(s["pending"]["version"], "99.0.0");
+    // Without the user's yes, the program is left alone.
+    let r = call("update_install", "{}");
+    assert_eq!(r["ok"], false);
+    assert!(
+        r["confirm_text"].as_str().unwrap().contains("99.0.0"),
+        "{r}"
+    );
+    assert!(
+        std::fs::read_to_string(&exe)
+            .unwrap()
+            .contains(env!("CARGO_PKG_VERSION"))
+    );
+    // With it, it goes in, and the old one is kept.
+    let r = call("update_install", r#"{"confirmed":true}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("99.0.0"));
+    let s = call("update_status", "{}");
+    assert_eq!(s["previous"]["version"], env!("CARGO_PKG_VERSION"));
+    assert!(s["pending"].is_null());
+    // Going back asks too, and doesn't take that update again.
+    let r = call("update_rollback", "{}");
+    assert_eq!(r["ok"], false);
+    assert!(r["confirm_text"].as_str().is_some());
+    assert!(std::fs::read_to_string(&exe).unwrap().contains("99.0.0"));
+    let r = call("update_rollback", r#"{"confirmed":true}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(
+        std::fs::read_to_string(&exe)
+            .unwrap()
+            .contains(env!("CARGO_PKG_VERSION"))
+    );
+    let c = ConfigStore::load(Some(&path)).unwrap().config;
+    assert_eq!(c.update.skip_version, "99.0.0");
+    assert!(call("update_status", "{}")["previous"].is_null());
+    alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}

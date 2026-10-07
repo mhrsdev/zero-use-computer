@@ -327,7 +327,11 @@ pub const ENTRIES: &[Entry] = &[
     // Updates
     e("update.enabled", UPDATES, "Look for updates and download them. Off: it never updates by itself.").confirm(),
     e("update.check_after_mins", UPDATES, "Minutes after the server starts before the first look.").number("minutes").confirm(),
-    e("update.check_every_hours", UPDATES, "Hours between looks while the server runs.").number("hours").confirm(),
+    e("update.check_every_hours", UPDATES, "Hours between looks while the server runs. Used when the minutes below are 0.").number("hours").confirm().advanced(),
+    e("update.check_every_mins", UPDATES, "Minutes between looks, for a shorter wait than an hour. At least 5. 0: use the hours.").number("minutes").confirm(),
+    e("update.channel", UPDATES, "Stable takes only proper releases. Prerelease also takes releases GitHub marks as pre-releases (their tags are plain numbers, such as v4.9.0).").choice(&["stable", "prerelease"]).confirm(),
+    e("update.pin", UPDATES, "A version to stay on, for example 4.8.2: only that release is taken, and nothing newer. Empty: the newest.").confirm(),
+    e("update.skip_version", UPDATES, "A version never to take, for example one that went wrong here.").confirm(),
     e("update.install", UPDATES, "When a downloaded update goes in: restart (after the computer restarts), start (the next server start) or manual.").choice(&["restart", "start", "manual"]).confirm(),
     e("update.repo", UPDATES, "The GitHub repository releases come from (owner/name).").confirm().advanced(),
     // Platform

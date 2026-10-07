@@ -103,6 +103,10 @@ pub struct Release {
     pub url: String,
     /// Lower-case hex.
     pub sha256: String,
+    /// What the release says about itself (cut short).
+    pub notes: String,
+    /// Its page on GitHub, or empty.
+    pub page: String,
 }
 
 /// An update downloaded and waiting to go in.
@@ -124,15 +128,11 @@ impl Pending {
 
 // ---- asking GitHub -------------------------------------------------------------
 
-/// Run curl (every supported system has it) for an https URL; what it
-/// wrote to stdout.
-fn curl(url: &str, out: Option<&Path>, time: Duration) -> Result<Vec<u8>> {
-    if !url.starts_with("https://") {
-        return Err(Error::InvalidArgs(format!("not an https address: {url}")));
-    }
+/// curl with this program's usual safety: `-q` first (the user's
+/// ~/.curlrc never applies), https only even through redirects (GitHub's
+/// downloads redirect to its file host).
+fn base_curl(time: Duration) -> Command {
     let mut cmd = Command::new("curl");
-    // `-q` first: the user's ~/.curlrc never applies. Https only, even
-    // through redirects (GitHub's downloads redirect to its file host).
     cmd.args([
         "-q",
         "-sS",
@@ -149,48 +149,196 @@ fn curl(url: &str, out: Option<&Path>, time: Duration) -> Result<Vec<u8>> {
         "-H",
         concat!("User-Agent: computer-use-mcp/", env!("CARGO_PKG_VERSION")),
     ]);
+    cmd
+}
+
+fn curl_failed(url: &str, o: &std::process::Output) -> Error {
+    let why = String::from_utf8_lossy(&o.stderr);
+    Error::Platform(format!(
+        "could not fetch {url}: {}",
+        why.trim().chars().take(300).collect::<String>()
+    ))
+}
+
+fn curl_missing(e: std::io::Error) -> Error {
+    Error::Platform(if e.kind() == std::io::ErrorKind::NotFound {
+        "updates need curl, and it isn't installed here".into()
+    } else {
+        format!("can't run curl: {e}")
+    })
+}
+
+/// Run curl (every supported system has it) for an https URL; what it
+/// wrote to stdout.
+fn curl(url: &str, out: Option<&Path>, time: Duration) -> Result<Vec<u8>> {
+    if !url.starts_with("https://") {
+        return Err(Error::InvalidArgs(format!("not an https address: {url}")));
+    }
+    let mut cmd = base_curl(time);
     if let Some(p) = out {
         cmd.arg("-o").arg(p);
     }
     cmd.arg(url);
-    let o = cmd.output().map_err(|e| {
-        Error::Platform(if e.kind() == std::io::ErrorKind::NotFound {
-            "updates need curl, and it isn't installed here".into()
-        } else {
-            format!("can't run curl: {e}")
-        })
-    })?;
+    let o = cmd.output().map_err(curl_missing)?;
     if !o.status.success() {
-        let why = String::from_utf8_lossy(&o.stderr);
-        return Err(Error::Platform(format!(
-            "could not fetch {url}: {}",
-            why.trim().chars().take(300).collect::<String>()
-        )));
+        return Err(curl_failed(url, &o));
     }
     Ok(o.stdout)
 }
 
+/// What asking GitHub for a page of its API came back with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fetched {
+    /// The page, and the tag GitHub gave it (to ask "changed?" next time).
+    Body(Vec<u8>, Option<String>),
+    /// Not changed since the tag we sent: nothing to read.
+    NotModified,
+}
+
+/// An API page, asking only "changed since?" when we hold its tag: an
+/// answer of "no" doesn't count against GitHub's limit on requests.
+fn curl_api(url: &str, etag: Option<&str>) -> Result<Fetched> {
+    if !url.starts_with("https://") {
+        return Err(Error::InvalidArgs(format!("not an https address: {url}")));
+    }
+    let dir = updates_dir();
+    std::fs::create_dir_all(&dir).io()?;
+    let head = dir.join(format!("headers.{}.tmp", std::process::id()));
+    let mut cmd = base_curl(Duration::from_secs(30));
+    cmd.arg("-D").arg(&head);
+    if let Some(t) = etag.filter(|t| t.len() < 200 && !t.contains(['\r', '\n'])) {
+        cmd.args(["-H", &format!("If-None-Match: {t}")]);
+    }
+    cmd.arg(url);
+    let done = cmd.output();
+    let headers = std::fs::read_to_string(&head).unwrap_or_default();
+    let _ = std::fs::remove_file(&head);
+    let o = done.map_err(curl_missing)?;
+    if !o.status.success() {
+        return Err(curl_failed(url, &o));
+    }
+    // The last answer, after any redirect.
+    let last = headers
+        .rsplit("\r\n\r\n")
+        .find(|b| !b.trim().is_empty())
+        .unwrap_or("");
+    let status = last
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("");
+    if status == "304" {
+        return Ok(Fetched::NotModified);
+    }
+    let tag = last
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case("etag").then(|| v.trim().to_string())
+        })
+        .filter(|t| t.len() < 200 && !t.contains(['\r', '\n']));
+    Ok(Fetched::Body(o.stdout, tag))
+}
+
+/// The page of GitHub's API that says which release to take under these
+/// settings.
+pub fn endpoint(cfg: &UpdateConfig) -> String {
+    let repo = cfg.repo.trim();
+    if let Some(v) = Version::parse(&cfg.pin) {
+        format!("https://api.github.com/repos/{repo}/releases/tags/v{v}")
+    } else if cfg.channel.trim() == "prerelease" {
+        format!("https://api.github.com/repos/{repo}/releases?per_page=30")
+    } else {
+        format!("https://api.github.com/repos/{repo}/releases/latest")
+    }
+}
+
+/// The release to take, from GitHub's answer at [`endpoint`]: the latest
+/// (stable), the newest of the last thirty (prerelease) or the pinned one,
+/// when it is newer than `current`, has a zip for this system and isn't
+/// the one to skip. None when there is nothing to take.
+pub fn choose(
+    json: &serde_json::Value,
+    cfg: &UpdateConfig,
+    asset: &str,
+    current: Version,
+) -> Result<Option<Release>> {
+    let repo = cfg.repo.trim();
+    let skip = Version::parse(&cfg.skip_version);
+    let one = |j: &serde_json::Value, pre: bool| {
+        release_from_with(j, repo, asset, current, pre)
+            .map(|r| r.filter(|r| Some(r.version) != skip))
+    };
+    if Version::parse(&cfg.pin).is_some() {
+        return one(json, true);
+    }
+    if cfg.channel.trim() != "prerelease" {
+        return one(json, false);
+    }
+    let Some(list) = json.as_array() else {
+        return Err(Error::Platform(
+            "GitHub's list of releases isn't a list".into(),
+        ));
+    };
+    let mut found: Vec<(Version, &serde_json::Value)> = list
+        .iter()
+        .filter(|j| j["draft"].as_bool() != Some(true))
+        .filter_map(|j| Some((Version::parse(j["tag_name"].as_str()?)?, j)))
+        .collect();
+    found.sort_by_key(|b| std::cmp::Reverse(b.0));
+    for (v, j) in found {
+        if v <= current {
+            break;
+        }
+        if Some(v) == skip {
+            continue;
+        }
+        match one(j, true)? {
+            Some(r) => return Ok(Some(r)),
+            None => continue, // no zip for this system (yet)
+        }
+    }
+    Ok(None)
+}
+
 /// The latest release of `repo` when it is newer than this program and has
-/// a zip for this system (None when up to date).
-pub fn latest(repo: &str) -> Result<Option<Release>> {
+/// a zip for this system (None when up to date), under `cfg`'s channel,
+/// pin and skipped version.
+pub fn latest(cfg: &UpdateConfig) -> Result<Option<Release>> {
     let Some(asset) = asset_name() else {
         return Ok(None);
     };
-    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
-    let body = curl(&url, None, Duration::from_secs(30))?;
-    let json: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| Error::Platform(format!("GitHub's answer isn't JSON: {e}")))?;
-    release_from(&json, repo, asset, Version::current())
+    match curl_api(&endpoint(cfg), None)? {
+        Fetched::Body(body, _) => {
+            let json: serde_json::Value = serde_json::from_slice(&body)
+                .map_err(|e| Error::Platform(format!("GitHub's answer isn't JSON: {e}")))?;
+            choose(&json, cfg, asset, Version::current())
+        }
+        Fetched::NotModified => Ok(None),
+    }
 }
 
-/// The newer release in GitHub's description of one (see [`latest`]).
+/// The newer release in GitHub's description of one (see [`latest`]);
+/// a pre-release isn't taken.
 pub fn release_from(
     json: &serde_json::Value,
     repo: &str,
     asset: &str,
     current: Version,
 ) -> Result<Option<Release>> {
-    if json["draft"].as_bool() == Some(true) || json["prerelease"].as_bool() == Some(true) {
+    release_from_with(json, repo, asset, current, false)
+}
+
+/// [`release_from`], taking a pre-release too when `pre`.
+pub fn release_from_with(
+    json: &serde_json::Value,
+    repo: &str,
+    asset: &str,
+    current: Version,
+    pre: bool,
+) -> Result<Option<Release>> {
+    if json["draft"].as_bool() == Some(true) || (!pre && json["prerelease"].as_bool() == Some(true))
+    {
         return Ok(None);
     }
     let tag = json["tag_name"].as_str().unwrap_or_default();
@@ -227,6 +375,17 @@ pub fn release_from(
         version,
         url: url.to_string(),
         sha256: sha.to_ascii_lowercase(),
+        notes: json["body"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(6000)
+            .collect(),
+        page: json["html_url"]
+            .as_str()
+            .filter(|u| u.starts_with(&format!("https://github.com/{repo}/")))
+            .unwrap_or_default()
+            .to_string(),
     }))
 }
 
@@ -402,6 +561,7 @@ pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
     if home.join(".claude-plugin").join("plugin.json").is_file() {
         copy_tree(&p.dir, home, &p.binary())?;
     }
+    keep_previous(exe, dir);
     replace_program(&p.binary(), exe)?;
     let _ = std::fs::remove_dir_all(&p.dir);
     let _ = std::fs::remove_file(dir.join("pending.json"));
@@ -488,36 +648,168 @@ pub enum Found {
     Waiting(Pending),
 }
 
-/// Look for a newer release and download it.
+/// Look for a newer release and download it, asking GitHub only "changed?"
+/// when nothing changed since the last look.
 pub fn check_now(cfg: &UpdateConfig) -> Result<Found> {
-    match latest(cfg.repo.trim())? {
-        None => Ok(Found::UpToDate),
-        Some(rel) => download(&rel, &updates_dir()).map(Found::Waiting),
+    check_with(cfg, &updates_dir(), false, &mut curl_api, &mut |r, d| {
+        download(r, d)
+    })
+}
+
+/// [`check_now`] without the "changed?" shortcut (a look the user asked for).
+pub fn check_now_forced(cfg: &UpdateConfig) -> Result<Found> {
+    check_in(cfg, &updates_dir(), true)
+}
+
+/// A look, keeping what it finds in `dir`.
+pub fn check_in(cfg: &UpdateConfig, dir: &Path, force: bool) -> Result<Found> {
+    check_with(cfg, dir, force, &mut curl_api, &mut |r, d| download(r, d))
+}
+
+type Fetch<'a> = &'a mut dyn FnMut(&str, Option<&str>) -> Result<Fetched>;
+type Download<'a> = &'a mut dyn FnMut(&Release, &Path) -> Result<Pending>;
+
+/// One look, with how to ask GitHub and how to download (so a test can
+/// stand in for both).
+pub fn check_with(
+    cfg: &UpdateConfig,
+    dir: &Path,
+    force: bool,
+    fetch: Fetch,
+    fetch_zip: Download,
+) -> Result<Found> {
+    let Some(asset) = asset_name() else {
+        return Ok(Found::UpToDate);
+    };
+    let url = endpoint(cfg);
+    let held = if force { None } else { read_etag(dir, &url) };
+    let (body, etag) = match fetch(&url, held.as_deref())? {
+        Fetched::NotModified => return Ok(Found::UpToDate),
+        Fetched::Body(b, t) => (b, t),
+    };
+    let json: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| Error::Platform(format!("GitHub's answer isn't JSON: {e}")))?;
+    let found = choose(&json, cfg, asset, Version::current())?;
+    let result = match found {
+        None => Found::UpToDate,
+        Some(rel) => {
+            write_release_notes(dir, &rel);
+            Found::Waiting(fetch_zip(&rel, dir)?)
+        }
+    };
+    // Kept only once this look is over: one that failed is looked at again
+    // in full, not answered "nothing new".
+    if let Some(t) = etag {
+        write_etag(dir, &url, &t);
+    }
+    Ok(result)
+}
+
+fn etag_file(dir: &Path) -> PathBuf {
+    dir.join("etags.json")
+}
+
+fn read_etag(dir: &Path, url: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(etag_file(dir)).ok()?).ok()?;
+    v.get(url)?.as_str().map(str::to_string)
+}
+
+fn write_etag(dir: &Path, url: &str, tag: &str) {
+    // One address at a time: a change of channel or pin is another page.
+    let _ = std::fs::create_dir_all(dir);
+    let text = serde_json::json!({ url: tag }).to_string();
+    let tmp = dir.join(format!("etags.json.{}", std::process::id()));
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, etag_file(dir));
     }
 }
 
-/// When any server on this computer last looked (`last-check`).
-fn last_check(dir: &Path) -> u64 {
+/// What the release a look found says about itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseNotes {
+    pub version: String,
+    pub notes: String,
+    pub page: String,
+}
+
+fn write_release_notes(dir: &Path, rel: &Release) {
+    let n = ReleaseNotes {
+        version: rel.version.to_string(),
+        notes: rel.notes.clone(),
+        page: rel.page.clone(),
+    };
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(
+        dir.join("release-notes.json"),
+        serde_json::to_vec(&n).unwrap_or_default(),
+    );
+}
+
+/// The notes of the release the last look found, if it is newer than this
+/// program.
+pub fn release_notes(dir: &Path) -> Option<ReleaseNotes> {
+    let n: ReleaseNotes =
+        serde_json::from_slice(&std::fs::read(dir.join("release-notes.json")).ok()?).ok()?;
+    Version::parse(&n.version)
+        .is_some_and(|v| v > Version::current())
+        .then_some(n)
+}
+
+/// When any server on this computer last looked (`last-check`), as seconds
+/// since 1970 (0: never).
+pub fn last_check(dir: &Path) -> u64 {
     std::fs::read_to_string(dir.join("last-check"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0)
 }
 
-/// Look `check_after_mins` after now, then every `check_every_hours`, in a
-/// thread of its own: `settings` gives the current settings each time (they
-/// may have changed). Servers on one computer share the looks.
+/// Seconds between looks.
+pub fn interval_secs(cfg: &UpdateConfig) -> u64 {
+    if cfg.check_every_mins > 0 {
+        cfg.check_every_mins.max(5).saturating_mul(60)
+    } else {
+        cfg.check_every_hours.max(1).saturating_mul(3600)
+    }
+}
+
+/// Until when looks wait because GitHub said "too many requests" (seconds
+/// since 1970; 0: not waiting).
+pub fn backoff_until(dir: &Path) -> u64 {
+    std::fs::read_to_string(dir.join("backoff-until"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// How long to wait after GitHub refuses a look for asking too often.
+const BACKOFF: u64 = 3600;
+
+/// Whether an error is GitHub saying "too many requests".
+fn rate_limited(e: &Error) -> bool {
+    let m = e.to_string();
+    m.contains("403") || m.contains("429") || m.to_ascii_lowercase().contains("rate limit")
+}
+
+/// Look at the first time after `check_after_mins`, then whenever the shared
+/// clock says an interval has passed, in a thread of its own: `settings`
+/// gives the current settings each time (they may have changed). Servers on
+/// one computer share the looks.
 pub fn watch(settings: impl Fn() -> UpdateConfig + Send + 'static) {
     let first = settings().check_after_mins;
     let spawned = std::thread::Builder::new()
         .name("updates".into())
+        .stack_size(512 * 1024)
         .spawn(move || {
             std::thread::sleep(Duration::from_secs(first.saturating_mul(60)));
             loop {
                 let cfg = settings();
-                let every = cfg.check_every_hours.max(1).saturating_mul(3600);
+                let every = interval_secs(&cfg);
                 let dir = updates_dir();
-                if cfg.enabled && now_secs().saturating_sub(last_check(&dir)) >= every {
+                if cfg.enabled
+                    && now_secs() >= backoff_until(&dir)
+                    && now_secs().saturating_sub(last_check(&dir)) >= every
+                {
                     // Claimed first, so the other servers wait their turn.
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = std::fs::write(dir.join("last-check"), now_secs().to_string());
@@ -530,16 +822,101 @@ pub fn watch(settings: impl Fn() -> UpdateConfig + Send + 'static) {
                             p.version,
                             when(cfg.install)
                         ),
-                        Err(e) => log::warn!("updates: {e}"),
+                        Err(e) => {
+                            log::warn!("updates: {e}");
+                            if rate_limited(&e) {
+                                let _ = std::fs::write(
+                                    dir.join("backoff-until"),
+                                    (now_secs() + BACKOFF).to_string(),
+                                );
+                            }
+                        }
                     }
                 }
-                // Look at the shared clock again in a while.
-                std::thread::sleep(Duration::from_secs(30 * 60));
+                // Look at the shared clock again in a while: often enough
+                // for a short interval, rarely for a long one.
+                std::thread::sleep(Duration::from_secs((every / 4).clamp(30, 30 * 60)));
             }
         });
     if let Err(e) = spawned {
         log::warn!("updates: can't start looking: {e}");
     }
+}
+
+// ---- going back ----------------------------------------------------------------------
+
+/// The version put aside when an update went in: what `rollback` returns to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Previous {
+    pub version: String,
+    /// When it was put aside (seconds since 1970).
+    pub saved: u64,
+}
+
+fn previous_dir(dir: &Path) -> PathBuf {
+    dir.join("previous")
+}
+
+/// The version an update replaced, kept to go back to (one only).
+pub fn previous(dir: &Path) -> Option<Previous> {
+    let p: Previous =
+        serde_json::from_slice(&std::fs::read(previous_dir(dir).join("previous.json")).ok()?)
+            .ok()?;
+    Version::parse(&p.version)?;
+    previous_dir(dir).join(BIN_NAME).is_file().then_some(p)
+}
+
+/// Keep the program at `exe` (this version) before an update replaces it.
+fn keep_previous(exe: &Path, dir: &Path) {
+    let keep = previous_dir(dir);
+    let done = (|| -> std::io::Result<()> {
+        let _ = std::fs::remove_dir_all(&keep);
+        std::fs::create_dir_all(&keep)?;
+        std::fs::copy(exe, keep.join(BIN_NAME))?;
+        let p = Previous {
+            version: Version::current().to_string(),
+            saved: now_secs(),
+        };
+        std::fs::write(
+            keep.join("previous.json"),
+            serde_json::to_vec(&p).unwrap_or_default(),
+        )
+    })();
+    if let Err(e) = done {
+        log::warn!(
+            "updates: couldn't keep {} to go back to: {e}",
+            Version::current()
+        );
+        let _ = std::fs::remove_dir_all(&keep);
+    }
+}
+
+/// Put the version an update replaced back in place of the program at
+/// `exe`; (the version it was, the version it is now). The update it undid
+/// is cleared; set `update.skip_version` to it so it isn't taken again.
+pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
+    let prev = previous(dir)
+        .ok_or_else(|| Error::Platform("there is no earlier version kept to go back to".into()))?;
+    let bin = previous_dir(dir).join(BIN_NAME);
+    let said = run_version(&bin)?;
+    let want = Version::parse(&prev.version);
+    if want.is_none() || Version::parse(said.split_whitespace().last().unwrap_or_default()) != want
+    {
+        return Err(Error::Platform(format!(
+            "the kept program says it is \"{said}\", not {}: not put back",
+            prev.version
+        )));
+    }
+    // What is being replaced is the program at `exe`, which may be newer
+    // than the one running (an update went in since it started).
+    let from = run_version(exe)
+        .ok()
+        .and_then(|said| Version::parse(said.split_whitespace().last().unwrap_or_default()))
+        .unwrap_or_else(Version::current);
+    replace_program(&bin, exe)?;
+    let _ = std::fs::remove_file(dir.join("pending.json"));
+    let _ = std::fs::remove_dir_all(previous_dir(dir));
+    Ok((from, want.unwrap_or(from)))
 }
 
 /// When a waiting update goes in, in words.
@@ -798,6 +1175,258 @@ mod tests {
             now,
         );
         assert_eq!(r.unwrap(), None);
+    }
+
+    fn cfg_with(f: impl FnOnce(&mut UpdateConfig)) -> UpdateConfig {
+        let mut c = UpdateConfig::default();
+        f(&mut c);
+        c
+    }
+
+    const ASSET: &str = "computer-use-mcp-linux-x64.zip";
+
+    fn rel(tag: &str, pre: bool) -> serde_json::Value {
+        let url =
+            format!("https://github.com/mhrsdev/zero-use-computer/releases/download/{tag}/{ASSET}");
+        let mut j = release_json(tag, Some(&format!("sha256:{}", "cd".repeat(32))), &url);
+        j["prerelease"] = pre.into();
+        j["body"] = format!("Notes of {tag}").into();
+        j["html_url"] =
+            format!("https://github.com/mhrsdev/zero-use-computer/releases/tag/{tag}").into();
+        j
+    }
+
+    #[test]
+    fn the_channel_pin_and_skip_decide_which_release_is_taken() {
+        let now = Version(4, 0, 1);
+        let all = serde_json::json!([
+            rel("v4.9.0-rc.1", true),
+            rel("v4.8.0", false),
+            rel("v4.7.0", false)
+        ]);
+        // "v4.9.0-rc.1" isn't a version this program reads: it is passed over.
+        let stable = cfg_with(|_| {});
+        assert!(endpoint(&stable).ends_with("/releases/latest"));
+        assert_eq!(
+            choose(&rel("v4.8.0", false), &stable, ASSET, now)
+                .unwrap()
+                .unwrap()
+                .version,
+            Version(4, 8, 0)
+        );
+        assert_eq!(
+            choose(&rel("v4.9.0", true), &stable, ASSET, now).unwrap(),
+            None
+        );
+        let pre = cfg_with(|c| c.channel = "prerelease".into());
+        assert!(endpoint(&pre).contains("/releases?per_page=30"));
+        assert_eq!(
+            choose(&all, &pre, ASSET, now).unwrap().unwrap().version,
+            Version(4, 8, 0)
+        );
+        let all = serde_json::json!([rel("v4.9.0", true), rel("v4.8.0", false)]);
+        assert_eq!(
+            choose(&all, &pre, ASSET, now).unwrap().unwrap().version,
+            Version(4, 9, 0)
+        );
+        // Skipped: the next one down.
+        let skip = cfg_with(|c| {
+            c.channel = "prerelease".into();
+            c.skip_version = "4.9.0".into();
+        });
+        assert_eq!(
+            choose(&all, &skip, ASSET, now).unwrap().unwrap().version,
+            Version(4, 8, 0)
+        );
+        // Stable with the newest skipped: nothing (it isn't looking further back).
+        let skip = cfg_with(|c| c.skip_version = "4.8.0".into());
+        assert_eq!(
+            choose(&rel("v4.8.0", false), &skip, ASSET, now).unwrap(),
+            None
+        );
+        // Pinned: that release, a pre-release too, and nothing else.
+        let pin = cfg_with(|c| c.pin = "4.7.0".into());
+        assert!(endpoint(&pin).ends_with("/releases/tags/v4.7.0"));
+        assert_eq!(
+            choose(&rel("v4.7.0", false), &pin, ASSET, now)
+                .unwrap()
+                .unwrap()
+                .version,
+            Version(4, 7, 0)
+        );
+        assert_eq!(
+            choose(&rel("v4.7.0", true), &pin, ASSET, now)
+                .unwrap()
+                .unwrap()
+                .version,
+            Version(4, 7, 0)
+        );
+        // Already there or beyond it: nothing.
+        assert_eq!(
+            choose(&rel("v4.7.0", false), &pin, ASSET, Version(4, 7, 0)).unwrap(),
+            None
+        );
+        assert_eq!(
+            choose(&rel("v4.7.0", false), &pin, ASSET, Version(4, 8, 0)).unwrap(),
+            None
+        );
+        // The notes and page come along, the page only from the repository.
+        let r = choose(&rel("v4.8.0", false), &stable, ASSET, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.notes, "Notes of v4.8.0");
+        assert!(r.page.ends_with("/releases/tag/v4.8.0"));
+        let mut odd = rel("v4.8.0", false);
+        odd["html_url"] = "https://evil.example/x".into();
+        assert_eq!(choose(&odd, &stable, ASSET, now).unwrap().unwrap().page, "");
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("cu-upd-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn pending_for(rel: &Release, dir: &Path) -> Pending {
+        Pending {
+            version: rel.version.to_string(),
+            dir: dir.join("x"),
+            downloaded: 1,
+            sha256: rel.sha256.clone(),
+        }
+    }
+
+    #[test]
+    fn a_look_asks_only_whether_it_changed_and_keeps_the_tag_when_it_is_over() {
+        let dir = temp_dir("etag");
+        let cfg = cfg_with(|_| {});
+        let newer = serde_json::to_vec(&rel("v99.0.0", false)).unwrap();
+        let mut asked: Vec<Option<String>> = Vec::new();
+        let mut answers = vec![
+            Fetched::Body(newer.clone(), Some("\"one\"".into())),
+            Fetched::NotModified,
+            Fetched::Body(newer.clone(), Some("\"two\"".into())),
+        ]
+        .into_iter();
+        let mut fetch = |_: &str, tag: Option<&str>| {
+            asked.push(tag.map(str::to_string));
+            Ok(answers.next().unwrap())
+        };
+        // A download that fails: the tag isn't kept, so it is looked at again in full.
+        let mut fail =
+            |_: &Release, _: &Path| -> Result<Pending> { Err(Error::Platform("no".into())) };
+        assert!(check_with(&cfg, &dir, false, &mut fetch, &mut fail).is_err());
+        assert!(read_etag(&dir, &endpoint(&cfg)).is_none());
+        // One that works keeps it, and the next look asks "changed?".
+        let mut ok = |r: &Release, d: &Path| -> Result<Pending> { Ok(pending_for(r, d)) };
+        let mut again = vec![
+            Fetched::Body(newer.clone(), Some("\"one\"".into())),
+            Fetched::NotModified,
+        ]
+        .into_iter();
+        let mut asked2: Vec<Option<String>> = Vec::new();
+        let mut fetch2 = |_: &str, tag: Option<&str>| {
+            asked2.push(tag.map(str::to_string));
+            Ok(again.next().unwrap())
+        };
+        assert!(matches!(
+            check_with(&cfg, &dir, false, &mut fetch2, &mut ok).unwrap(),
+            Found::Waiting(_)
+        ));
+        assert_eq!(read_etag(&dir, &endpoint(&cfg)).as_deref(), Some("\"one\""));
+        assert_eq!(
+            check_with(&cfg, &dir, false, &mut fetch2, &mut ok).unwrap(),
+            Found::UpToDate
+        );
+        // A look the user asked for sends no tag.
+        let mut third = vec![Fetched::Body(newer, Some("\"two\"".into()))].into_iter();
+        let mut sent: Vec<Option<String>> = Vec::new();
+        let mut fetch3 = |_: &str, tag: Option<&str>| {
+            sent.push(tag.map(str::to_string));
+            Ok(third.next().unwrap())
+        };
+        check_with(&cfg, &dir, true, &mut fetch3, &mut ok).unwrap();
+        assert_eq!(asked2, [None, Some("\"one\"".to_string())]);
+        assert_eq!(sent, [None]);
+        // The notes of what it found.
+        assert_eq!(release_notes(&dir).unwrap().version, "99.0.0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn looks_come_as_often_as_asked_and_a_refusal_waits() {
+        assert_eq!(interval_secs(&cfg_with(|_| {})), 12 * 3600);
+        assert_eq!(interval_secs(&cfg_with(|c| c.check_every_hours = 0)), 3600);
+        assert_eq!(interval_secs(&cfg_with(|c| c.check_every_mins = 10)), 600);
+        assert_eq!(interval_secs(&cfg_with(|c| c.check_every_mins = 1)), 300);
+        assert!(rate_limited(&Error::Platform(
+            "could not fetch x: The requested URL returned error: 403".into()
+        )));
+        assert!(rate_limited(&Error::Platform(
+            "API rate limit exceeded".into()
+        )));
+        assert!(!rate_limited(&Error::Platform(
+            "could not resolve host".into()
+        )));
+        let dir = temp_dir("backoff");
+        assert_eq!(backoff_until(&dir), 0);
+        assert_eq!(last_check(&dir), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_version_an_update_replaced_can_be_put_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("rollback");
+        let exe = dir.join(BIN_NAME);
+        let script = |v: &str| format!("#!/bin/sh\necho computer-use-mcp {v}\n");
+        let put = |path: &Path, v: &str| {
+            std::fs::write(path, script(v)).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // Nothing kept yet.
+        assert!(previous(&dir).is_none());
+        assert!(rollback(&exe, &dir).is_err());
+        // An update goes in: the running program is kept first.
+        put(&exe, &Version::current().to_string());
+        let newer = dir.join("v99.0.0");
+        std::fs::create_dir_all(&newer).unwrap();
+        put(&newer.join(BIN_NAME), "99.0.0");
+        let p = Pending {
+            version: "99.0.0".into(),
+            dir: newer,
+            downloaded: 1,
+            sha256: String::new(),
+        };
+        install(&p, &exe, &dir).unwrap();
+        assert!(std::fs::read_to_string(&exe).unwrap().contains("99.0.0"));
+        let kept = previous(&dir).unwrap();
+        assert_eq!(kept.version, Version::current().to_string());
+        // Put back.
+        let (from, to) = rollback(&exe, &dir).unwrap();
+        assert_eq!((from, to), (Version(99, 0, 0), Version::current()));
+        assert!(
+            std::fs::read_to_string(&exe)
+                .unwrap()
+                .contains(&Version::current().to_string())
+        );
+        assert!(previous(&dir).is_none());
+        // A kept program that isn't the version it says is not put back.
+        let keep = previous_dir(&dir);
+        std::fs::create_dir_all(&keep).unwrap();
+        put(&keep.join(BIN_NAME), "1.2.3");
+        std::fs::write(
+            keep.join("previous.json"),
+            serde_json::to_vec(&Previous {
+                version: "4.0.0".into(),
+                saved: 1,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(rollback(&exe, &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A zip with `files` (name, contents), stored or deflated.

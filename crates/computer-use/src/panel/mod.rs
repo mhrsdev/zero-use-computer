@@ -21,6 +21,7 @@ mod raw;
 mod schema;
 mod settings;
 mod status;
+mod updates;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -222,8 +223,10 @@ struct Page {
     host: String,
     token: String,
     path: Option<PathBuf>,
-    /// The server's folder (profiles are kept in it).
+    /// The server's folder (profiles and updates are kept in it).
     home: PathBuf,
+    /// The program an update replaces: the one running.
+    exe: PathBuf,
     idle: Duration,
     alive: Arc<AtomicBool>,
     /// When the last request came.
@@ -255,6 +258,10 @@ fn panel_settings(path: Option<&Path>) -> config::PanelConfig {
 
 impl Server {
     fn bind(path: Option<PathBuf>, home: &Path) -> Result<Bound> {
+        Self::bind_with(path, home, std::env::current_exe().unwrap_or_default())
+    }
+
+    fn bind_with(path: Option<PathBuf>, home: &Path, exe: PathBuf) -> Result<Bound> {
         let cfg = panel_settings(path.as_deref());
         let token = persistent_token(home, cfg.port);
         let (listener, token) = match TcpListener::bind(("127.0.0.1", cfg.port)) {
@@ -286,6 +293,7 @@ impl Server {
                 token,
                 path,
                 home: home.to_path_buf(),
+                exe,
                 idle: Duration::from_secs(cfg.idle_minutes.clamp(1, 240) * 60),
                 alive: Arc::new(AtomicBool::new(true)),
                 last: Mutex::new(Instant::now()),
@@ -535,6 +543,16 @@ impl Page {
                 let style = body.get("style").and_then(Value::as_str).unwrap_or("mixed");
                 status::path_preview(style)
             }
+            "update_status" => self.with_config(|c| updates::status(c, &self.updates_dir())),
+            "update_check" => self.with_config(|c| updates::check(c, &self.updates_dir())),
+            "update_install" => {
+                let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+                updates::install(&self.updates_dir(), &self.exe, yes)
+            }
+            "update_rollback" => {
+                let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+                updates::rollback(self.path.as_deref(), &self.updates_dir(), &self.exe, yes)
+            }
             "test" => self.test(body),
             "save" => self.save(body),
             "remove" => self.remove(),
@@ -542,6 +560,10 @@ impl Page {
             _ => return None,
         };
         Some((reply, false))
+    }
+
+    fn updates_dir(&self) -> PathBuf {
+        self.home.join("updates")
     }
 
     fn with_config(&self, f: impl FnOnce(&Config) -> Value) -> Value {

@@ -115,6 +115,10 @@ enum Command {
         /// needed); start your MCP client again to use it.
         #[arg(long)]
         install: bool,
+        /// Go back to the version the last update replaced, and don't take
+        /// that update again (sets update.skip_version).
+        #[arg(long)]
+        rollback: bool,
     },
     /// Open the settings panel in your browser (what Ctrl+Alt+J does), and
     /// serve it until you press Done.
@@ -339,7 +343,17 @@ fn run() -> Result<()> {
 
     match command {
         Command::Serve => serve(&cli.common, store, problem),
-        Command::Update { check, install } => update_cmd(&store.config, check, install),
+        Command::Update {
+            check,
+            install,
+            rollback,
+        } => update_cmd(
+            &store.config,
+            &config_path(&cli.common),
+            check,
+            install,
+            rollback,
+        ),
         Command::Apps => run_and_print(&cli.common, store, "list_apps", json!({})),
         Command::State {
             app,
@@ -440,12 +454,33 @@ fn restart(exe: &std::path::Path) {
     }
 }
 
-fn update_cmd(cfg: &Config, check: bool, install: bool) -> Result<()> {
+fn update_cmd(
+    cfg: &Config,
+    path: &std::path::Path,
+    check: bool,
+    install: bool,
+    rollback: bool,
+) -> Result<()> {
     use computer_use::update::{self, Found};
     let current = update::Version::current();
     let dir = update::updates_dir();
+    if rollback {
+        let exe = std::env::current_exe()?;
+        let (from, to) = update::rollback(&exe, &dir)?;
+        // The update that was undone is not taken again.
+        config::edit_file(
+            path,
+            "update.skip_version",
+            config::Edit::SetText(from.to_string()),
+        )?;
+        println!(
+            "{to} is back in place of {from} ({}); start your MCP client again to use it. {from} will not be taken again (update.skip_version)",
+            exe.display()
+        );
+        return Ok(());
+    }
     if check {
-        match update::latest(cfg.update.repo.trim())? {
+        match update::latest(&cfg.update)? {
             Some(r) => println!(
                 "{} is out (this is {current}); `update` downloads it",
                 r.version
@@ -454,7 +489,7 @@ fn update_cmd(cfg: &Config, check: bool, install: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let waiting = match update::check_now(&cfg.update)? {
+    let waiting = match update::check_now_forced(&cfg.update)? {
         Found::UpToDate => {
             println!("{current} is the latest");
             update::pending(&dir)

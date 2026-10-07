@@ -85,8 +85,19 @@ pub struct UpdateConfig {
     /// Minutes after the server starts before the first look.
     pub check_after_mins: u64,
     /// Hours between looks while the server runs (every server on the
-    /// computer shares them).
+    /// computer shares them). Used when `check_every_mins` is 0.
     pub check_every_hours: u64,
+    /// Minutes between looks, for a shorter wait than an hour allows
+    /// (5 at least). 0: `check_every_hours` says.
+    pub check_every_mins: u64,
+    /// Which releases are taken: "stable", or "prerelease" (also those
+    /// GitHub marks as pre-releases; their tags are plain numbers).
+    pub channel: String,
+    /// A version to stay on (for example "4.8.2"): only that release is
+    /// looked for, and nothing newer is taken. Empty: the newest.
+    pub pin: String,
+    /// A version never to take, for example one that went wrong here.
+    pub skip_version: String,
     /// When a downloaded update goes in: "restart" (the first start after
     /// the computer restarts), "start" (the next time the server starts),
     /// or "manual" (only `computer-use-mcp update --install`).
@@ -101,6 +112,10 @@ impl Default for UpdateConfig {
             enabled: true,
             check_after_mins: 5,
             check_every_hours: 12,
+            check_every_mins: 0,
+            channel: "stable".into(),
+            pin: String::new(),
+            skip_version: String::new(),
             install: UpdateInstall::Restart,
             repo: "mhrsdev/zero-use-computer".into(),
         }
@@ -1289,6 +1304,30 @@ impl Config {
             return Err(format!(
                 "panel.accent must be a colour like \"#1A73E8\" (got \"{accent}\")"
             ));
+        }
+        let u = &self.update;
+        if u.check_every_mins != 0 && !(5..=100_800).contains(&u.check_every_mins) {
+            return Err(format!(
+                "update.check_every_mins must be 0 or between 5 and 100800 (got {})",
+                u.check_every_mins
+            ));
+        }
+        if !matches!(u.channel.trim(), "stable" | "prerelease") {
+            return Err(format!(
+                "update.channel must be stable or prerelease (got \"{}\")",
+                u.channel
+            ));
+        }
+        for (key, value) in [
+            ("update.pin", &u.pin),
+            ("update.skip_version", &u.skip_version),
+        ] {
+            let v = value.trim();
+            if !v.is_empty() && crate::update::Version::parse(v).is_none() {
+                return Err(format!(
+                    "{key} must be a version like 4.8.2, or empty (got \"{v}\")"
+                ));
+            }
         }
         let c = &self.cache;
         if !(0.0..=1.0).contains(&c.match_threshold) {
