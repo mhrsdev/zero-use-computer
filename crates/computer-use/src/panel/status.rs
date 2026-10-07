@@ -165,7 +165,7 @@ pub fn audit(cfg: &Config, lines: usize) -> Value {
 
 /// Sample paths of the pointer's gliding in a style (the real routes the
 /// pointer takes, drawn from the program's own path maker).
-pub fn path_preview(style: &str) -> Value {
+pub fn path_preview(style: &str, feel: motion::Feel) -> Value {
     let from = (30.0, 190.0);
     let to = (450.0, 50.0);
     let mut rng = motion::Rng::new();
@@ -178,7 +178,7 @@ pub fn path_preview(style: &str) -> Value {
     let paths: Vec<Value> = styles
         .into_iter()
         .map(|s| {
-            let pts = motion::travel_with(from, to, motion::Kind::Reach, s, &mut rng);
+            let pts = motion::travel_feel(from, to, motion::Kind::Reach, s, &mut rng, feel);
             let ms = pts.len() as f64 * motion::STEP.as_secs_f64() * 1000.0;
             let thin: Vec<[f64; 2]> = pts
                 .iter()
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn paths_start_near_and_end_on_the_target() {
         for style in ["hand", "sine", "arc", "spring", "spiral", "mixed"] {
-            let v = path_preview(style);
+            let v = path_preview(style, motion::Feel::default());
             assert_eq!(v["paths"].as_array().unwrap().len(), 3);
             for p in v["paths"].as_array().unwrap() {
                 let pts = p["points"].as_array().unwrap();
@@ -211,6 +211,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_preview_shows_the_real_mouses_feel() {
+        let avg = |feel: motion::Feel| {
+            let v = path_preview("hand", feel);
+            v["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["ms"].as_f64().unwrap())
+                .sum::<f64>()
+                / 3.0
+        };
+        let normal: f64 = (0..30).map(|_| avg(motion::Feel::default())).sum::<f64>() / 30.0;
+        let fast: f64 = (0..30)
+            .map(|_| {
+                avg(motion::Feel {
+                    speed: 2.0,
+                    ..Default::default()
+                })
+            })
+            .sum::<f64>()
+            / 30.0;
+        assert!(fast < normal * 0.65, "{fast} against {normal}");
     }
 
     #[test]

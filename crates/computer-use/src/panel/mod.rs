@@ -557,7 +557,17 @@ impl Page {
             }
             "path" => {
                 let style = body.get("style").and_then(Value::as_str).unwrap_or("mixed");
-                status::path_preview(style)
+                // The real mouse's glide has its own pace, overshoot and
+                // tremor; the pointer's has none of them.
+                let real = body.get("real").and_then(Value::as_bool) == Some(true);
+                self.with_config(|c| {
+                    let feel = if real {
+                        crate::motion::Feel::from_config(c)
+                    } else {
+                        Default::default()
+                    };
+                    status::path_preview(style, feel)
+                })
             }
             "connect_list" => connecting::list(&self.env, &self.exe),
             "connect_do" => connecting::act(&self.env, &self.exe, body),

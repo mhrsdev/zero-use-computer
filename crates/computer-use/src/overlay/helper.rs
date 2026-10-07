@@ -854,8 +854,15 @@ impl Machine {
                 }
             };
             let lean: f64 = (0..5).filter_map(|k| ago(16 * k)).map(speed).sum::<f64>() / 5.0;
-            fx.tilt = (14.0 * (lean / 2.0).tanh()) as f32;
-            for k in 1..=8 {
+            fx.tilt = (14.0 * (lean / 2.0).tanh()) as f32
+                * (self.cfg.lean_strength.min(100) as f32 / 100.0);
+            // How much of the trail: 8 points at full strength.
+            let keep = if self.cfg.trail {
+                (8 * self.cfg.trail_strength.min(100) + 50) / 100
+            } else {
+                0
+            };
+            for k in 1..=u64::from(keep) {
                 let Some(t) = ago(14 * k).filter(|t| *t >= g.start) else {
                     break;
                 };
@@ -870,7 +877,8 @@ impl Machine {
         if self.cfg.cursor_motion {
             let still =
                 self.glide_progress(now) >= 1.0 && self.ripple_at.is_none() && !self.click_pending;
-            if still {
+            if still && self.cfg.breathe {
+                fx.calm = 1.0 - self.cfg.breathe_strength.min(100) as f32 / 100.0;
                 let since = self.glide.as_ref().map_or(self.since, |g| {
                     g.start + Duration::from_millis(self.cfg.move_ms)
                 });
@@ -2106,6 +2114,147 @@ mod tests {
         let c = plain.scene(at(50)).cursor.unwrap();
         assert_eq!(c.pos.1, 300.0);
         assert_eq!(c.fx, draw::CursorFx::default());
+    }
+
+    /// A glide across a line, looked at in the middle and at rest.
+    fn effects_with(cfg: OverlayConfig) -> (draw::CursorFx, draw::CursorFx) {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg, t0);
+        let to = |x: f64, y: f64| Cmd::Pointer {
+            x,
+            y,
+            click: false,
+            id: None,
+        };
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 300.0), t0);
+        m.apply(to(410.0, 300.0), at(0));
+        let mid = m.scene(at(110)).cursor.unwrap().fx;
+        m.tick(at(400));
+        let still = m.scene(at(400)).cursor.unwrap().fx;
+        (mid, still)
+    }
+
+    #[test]
+    fn each_effect_can_be_turned_down_or_off_alone() {
+        // Each glide takes a path of its own (a hand is never the same
+        // twice), so a figure is the average of a dozen.
+        let base = || OverlayConfig {
+            cursor_path: "arc".into(),
+            ..cfg()
+        };
+        let avg = |cfg: &dyn Fn() -> OverlayConfig,
+                   f: &dyn Fn(&draw::CursorFx, &draw::CursorFx) -> f64| {
+            (0..12)
+                .map(|_| {
+                    let (mid, still) = effects_with(cfg());
+                    f(&mid, &still)
+                })
+                .sum::<f64>()
+                / 12.0
+        };
+        let tilt = |m: &draw::CursorFx, _: &draw::CursorFx| f64::from(m.tilt.abs());
+        let trail = |m: &draw::CursorFx, _: &draw::CursorFx| m.trail.len() as f64;
+        let calm = |_: &draw::CursorFx, s: &draw::CursorFx| f64::from(s.calm);
+        let breathing =
+            |_: &draw::CursorFx, s: &draw::CursorFx| f64::from(u8::from(s.idle.is_some()));
+
+        let (full_tilt, full_trail) = (avg(&base, &tilt), avg(&base, &trail));
+        assert!(
+            full_tilt > 1.0 && full_trail >= 4.0,
+            "{full_tilt} {full_trail}"
+        );
+        assert_eq!(avg(&base, &breathing), 1.0);
+        assert_eq!(avg(&base, &calm), 0.0);
+
+        // No trail, the rest as it was.
+        let off = || OverlayConfig {
+            trail: false,
+            ..base()
+        };
+        assert_eq!(avg(&off, &trail), 0.0);
+        assert!(avg(&off, &tilt) > 1.0);
+        assert_eq!(avg(&off, &breathing), 1.0);
+        // A shorter one, or none at strength 0.
+        let half = || OverlayConfig {
+            trail_strength: 50,
+            ..base()
+        };
+        let t = avg(&half, &trail);
+        assert!(t > 1.0 && t < full_trail * 0.75, "{t} of {full_trail}");
+        let none = || OverlayConfig {
+            trail_strength: 0,
+            ..base()
+        };
+        assert_eq!(avg(&none, &trail), 0.0);
+        // Upright, or about half the lean.
+        let upright = || OverlayConfig {
+            lean_strength: 0,
+            ..base()
+        };
+        assert_eq!(avg(&upright, &tilt), 0.0);
+        assert!(avg(&upright, &trail) >= 4.0);
+        let leaning = || OverlayConfig {
+            lean_strength: 50,
+            ..base()
+        };
+        let t = avg(&leaning, &tilt);
+        assert!(
+            t > full_tilt * 0.3 && t < full_tilt * 0.7,
+            "{t} of {full_tilt}"
+        );
+        // Not breathing, or less deeply.
+        let still = || OverlayConfig {
+            breathe: false,
+            ..base()
+        };
+        assert_eq!(avg(&still, &breathing), 0.0);
+        let soft = || OverlayConfig {
+            breathe_strength: 25,
+            ..base()
+        };
+        assert_eq!(avg(&soft, &breathing), 1.0);
+        assert!((avg(&soft, &calm) - 0.75).abs() < 0.001);
+        // How deeply it breathes redraws the pointer.
+        let a = draw::CursorFx {
+            idle: Some(0.25),
+            calm: 0.0,
+            ..Default::default()
+        };
+        let b = draw::CursorFx {
+            calm: 0.75,
+            ..a.clone()
+        };
+        assert_ne!(a.key(), b.key());
+    }
+
+    #[test]
+    fn a_calmer_breath_moves_the_pointer_less() {
+        // The same pose, drawn at the top of a breath, at full and half depth.
+        let draw_at = |calm: f32| {
+            let fonts = Fonts::load("");
+            let fx = draw::CursorFx {
+                idle: Some(0.25),
+                calm,
+                ..Default::default()
+            };
+            let art = draw::cursor(
+                &fonts,
+                "Zero",
+                1.0,
+                draw::parse_color("#9C27B0").unwrap(),
+                draw::parse_color("#1E88E5").unwrap(),
+                None,
+                draw::CursorStyle::Jelly,
+                &fx,
+            );
+            art.image.data().to_vec()
+        };
+        let (full, calm, none) = (draw_at(0.0), draw_at(0.5), draw_at(1.0));
+        assert_ne!(full, none, "breathing changes the picture");
+        assert_ne!(full, calm);
+        assert_ne!(calm, none);
     }
 
     #[test]

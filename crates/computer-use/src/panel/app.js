@@ -202,7 +202,7 @@ function pathPreview(key, who) {
   const canvas = h("canvas", { width: 960, height: 480, role: "img", "aria-label": "Three sample paths of the " + v + " style" });
   const info = h("div", { class: "help", role: "status" });
   const draw = async () => {
-    const r = await post("path", { style: v });
+    const r = await post("path", { style: v, real: key === "mouse_path" });
     if (!r.ok) return;
     const ctx = canvas.getContext("2d"), cs = getComputedStyle(document.documentElement);
     const k = canvas.width / 480; ctx.clearRect(0, 0, canvas.width, canvas.height);

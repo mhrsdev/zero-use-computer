@@ -172,6 +172,8 @@ fn picture(style: CursorStyle) -> Option<&'static Picture> {
 pub(super) struct Pose {
     pub tilt: f32,
     pub idle: Option<f32>,
+    /// 0: breathing as the pointer was made; 1: none.
+    pub calm: f32,
 }
 
 /// Draw `style` with its tip at `tip` (px), `s` px per unit; `click` runs
@@ -188,7 +190,7 @@ pub(super) fn draw(
         return;
     };
     // Waiting, each breathes its own way (about the tip, which stays put).
-    let wave = pose.idle.map_or(0.0, |p| (p * TAU).sin());
+    let wave = pose.idle.map_or(0.0, |p| (p * TAU).sin()) * (1.0 - pose.calm.clamp(0.0, 1.0));
     let breath = match style {
         CursorStyle::Jelly => Transform::from_scale(1.0 + 0.035 * wave, 1.0 - 0.035 * wave),
         CursorStyle::Paper => Transform::from_rotate(2.5 * wave),

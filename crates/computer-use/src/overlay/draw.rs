@@ -154,6 +154,8 @@ pub struct CursorFx {
     pub trail: Vec<(f32, f32)>,
     /// The phase 0–1 of its breathing while it waits.
     pub idle: Option<f32>,
+    /// How calm that breathing is: 0 as the pointer was made, 1 none at all.
+    pub calm: f32,
     /// Keys pressed together (one cap each: "Ctrl", "S"), and 0–1 through
     /// showing them.
     pub keys: Option<(Vec<String>, f32)>,
@@ -175,6 +177,7 @@ impl CursorFx {
             (q(*x, 1.0), q(*y, 1.0)).hash(&mut h);
         }
         self.idle.map(|p| q(p, 32.0)).hash(&mut h);
+        q(self.calm, 20.0).hash(&mut h);
         self.keys
             .as_ref()
             .map(|(k, t)| (k, q(*t, 30.0)))
@@ -241,6 +244,7 @@ pub fn cursor(
     let pose = pointers::Pose {
         tilt: fx.tilt,
         idle: fx.idle,
+        calm: fx.calm,
     };
     let art = if style == CursorStyle::Classic {
         classic_cursor(fonts, tag, scale, body, ring, ripple)
@@ -1058,6 +1062,7 @@ mod tests {
             tilt: 10.0,
             trail: vec![(-20.0, 4.0), (-40.0, 8.0), (-60.0, 12.0)],
             idle: None,
+            calm: 0.0,
             keys: Some((vec!["Ctrl".into(), "S".into()], 0.3)),
             typed: Some(("hello".into(), 1.0)),
             scroll: Some(((0, 1), 0.5)),

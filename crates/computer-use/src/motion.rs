@@ -10,7 +10,7 @@
 //! pointer glides along [`Path::at`] too.
 
 use std::f64::consts::{PI, TAU};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::Duration;
 
 /// Time between two points of a path (a 125 Hz mouse).
@@ -130,10 +130,63 @@ impl Style {
 /// The real mouse's `mouse_path` setting (0: mixed, else a style + 1).
 static MOUSE_STYLE: AtomicU8 = AtomicU8::new(0);
 
-/// Take `mouse_path` from the settings, for [`travel`].
+/// How a reach feels: how fast it goes, how often it overshoots and how
+/// much it trembles, each as a multiple of a hand's (1 is as made).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Feel {
+    /// 0.5 to 2: the pace.
+    pub speed: f64,
+    /// 0 to 1: the share of the hand's chance of going a touch past.
+    pub overshoot: f64,
+    /// 0 to 2: the tremor.
+    pub jitter: f64,
+}
+
+impl Default for Feel {
+    fn default() -> Self {
+        Feel {
+            speed: 1.0,
+            overshoot: 1.0,
+            jitter: 1.0,
+        }
+    }
+}
+
+impl Feel {
+    /// From the settings (`mouse_speed`, `mouse_overshoot`, `mouse_jitter`).
+    pub fn from_config(c: &crate::config::Config) -> Feel {
+        Feel {
+            speed: c.mouse_speed.clamp(0.5, 2.0),
+            overshoot: f64::from(c.mouse_overshoot.min(100)) / 100.0,
+            jitter: f64::from(c.mouse_jitter.min(200)) / 100.0,
+        }
+    }
+}
+
+/// The real mouse's feel, in hundredths (speed, overshoot, jitter).
+static MOUSE_FEEL: [AtomicU32; 3] = [
+    AtomicU32::new(100),
+    AtomicU32::new(100),
+    AtomicU32::new(100),
+];
+
+fn mouse_feel() -> Feel {
+    let get = |i: usize| f64::from(MOUSE_FEEL[i].load(Ordering::Relaxed)) / 100.0;
+    Feel {
+        speed: get(0),
+        overshoot: get(1),
+        jitter: get(2),
+    }
+}
+
+/// Take `mouse_path` and how it feels from the settings, for [`travel`].
 pub fn configure(config: &crate::config::Config) {
     let v = Style::named(&config.mouse_path).map_or(0, |s| s as u8 + 1);
     MOUSE_STYLE.store(v, Ordering::Relaxed);
+    let f = Feel::from_config(config);
+    for (slot, v) in MOUSE_FEEL.iter().zip([f.speed, f.overshoot, f.jitter]) {
+        slot.store((v * 100.0).round() as u32, Ordering::Relaxed);
+    }
 }
 
 fn mouse_setting() -> &'static str {
@@ -172,6 +225,18 @@ pub struct Path {
 
 impl Path {
     pub fn new(from: (f64, f64), to: (f64, f64), style: Style, kind: Kind, rng: &mut Rng) -> Path {
+        Path::feeling(from, to, style, kind, rng, Feel::default())
+    }
+
+    /// [`Path::new`], with the tremor and the overshoot as `feel` says.
+    pub fn feeling(
+        from: (f64, f64),
+        to: (f64, f64),
+        style: Style,
+        kind: Kind,
+        rng: &mut Rng,
+        feel: Feel,
+    ) -> Path {
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let d = dx.hypot(dy);
         let n = if d > 1e-9 {
@@ -186,6 +251,7 @@ impl Path {
             Kind::Reach => rng.range(0.3, 0.9),
             Kind::Drag => rng.range(0.15, 0.35),
         };
+        k[4] *= feel.jitter;
         k[5] = rng.range(9.0, 15.0);
         k[6] = rng.range(0.0, TAU);
         k[7] = rng.range(19.0, 29.0);
@@ -195,7 +261,7 @@ impl Path {
                 let bow = (d * rng.range(0.04, 0.16)).min(120.0) * side;
                 k[0] = bow * rng.range(0.6, 1.2);
                 k[1] = bow * rng.range(0.6, 1.2);
-                k[2] = if d > 250.0 && rng.chance(0.45) {
+                k[2] = if d > 250.0 && rng.chance(0.45 * feel.overshoot) {
                     (d * rng.range(0.015, 0.035)).min(16.0)
                 } else {
                     0.0
@@ -359,7 +425,7 @@ const LAST_STRETCH: (f64, f64) = (70.0, 140.0);
 pub fn travel(from: (f64, f64), to: (f64, f64), kind: Kind) -> Vec<(f64, f64)> {
     let mut rng = Rng::new();
     let style = Style::pick(mouse_setting(), &mut rng);
-    travel_near(from, to, kind, style, &mut rng)
+    travel_near_feel(from, to, kind, style, &mut rng, mouse_feel())
 }
 
 /// [`travel_with`], but a reach from far away goes at once to a point a
@@ -373,6 +439,18 @@ pub fn travel_near(
     style: Style,
     rng: &mut Rng,
 ) -> Vec<(f64, f64)> {
+    travel_near_feel(from, to, kind, style, rng, Feel::default())
+}
+
+/// [`travel_near`], with the pace, overshoot and tremor of `feel`.
+pub fn travel_near_feel(
+    from: (f64, f64),
+    to: (f64, f64),
+    kind: Kind,
+    style: Style,
+    rng: &mut Rng,
+    feel: Feel,
+) -> Vec<(f64, f64)> {
     let d = (to.0 - from.0).hypot(to.1 - from.1);
     let reach = rng.range(LAST_STRETCH.0, LAST_STRETCH.1);
     if kind == Kind::Reach && d.is_finite() && d > reach * 1.3 {
@@ -384,10 +462,10 @@ pub fn travel_near(
             to.1 + (ux * sin + uy * cos) * reach,
         );
         let mut out = vec![start];
-        out.extend(travel_with(start, to, kind, style, rng));
+        out.extend(travel_feel(start, to, kind, style, rng, feel));
         return out;
     }
-    travel_with(from, to, kind, style, rng)
+    travel_feel(from, to, kind, style, rng, feel)
 }
 
 pub fn travel_with(
@@ -396,6 +474,18 @@ pub fn travel_with(
     kind: Kind,
     style: Style,
     rng: &mut Rng,
+) -> Vec<(f64, f64)> {
+    travel_feel(from, to, kind, style, rng, Feel::default())
+}
+
+/// [`travel_with`], with the pace, overshoot and tremor of `feel`.
+pub fn travel_feel(
+    from: (f64, f64),
+    to: (f64, f64),
+    kind: Kind,
+    style: Style,
+    rng: &mut Rng,
+    feel: Feel,
 ) -> Vec<(f64, f64)> {
     let d = (to.0 - from.0).hypot(to.1 - from.1);
     if !d.is_finite() || d < 2.0 {
@@ -407,7 +497,13 @@ pub fn travel_with(
         Style::Spring | Style::Spiral if kind == Kind::Reach => ms * 1.3,
         _ => ms,
     };
-    let path = Path::new(from, to, style, kind, rng);
+    // Quicker or slower than a hand (a drag keeps to its own pace).
+    let ms = if kind == Kind::Reach {
+        ms / feel.speed.clamp(0.5, 2.0)
+    } else {
+        ms
+    };
+    let path = Path::feeling(from, to, style, kind, rng, feel);
     let steps = ((ms / STEP.as_secs_f64() / 1000.0).round() as usize).max(2);
     (1..=steps)
         .map(|i| path.at(i as f64 / steps as f64))
@@ -582,5 +678,124 @@ mod tests {
         let a = travel((0.0, 0.0), (500.0, 300.0), Kind::Reach);
         let b = travel((0.0, 0.0), (500.0, 300.0), Kind::Reach);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn the_feel_changes_pace_overshoot_and_tremor_and_nothing_else() {
+        let (from, to) = ((20.0, 400.0), (900.0, 120.0));
+        let steps = |feel: Feel| {
+            let mut rng = Rng::new();
+            travel_feel(from, to, Kind::Reach, Style::Hand, &mut rng, feel).len()
+        };
+        // A pace of 2 takes about half as long as 1, and 0.5 about twice.
+        let avg = |feel: Feel| (0..40).map(|_| steps(feel)).sum::<usize>() as f64 / 40.0;
+        let normal = avg(Feel::default());
+        let fast = avg(Feel {
+            speed: 2.0,
+            ..Feel::default()
+        });
+        let slow = avg(Feel {
+            speed: 0.5,
+            ..Feel::default()
+        });
+        assert!((fast / normal - 0.5).abs() < 0.08, "{fast} of {normal}");
+        assert!((slow / normal - 2.0).abs() < 0.3, "{slow} of {normal}");
+        // Every path still ends exactly on its target.
+        for feel in [
+            Feel {
+                speed: 2.0,
+                overshoot: 0.0,
+                jitter: 0.0,
+            },
+            Feel {
+                speed: 0.5,
+                overshoot: 1.0,
+                jitter: 2.0,
+            },
+        ] {
+            for style in Style::ALL {
+                let mut rng = Rng::new();
+                let p = travel_feel(from, to, Kind::Reach, style, &mut rng, feel);
+                assert_eq!(*p.last().unwrap(), to, "{style:?}");
+            }
+        }
+        // No overshoot: a long hand reach never goes past the target; with
+        // all of it, some do.
+        let past = |feel: Feel| {
+            (0..200)
+                .filter(|_| {
+                    let mut rng = Rng::new();
+                    let p = travel_feel(from, to, Kind::Reach, Style::Hand, &mut rng, feel);
+                    let (ux, uy) = ((to.0 - from.0), (to.1 - from.1));
+                    let l = ux.hypot(uy);
+                    p.iter()
+                        .any(|q| ((q.0 - to.0) * ux + (q.1 - to.1) * uy) / l > 3.0)
+                })
+                .count()
+        };
+        assert_eq!(
+            past(Feel {
+                overshoot: 0.0,
+                ..Feel::default()
+            }),
+            0
+        );
+        let some = past(Feel::default());
+        assert!((50..=130).contains(&some), "{some} of 200 overshoot");
+        let half = past(Feel {
+            overshoot: 0.5,
+            ..Feel::default()
+        });
+        assert!(half < some && half > 5, "{half} against {some}");
+        // No tremor: the straight-line drag keeps to its line exactly.
+        let mut rng = Rng::new();
+        let steady = travel_feel(
+            from,
+            to,
+            Kind::Drag,
+            Style::Hand,
+            &mut rng,
+            Feel {
+                jitter: 0.0,
+                ..Feel::default()
+            },
+        );
+        assert!(
+            off_line(&steady, from, to) < 1e-6,
+            "{}",
+            off_line(&steady, from, to)
+        );
+        let mut rng = Rng::new();
+        let shaky = travel_feel(
+            from,
+            to,
+            Kind::Drag,
+            Style::Hand,
+            &mut rng,
+            Feel {
+                jitter: 2.0,
+                ..Feel::default()
+            },
+        );
+        assert!(off_line(&shaky, from, to) > 0.1);
+    }
+
+    #[test]
+    fn the_feel_comes_from_the_settings() {
+        let mut c = crate::config::Config::default();
+        assert_eq!(Feel::from_config(&c), Feel::default());
+        c.mouse_speed = 1.5;
+        c.mouse_overshoot = 40;
+        c.mouse_jitter = 150;
+        assert_eq!(
+            Feel::from_config(&c),
+            Feel {
+                speed: 1.5,
+                overshoot: 0.4,
+                jitter: 1.5
+            }
+        );
+        c.mouse_speed = 9.0;
+        assert_eq!(Feel::from_config(&c).speed, 2.0);
     }
 }

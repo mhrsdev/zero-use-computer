@@ -566,6 +566,17 @@ pub struct OverlayConfig {
     /// material, breathes while it waits, draws a line where it drags and
     /// shows the way it scrolls.
     pub cursor_motion: bool,
+    /// With `cursor_motion`: the trail the pointer leaves, how much of it
+    /// (0 to 100: its length; 100 as it was made).
+    pub trail: bool,
+    pub trail_strength: u32,
+    /// With `cursor_motion`: how far the pointer leans into a move (0 to
+    /// 100 percent of its full lean).
+    pub lean_strength: u32,
+    /// With `cursor_motion`: the pointer breathes while it waits, and how
+    /// deeply (0 to 100 percent).
+    pub breathe: bool,
+    pub breathe_strength: u32,
     /// The way the pointer glides to where it acts (as `mouse_path`):
     /// "mixed", "hand", "sine", "arc", "spring" or "spiral".
     pub cursor_path: String,
@@ -626,6 +637,11 @@ impl Default for OverlayConfig {
             cursor_style: "random".into(),
             agent_cursors: Default::default(),
             cursor_motion: true,
+            trail: true,
+            trail_strength: 100,
+            lean_strength: 100,
+            breathe: true,
+            breathe_strength: 100,
             cursor_path: "mixed".into(),
             show_keys: true,
             done_after_ms: 20_000,
@@ -1226,6 +1242,15 @@ pub struct Config {
     /// circle's arc), "spring" (past the target and back) or "spiral" (in
     /// to the target). Drags go straight whatever this says.
     pub mouse_path: String,
+    /// How fast the real mouse moves, as a multiple of a hand's pace
+    /// (0.5 to 2).
+    pub mouse_speed: f64,
+    /// How often a reach goes a touch past its target and back, as a share
+    /// of how often a hand does (0 to 100 percent; the hand style only).
+    pub mouse_overshoot: u32,
+    /// How much the real mouse's path trembles, as a share of a hand's
+    /// (0 to 200 percent).
+    pub mouse_jitter: u32,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -1262,6 +1287,9 @@ impl Default for Config {
             restore_pointer: true,
             natural_mouse: true,
             mouse_path: "mixed".into(),
+            mouse_speed: 1.0,
+            mouse_overshoot: 100,
+            mouse_jitter: 100,
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
@@ -1279,6 +1307,33 @@ impl Config {
                 "hub.turn_wait_secs must be between 1 and 600 (got {})",
                 self.hub.turn_wait_secs
             ));
+        }
+        if !(0.5..=2.0).contains(&self.mouse_speed) {
+            return Err(format!(
+                "mouse_speed must be between 0.5 and 2 (got {})",
+                self.mouse_speed
+            ));
+        }
+        if self.mouse_overshoot > 100 {
+            return Err(format!(
+                "mouse_overshoot must be between 0 and 100 (got {})",
+                self.mouse_overshoot
+            ));
+        }
+        if self.mouse_jitter > 200 {
+            return Err(format!(
+                "mouse_jitter must be between 0 and 200 (got {})",
+                self.mouse_jitter
+            ));
+        }
+        for (key, value) in [
+            ("overlay.trail_strength", self.overlay.trail_strength),
+            ("overlay.lean_strength", self.overlay.lean_strength),
+            ("overlay.breathe_strength", self.overlay.breathe_strength),
+        ] {
+            if value > 100 {
+                return Err(format!("{key} must be between 0 and 100 (got {value})"));
+            }
         }
         let p = &self.panel;
         if p.port == 0 {
