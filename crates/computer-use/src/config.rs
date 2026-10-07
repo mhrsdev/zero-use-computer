@@ -46,6 +46,33 @@ impl Default for HubConfig {
     }
 }
 
+/// The settings panel ([panel]): a page this program serves on this
+/// computer only, opened by the settings key or `computer-use-mcp settings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelConfig {
+    /// The port of this computer the panel listens on while it is open. If
+    /// it is taken by another program, a free one is used.
+    pub port: u16,
+    /// The panel closes after this many minutes without a request.
+    pub idle_minutes: u64,
+    /// "system" (follow the computer), "light" or "dark".
+    pub theme: String,
+    /// The accent colour the panel's palette is made from (#RRGGBB).
+    pub accent: String,
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        Self {
+            port: 47_382,
+            idle_minutes: 15,
+            theme: "system".into(),
+            accent: "#1A73E8".into(),
+        }
+    }
+}
+
 /// Updates ([update]): a while after the server starts it asks GitHub for
 /// the latest release; a newer one is downloaded, checked and set aside,
 /// never put in place while the agent may be working. It goes in when the
@@ -813,8 +840,8 @@ pub struct ControlConfig {
     /// Give up (the action fails with a message to the agent) after waiting
     /// this long for the user (seconds).
     pub max_pause_secs: u64,
-    /// Global key combination that opens the settings page for the decision
-    /// model in the browser. "" = none.
+    /// Global key combination that opens the settings panel in the browser.
+    /// "" = none.
     pub settings_hotkey: String,
 }
 
@@ -1160,6 +1187,7 @@ pub struct Config {
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub hub: HubConfig,
+    pub panel: PanelConfig,
     pub update: UpdateConfig,
     pub linux: LinuxConfig,
     pub macos: MacosConfig,
@@ -1208,6 +1236,7 @@ impl Default for Config {
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             hub: HubConfig::default(),
+            panel: PanelConfig::default(),
             update: UpdateConfig::default(),
             linux: LinuxConfig::default(),
             macos: MacosConfig::default(),
@@ -1234,6 +1263,31 @@ impl Config {
             return Err(format!(
                 "hub.turn_wait_secs must be between 1 and 600 (got {})",
                 self.hub.turn_wait_secs
+            ));
+        }
+        let p = &self.panel;
+        if p.port == 0 {
+            return Err("panel.port must be a port number (1 to 65535)".into());
+        }
+        if !(1..=240).contains(&p.idle_minutes) {
+            return Err(format!(
+                "panel.idle_minutes must be between 1 and 240 (got {})",
+                p.idle_minutes
+            ));
+        }
+        if !matches!(p.theme.trim(), "system" | "light" | "dark") {
+            return Err(format!(
+                "panel.theme must be system, light or dark (got \"{}\")",
+                p.theme
+            ));
+        }
+        let accent = p.accent.trim();
+        if !(accent.len() == 7
+            && accent.starts_with('#')
+            && accent[1..].chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(format!(
+                "panel.accent must be a colour like \"#1A73E8\" (got \"{accent}\")"
             ));
         }
         let c = &self.cache;

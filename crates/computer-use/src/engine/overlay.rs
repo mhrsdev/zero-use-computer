@@ -174,12 +174,12 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    /// What the settings key does: open the decision model's settings page
+    /// What the settings key does: open the settings panel
     /// (from the helper's reader thread, whatever the engine is doing).
     fn settings_handler(&self) -> crate::overlay::OnSettings {
         let path = self.store.path.clone();
         Arc::new(move || {
-            if let Err(e) = crate::decision::page::open(path.clone()) {
+            if let Err(e) = crate::panel::open(path.clone(), "") {
                 log::warn!("couldn't open the settings page: {e}");
             }
         })

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased (v4.8)
+
+The settings panel, built in steps
+([plan](docs/PANEL-SPEC.md)).
+
+- **One panel for every setting** (`computer-use-mcp settings`,
+  Ctrl+Alt+J, or `decide setup="open"`): all 171 settings in 22 groups, with
+  help, defaults, a reset button each, search, "changed from default" and
+  light, dark and automatic themes in Material Design 3 style. The decision
+  model's page is a tab of it. A new test fails when a setting has no entry
+  in the panel.
+- **A stable address**: `[panel]` `port` (47382, a free port if taken), a
+  token kept in a file only the user can read, and a panel already served by
+  another process is shown instead of a second one. It listens only while it
+  is open and closes after `panel.idle_minutes`.
+- **The agent never uses it**: a window whose title says "Zero panel
+  [private]" is refused by every tool. Settings that limit the agent or the
+  updates ask the user to confirm, in the page and in the server.
+- Secrets (the API key, the HTTP token) are written but never sent back.
+
 ## v4.0.1
 
 Two fixes to v4.0.0

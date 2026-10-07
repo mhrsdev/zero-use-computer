@@ -737,10 +737,11 @@ impl<B: Backend> Engine<B> {
                 "open" | "page" | "settings" => {
                     // Never its address: it carries the page's secret, and
                     // the page is the user's alone.
-                    let (_, browser) = decision::page::open(self.store.path.clone())?;
+                    let (_, browser) =
+                        crate::panel::open(self.store.path.clone(), "decision-model")?;
                     Ok(ToolOutput::text(match browser {
                         Ok(()) => format!(
-                            "Opened the decision model's settings page in the user's browser. Ask them to choose the model, paste its API key and press Save there; it is used at once.{}",
+                            "Opened the settings panel, on the decision model's page, in the user's browser. Ask them to choose the model, paste its API key and press Save there; it is used at once.{}",
                             key.map(|k| format!(" ({k} opens it too.)"))
                                 .unwrap_or_default()
                         ),

@@ -295,7 +295,7 @@ stop_hotkey = "ctrl+alt+escape"
 pause_on_user_input = true
 resume_after_idle_ms = 1500  # how long you must be idle before it continues
 max_pause_secs = 120         # then the action fails and the agent is told why
-# Opens the decision model's settings page in your browser, from any app
+# Opens the settings panel in your browser, from any app
 # ("" = none; `computer-use-mcp settings` opens it too).
 settings_hotkey = "ctrl+alt+j"
 
@@ -368,6 +368,15 @@ port = 47381                # this computer only, with a token only you can read
 arrange = true              # move each agent's window into its part of the screen
 chat = false                # let the agents send each other short messages
 turn_wait_secs = 60         # longest wait for the keyboard and mouse
+
+[panel]
+# The settings panel: a page served on this computer only, opened by the
+# settings key (control.settings_hotkey) or `computer-use-mcp settings`. It
+# listens only while it is open, and its address is the same every time.
+port = 47382                # a free port is used if this one is taken
+idle_minutes = 15           # it closes after this long without a request
+theme = "system"            # "system" (follow the computer), "light" or "dark"
+accent = "#1A73E8"          # the colour its palette is made from
 
 [update]
 # A while after the server starts it asks GitHub for the latest release; a

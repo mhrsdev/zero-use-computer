@@ -1081,7 +1081,25 @@ impl<B: Backend> Engine<B> {
         Ok(w)
     }
 
+    /// The window a call acts on. Never the settings panel: the agent could
+    /// change its own limits there.
     fn pick_window(
+        &mut self,
+        app: &AppInfo,
+        query: Option<&str>,
+        fresh: bool,
+    ) -> Result<WindowInfo> {
+        let w = self.pick_window_any(app, query, fresh)?;
+        if crate::panel::is_panel_window(&w.title) {
+            return Err(Error::Blocked(
+                app.name.clone(),
+                "that window is the user's settings panel, which the agent never uses".into(),
+            ));
+        }
+        Ok(w)
+    }
+
+    fn pick_window_any(
         &mut self,
         app: &AppInfo,
         query: Option<&str>,

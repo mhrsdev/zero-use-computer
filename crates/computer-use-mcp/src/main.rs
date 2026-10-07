@@ -116,8 +116,8 @@ enum Command {
         #[arg(long)]
         install: bool,
     },
-    /// Open the decision model's settings page in your browser (what
-    /// Ctrl+Alt+J does), and serve it until you press Done.
+    /// Open the settings panel in your browser (what Ctrl+Alt+J does), and
+    /// serve it until you press Done.
     Settings {
         /// Print the page's address instead of opening a browser.
         #[arg(long)]
@@ -381,8 +381,8 @@ fn run() -> Result<()> {
         Command::Doctor => doctor(&cli.common, store),
         Command::Settings { no_browser } => {
             let path = config_path(&cli.common);
-            computer_use::decision::page::serve(Some(path), !no_browser, |url| {
-                println!("The decision model's settings page: {url}");
+            computer_use::panel::serve(Some(path), !no_browser, |url| {
+                println!("The settings panel: {url}");
                 println!(
                     "(only this computer can open it; press Done on the page, or Ctrl+C, when finished)"
                 );

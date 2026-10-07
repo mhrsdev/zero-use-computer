@@ -5830,3 +5830,37 @@ fn a_design_drawn_in_a_batch_is_not_counted_as_seen() {
     );
     assert!(out.image.is_some(), "{}", out.text);
 }
+
+#[test]
+fn the_agent_never_acts_on_the_settings_panel() {
+    let mut backend = MockBackend::new();
+    let mut app = MockBackend::text_editor(4242);
+    app.windows[0].title = "Zero panel [private] - Browser".into();
+    backend.add_app(app);
+    let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+        .with_time(Instant::now, |_| {});
+
+    // Looking, acting and pictures are all refused, by name or by default.
+    for call in [
+        ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            ..Default::default()
+        }),
+        ToolCall::GetAppState(GetAppStateArgs {
+            app: "TextEdit".into(),
+            window: Some("Zero panel".into()),
+            ..Default::default()
+        }),
+    ] {
+        let err = e.call(call).unwrap_err().to_string();
+        assert!(err.contains("settings panel"), "{err}");
+    }
+    assert!(
+        e.backend()
+            .events
+            .iter()
+            .all(|ev| !matches!(ev, Event::Click(..) | Event::Key(..) | Event::Type(..))),
+        "{:?}",
+        e.backend().events
+    );
+}

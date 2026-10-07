@@ -68,6 +68,7 @@ pub mod motion;
 pub mod ocr;
 pub mod overlay;
 pub mod paint;
+pub mod panel;
 pub mod privacy;
 pub mod roles;
 pub mod scene;

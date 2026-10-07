@@ -1,6 +1,9 @@
 # Control panel: specification for v4.8
 
-Status: proposal. Nothing here is built yet. Written against v4.0.0.
+Status: step 1 of section 10 is built (server, token file, theme shell,
+schema with its test, the decision model tab, the agent protection) and
+first check of the settings groups, search and reset. Steps 2 to 7 are not.
+Written against v4.0.0, now on v4.0.1.
 
 All text in the panel, its help pages, this spec, the changelog entry and
 the code comments is English only.
