@@ -450,7 +450,10 @@ their mouse:
   fallbacks move it the way a hand does: quick to start, slower to
   settle, in a hand's time for the distance, with the wheel turned a notch
   at a time (`natural_mouse`; some apps notice a pointer that jumps or goes
-  dead straight). Each move goes one of five ways (`mouse_path`, "mixed"
+  dead straight). An app sees the pointer only over its own window, so
+  the pointer goes at once to a short stretch from the target and travels
+  only that: the user's pointer is away for about a third of a second.
+  Each move goes one of five ways (`mouse_path`, "mixed"
   picks one at random each time): a hand's curve (a bow to one side, a
   tremor, sometimes a touch past and back), a sine wave, a circular arc, a
   spring (past the target and back, settling) or a spiral in to the
