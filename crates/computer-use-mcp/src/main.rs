@@ -516,10 +516,12 @@ fn install_cmd(names: &[String], remove: bool, list: bool) -> Result<()> {
     if chosen.is_empty() {
         chosen = all
             .iter()
-            .filter(|i| match (&i.state, remove) {
-                (State::Installed | State::Different(_), true) => true,
-                (State::NotInstalled | State::Different(_), false) => true,
-                _ => false,
+            .filter(|i| {
+                matches!(
+                    (&i.state, remove),
+                    (State::Installed | State::Different(_), true)
+                        | (State::NotInstalled | State::Different(_), false)
+                )
             })
             .map(|i| i.client)
             .collect();

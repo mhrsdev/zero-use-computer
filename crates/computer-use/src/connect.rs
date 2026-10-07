@@ -674,8 +674,8 @@ pub fn remove(env: &Env, c: Client) -> Result<String> {
         Client::ClaudeCode => {
             let a = run_claude(env, &["mcp", "remove", NAME, "--scope", "user"]);
             let b = run_claude(env, &["mcp", "remove", ALT_NAME, "--scope", "user"]);
-            if a.is_err() && b.is_err() {
-                return Err(a.unwrap_err());
+            if let (Err(e), Err(_)) = (a, b) {
+                return Err(e);
             }
         }
         Client::Codex => {
