@@ -2126,7 +2126,9 @@ mod tests {
         m.apply(Cmd::Scroll { dx: 0, dy: -5 }, at(200));
         let fx = m.scene(at(300)).cursor.unwrap().fx;
         let (keys, k) = fx.keys.unwrap();
-        assert_eq!(keys, ["Ctrl", "Shift", "S"]);
+        // Named as on this system's keyboard ("Control" on a Mac).
+        let ctrl = pretty_key("ctrl");
+        assert_eq!(keys, [ctrl.as_str(), "Shift", "S"]);
         assert!(k > 0.0 && k < 0.2);
         // The text runs out a letter at a time; a line break shows as a space.
         let (early, _) = fx.typed.unwrap();
@@ -2164,8 +2166,9 @@ mod tests {
 
     #[test]
     fn keycaps_are_named_for_people() {
-        assert_eq!(caps("ctrl+s"), ["Ctrl", "S"]);
-        assert_eq!(caps("ctrl++"), ["Ctrl", "+"]);
+        let ctrl = pretty_key("ctrl");
+        assert_eq!(caps("ctrl+s"), [ctrl.as_str(), "S"]);
+        assert_eq!(caps("ctrl++"), [ctrl.as_str(), "+"]);
         assert_eq!(caps("Return"), ["Return"]);
     }
 
