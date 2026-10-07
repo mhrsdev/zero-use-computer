@@ -241,7 +241,7 @@ impl Colors {
 }
 
 /// The look a `cursor_style` setting names; "random" (or anything else)
-/// picks a picture, avoiding `taken`.
+/// picks a pointer, avoiding `taken`.
 fn style_for(setting: &str, taken: &[draw::CursorStyle]) -> draw::CursorStyle {
     draw::CursorStyle::named(setting).unwrap_or_else(|| draw::CursorStyle::random(taken))
 }
@@ -252,7 +252,8 @@ struct Glide {
     start: Instant,
 }
 
-const RIPPLE: Duration = Duration::from_millis(450);
+/// How long a click shows (the pointers each click in their own way).
+const RIPPLE: Duration = Duration::from_millis(700);
 
 /// A value easing from one level to another over time.
 #[derive(Debug, Clone, Copy)]
@@ -1709,8 +1710,8 @@ mod tests {
         let end = m.scene(at(130)).cursor.unwrap();
         assert_eq!(end.pos, (110.0, 10.0));
         assert!(end.ripple.is_some(), "ripple on arrival");
-        m.tick(at(700));
-        assert!(m.scene(at(700)).cursor.unwrap().ripple.is_none());
+        m.tick(at(1000));
+        assert!(m.scene(at(1000)).cursor.unwrap().ripple.is_none());
     }
 
     #[test]

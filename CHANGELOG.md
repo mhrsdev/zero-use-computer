@@ -5,13 +5,21 @@
 New pointers for the agent, and the overlay kept out of screenshots on X11
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
 
-- **Six pointer pictures**: crystal, gold, glass, frost, chrome and orbit
-  (3D-rendered, cut out with their glow). Each session picks one at
-  random; agents working at once each get a different one while there
-  are pictures to go round. The state colour still glows behind the
-  pointer, the click ripple and the name tag are as before.
-  `overlay.cursor_style` names one (`"crystal"`, …), `"classic"` keeps the
-  drawn arrow, `"random"` is the default.
+- **Six new pointers, drawn by hand, each clicking its own way**:
+  - crystal (cut glass, rainbow edges): light breaks out of it in colours;
+  - paper (a folded sheet, warm inside): its folded wing opens out flat
+    and folds back;
+  - jelly (violet): it squashes flat and wobbles back;
+  - ice (with a glowing crystal inside): it melts and drips, then freezes
+    again;
+  - metal (liquid chrome, a hanging drop): drops of metal splash out;
+  - orbit (a dark crystal in a ring): the pearl races once round the ring.
+
+  Each session picks one at random; agents working at once each get a
+  different one while there are pointers to go round. The state colour
+  glows behind the pointer and the name tag is as before; a click shows
+  for 0.7 s (was 0.45). `overlay.cursor_style` names one (`"jelly"`, …),
+  `"classic"` keeps the plain arrow, `"random"` is the default.
 - **The overlay could be in the agent's screenshots on X11** without a
   compositor: the engine waited 150 ms for the overlay to say it was
   hidden, and a helper busy drawing (a glide, a fade) answered later, so
@@ -20,11 +28,11 @@ New pointers for the agent, and the overlay kept out of screenshots on X11
 
 ### Checked
 
-- 504 tests in the library (new: the pictures load with their tip on the
-  pointer; agents at once get different pictures), 55 in the server;
+- 504 tests in the library (new: every pointer keeps its tip on the spot
+  through a click; agents at once get different pointers), 55 in the server;
   clippy on Linux, Windows and macOS; Rust 1.88; the live Linux tests
   10 of 10, the overlay test 10 runs of 10 (5 of 10 before); four agents
-  on one hub under Xvfb showed four different pictures. Not seen on a
+  on one hub under Xvfb showed four different pointers. Not seen on a
   Windows or macOS desktop.
 
 ## v3.9.7

@@ -351,9 +351,10 @@ possible, and far more tools behind `find_tools`.
     stopped without the token, OCR text from private fields and values in
     the audit log reached the model or the disk, and clicks landed at the
     old place after a window moved.
-  - v3.9.8: six pointer pictures for the agent (one at random, another for
-    each agent at once); the overlay no longer gets into screenshots on
-    X11 when its helper is busy drawing.
+  - v3.9.8: six hand-drawn pointers for the agent, each clicking its own
+    way (a jelly squashes, ice melts, paper unfolds, metal splashes; one at
+    random, another for each agent at once); the overlay no longer gets
+    into screenshots on X11 when its helper is busy drawing.
   Windows and Wayland fixes in these were checked by CI, not on real
   desktops.
 

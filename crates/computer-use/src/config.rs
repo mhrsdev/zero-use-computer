@@ -468,9 +468,9 @@ pub struct OverlayConfig {
     pub cursor_color: String,
     /// Name tag shown beside the agent cursor ("" = none).
     pub cursor_tag: String,
-    /// The agent cursor's look: "random" (one of the pictures, another for
-    /// each agent working at once), "classic" (the drawn arrow), or a
-    /// picture: crystal, gold, glass, frost, chrome, orbit.
+    /// The agent cursor's look: "random" (one of the pointers, another for
+    /// each agent working at once), "classic" (the plain arrow), or one:
+    /// crystal, paper, jelly, ice, metal, orbit.
     pub cursor_style: String,
     /// No new action for this long after the last one: done (green), then hidden.
     pub done_after_ms: u64,

@@ -1,8 +1,8 @@
 # Upgrading to v3.9.8
 
-Nothing to change. The agent's pointer is now one of six pictures, picked
+Nothing to change. The agent's pointer is now one of six new ones, picked
 at random (another for each agent at once); `overlay.cursor_style =
-"classic"` brings back the drawn arrow.
+"classic"` brings back the plain arrow.
 
 # Upgrading to v3.9.7
 

@@ -7,8 +7,7 @@ use tiny_skia::{
     Point, RadialGradient, Rect as SkRect, SpreadMode, Stroke, Transform,
 };
 
-use std::sync::OnceLock;
-
+use super::pointers;
 use super::text::{self, Fonts};
 
 /// Side of the (square) cursor image at scale 1; the hotspot is its centre.
@@ -76,32 +75,33 @@ fn stroke(width: f32) -> Stroke {
     }
 }
 
-/// How the agent's pointer looks: the drawn arrow, or one of the pictures.
+/// How the agent's pointer looks: the classic arrow, or one of the
+/// pointers drawn in `pointers` (each with its own click).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CursorStyle {
     Classic,
     Crystal,
-    Gold,
-    Glass,
-    Frost,
-    Chrome,
+    Paper,
+    Jelly,
+    Ice,
+    Metal,
     Orbit,
 }
 
-/// What `overlay.cursor_style` takes: "random" (a picture picked for each
+/// What `overlay.cursor_style` takes: "random" (a pointer picked for each
 /// agent) or a style's name.
 pub const CURSOR_STYLES: [&str; 8] = [
-    "random", "classic", "crystal", "gold", "glass", "frost", "chrome", "orbit",
+    "random", "classic", "crystal", "paper", "jelly", "ice", "metal", "orbit",
 ];
 
 impl CursorStyle {
-    /// The pictures, the ones "random" picks from.
-    pub const PICTURES: [CursorStyle; 6] = [
+    /// The pointers "random" picks from.
+    pub const POINTERS: [CursorStyle; 6] = [
         CursorStyle::Crystal,
-        CursorStyle::Gold,
-        CursorStyle::Glass,
-        CursorStyle::Frost,
-        CursorStyle::Chrome,
+        CursorStyle::Paper,
+        CursorStyle::Jelly,
+        CursorStyle::Ice,
+        CursorStyle::Metal,
         CursorStyle::Orbit,
     ];
 
@@ -110,25 +110,25 @@ impl CursorStyle {
         Some(match name.trim().to_ascii_lowercase().as_str() {
             "classic" => Self::Classic,
             "crystal" => Self::Crystal,
-            "gold" => Self::Gold,
-            "glass" => Self::Glass,
-            "frost" => Self::Frost,
-            "chrome" => Self::Chrome,
+            "paper" => Self::Paper,
+            "jelly" => Self::Jelly,
+            "ice" => Self::Ice,
+            "metal" => Self::Metal,
             "orbit" => Self::Orbit,
             _ => return None,
         })
     }
 
-    /// One of the pictures, at random, preferring those not in `taken`
-    /// (other agents' pointers).
+    /// One of the pointers, at random, preferring those not in `taken`
+    /// (other agents').
     pub fn random(taken: &[CursorStyle]) -> Self {
         use std::hash::{BuildHasher, Hasher};
-        let free: Vec<CursorStyle> = Self::PICTURES
+        let free: Vec<CursorStyle> = Self::POINTERS
             .into_iter()
             .filter(|p| !taken.contains(p))
             .collect();
         let pool = if free.is_empty() {
-            Self::PICTURES.to_vec()
+            Self::POINTERS.to_vec()
         } else {
             free
         };
@@ -140,49 +140,7 @@ impl CursorStyle {
         );
         pool[(h.finish() % pool.len() as u64) as usize]
     }
-
-    /// The picture, decoded once; None for the drawn arrow.
-    fn picture(self) -> Option<&'static Picture> {
-        static PICTURES: OnceLock<Vec<Option<Picture>>> = OnceLock::new();
-        let i = Self::PICTURES.iter().position(|p| *p == self)?;
-        PICTURES
-            .get_or_init(|| {
-                PICTURE_FILES
-                    .iter()
-                    .map(|(png, tip)| {
-                        Pixmap::decode_png(png)
-                            .ok()
-                            .map(|image| Picture { image, tip: *tip })
-                    })
-                    .collect()
-            })
-            .get(i)?
-            .as_ref()
-    }
 }
-
-/// A picture of a pointer and where its tip is in it (px).
-struct Picture {
-    image: Pixmap,
-    tip: (f32, f32),
-}
-
-/// The pictures, in the order of `CursorStyle::PICTURES`, all drawn at one
-/// scale (a 192 px tall picture is the tallest).
-const PICTURE_FILES: [(&[u8], (f32, f32)); 6] = [
-    (
-        include_bytes!("../../assets/cursors/crystal.png"),
-        (7.0, 6.0),
-    ),
-    (include_bytes!("../../assets/cursors/gold.png"), (4.0, 4.0)),
-    (include_bytes!("../../assets/cursors/glass.png"), (7.0, 5.0)),
-    (include_bytes!("../../assets/cursors/frost.png"), (7.0, 5.0)),
-    (
-        include_bytes!("../../assets/cursors/chrome.png"),
-        (6.0, 5.0),
-    ),
-    (include_bytes!("../../assets/cursors/orbit.png"), (6.0, 4.0)),
-];
 
 /// The agent's pointer, drawn with its hotspot (the arrow tip) at `hotspot`.
 pub struct CursorArt {
@@ -219,8 +177,8 @@ fn arrow_path(x: f32, y: f32, s: f32) -> Option<tiny_skia::Path> {
 /// white and outlined in the state colour `ring`, over a soft shadow and a
 /// glow in `ring`; beside it, a small name `tag` in the same colours. While
 /// `ripple` (0–1) runs, a click ring expands from the tip.
-/// With a picture `style`, the picture takes the arrow's place (the state
-/// colour glows behind it).
+/// With another `style`, that pointer takes the arrow's place (the state
+/// colour glows behind it, and the click is its own).
 pub fn cursor(
     fonts: &Fonts,
     tag: &str,
@@ -230,8 +188,8 @@ pub fn cursor(
     ripple: Option<f32>,
     style: CursorStyle,
 ) -> CursorArt {
-    if let Some(pic) = style.picture() {
-        return picture_cursor(fonts, tag, scale, body, ring, ripple, pic);
+    if style != CursorStyle::Classic {
+        return styled_cursor(fonts, tag, scale, body, ring, ripple, style);
     }
     // About the size of a system pointer, so it is easy to follow.
     let s = scale * 1.35;
@@ -391,37 +349,33 @@ fn name_tag(
     }
 }
 
-/// A picture pointer: the state colour glows behind it, the click ripple
-/// spreads from its tip, and the name tag sits by its lower right.
-fn picture_cursor(
+/// A drawn pointer: the state colour glows behind it, it clicks in its own
+/// way, and the name tag sits by its lower right.
+fn styled_cursor(
     fonts: &Fonts,
     tag: &str,
     scale: f32,
     body: Color,
     ring: Color,
-    ripple: Option<f32>,
-    pic: &Picture,
+    click: Option<f32>,
+    style: CursorStyle,
 ) -> CursorArt {
     let s = scale * 1.35;
-    // The tallest picture is about one and a half system pointers high.
-    let k = 38.0 * s / 192.0;
-    let (pw, ph) = (pic.image.width() as f32 * k, pic.image.height() as f32 * k);
-    let (tip_x, tip_y) = (pic.tip.0 * k, pic.tip.1 * k);
     let pad = (CURSOR_BOX / 2.0) * s;
     let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
     let tag_text = tag_text.filter(|t| t.width > 0.0);
-    // Tag: beside the lower right of the pointer, off its tip.
-    let (tag_x, tag_y) = (pw * 0.74 - tip_x, ph * 0.88 - tip_y);
+    let (tag_x, tag_y) = (24.0 * s, 29.0 * s);
     let (tag_w, tag_h) = tag_text.as_ref().map_or((0.0, 0.0), |t| {
         (t.width + 12.0 * s, (t.height + 3.0 * s).max(16.0 * s))
     });
-    let w = pad + pad.max(pw - tip_x).max(tag_x + tag_w + 4.0 * s);
-    let h = pad + pad.max(ph - tip_y).max(tag_y + tag_h + 4.0 * s);
+    // Room below and right for what a click throws out (drops, rays).
+    let w = pad + (54.0 * s).max(tag_x + tag_w + 4.0 * s);
+    let h = pad + (56.0 * s).max(tag_y + tag_h + 4.0 * s);
     let mut pm = canvas(w, h);
     let (c, id) = (pad, Transform::identity());
 
     // The state colour, glowing behind the body of the pointer.
-    let (gx, gy, glow_r) = (c + pw * 0.28, c + ph * 0.32, 22.0 * s);
+    let (gx, gy, glow_r) = (c + 10.0 * s, c + 11.0 * s, 22.0 * s);
     if let (Some(p), Some(shader)) = (
         PathBuilder::from_circle(gx, gy, glow_r),
         RadialGradient::new(
@@ -445,30 +399,8 @@ fn picture_cursor(
         pm.fill_path(&p, &glow, FillRule::Winding, id, None);
     }
 
-    if let Some(t) = ripple.filter(|t| (0.0..1.0).contains(t)) {
-        let r = (5.0 + 22.0 * t) * s;
-        if let Some(p) = PathBuilder::from_circle(c, c, r) {
-            pm.stroke_path(
-                &p,
-                &paint(with_alpha(ring, 1.0 - t)),
-                &stroke(3.0 * s * (1.0 - 0.5 * t)),
-                id,
-                None,
-            );
-        }
-    }
-
-    pm.draw_pixmap(
-        0,
-        0,
-        pic.image.as_ref(),
-        &tiny_skia::PixmapPaint {
-            quality: tiny_skia::FilterQuality::Bicubic,
-            ..tiny_skia::PixmapPaint::default()
-        },
-        Transform::from_scale(k, k).post_translate(c - tip_x, c - tip_y),
-        None,
-    );
+    // A little bigger than the plain arrow: there is more to see.
+    pointers::draw(&mut pm, style, (c, c), s * 1.15, click);
 
     if let Some(t) = &tag_text {
         name_tag(
@@ -734,20 +666,19 @@ mod tests {
     }
 
     #[test]
-    fn every_picture_loads_with_its_tip_on_the_pointer() {
+    fn every_pointer_is_drawn_with_its_tip_on_the_hotspot() {
         let body = parse_color("#8E24AA").unwrap();
         let ring = parse_color("#1E88E5").unwrap();
         let fonts = Fonts::load("");
-        for style in CursorStyle::PICTURES {
-            let pic = style
-                .picture()
-                .unwrap_or_else(|| panic!("{style:?} didn't load"));
-            assert!(pic.image.height() >= 150, "{style:?}");
+        for style in CursorStyle::POINTERS {
+            // Through a click too: each frame keeps the tip in place.
+            for click in [None, Some(0.2), Some(0.5), Some(0.9)] {
+                let art = cursor(&fonts, "Zero", 1.0, body, ring, click, style);
+                let (hx, hy) = (art.hotspot.0 as u32, art.hotspot.1 as u32);
+                let a = art.image.pixel(hx + 2, hy + 3).unwrap().alpha();
+                assert!(a > 150, "{style:?} {click:?}: {a} at the tip");
+            }
             let art = cursor(&fonts, "Zero", 1.0, body, ring, None, style);
-            let (hx, hy) = (art.hotspot.0 as u32, art.hotspot.1 as u32);
-            // The pointer itself is drawn just inside its tip.
-            let a = art.image.pixel(hx + 2, hy + 3).unwrap().alpha();
-            assert!(a > 150, "{style:?}: {a} at the tip");
             assert_eq!(
                 art.hotspot,
                 cursor(&fonts, "", 1.0, body, ring, None, style).hotspot
@@ -763,15 +694,15 @@ mod tests {
         for name in CURSOR_STYLES.iter().skip(1) {
             assert!(CursorStyle::named(name).is_some(), "{name}");
         }
-        // Each new agent gets a picture none of the others has.
+        // Each new agent gets a pointer none of the others has.
         let mut taken = Vec::new();
-        for _ in 0..CursorStyle::PICTURES.len() {
+        for _ in 0..CursorStyle::POINTERS.len() {
             let p = CursorStyle::random(&taken);
             assert!(!taken.contains(&p) && p != CursorStyle::Classic);
             taken.push(p);
         }
-        // Past six, any picture.
-        assert!(CursorStyle::PICTURES.contains(&CursorStyle::random(&taken)));
+        // Past six, any pointer.
+        assert!(CursorStyle::POINTERS.contains(&CursorStyle::random(&taken)));
     }
 
     /// `OVERLAY_PREVIEW_DIR=/tmp/x cargo test -p computer-use preview -- --ignored`
@@ -799,7 +730,7 @@ mod tests {
                 .image
                 .save_png(dir.join(format!("cursor-{name}.png")))
                 .unwrap();
-            for style in CursorStyle::PICTURES {
+            for style in CursorStyle::POINTERS {
                 cursor(&fonts, "Zero", 3.0, body, c, None, style)
                     .image
                     .save_png(dir.join(format!("cursor-{name}-{style:?}.png")))

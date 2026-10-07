@@ -859,7 +859,7 @@ struct Hub {
 
 impl Hub {
     /// An agent whose pointer is picked at random gets one no other agent
-    /// has, while there are pictures to go round.
+    /// has, while there are pointers to go round.
     fn own_pointer(&mut self, agent: u32) {
         let taken: Vec<_> = self
             .looks
@@ -1725,7 +1725,7 @@ mod tests {
         assert!(hub.stopped);
     }
 
-    /// Agents working at once each get their own picture, and keep it as
+    /// Agents working at once each get their own pointer, and keep it as
     /// their settings come and go; one that names a style gets that one.
     #[test]
     fn each_agent_gets_its_own_pointer() {

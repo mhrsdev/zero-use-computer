@@ -18,6 +18,7 @@
 pub mod draw;
 pub mod helper;
 pub mod hub;
+mod pointers;
 pub mod text;
 
 #[cfg(target_os = "linux")]
