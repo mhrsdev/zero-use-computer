@@ -1,5 +1,29 @@
 # Changelog
 
+## v4.0.1
+
+Two fixes to v4.0.0
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.0...v4.0.1)).
+
+- **The user's pointer followed the agent's** on Windows and Linux: where
+  an action used the real mouse, v4.0.0 moved the user's pointer the whole
+  way from where it was, up to 0.8 s, before bringing it back. An app sees
+  the pointer only over its own window, so the way across the rest of the
+  screen showed it nothing and only took the pointer from the user. Now
+  the pointer goes at once to a short stretch (70–140 px) from the target
+  and travels only that, in a hand's way, then goes back: under traced
+  X11, 0.34 s away from where the user left it (it was 0.6–0.8 s).
+  `natural_mouse = false` still makes it a jump there and back.
+- **The pointers looked rough at their real size**: a picture shrunk about
+  sixfold in one step lost its edges and its fine light to speckle (the
+  crystal most), and some vanished on some backgrounds (ice on white,
+  orbit on dark, chrome on grey). Each picture is now drawn from a halved
+  copy near its size on screen, with a thin light edge and a soft shadow
+  cut from its solid part, so it stays clear on light, grey and dark.
+- **The pointers are 17% bigger** (a 3D picture needs the room to show),
+  and **their name tag sits under them**: beside them it covered the
+  metal's drop and the paper's tail. Typed text runs out under the tag.
+
 ## v4.0.0
 
 New pointers for the agent that move like a hand, a mouse that moves like

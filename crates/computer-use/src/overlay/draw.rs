@@ -438,18 +438,19 @@ fn styled_cursor(
     let pad = (CURSOR_BOX / 2.0) * s;
     let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
     let tag_text = tag_text.filter(|t| t.width > 0.0);
-    let (tag_x, tag_y) = (24.0 * s, 29.0 * s);
+    // Under the pointer: beside it, it would sit on a tail or a ring.
+    let (tag_x, tag_y) = (STYLED_TAG.0 * s, STYLED_TAG.1 * s);
     let (tag_w, tag_h) = tag_text.as_ref().map_or((0.0, 0.0), |t| {
         (t.width + 12.0 * s, (t.height + 3.0 * s).max(16.0 * s))
     });
     // Room below and right for what a click throws out (drops, rays).
-    let w = pad + (54.0 * s).max(tag_x + tag_w + 4.0 * s);
-    let h = pad + (56.0 * s).max(tag_y + tag_h + 4.0 * s);
+    let w = pad + (58.0 * s).max(tag_x + tag_w + 4.0 * s);
+    let h = pad + (60.0 * s).max(tag_y + tag_h + 4.0 * s);
     let mut pm = canvas(w, h);
     let (c, id) = (pad, Transform::identity());
 
     // The state colour, glowing behind the body of the pointer.
-    let (gx, gy, glow_r) = (c + 10.0 * s, c + 11.0 * s, 22.0 * s);
+    let (gx, gy, glow_r) = (c + 13.0 * s, c + 15.0 * s, 26.0 * s);
     if let (Some(p), Some(shader)) = (
         PathBuilder::from_circle(gx, gy, glow_r),
         RadialGradient::new(
@@ -473,8 +474,8 @@ fn styled_cursor(
         pm.fill_path(&p, &glow, FillRule::Winding, id, None);
     }
 
-    // A little bigger than the plain arrow: there is more to see.
-    pointers::draw(&mut pm, style, (c, c), s * 1.15, click, pose);
+    // Bigger than the plain arrow: there is more to see in a picture.
+    pointers::draw(&mut pm, style, (c, c), s * 1.35, click, pose);
 
     if let Some(t) = &tag_text {
         name_tag(
@@ -647,7 +648,11 @@ fn around(
         hi = (hi.0.max(x), hi.1.max(y));
     };
     // The trail follows the body, a little below and right of the tip.
-    let body = (10.0 * s, 11.0 * s);
+    let body = if style == CursorStyle::Classic {
+        (10.0 * s, 11.0 * s)
+    } else {
+        (13.0 * s, 15.0 * s)
+    };
     let trail_at: Vec<(f32, f32)> = fx
         .trail
         .iter()
@@ -668,12 +673,12 @@ fn around(
             caps_at.1 + pm.height() as f32,
         );
     }
-    let below = if style == CursorStyle::Classic {
-        36.0
+    // Under the name tag.
+    let bubble_at = if style == CursorStyle::Classic {
+        (20.0 * s, 36.0 * s)
     } else {
-        49.0
-    } * s;
-    let bubble_at = (20.0 * s, below);
+        (STYLED_TAG.0 * s, (STYLED_TAG.1 + 21.0) * s)
+    };
     if let Some((pm, _)) = &bubble {
         grow(
             bubble_at.0 + pm.width() as f32,
@@ -761,6 +766,10 @@ pub fn drag_line(
     pointers::drag_line(&mut pm, style, ring, &pts, s, alpha);
     (pm, (x0, y0))
 }
+
+/// Where a drawn pointer's name tag goes (px at scale 1 from the tip, times
+/// the pointer's 1.35): just under the pointer, clear of its tail.
+const STYLED_TAG: (f32, f32) = (14.0, 44.0);
 
 /// The status label: a pill with a dot in the state colour and `text`.
 /// Dark state colours get a light pill
