@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v4.0.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v4.0.1](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 (from v4.0 it keeps itself up to date: [Updates](docs/GUIDE.md#updates))
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
@@ -209,7 +209,7 @@ Or embed the library (`computer-use`) in your own agent:
 ## Version history and token use
 
 <details>
-<summary>Every minor version from the first release to v4.0 (and v3.9.1–v3.9.7): what changed, and what it cost in tokens (measured)</summary>
+<summary>Every minor version from the first release to v4.0 (and v3.9.1–v3.9.7, v4.0.1): what changed, and what it cost in tokens (measured)</summary>
 
 ### How this was measured
 
@@ -364,6 +364,10 @@ possible, and far more tools behind `find_tools`.
   restarts; the overlay no longer gets into screenshots on X11 when its
   helper is busy drawing. The tools the model sees are the same as in
   v3.9.7 (2,191 tokens per request): tokens unchanged.
+  - v4.0.1: the user's pointer no longer follows the agent's across the
+    screen (only the last short stretch, about a third of a second); the
+    pointers are bigger, sharp and clear at their real size, their name
+    tag under them, off their tails.
 
 ### v3.9 against v3.6 (with v3.5) and v3.0
 

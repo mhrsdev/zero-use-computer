@@ -2,6 +2,9 @@
 
 ## v4.0.1
 
+Two fixes to v4.0.0
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.0...v4.0.1)).
+
 - **The user's pointer followed the agent's** on Windows and Linux: where
   an action used the real mouse, v4.0.0 moved the user's pointer the whole
   way from where it was, up to 0.8 s, before bringing it back. An app sees
@@ -17,6 +20,9 @@
   orbit on dark, chrome on grey). Each picture is now drawn from a halved
   copy near its size on screen, with a thin light edge and a soft shadow
   cut from its solid part, so it stays clear on light, grey and dark.
+- **The pointers are 17% bigger** (a 3D picture needs the room to show),
+  and **their name tag sits under them**: beside them it covered the
+  metal's drop and the paper's tail. Typed text runs out under the tag.
 
 ## v4.0.0
 
