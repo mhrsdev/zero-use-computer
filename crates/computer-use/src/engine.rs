@@ -2200,7 +2200,7 @@ fn text_hash(text: &str) -> u64 {
 /// heap (and a finished thread's arena) for reuse, so without this the
 /// server would stay at its largest size; elsewhere the allocator returns
 /// it by itself.
-fn trim_heap() {
+pub(crate) fn trim_heap() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim only releases free memory; it is safe to call at
     // any time.

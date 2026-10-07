@@ -70,13 +70,8 @@ fn config_with_port(dir: &Path, extra: &str) -> PathBuf {
     path
 }
 
-fn entry<'a>(state: &'a Value, key: &str) -> &'a Value {
-    state["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["key"] == key)
-        .unwrap_or_else(|| panic!("no entry {key}"))
+fn schema_of(host: &str, token: &str) -> Value {
+    json_of(&get(host, token, "schema.json"))
 }
 
 #[test]
@@ -171,15 +166,23 @@ fn settings_are_changed_checked_and_reset() {
     };
     let load = || ConfigStore::load(Some(&path)).unwrap().config;
 
-    // Every setting is on the page, with its default.
-    let state = json_of(&post(host, token, "state", "{}"));
-    assert_eq!(state["ok"], true);
+    // Every setting is on the page, with its default; the saved values
+    // that differ from them are all the state carries.
+    let schema = schema_of(host, token);
     assert_eq!(
-        state["entries"].as_array().unwrap().len(),
+        schema["entries"].as_array().unwrap().len(),
         crate::config::known_keys().len()
     );
-    assert_eq!(entry(&state, "screenshot.max_dimension")["value"], 1280);
-    assert_eq!(entry(&state, "screenshot.max_dimension")["changed"], false);
+    let max = schema["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "screenshot.max_dimension")
+        .unwrap();
+    assert_eq!(max["default"], 1280);
+    let state = json_of(&post(host, token, "state", "{}"));
+    // (the test's own port is the one thing set)
+    assert_eq!(state["values"].as_object().unwrap().len(), 1, "{state}");
 
     // Each kind of value.
     let r = set(
@@ -203,6 +206,10 @@ fn settings_are_changed_checked_and_reset() {
     assert!(!c.natural_mouse);
     assert_eq!(r["values"]["screenshot.max_dimension"], 1024);
 
+    let state = json_of(&post(host, token, "state", "{}"));
+    assert_eq!(state["values"]["screenshot.max_dimension"], 1024);
+    assert_eq!(state["values"]["overlay.cursor_style"], "jelly");
+
     // Wrong types, values off the choices, out of range, several lines.
     for bad in [
         r#"[{"key":"natural_mouse","value":"yes"}]"#,
@@ -217,6 +224,7 @@ fn settings_are_changed_checked_and_reset() {
         r#"[{"key":"decision.api_key","value":"x"}]"#,
         r#"[{"key":"overlay.color_working","value":"blue-ish"}]"#,
         r#"[{"key":"panel.idle_minutes","value":0}]"#,
+        r#"[{"key":"clipboard","value":null}]"#,
     ] {
         let r = set(bad, true);
         assert_eq!(r["ok"], false, "{bad} was accepted: {r}");
@@ -233,6 +241,7 @@ fn settings_are_changed_checked_and_reset() {
     let prot = r#"[{"key":"control.pause_on_user_input","value":false}]"#;
     let r = set(prot, false);
     assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["confirm"], json!(["control.pause_on_user_input"]));
     assert!(load().control.pause_on_user_input);
     assert_eq!(set(prot, true)["ok"], true);
     assert!(!load().control.pause_on_user_input);
@@ -507,12 +516,263 @@ fn the_panel_is_english_only() {
     let arabic_script = |c: char| matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF);
     for (name, text) in [
         ("index.html", include_str!("index.html")),
+        ("app.js", include_str!("app.js")),
         ("schema.rs", include_str!("schema.rs")),
         ("mod.rs", include_str!("mod.rs")),
+        ("settings.rs", include_str!("settings.rs")),
+        ("profiles.rs", include_str!("profiles.rs")),
+        ("raw.rs", include_str!("raw.rs")),
+        ("status.rs", include_str!("status.rs")),
         ("tests.rs", include_str!("tests.rs")),
     ] {
         if let Some(c) = text.chars().find(|&c| arabic_script(c)) {
             panic!("panel/{name} has text in another script: {c}");
         }
     }
+}
+
+#[test]
+fn the_state_is_small_and_the_schema_is_sent_once() {
+    let dir = temp("small");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path), &dir);
+    let state = post(&up.host, &up.token, "state", "{}");
+    let schema = get(&up.host, &up.token, "schema.json");
+    assert!(state.len() < 2_000, "state is {} bytes", state.len());
+    assert!(schema.len() > 20_000, "schema is {} bytes", schema.len());
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn profiles_apply_undo_and_are_kept() {
+    let dir = temp("profiles");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let load = || ConfigStore::load(Some(&path)).unwrap().config;
+    let call = |route: &str, body: &str| json_of(&post(host, token, route, body));
+
+    let list = call("profiles", "{}");
+    let ids: Vec<&str> = list["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["balanced", "low-tokens", "best-quality", "showcase"]);
+
+    let r = call("profile_apply", r#"{"id":"low-tokens"}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    let c = load();
+    assert_eq!((c.screenshot.max_dimension, c.tree.max_nodes), (1024, 600));
+    // Another profile leaves nothing of the first one behind.
+    assert_eq!(
+        call("profile_apply", r#"{"id":"best-quality"}"#)["ok"],
+        true
+    );
+    let c = load();
+    assert_eq!((c.screenshot.max_dimension, c.tree.max_nodes), (2048, 2400));
+    assert_eq!(c.screenshot.overview_max_dimension, 0);
+    assert_eq!(call("profile_apply", r#"{"id":"balanced"}"#)["ok"], true);
+    let c = load();
+    assert_eq!((c.screenshot.max_dimension, c.tree.max_nodes), (1280, 1200));
+    assert_eq!(call("profile_apply", r#"{"id":"nothing"}"#)["ok"], false);
+
+    // The user's own: what they changed, without protected settings.
+    call(
+        "set",
+        r#"{"changes":[{"key":"overlay.cursor_style","value":"ice"},{"key":"tree.indent","value":3}]}"#,
+    );
+    call(
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"control.max_pause_secs","value":30}]}"#,
+    );
+    let r = call("profile_save", r#"{"label":"My setup"}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["id"], "my-setup");
+    assert_eq!(r["settings"], 2);
+    assert!(r["left_out"].as_u64().unwrap() >= 2, "{r}"); // max_pause_secs and the port
+    assert_eq!(call("profile_save", r#"{"label":"Balanced"}"#)["ok"], false);
+    assert_eq!(call("profile_save", r#"{"label":"  "}"#)["ok"], false);
+    call(
+        "reset",
+        r#"{"keys":["overlay.cursor_style","tree.indent"]}"#,
+    );
+    assert_eq!(load().tree.indent, 1);
+    let list = call("profiles", "{}");
+    let mine = list["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "my-setup")
+        .unwrap();
+    assert_eq!(mine["differs"], 2);
+    assert_eq!(call("profile_apply", r#"{"id":"my-setup"}"#)["ok"], true);
+    assert_eq!(load().overlay.cursor_style, "ice");
+    assert_eq!(load().tree.indent, 3);
+    assert_eq!(call("profile_delete", r#"{"id":"my-setup"}"#)["ok"], true);
+    assert_eq!(call("profile_apply", r#"{"id":"my-setup"}"#)["ok"], false);
+    assert_eq!(call("profile_delete", r#"{"id":"../x"}"#)["ok"], false);
+
+    // A file edited by hand to hold a protected setting still asks.
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::write(
+        dir.join("profiles/sneaky.json"),
+        r#"{"label":"Sneaky","values":{"control.pause_on_user_input":false}}"#,
+    )
+    .unwrap();
+    let r = call("profile_apply", r#"{"id":"sneaky"}"#);
+    assert_eq!(r["ok"], false);
+    assert_eq!(r["confirm"], json!(["control.pause_on_user_input"]));
+    assert!(load().control.pause_on_user_input);
+
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_settings_file_is_edited_as_text_through_the_page() {
+    let dir = temp("raw");
+    let path = config_with_port(&dir, "[decision]\napi_key = \"sk-hidden-0000\"\n");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let call = |route: &str, body: Value| json_of(&post(host, token, route, &body.to_string()));
+
+    let v = call("raw_get", json!({}));
+    let text = v["text"].as_str().unwrap().to_string();
+    assert!(!text.contains("sk-hidden"), "{text}");
+    let edited = format!("{text}\n[tree]\nmax_nodes = 77\n");
+    let r = call("raw_check", json!({"text": edited}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["changed"], json!(["tree.max_nodes"]));
+    assert_eq!(call("raw_save", json!({"text": edited}))["ok"], true);
+    let c = ConfigStore::load(Some(&path)).unwrap().config;
+    assert_eq!(
+        (c.tree.max_nodes, c.decision.api_key.as_str()),
+        (77, "sk-hidden-0000")
+    );
+    let r = call("raw_save", json!({"text": "tree = [1"}));
+    assert_eq!(r["ok"], false);
+    assert!(r["error"].as_str().unwrap().len() > 3);
+    assert_eq!(
+        ConfigStore::load(Some(&path))
+            .unwrap()
+            .config
+            .tree
+            .max_nodes,
+        77
+    );
+
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn settings_go_out_and_come_back_in_as_toml() {
+    let dir = temp("export");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let call = |route: &str, body: Value| json_of(&post(host, token, route, &body.to_string()));
+
+    call(
+        "set",
+        json!({"changes":[{"key":"overlay.cursor_style","value":"orbit"},{"key":"tools.disabled","value":["drag"]}]}),
+    );
+    call(
+        "set",
+        json!({"confirmed":true,"changes":[{"key":"server.http_token","value":"secret-token-0001"}]}),
+    );
+    let out = call("export", json!({}));
+    let text = out["text"].as_str().unwrap();
+    assert!(
+        text.contains("cursor_style = \"orbit\"") && text.contains("disabled"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("secret-token") && !text.contains("http_token"),
+        "{text}"
+    );
+    assert_eq!(out["skipped_secrets"], 1);
+
+    // Into another file, through its own panel.
+    let dir2 = temp("import");
+    let path2 = config_with_port(&dir2, "");
+    let up2 = start(Some(path2.clone()), &dir2);
+    let r = json_of(&post(
+        &up2.host,
+        &up2.token,
+        "import",
+        &json!({"text": text}).to_string(),
+    ));
+    assert_eq!(r["ok"], true, "{r}");
+    let c = ConfigStore::load(Some(&path2)).unwrap().config;
+    assert_eq!(c.overlay.cursor_style, "orbit");
+    assert_eq!(c.tools.disabled, vec!["drag".to_string()]);
+    // The port in it came along too (it is a setting like another): fine,
+    // but a secret in a file someone hands over is refused.
+    let r = json_of(&post(
+        &up2.host,
+        &up2.token,
+        "import",
+        &json!({"text": "[decision]\napi_key = \"x\"\n"}).to_string(),
+    ));
+    assert_eq!(r["ok"], false);
+    let r = json_of(&post(
+        &up2.host,
+        &up2.token,
+        "import",
+        &json!({"text": "[control]\nstop_hotkey = \"\"\n"}).to_string(),
+    ));
+    assert_eq!(r["ok"], false);
+    assert_eq!(r["confirm"], json!(["control.stop_hotkey"]));
+    assert_eq!(
+        ConfigStore::load(Some(&path2))
+            .unwrap()
+            .config
+            .control
+            .stop_hotkey,
+        "ctrl+alt+escape"
+    );
+    let r = json_of(&post(
+        &up2.host,
+        &up2.token,
+        "import",
+        &json!({"text": "nonsense = 1"}).to_string(),
+    ));
+    assert_eq!(r["ok"], false);
+
+    for u in [&up, &up2] {
+        u.alive.store(false, Ordering::SeqCst);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn the_reports_answer() {
+    let dir = temp("reports");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path), &dir);
+    let (host, token) = (&up.host, &up.token);
+    for (route, key) in [
+        ("overview", "version"),
+        ("tools", "tools"),
+        ("apps", "apps"),
+        ("audit", "lines"),
+        ("path", "paths"),
+    ] {
+        let r = json_of(&post(host, token, route, "{}"));
+        assert_eq!(r["ok"], true, "{route}: {r}");
+        assert!(r.get(key).is_some(), "{route}: {r}");
+    }
+    let o = json_of(&post(host, token, "overview", "{}"));
+    assert_eq!(
+        o["stop_key"],
+        crate::overlay::helper::pretty_key("ctrl+alt+escape")
+    );
+    assert!(post(host, token, "nothing", "{}").starts_with("HTTP/1.1 404"));
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
 }

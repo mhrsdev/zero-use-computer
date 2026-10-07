@@ -85,9 +85,9 @@
   .row { display: flex; align-items: center; gap: 16px; padding: 12px 24px; }
   .row + .row { border-top: 1px solid var(--outline-variant); }
   .row .text { flex: 1; min-width: 0; }
-  .row .label { font-weight: 500; }
-  .row .help { color: var(--on-surface-variant); }
-  .row .meta { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--on-surface-variant); }
+  .row .label, .profile .label { font-weight: 500; }
+  .row .help, .profile .help { color: var(--on-surface-variant); }
+  .row .meta, .profile .meta { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--on-surface-variant); }
   .row .meta code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .badge { padding: 0 8px; border-radius: 8px; background: var(--surface-3); line-height: 18px; }
   .badge.changed { background: var(--primary-container); color: var(--on-primary-container); }
@@ -185,6 +185,62 @@
   dialog ul { margin: 8px 0 0; padding-left: 20px; }
   dialog .actions { justify-content: flex-end; margin-top: 24px; }
   footer.where { color: var(--on-surface-variant); font-size: 12px; padding: 8px 8px 0; overflow-wrap: anywhere; }
+
+  /* nav sections */
+  nav.rail .section { padding: 16px 16px 4px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--on-surface-variant); }
+  nav.rail .section:first-child { padding-top: 4px; }
+
+  /* overview */
+  .facts { list-style: none; margin: 0; padding: 4px 0; }
+  .facts li { padding: 10px 24px; display: flex; gap: 12px; align-items: baseline; }
+  .facts li + li { border-top: 1px solid var(--outline-variant); }
+  .facts .k { flex: none; width: 140px; color: var(--on-surface-variant); }
+  .facts .v { min-width: 0; overflow-wrap: anywhere; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: var(--outline); }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--error); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 0 0 16px; }
+  .tile { background: var(--surface-1); border-radius: var(--radius); padding: 16px 20px; }
+  .tile .big { font: 400 28px/36px var(--font); }
+  .tile .small { color: var(--on-surface-variant); }
+
+  /* profiles, tools, tables */
+  .profile { display: flex; gap: 16px; align-items: center; padding: 14px 24px; }
+  .profile + .profile { border-top: 1px solid var(--outline-variant); }
+  .profile .text { flex: 1; min-width: 0; }
+  .table { width: 100%; border-collapse: collapse; }
+  .table th { text-align: left; font-weight: 500; color: var(--on-surface-variant); padding: 8px 12px; }
+  .table td { padding: 8px 12px; border-top: 1px solid var(--outline-variant); }
+  .table td.num, .table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .toolrow { display: flex; align-items: center; gap: 16px; padding: 8px 24px; }
+  .toolrow + .toolrow { border-top: 1px solid var(--outline-variant); }
+  .toolrow .name { flex: 1; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .toolrow .cost { color: var(--on-surface-variant); font-variant-numeric: tabular-nums; width: 90px; text-align: right; }
+  textarea {
+    width: 100%; min-height: 360px; resize: vertical; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--outline);
+    background: var(--surface); color: var(--on-surface); font: 13px/20px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2;
+  }
+  textarea.short { min-height: 140px; }
+  textarea:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
+  pre.log { margin: 0; padding: 12px 24px; max-height: 480px; overflow: auto; font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .note { padding: 8px 24px 12px; color: var(--on-surface-variant); }
+  .note.pad0 { padding: 0 0 12px; }
+
+  /* previews */
+  .preview { padding: 8px 24px 20px; }
+  .preview canvas { width: 100%; max-width: 520px; aspect-ratio: 2 / 1; border-radius: 12px; background: var(--surface); border: 1px solid var(--outline-variant); display: block; }
+  .preview .chips2 { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+  .mock { position: relative; width: 100%; max-width: 520px; aspect-ratio: 16 / 9; border-radius: 10px; background: var(--surface-3); overflow: hidden; }
+  .mock .win { position: absolute; left: 14%; top: 18%; width: 62%; height: 62%; border-radius: 6px; background: var(--surface); border: 1px solid var(--outline-variant); }
+  .mock .win i { display: block; height: 8px; margin: 12px; border-radius: 4px; background: var(--surface-2); }
+  .mock .win i:nth-child(2) { width: 60%; } .mock .win i:nth-child(3) { width: 80%; }
+  .mock .ring { position: absolute; pointer-events: none; }
+  .mock .pill { position: absolute; left: 50%; top: 4%; transform: translateX(-50%); padding: 3px 12px; border-radius: 14px; background: rgba(20,20,24,.82); color: #fff; font-size: 11px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+  .mock .pill b { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .mock .ptr { position: absolute; left: 56%; top: 44%; width: 12%; transform: translate(-30%, -20%); text-align: center; }
+  .mock .ptr img { width: 100%; display: block; }
+  .mock .ptr span { display: inline-block; margin-top: 2px; padding: 1px 8px; border-radius: 10px; font-size: 10px; color: #fff; }
+  .stop { position: fixed; }
 </style>
 </head>
 <body>
@@ -212,303 +268,7 @@
   <div class="actions"><button class="btn" id="dlg_no">Cancel</button><button class="btn filled" id="dlg_yes">Change</button></div>
 </dialog>
 <script>
-"use strict";
-const $ = (id) => document.getElementById(id);
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-function h(tag, props, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === "class") el.className = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k in el && k !== "list") el[k] = v;
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
-  return el;
-}
-async function post(route, body) {
-  const r = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
-  return r.json();
-}
-
-/* ---------- palette ---------- */
-function hexToHsl(hex) {
-  let r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b); let hh = 0, s = 0; const l = (mx + mn) / 2;
-  if (mx !== mn) {
-    const d = mx - mn; s = l > .5 ? d / (2 - mx - mn) : d / (mx + mn);
-    hh = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh *= 60;
-  }
-  return [hh, s * 100, l * 100];
-}
-function applyPalette(accent, dark) {
-  const m = /^#[0-9a-f]{6}/i.exec(accent || "") ? accent : "#1A73E8";
-  const [hh, s0] = hexToHsl(m); const s = Math.max(35, Math.min(90, s0));
-  const c = (sat, l) => `hsl(${hh.toFixed(0)} ${sat.toFixed(0)}% ${l}%)`;
-  const t = dark ? {
-    "--primary": c(s, 78), "--on-primary": c(s, 14), "--primary-container": c(s * .8, 28), "--on-primary-container": c(s, 90),
-    "--surface": c(12, 9), "--surface-1": c(10, 13), "--surface-2": c(9, 17), "--surface-3": c(9, 22),
-    "--on-surface": c(8, 90), "--on-surface-variant": c(6, 72), "--outline": c(5, 56), "--outline-variant": c(6, 28),
-    "--error": "#f2b8b5", "--on-error": "#601410", "--ok": "#7dd99a",
-  } : {
-    "--primary": c(s, 40), "--on-primary": "#ffffff", "--primary-container": c(Math.min(s, 85), 90), "--on-primary-container": c(s, 14),
-    "--surface": c(25, 98), "--surface-1": c(20, 95), "--surface-2": c(18, 92), "--surface-3": c(16, 88),
-    "--on-surface": c(10, 10), "--on-surface-variant": c(8, 32), "--outline": c(8, 48), "--outline-variant": c(10, 80),
-    "--error": "#b3261e", "--on-error": "#ffffff", "--ok": "#146c2e",
-  };
-  for (const [k, v] of Object.entries(t)) document.documentElement.style.setProperty(k, v);
-}
-const mq = window.matchMedia("(prefers-color-scheme: dark)");
-function theme(t) {
-  const root = document.documentElement; root.dataset.theme = t;
-  const dark = t === "dark" || (t === "system" && mq.matches);
-  applyPalette(root.dataset.accent, dark);
-  for (const b of document.querySelectorAll("#themes button")) b.setAttribute("aria-pressed", String(b.dataset.t === t));
-}
-mq.addEventListener("change", () => theme(document.documentElement.dataset.theme));
-
-/* ---------- state ---------- */
-let S = null, current = "", snackTimer = 0;
-const view = { query: "", changedOnly: false, advanced: false };
-
-function snack(text, bad) {
-  const el = $("snack"); el.textContent = text; el.className = "show" + (bad ? " bad" : "");
-  clearTimeout(snackTimer); snackTimer = setTimeout(() => { el.className = ""; }, bad ? 6000 : 2200);
-}
-function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
-function labelOf(e) { const k = e.key.split(".").pop().replace(/_/g, " "); return k.charAt(0).toUpperCase() + k.slice(1); }
-
-function confirmDialog(entries) {
-  return new Promise((resolve) => {
-    const body = $("dlg_b"); body.textContent = "";
-    body.append(h("div", {}, "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:"),
-      h("ul", {}, entries.map((e) => h("li", {}, labelOf(e) + " (" + e.key + ")"))));
-    const dlg = $("dlg"); const done = (v) => { dlg.close(); resolve(v); };
-    $("dlg_yes").onclick = () => done(true); $("dlg_no").onclick = () => done(false);
-    dlg.oncancel = () => resolve(false);
-    dlg.showModal(); $("dlg_no").focus();
-  });
-}
-
-async function apply(entries, values) {
-  // entries: [entry]; values: [json value]. Protected ones are confirmed first.
-  const prot = entries.filter((e) => e.confirm);
-  let confirmed = false;
-  if (prot.length) { if (!(await confirmDialog(prot))) { render(); return false; } confirmed = true; }
-  const r = await post("set", { confirmed, changes: entries.map((e, i) => ({ key: e.key, value: values[i] })) });
-  if (!r.ok) { snack(r.error || "Not saved.", true); render(); return false; }
-  for (const [k, v] of Object.entries(r.values || {})) { const e = S.entries.find((x) => x.key === k); if (e) { e.value = v; e.changed = !same(v, e.default); } }
-  if (r.theme) { document.documentElement.dataset.accent = r.accent; theme(r.theme); }
-  snack("Saved. Running servers use it now."); render(); return true;
-}
-async function reset(e) {
-  if (e.confirm && !(await confirmDialog([e]))) return;
-  const r = await post("reset", { confirmed: !!e.confirm, keys: [e.key] });
-  if (!r.ok) return snack(r.error || "Not reset.", true);
-  for (const [k, v] of Object.entries(r.values || {})) { const x = S.entries.find((y) => y.key === k); if (x) { x.value = v; x.changed = false; } }
-  if (r.theme) { document.documentElement.dataset.accent = r.accent; theme(r.theme); }
-  snack("Back to the default."); render();
-}
-
-/* ---------- controls ---------- */
-function control(e) {
-  const id = "c_" + e.key.replace(/\./g, "_");
-  const commit = (v) => apply([e], [v]);
-  switch (e.type) {
-    case "bool": {
-      const i = h("input", { type: "checkbox", id, checked: !!e.value, role: "switch", "aria-label": labelOf(e), onchange: () => commit(i.checked) });
-      return h("label", { class: "switch" }, i, h("span"));
-    }
-    case "choice": {
-      if (e.choices.length <= 3) return h("div", { class: "seg", role: "group", "aria-label": labelOf(e) },
-        e.choices.map((c) => h("button", { "aria-pressed": String(e.value === c), onclick: () => e.value !== c && commit(c) }, c)));
-      return h("select", { id, "aria-label": labelOf(e), onchange: (ev) => commit(ev.target.value) },
-        e.choices.map((c) => h("option", { value: c, selected: e.value === c }, c)));
-    }
-    case "range": {
-      const num = h("input", { type: "number", id, min: e.min, max: e.max, step: e.step, value: e.value });
-      const rng = h("input", { type: "range", min: e.min, max: e.max, step: e.step, value: e.value, "aria-label": labelOf(e) + " slider" });
-      rng.oninput = () => { num.value = rng.value; };
-      rng.onchange = () => commit(Number(rng.value));
-      num.onchange = () => { if (num.value === "" || isNaN(Number(num.value))) return render(); rng.value = num.value; commit(Number(num.value)); };
-      return [rng, num, e.unit && h("span", { class: "unit" }, e.unit)];
-    }
-    case "int": case "float": {
-      const num = h("input", { type: "number", id, step: e.type === "float" ? "any" : "1", value: e.value });
-      num.onchange = () => { if (num.value === "" || isNaN(Number(num.value))) return render(); commit(Number(num.value)); };
-      return [num, e.unit && h("span", { class: "unit" }, e.unit)];
-    }
-    case "color": {
-      const text = h("input", { type: "text", id, value: e.value, spellcheck: false, size: 10, style: "width:120px" });
-      const pick = h("input", { type: "color", value: /^#[0-9a-f]{6}/i.test(e.value) ? e.value.slice(0, 7) : "#000000", "aria-label": labelOf(e) + " picker" });
-      pick.onchange = () => commit(pick.value.toUpperCase());
-      text.onchange = () => commit(text.value.trim());
-      return [pick, text];
-    }
-    case "list": {
-      const box = h("div", { class: "chips" });
-      const set = (list) => commit(list);
-      for (const item of e.value) box.append(h("span", { class: "tag" }, item,
-        h("button", { "aria-label": "Remove " + item, title: "Remove", onclick: () => set(e.value.filter((x) => x !== item)) }, "×")));
-      const add = h("input", { type: "text", placeholder: "Add and press Enter", "aria-label": "Add to " + labelOf(e), spellcheck: false });
-      add.onkeydown = (ev) => { if (ev.key === "Enter" && add.value.trim()) { ev.preventDefault(); set([...e.value.filter((x) => x !== add.value.trim()), add.value.trim()]); } };
-      box.append(add); return box;
-    }
-    case "secret": {
-      const i = h("input", { type: "password", id, autocomplete: "off", spellcheck: false, placeholder: e.value ? "Saved " + e.value + ". Type to replace." : "Not set" });
-      i.onchange = async () => { if (!i.value) return; const v = i.value; i.value = ""; await commit(v); };
-      return i;
-    }
-    default: {
-      const i = h("input", { type: "text", id, value: e.value, spellcheck: false, autocomplete: "off", placeholder: e.type === "hotkey" ? "for example ctrl+alt+escape" : "" });
-      i.onchange = () => commit(i.value);
-      return i;
-    }
-  }
-}
-
-function row(e) {
-  const meta = h("div", { class: "meta" }, h("code", {}, e.key),
-    e.changed && h("span", { class: "badge changed" }, "changed"),
-    e.restart && h("span", { class: "badge" }, "applies after a restart"),
-    e.confirm && h("span", { class: "badge warn" }, "asks to confirm"),
-    e.advanced && h("span", { class: "badge" }, "advanced"),
-    !e.changed ? null : h("span", {}, "default: ", h("code", {}, e.type === "secret" ? "none" : Array.isArray(e.default) ? (e.default.join(", ") || "empty") : (String(e.default) === "" ? "empty" : String(e.default)))));
-  return h("div", { class: "row" },
-    h("div", { class: "text" }, h("label", { class: "label", for: "c_" + e.key.replace(/\./g, "_") }, labelOf(e)), h("div", { class: "help" }, e.help), meta),
-    h("div", { class: "ctl" }, control(e), e.changed && e.type !== "secret" && h("button", { class: "btn small", onclick: () => reset(e), title: "Back to the default" }, "Reset")));
-}
-
-function pointerPicker(e) {
-  const names = ["crystal", "paper", "jelly", "ice", "metal", "orbit"];
-  const cell = (name, glyph, text) => h("button", { class: "pick", "aria-pressed": String(e.value === name), title: text || name, onclick: () => e.value !== name && apply([e], [name]) },
-    glyph ? h("span", { class: "glyph", "aria-hidden": "true" }, glyph) : h("img", { src: "cursor/" + name + ".png", alt: "" }), h("span", {}, name));
-  return h("div", { class: "picker", role: "group", "aria-label": "Pointer style" },
-    cell("random", "?", "A different one each session"), cell("classic", "➤", "The plain arrow"), names.map((n) => cell(n)));
-}
-
-/* ---------- decision model ---------- */
-function decisionCard() {
-  const D = S.decision; const st = h("div", { class: "msg", role: "status" });
-  const say = (t, ok) => { st.textContent = t; st.className = "msg " + (ok === undefined ? "" : ok ? "ok" : "bad"); };
-  const base = { jev: "https://api.typesafe.ai", openai: "https://api.openai.com/v1" };
-  const models = { jev: "jev-latest", openai: "e.g. gpt-4.1-nano, llama-3.1-8b-instant" };
-  const radios = ["jev", "openai"].map((v) => h("input", { type: "radio", name: "provider", value: v, checked: D.provider === v }));
-  const kind = (v, title, text, r) => h("label", { class: "kind" }, r, h("div", {}, h("b", {}, title), h("span", {}, text)));
-  const url = h("input", { type: "url", id: "d_url", value: D.base_url, autocomplete: "off", spellcheck: false });
-  const model = h("input", { type: "text", id: "d_model", value: D.model, autocomplete: "off", spellcheck: false });
-  const key = h("input", { type: "password", id: "d_key", autocomplete: "off", spellcheck: false });
-  const keyHint = h("div", { class: "hint" }), baseHint = h("div", { class: "hint" });
-  const prov = () => (radios.find((r) => r.checked) || {}).value || "";
-  const refresh = () => { const p = prov() || "jev"; url.placeholder = base[p]; model.placeholder = models[p]; baseHint.textContent = "Leave empty for " + base[p] + "."; };
-  keyHint.textContent = D.key_hint ? "Saved: " + D.key_hint + ". Leave empty to keep it." : D.key_env ? "Read from the environment variable " + D.key_env + "." : "Not needed for a server on this computer.";
-  for (const r of radios) r.onchange = () => { url.value = ""; model.value = ""; refresh(); };
-  refresh();
-  const form = () => ({ provider: prov(), base_url: url.value, model: model.value, api_key: key.value });
-  const buttons = [];
-  const busy = (on) => buttons.forEach((b) => { b.disabled = on; });
-  const run = (fn) => async () => { busy(true); try { await fn(); } catch (err) { say("The server didn't answer: " + err, false); } busy(false); };
-  buttons.push(
-    h("button", { class: "btn filled", onclick: run(async () => {
-      if (!prov()) return say("Choose a kind of model first.", false);
-      say("Saving…"); const r = await post("save", form());
-      if (r.ok) { key.value = ""; if (r.key_hint) keyHint.textContent = "Saved: " + r.key_hint + ". Leave empty to keep it."; D.provider = prov(); }
-      say(r.ok ? r.message : r.error, r.ok);
-    }) }, "Save"),
-    h("button", { class: "btn", onclick: run(async () => {
-      if (!prov()) return say("Choose a kind of model first.", false);
-      say("Asking the model…"); const r = await post("test", form()); say(r.ok ? r.message : r.error, r.ok);
-    }) }, "Test"),
-    h("button", { class: "btn danger", onclick: run(async () => {
-      if (!confirm("Remove the decision model and its key?")) return;
-      const r = await post("remove");
-      if (r.ok) { radios.forEach((x) => { x.checked = false; }); url.value = model.value = key.value = ""; keyHint.textContent = ""; refresh(); }
-      say(r.ok ? r.message : r.error, r.ok);
-    }) }, "Remove"));
-  return h("div", { class: "card pad" },
-    h("h3", {}, "Model and API key"),
-    h("p", { class: "help" }, "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat."),
-    h("div", { class: "kinds" },
-      kind("jev", "Jev (TypeSafe System One)", "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.", radios[0]),
-      kind("openai", "OpenAI-compatible chat model", "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.", radios[1])),
-    h("div", { class: "field" }, h("label", { for: "d_url" }, "Address (base URL)"), url, baseHint),
-    h("div", { class: "field" }, h("label", { for: "d_model" }, "Model"), model),
-    h("div", { class: "field" }, h("label", { for: "d_key" }, "API key"), key, keyHint),
-    h("div", { class: "actions" }, buttons), st);
-}
-
-/* ---------- render ---------- */
-function visible(e) {
-  if (e.type === "custom") return false;
-  if (view.changedOnly && !e.changed) return false;
-  if (!view.advanced && e.advanced && !e.changed && !view.query) return false;
-  if (view.query) {
-    const q = view.query.toLowerCase();
-    return (e.key + " " + labelOf(e) + " " + e.help + " " + e.group).toLowerCase().includes(q);
-  }
-  return e.group === current;
-}
-
-function renderNav() {
-  const nav = $("nav"); nav.textContent = "";
-  for (const g of S.groups) {
-    const n = S.entries.filter((e) => e.group === g && e.type !== "custom").length;
-    const ch = S.entries.filter((e) => e.group === g && e.changed).length;
-    nav.append(h("button", { "aria-current": String(!view.query && g === current), onclick: () => { view.query = ""; $("q").value = ""; go(g); } },
-      h("span", {}, g), h("span", { class: "count" }, ch ? ch + " changed" : String(n))));
-  }
-}
-
-function render() {
-  if (!S) return;
-  renderNav();
-  const main = $("main"); main.textContent = "";
-  const rows = S.entries.filter(visible);
-  main.append(h("h2", {}, view.query ? "Search results" : current),
-    h("p", { class: "lead" }, view.query ? rows.length + " setting" + (rows.length === 1 ? "" : "s") + " match “" + view.query + "”." : S.blurbs[current] || ""),
-    h("div", { class: "tools" },
-      h("button", { class: "chip", "aria-pressed": String(view.changedOnly), onclick: () => { view.changedOnly = !view.changedOnly; render(); } }, "Changed from default"),
-      h("button", { class: "chip", "aria-pressed": String(view.advanced), onclick: () => { view.advanced = !view.advanced; render(); } }, "Show advanced")));
-  if (!view.query && current === "Decision model") main.append(decisionCard());
-  if (!view.query && current === "Pointer") {
-    const e = S.entries.find((x) => x.key === "overlay.cursor_style");
-    main.append(h("div", { class: "card" }, h("h3", {}, "Pointer style"), pointerPicker(e)));
-  }
-  if (!view.query && current === "Several agents") { /* the chat switch is the hub.chat setting below */ }
-  const list = rows.filter((e) => view.query || e.key !== "overlay.cursor_style" || current !== "Pointer");
-  if (list.length) {
-    const card = h("div", { class: "card" });
-    let last = null;
-    for (const e of list) {
-      if (view.query && e.group !== last) { card.append(h("h3", {}, e.group)); last = e.group; }
-      card.append(row(e));
-    }
-    main.append(card);
-  } else if (view.query || view.changedOnly) main.append(h("div", { class: "empty" }, view.query ? "Nothing matches." : "Nothing in this group differs from its default."));
-  main.append(h("footer", { class: "where" }, S.path ? "Settings file: " + S.path : "This server keeps its settings in memory, so nothing can be saved here."));
-}
-
-function go(g) { current = g; history.replaceState(null, "", "#" + slug(g)); render(); window.scrollTo(0, 0); }
-
-async function load() {
-  S = await post("state");
-  if (!S.ok) { $("main").textContent = S.error || "Couldn't read the settings."; return; }
-  $("ver").textContent = "v" + S.version;
-  document.documentElement.dataset.accent = S.accent; theme(S.theme);
-  const want = S.groups.find((g) => slug(g) === location.hash.slice(1)) || S.groups[0];
-  current = want; render();
-}
-
-$("q").addEventListener("input", (ev) => { view.query = ev.target.value.trim(); render(); });
-for (const b of document.querySelectorAll("#themes button")) b.onclick = async () => {
-  theme(b.dataset.t); const e = S && S.entries.find((x) => x.key === "panel.theme");
-  if (e) { const r = await post("set", { confirmed: false, changes: [{ key: "panel.theme", value: b.dataset.t }] }); if (r.ok) { e.value = b.dataset.t; e.changed = b.dataset.t !== e.default; render(); } else snack(r.error, true); }
-};
-$("done").onclick = async () => { try { await post("close"); } catch (e) {} document.body.textContent = "You can close this tab."; window.close(); };
-window.addEventListener("hashchange", () => { if (!S) return; const g = S.groups.find((x) => slug(x) === location.hash.slice(1)); if (g && g !== current) { current = g; render(); } });
-theme(document.documentElement.dataset.theme);
-load().catch((err) => { $("main").textContent = "The server didn't answer: " + err; });
+/*__SCRIPT__*/
 </script>
 </body>
 </html>

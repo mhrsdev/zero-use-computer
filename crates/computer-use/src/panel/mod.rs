@@ -16,7 +16,11 @@
 //! The agent never uses it: the page's window title carries a mark that
 //! the engine refuses to act on (see [`is_panel_window`]).
 
+mod profiles;
+mod raw;
 mod schema;
+mod settings;
+mod status;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -27,8 +31,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use self::schema::{ENTRIES, Entry, GROUPS, Kind};
-use crate::config::{self, Config, ConfigStore, DecisionConfig, Edit};
+use self::schema::Kind;
+use self::settings::{apply, fail};
+use crate::config::{self, Config, ConfigStore, DecisionConfig};
 use crate::decision::{Decider, Provider, page as model};
 use crate::error::{Error, Result};
 
@@ -45,6 +50,8 @@ pub fn is_panel_window(title: &str) -> bool {
 const MAX_REQUEST: usize = 64 * 1024;
 /// Connections served at once, at most (a browser opens a few spare ones).
 const MAX_CONNECTIONS: usize = 16;
+/// The stack of a connection's thread (bytes).
+const CONNECTION_STACK: usize = 512 * 1024;
 
 struct Running {
     url: String,
@@ -215,6 +222,8 @@ struct Page {
     host: String,
     token: String,
     path: Option<PathBuf>,
+    /// The server's folder (profiles are kept in it).
+    home: PathBuf,
     idle: Duration,
     alive: Arc<AtomicBool>,
     /// When the last request came.
@@ -276,6 +285,7 @@ impl Server {
                 host,
                 token,
                 path,
+                home: home.to_path_buf(),
                 idle: Duration::from_secs(cfg.idle_minutes.clamp(1, 240) * 60),
                 alive: Arc::new(AtomicBool::new(true)),
                 last: Mutex::new(Instant::now()),
@@ -290,6 +300,7 @@ impl Server {
         use std::sync::atomic::AtomicUsize;
         let _ = self.listener.set_nonblocking(true);
         let open = Arc::new(AtomicUsize::new(0));
+        let mut trimmed = true;
         let idle = |p: &Page| p.last.lock().map(|t| t.elapsed() >= p.idle).unwrap_or(true);
         while self.page.alive.load(Ordering::SeqCst) && !idle(&self.page) {
             match self.listener.accept() {
@@ -300,23 +311,43 @@ impl Server {
                     let _ = stream.set_nonblocking(false);
                     open.fetch_add(1, Ordering::SeqCst);
                     let (page, conns) = (self.page.clone(), open.clone());
-                    let spawned =
-                        std::thread::Builder::new()
-                            .name("panel-conn".into())
-                            .spawn(move || {
-                                if page.handle(stream) == Some(true) {
-                                    page.alive.store(false, Ordering::SeqCst);
-                                }
-                                conns.fetch_sub(1, Ordering::SeqCst);
-                            });
+                    let spawned = std::thread::Builder::new()
+                        .name("panel-conn".into())
+                        // A small stack: a request here is a few JSON
+                        // documents.
+                        .stack_size(CONNECTION_STACK)
+                        .spawn(move || {
+                            if page.handle(stream) == Some(true) {
+                                page.alive.store(false, Ordering::SeqCst);
+                            }
+                            conns.fetch_sub(1, Ordering::SeqCst);
+                        });
                     if spawned.is_err() {
                         open.fetch_sub(1, Ordering::SeqCst);
                     }
                 }
-                Err(_) => std::thread::sleep(Duration::from_millis(30)),
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(30));
+                    // A few seconds after the last request, once: give back
+                    // what the requests used (the program goes on running).
+                    let quiet = self
+                        .page
+                        .last
+                        .lock()
+                        .map(|t| t.elapsed() >= Duration::from_secs(3))
+                        .unwrap_or(false);
+                    if quiet && !trimmed {
+                        crate::engine::trim_heap();
+                        trimmed = true;
+                    } else if !quiet {
+                        trimmed = false;
+                    }
+                }
             }
         }
         self.page.alive.store(false, Ordering::SeqCst);
+        // Give back what the page used: the program goes on running.
+        crate::engine::trim_heap();
     }
 }
 
@@ -371,6 +402,12 @@ impl Page {
                         page.as_bytes(),
                     );
                 }
+                "schema.json" => respond(
+                    &mut stream,
+                    200,
+                    "application/json",
+                    settings::schema_json().as_bytes(),
+                ),
                 "ping" => respond(&mut stream, 200, "text/plain", b"zero-panel"),
                 r => match r
                     .strip_prefix("cursor/")
@@ -403,15 +440,9 @@ impl Page {
             return None;
         }
         let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-        let (reply, done) = match route.as_str() {
-            "state" => (self.state(), false),
-            "set" => (self.set(&body), false),
-            "reset" => (self.reset(&body), false),
-            "test" => (self.test(&body), false),
-            "save" => (self.save(&body), false),
-            "remove" => (self.remove(), false),
-            "close" => (json!({"ok": true}), true),
-            _ => {
+        let (reply, done) = match self.route(&route, &body) {
+            Some(r) => r,
+            None => {
                 respond(&mut stream, 404, "text/plain", b"not found");
                 return None;
             }
@@ -436,7 +467,10 @@ impl Page {
     }
 
     /// The page, with the saved theme in it so it never flashes.
-    fn shell(&self) -> String {
+    /// Made once for each theme and accent, then reused: the page is 60 KB
+    /// and a browser asks for it on every visit.
+    fn shell(&self) -> Arc<String> {
+        static CACHE: Mutex<Option<(String, Arc<String>)>> = Mutex::new(None);
         let p = panel_settings(self.path.as_deref());
         let theme = match p.theme.as_str() {
             t @ ("light" | "dark") => t,
@@ -447,32 +481,96 @@ impl Page {
         } else {
             "#1A73E8"
         };
-        PAGE.replace("__THEME__", theme)
-            .replace("__ACCENT__", accent)
+        let key = format!("{theme} {accent}");
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((k, page)) = cache.as_ref()
+            && *k == key
+        {
+            return page.clone();
+        }
+        let page = Arc::new(
+            PAGE.replace("__THEME__", theme)
+                .replace("__ACCENT__", accent)
+                .replace("/*__SCRIPT__*/", APP),
+        );
+        *cache = Some((key, page.clone()));
+        page
     }
 
-    /// Everything the page shows.
+    /// The answer to one POST route; the bool is "the user closed the page".
+    fn route(&self, route: &str, body: &Value) -> Option<(Value, bool)> {
+        let reply = match route {
+            "state" => self.state(),
+            "set" => self.set(body),
+            "reset" => self.reset(body),
+            "profiles" => self.with_config(|c| profiles::list(&self.home, c)),
+            "profile_apply" => self.profile_apply(body),
+            "profile_save" => {
+                let label = body
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.with_config(|c| profiles::save(&self.home, c, label))
+            }
+            "profile_delete" => {
+                let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+                profiles::delete(&self.home, id)
+            }
+            "raw_get" => self.with_path(raw::view),
+            "raw_check" | "raw_save" => {
+                let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
+                let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+                self.with_path(|p| raw::run(p, text, confirmed, route == "raw_save"))
+            }
+            "export" => self.with_config(export),
+            "import" => self.import(body),
+            "overview" => self.with_config(|c| status::overview(self.path.as_deref(), c)),
+            "tools" => self.with_config(status::tool_list),
+            "apps" => status::apps(),
+            "audit" => {
+                let n = body.get("lines").and_then(Value::as_u64).unwrap_or(100) as usize;
+                self.with_config(|c| status::audit(c, n))
+            }
+            "path" => {
+                let style = body.get("style").and_then(Value::as_str).unwrap_or("mixed");
+                status::path_preview(style)
+            }
+            "test" => self.test(body),
+            "save" => self.save(body),
+            "remove" => self.remove(),
+            "close" => return Some((json!({"ok": true}), true)),
+            _ => return None,
+        };
+        Some((reply, false))
+    }
+
+    fn with_config(&self, f: impl FnOnce(&Config) -> Value) -> Value {
+        match self.config() {
+            Ok(c) => f(&c),
+            Err(e) => fail(&e),
+        }
+    }
+
+    fn with_path(&self, f: impl FnOnce(&Path) -> Value) -> Value {
+        match &self.path {
+            Some(p) => f(p),
+            None => fail("this server keeps its settings in memory, so there is no file"),
+        }
+    }
+
+    /// The saved values that differ from the defaults, and who is asking.
     fn state(&self) -> Value {
         let cfg = match self.config() {
             Ok(c) => c,
-            Err(e) => return json!({"ok": false, "error": e}),
+            Err(e) => return fail(&e),
         };
-        let now = toml::Value::try_from(&cfg).unwrap_or(toml::Value::Boolean(false));
-        let def = toml::Value::try_from(Config::default()).unwrap_or(toml::Value::Boolean(false));
-        let entries: Vec<Value> = ENTRIES
-            .iter()
-            .map(|e| entry_json(e, lookup(&now, e.key), lookup(&def, e.key)))
-            .collect();
         let d = &cfg.decision;
         json!({
             "ok": true,
-            "version": env!("CARGO_PKG_VERSION"),
             "path": self.path.as_ref().map(|p| p.display().to_string()),
             "theme": cfg.panel.theme,
             "accent": cfg.panel.accent,
-            "groups": GROUPS,
-            "blurbs": blurbs(),
-            "entries": entries,
+            "values": settings::changed_values(&cfg),
             "decision": {
                 "provider": d.provider,
                 "base_url": d.base_url,
@@ -483,99 +581,80 @@ impl Page {
         })
     }
 
-    /// Change settings: `{changes: [{key, value}], confirmed}`.
+    fn changes_of(body: &Value) -> std::result::Result<Vec<(String, Value)>, Value> {
+        let Some(list) = body.get("changes").and_then(Value::as_array) else {
+            return Err(fail("say which settings to change"));
+        };
+        list.iter()
+            .map(|c| match c.get("key").and_then(Value::as_str) {
+                Some(k) => Ok((
+                    k.to_string(),
+                    c.get("value").cloned().unwrap_or(Value::Null),
+                )),
+                None => Err(fail("a change has no key")),
+            })
+            .collect()
+    }
+
+    /// Change settings: `{changes: [{key, value}], confirmed}`; a `null`
+    /// value puts the setting back to its default.
     fn set(&self, body: &Value) -> Value {
-        let Some(path) = &self.path else {
-            return fail("this server keeps its settings in memory, so they can't be saved here");
+        let changes = match Self::changes_of(body) {
+            Ok(c) => c,
+            Err(e) => return e,
         };
-        let Some(changes) = body.get("changes").and_then(Value::as_array) else {
-            return fail("say which settings to change");
-        };
-        let def = toml::Value::try_from(Config::default()).unwrap_or(toml::Value::Boolean(false));
-        let mut edits: Vec<(&'static str, Edit)> = Vec::new();
-        let mut protected = false;
-        for c in changes {
-            let Some(key) = c.get("key").and_then(Value::as_str) else {
-                return fail("a change has no key");
-            };
-            let Some(entry) = schema::entry(key) else {
-                return fail(&format!("`{key}` is not a setting"));
-            };
-            if entry.kind == Kind::Custom {
-                return fail(&format!("`{key}` is changed on its own page"));
-            }
-            let value = c.get("value").unwrap_or(&Value::Null);
-            match coerce(entry, lookup(&def, key), value) {
-                Ok(Some(edit)) => {
-                    protected |= entry.confirm;
-                    edits.push((entry.key, edit));
-                }
-                Ok(None) => {}
-                Err(e) => return fail(&format!("{key}: {e}")),
-            }
+        // A change with no value in it is a mistake, not a reset: only an
+        // explicit `null` resets (the page uses `reset` for that).
+        if changes.iter().any(|(_, v)| v.is_null()) {
+            return fail("a change needs a value");
         }
-        if protected && body.get("confirmed").and_then(Value::as_bool) != Some(true) {
-            return fail("these settings need the user's confirmation first");
-        }
-        if edits.is_empty() {
-            return self.values(&[]);
-        }
-        if let Err(e) = config::edit_file_many(path, &edits) {
-            return fail(&e.to_string());
-        }
-        let keys: Vec<&str> = edits.iter().map(|(k, _)| *k).collect();
-        self.values(&keys)
+        let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+        self.with_path(|p| apply(p, &changes, confirmed))
     }
 
     /// Put settings back to their defaults: `{keys: [...], confirmed}`.
     fn reset(&self, body: &Value) -> Value {
-        let Some(path) = &self.path else {
-            return fail("this server keeps its settings in memory, so they can't be saved here");
-        };
         let Some(keys) = body.get("keys").and_then(Value::as_array) else {
             return fail("say which settings to reset");
         };
-        let mut edits: Vec<(&'static str, Edit)> = Vec::new();
-        let mut protected = false;
+        let mut changes = Vec::new();
         for k in keys {
-            let Some(entry) = k.as_str().and_then(schema::entry) else {
+            let Some(k) = k.as_str() else {
                 return fail("that is not a setting");
             };
-            if entry.kind == Kind::Custom {
-                return fail(&format!("`{}` is changed on its own page", entry.key));
-            }
-            protected |= entry.confirm;
-            edits.push((entry.key, Edit::Unset));
+            changes.push((k.to_string(), Value::Null));
         }
-        if protected && body.get("confirmed").and_then(Value::as_bool) != Some(true) {
-            return fail("these settings need the user's confirmation first");
-        }
-        if let Err(e) = config::edit_file_many(path, &edits) {
-            return fail(&e.to_string());
-        }
-        let keys: Vec<&str> = edits.iter().map(|(k, _)| *k).collect();
-        self.values(&keys)
+        let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+        self.with_path(|p| apply(p, &changes, confirmed))
     }
 
-    /// The saved values of `keys`, for the page to show.
-    fn values(&self, keys: &[&str]) -> Value {
-        let cfg = match self.config() {
-            Ok(c) => c,
-            Err(e) => return fail(&e),
+    fn profile_apply(&self, body: &Value) -> Value {
+        let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+        let Some(changes) = profiles::changes_for(&self.home, id) else {
+            return fail("there is no such profile");
         };
-        let now = toml::Value::try_from(&cfg).unwrap_or(toml::Value::Boolean(false));
-        let mut values = serde_json::Map::new();
-        for k in keys {
-            if let Some(e) = schema::entry(k) {
-                values.insert((*k).into(), shown(e, lookup(&now, k)));
-            }
+        let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+        self.with_path(|p| apply(p, &changes, confirmed))
+    }
+
+    /// Settings typed or pasted as TOML (what `export` makes): each key
+    /// is changed as if set on the page.
+    fn import(&self, body: &Value) -> Value {
+        let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
+        if text.len() > 64 * 1024 {
+            return fail("that is too long to be a list of settings");
         }
-        let mut reply = json!({"ok": true, "values": values});
-        if keys.iter().any(|k| k.starts_with("panel.")) {
-            reply["theme"] = json!(cfg.panel.theme);
-            reply["accent"] = json!(cfg.panel.accent);
+        let table: toml::Table = match text.parse() {
+            Ok(t) => t,
+            Err(e) => return fail(&e.to_string()),
+        };
+        let mut changes = Vec::new();
+        flatten("", &table, &mut changes);
+        if changes.is_empty() {
+            return fail("there are no settings in it");
         }
-        reply
+        let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+        self.with_path(|p| apply(p, &changes, confirmed))
     }
 
     // The decision model's page.
@@ -674,190 +753,65 @@ impl Page {
     }
 }
 
-fn fail(error: &str) -> Value {
-    json!({"ok": false, "error": error})
-}
-
 fn valid_accent(a: &str) -> bool {
     a.len() == 7 && a.starts_with('#') && a[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// A short line under each group's name.
-fn blurbs() -> Value {
+/// Nested TOML as dotted keys with JSON values.
+fn flatten(prefix: &str, table: &toml::Table, out: &mut Vec<(String, Value)>) {
+    for (k, v) in table {
+        let key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        match v {
+            toml::Value::Table(t) => flatten(&key, t, out),
+            v => out.push((key, serde_json::to_value(v).unwrap_or(Value::Null))),
+        }
+    }
+}
+
+fn insert_dotted(table: &mut toml::Table, key: &str, v: toml::Value) {
+    match key.split_once('.') {
+        None => {
+            table.insert(key.to_string(), v);
+        }
+        Some((head, rest)) => {
+            let next = table
+                .entry(head.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(t) = next {
+                insert_dotted(t, rest, v);
+            }
+        }
+    }
+}
+
+/// The settings that differ from the defaults, as a file others can import
+/// (no secrets, nothing for the decision model's card).
+fn export(cfg: &Config) -> Value {
+    let values = settings::changed_values(cfg);
+    let mut table = toml::Table::new();
+    let mut skipped = 0;
+    for (key, value) in values.as_object().into_iter().flatten() {
+        let Some(e) = schema::entry(key) else {
+            continue;
+        };
+        if matches!(e.kind, Kind::Secret | Kind::Custom) {
+            skipped += 1;
+            continue;
+        }
+        let Ok(v) = toml::Value::try_from(value) else {
+            continue;
+        };
+        insert_dotted(&mut table, key, v);
+    }
     json!({
-        "General": "Switches that apply to the whole program.",
-        "Pointer": "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.",
-        "Real mouse": "How the real mouse moves when an action has to use it.",
-        "Overlay": "The border, label and colours shown while the agent works.",
-        "Screenshots": "When pictures are sent to the model, and how big. The biggest lever on image tokens.",
-        "Accessibility tree": "How much of the app's tree the model reads, and how it is shortened.",
-        "Tools and tokens": "Which tools the model sees. The tool list is sent with every request.",
-        "Timing": "Pauses and waits around actions.",
-        "Screen memory": "Remembering screens the model has already seen.",
-        "Text on screen (OCR)": "Reading text off the screen for apps whose tree says little.",
-        "Decision model": "A fast model that answers small questions about what is on screen.",
-        "Privacy": "What is masked before anything reaches the model. Changes ask you to confirm.",
-        "Your control": "The emergency stop and the pause while you use the computer. Changes ask you to confirm.",
-        "Several agents": "Subagents, or Claude Code beside Codex, on one desktop.",
-        "Notifications": "Reading desktop notifications.",
-        "Scripts": "Small programs the agent writes and the server runs.",
-        "Checking actions": "Verifying that an action did what it should.",
-        "Audit log": "A record of every call, without the data.",
-        "Server": "Logging, the instructions sent to clients and the optional HTTP transport.",
-        "Updates": "How the program keeps itself up to date. Changes ask you to confirm.",
-        "Platform": "Settings for one operating system.",
-        "Panel": "This page.",
+        "ok": true,
+        "text": toml::to_string_pretty(&table).unwrap_or_default(),
+        "skipped_secrets": skipped,
     })
-}
-
-/// A setting as the page shows it: a secret only by its last characters,
-/// and the decision model's (shown by its own card) not at all.
-fn shown(e: &Entry, v: Option<&toml::Value>) -> Value {
-    match (e.kind, v) {
-        (Kind::Custom, _) => json!(""),
-        (Kind::Secret, Some(toml::Value::String(s))) => json!(config::masked_key(s)),
-        (Kind::Secret, _) => json!(""),
-        (_, Some(v)) => serde_json::to_value(v).unwrap_or(Value::Null),
-        (_, None) => json!(""),
-    }
-}
-
-fn lookup<'a>(root: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
-    let mut v = root;
-    for part in key.split('.') {
-        v = v.get(part)?;
-    }
-    Some(v)
-}
-
-fn entry_json(e: &Entry, now: Option<&toml::Value>, def: Option<&toml::Value>) -> Value {
-    let type_name = match e.kind {
-        Kind::Choice(_) => "choice",
-        Kind::Range { .. } => "range",
-        Kind::Color => "color",
-        Kind::Hotkey => "hotkey",
-        Kind::Secret => "secret",
-        Kind::Custom => "custom",
-        Kind::Number { .. } | Kind::Auto => match def {
-            Some(toml::Value::Boolean(_)) => "bool",
-            Some(toml::Value::Integer(_)) => "int",
-            Some(toml::Value::Float(_)) => "float",
-            Some(toml::Value::Array(_)) => "list",
-            _ => "string",
-        },
-    };
-    let value = shown(e, now);
-    let default = shown(e, def);
-    let mut j = json!({
-        "key": e.key,
-        "group": e.group,
-        "help": e.help,
-        "type": type_name,
-        "value": value,
-        "default": default,
-        "changed": value != default,
-        "restart": e.restart,
-        "confirm": e.confirm,
-        "advanced": e.advanced,
-    });
-    match e.kind {
-        Kind::Choice(c) => j["choices"] = json!(c),
-        Kind::Range {
-            min,
-            max,
-            step,
-            unit,
-        } => {
-            j["min"] = json!(min);
-            j["max"] = json!(max);
-            j["step"] = json!(step);
-            j["unit"] = json!(unit);
-        }
-        Kind::Number { unit } => j["unit"] = json!(unit),
-        _ => {}
-    }
-    j
-}
-
-/// A value from the page as an edit of the settings file, checked against
-/// the setting's type: `None` for nothing to change (an empty secret).
-fn coerce(
-    e: &Entry,
-    def: Option<&toml::Value>,
-    v: &Value,
-) -> std::result::Result<Option<Edit>, String> {
-    let line = |s: &str| -> std::result::Result<String, String> {
-        if s.chars().any(char::is_control) {
-            return Err("must be one line of text".into());
-        }
-        Ok(s.to_string())
-    };
-    if let Kind::Secret = e.kind {
-        let s = v.as_str().ok_or("must be text")?;
-        if s.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(Edit::SetText(line(s)?)));
-    }
-    if let Kind::Choice(c) = e.kind {
-        let s = v.as_str().ok_or("must be text")?;
-        if !c.contains(&s) {
-            return Err(format!("must be one of {}", c.join(", ")));
-        }
-        return Ok(Some(Edit::SetText(s.to_string())));
-    }
-    match def {
-        Some(toml::Value::Boolean(_)) => v
-            .as_bool()
-            .map(|b| Some(Edit::Set(b.to_string())))
-            .ok_or_else(|| "must be on or off".into()),
-        Some(toml::Value::Integer(_)) => {
-            let n = number(v)?;
-            if n.fract() != 0.0 || !(0.0..=9.0e15).contains(&n) {
-                return Err("must be a whole number, not negative".into());
-            }
-            range_check(e, n)?;
-            Ok(Some(Edit::Set(format!("{}", n as i64))))
-        }
-        Some(toml::Value::Float(_)) => {
-            let n = number(v)?;
-            range_check(e, n)?;
-            Ok(Some(Edit::Set(format!("{n:?}"))))
-        }
-        Some(toml::Value::Array(_)) => {
-            let items = v.as_array().ok_or("must be a list")?;
-            let mut out = Vec::new();
-            for i in items {
-                let s = i.as_str().ok_or("a list holds text")?;
-                out.push(toml::Value::String(line(s.trim())?).to_string());
-            }
-            Ok(Some(Edit::Set(format!("[{}]", out.join(", ")))))
-        }
-        // Text, and settings that are unset by default (a path).
-        _ => {
-            let s = v.as_str().ok_or("must be text")?;
-            let s = line(s.trim())?;
-            if s.is_empty() && def.is_none() {
-                return Ok(Some(Edit::Unset));
-            }
-            Ok(Some(Edit::SetText(s)))
-        }
-    }
-}
-
-fn number(v: &Value) -> std::result::Result<f64, String> {
-    v.as_f64()
-        .filter(|n| n.is_finite())
-        .ok_or_else(|| "must be a number".into())
-}
-
-fn range_check(e: &Entry, n: f64) -> std::result::Result<(), String> {
-    if let Kind::Range { min, max, .. } = e.kind
-        && !(min..=max).contains(&n)
-    {
-        return Err(format!("must be between {min} and {max}"));
-    }
-    Ok(())
 }
 
 fn read_request(stream: &TcpStream) -> std::result::Result<Request, u16> {
@@ -922,6 +876,7 @@ fn respond(stream: &mut TcpStream, code: u16, kind: &str, body: &[u8]) {
 }
 
 const PAGE: &str = include_str!("index.html");
+const APP: &str = include_str!("app.js");
 
 #[cfg(test)]
 mod tests;

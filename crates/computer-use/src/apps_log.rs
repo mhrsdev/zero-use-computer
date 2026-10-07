@@ -243,6 +243,13 @@ fn read(path: &Path) -> BTreeMap<String, AppRecord> {
         .unwrap_or_default()
 }
 
+/// Every app's counts, the most looked at first (for the settings panel).
+pub fn records(path: &Path) -> Vec<(String, AppRecord)> {
+    let mut apps: Vec<_> = read(path).into_iter().collect();
+    apps.sort_by(|a, b| b.1.looks.cmp(&a.1.looks).then_with(|| a.0.cmp(&b.0)));
+    apps
+}
+
 /// The apps that needed pixels most, as lines for `doctor`: those with
 /// at least a few looks, the least served by their tree first.
 pub fn summary(path: &Path, max: usize) -> Vec<String> {

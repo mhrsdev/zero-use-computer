@@ -1732,6 +1732,7 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
             .ok_or_else(|| Error::Config(format!("`{t}` is not a table")))?;
     }
 
+    let mut prune = false;
     match edit {
         Edit::Set(raw) => {
             // A text setting keeps text that reads like a number or a
@@ -1753,6 +1754,7 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
         }
         Edit::Unset => {
             table.remove(last);
+            prune = true;
         }
         Edit::Add(item) => {
             // Start from the current effective list so defaults are kept.
@@ -1772,6 +1774,23 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
                 arr.push(v.as_str());
             }
             table.insert(last, toml_edit::value(arr));
+        }
+    }
+    if prune && parts.len() > 1 {
+        // A section left with nothing in it (and no comment of its own
+        // above it) goes too, so a reset leaves no empty `[screenshot]`.
+        let empty = doc
+            .get(parts[0])
+            .and_then(|i| i.as_table())
+            .is_some_and(|t| {
+                t.is_empty()
+                    && t.decor()
+                        .prefix()
+                        .and_then(|p| p.as_str())
+                        .is_none_or(|p| p.trim().is_empty())
+            });
+        if empty {
+            doc.remove(parts[0]);
         }
     }
     Ok(doc.to_string())
@@ -1812,7 +1831,7 @@ pub fn masked_key(key: &str) -> String {
 /// stays, even before what it points to exists), and keeps its
 /// permissions; `private` (it holds an API key or the HTTP token) makes it
 /// readable by its owner only, from the moment it is created.
-fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
     let fail = |e: std::io::Error| Error::Config(format!("{}: {e}", path.display()));
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
         // A link to a file not made yet: write that file.
@@ -2059,6 +2078,25 @@ mod tests {
         assert_eq!(cfg.screenshot.max_dimension, 1024);
         assert!(cfg.screenshot.enabled);
         assert!(!cfg.privacy.redact_labels.is_empty());
+    }
+
+    #[test]
+    fn a_reset_leaves_no_empty_section_but_keeps_one_with_a_comment() {
+        let text = "[screenshot]\nattach = \"always\"\n\n# mine\n[tree]\nmax_nodes = 5\n";
+        let out = edit_text(text, "screenshot.attach", Edit::Unset).unwrap();
+        assert!(!out.contains("[screenshot]"), "{out}");
+        let out = edit_text(&out, "tree.max_nodes", Edit::Unset).unwrap();
+        assert!(out.contains("# mine") && out.contains("[tree]"), "{out}");
+        // Top-level keys and sections that still hold something stay.
+        let out = edit_text("clipboard = false\n", "clipboard", Edit::Unset).unwrap();
+        assert_eq!(out.trim(), "");
+        let kept = edit_text(
+            "[tree]\nindent = 2\nmax_nodes = 5\n",
+            "tree.max_nodes",
+            Edit::Unset,
+        )
+        .unwrap();
+        assert!(kept.contains("indent = 2"), "{kept}");
     }
 
     #[test]

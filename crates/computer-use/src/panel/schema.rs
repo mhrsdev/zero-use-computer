@@ -343,6 +343,34 @@ pub const ENTRIES: &[Entry] = &[
     e("panel.idle_minutes", PANEL, "The panel closes after this long without a request.").range(1.0, 240.0, 1.0, "min"),
 ];
 
+/// A short line under each group's name.
+pub fn blurbs() -> serde_json::Value {
+    serde_json::json!({
+        "General": "Switches that apply to the whole program.",
+        "Pointer": "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.",
+        "Real mouse": "How the real mouse moves when an action has to use it.",
+        "Overlay": "The border, label and colours shown while the agent works.",
+        "Screenshots": "When pictures are sent to the model, and how big. The biggest lever on image tokens.",
+        "Accessibility tree": "How much of the app's tree the model reads, and how it is shortened.",
+        "Tools and tokens": "Which tools the model sees. The tool list is sent with every request.",
+        "Timing": "Pauses and waits around actions.",
+        "Screen memory": "Remembering screens the model has already seen.",
+        "Text on screen (OCR)": "Reading text off the screen for apps whose tree says little.",
+        "Decision model": "A fast model that answers small questions about what is on screen.",
+        "Privacy": "What is masked before anything reaches the model. Changes ask you to confirm.",
+        "Your control": "The emergency stop and the pause while you use the computer. Changes ask you to confirm.",
+        "Several agents": "Subagents, or Claude Code beside Codex, on one desktop.",
+        "Notifications": "Reading desktop notifications.",
+        "Scripts": "Small programs the agent writes and the server runs.",
+        "Checking actions": "Verifying that an action did what it should.",
+        "Audit log": "A record of every call, without the data.",
+        "Server": "Logging, the instructions sent to clients and the optional HTTP transport.",
+        "Updates": "How the program keeps itself up to date. Changes ask you to confirm.",
+        "Platform": "Settings for one operating system.",
+        "Panel": "This page.",
+    })
+}
+
 pub fn entry(key: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.key == key)
 }
