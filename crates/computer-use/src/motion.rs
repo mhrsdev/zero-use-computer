@@ -143,10 +143,10 @@ fn mouse_setting() -> &'static str {
 /// How long a move of `d` px takes, about (ms): longer reaches take longer,
 /// but not in proportion (Fitts's law).
 fn duration_ms(d: f64, kind: Kind, rng: &mut Rng) -> f64 {
-    let ms = (80.0 + 85.0 * (1.0 + d / 12.0).log2()) * rng.range(0.85, 1.15);
+    let ms = (60.0 + 50.0 * (1.0 + d / 12.0).log2()) * rng.range(0.85, 1.15);
     match kind {
-        Kind::Reach => ms.clamp(120.0, 800.0),
-        Kind::Drag => (ms * 1.25).clamp(180.0, 1000.0),
+        Kind::Reach => ms.clamp(100.0, 600.0),
+        Kind::Drag => (ms * 1.25).clamp(150.0, 800.0),
     }
 }
 
@@ -345,12 +345,49 @@ impl Path {
     }
 }
 
-/// The points from `from` to `to` (excluding `from`, ending exactly at
-/// `to`), one per [`STEP`], in the style `mouse_path` asks for.
+/// How far from its target a reach really travels (px). An app sees the
+/// pointer only over its own window, so the way across the rest of the
+/// screen shows it nothing; it only takes the user's pointer from them
+/// for longer. A reach goes at once to a point this far off and travels
+/// the last stretch.
+const LAST_STRETCH: (f64, f64) = (70.0, 140.0);
+
+/// The points the real pointer goes through from `from` to `to`
+/// (excluding `from`, ending exactly at `to`), one per [`STEP`], in the
+/// style `mouse_path` asks for. A reach from farther than its last stretch
+/// starts with a jump to it ([`travel_near`]).
 pub fn travel(from: (f64, f64), to: (f64, f64), kind: Kind) -> Vec<(f64, f64)> {
     let mut rng = Rng::new();
     let style = Style::pick(mouse_setting(), &mut rng);
-    travel_with(from, to, kind, style, &mut rng)
+    travel_near(from, to, kind, style, &mut rng)
+}
+
+/// [`travel_with`], but a reach from far away goes at once to a point a
+/// short stretch from `to` (back the way it came, a little to one side),
+/// the first point, and travels only from there. A drag travels the whole
+/// way: that is the drag.
+pub fn travel_near(
+    from: (f64, f64),
+    to: (f64, f64),
+    kind: Kind,
+    style: Style,
+    rng: &mut Rng,
+) -> Vec<(f64, f64)> {
+    let d = (to.0 - from.0).hypot(to.1 - from.1);
+    let reach = rng.range(LAST_STRETCH.0, LAST_STRETCH.1);
+    if kind == Kind::Reach && d.is_finite() && d > reach * 1.3 {
+        let turn = rng.range(-0.45, 0.45);
+        let (ux, uy) = ((from.0 - to.0) / d, (from.1 - to.1) / d);
+        let (sin, cos) = turn.sin_cos();
+        let start = (
+            to.0 + (ux * cos - uy * sin) * reach,
+            to.1 + (ux * sin + uy * cos) * reach,
+        );
+        let mut out = vec![start];
+        out.extend(travel_with(start, to, kind, style, rng));
+        return out;
+    }
+    travel_with(from, to, kind, style, rng)
 }
 
 pub fn travel_with(
@@ -425,20 +462,20 @@ mod tests {
         for style in Style::ALL {
             for seed in 1..60 {
                 let mut rng = Rng::seeded(seed);
-                let p = travel_with(from, to, Kind::Reach, style, &mut rng);
+                // As the real pointer goes: a jump near, then the last stretch.
+                let p = travel_near(from, to, Kind::Reach, style, &mut rng);
                 assert_eq!(*p.last().unwrap(), to, "{style:?}");
                 let ms = p.len() as u128 * STEP.as_millis();
-                assert!((300..=1000).contains(&ms), "{style:?}: {ms} ms");
-                // Never wildly off the way (within the distance of the target).
+                assert!((100..=600).contains(&ms), "{style:?}: {ms} ms");
                 for q in &p {
                     assert!(
                         dist(*q, to) <= dist(from, to) * 1.15 + 10.0,
                         "{style:?} {q:?}"
                     );
                 }
-                // No jumps between points.
-                for w in p.windows(2) {
-                    assert!(dist(w[0], w[1]) < 60.0, "{style:?}: {w:?}");
+                // No jumps after the first.
+                for w in p[1..].windows(2) {
+                    assert!(dist(w[0], w[1]) < 40.0, "{style:?}: {w:?}");
                 }
             }
         }
@@ -500,6 +537,38 @@ mod tests {
         for s in Style::ALL {
             assert_eq!(Style::named(s.name()), Some(s));
         }
+    }
+
+    #[test]
+    fn a_far_reach_jumps_near_and_travels_only_the_last_stretch() {
+        let (from, to) = ((50.0, 900.0), (1500.0, 120.0));
+        for style in Style::ALL {
+            for seed in 1..40 {
+                let p = travel_near(from, to, Kind::Reach, style, &mut Rng::seeded(seed));
+                // The first point is the jump: a short stretch from the target.
+                let near = dist(p[0], to);
+                assert!((60.0..=150.0).contains(&near), "{style:?}: {near}");
+                assert_eq!(*p.last().unwrap(), to);
+                // The user's pointer is taken for a moment, not a journey.
+                let ms = p.len() as u128 * STEP.as_millis();
+                assert!(ms <= 450, "{style:?}: {ms} ms");
+                // Everything after the jump stays near the target.
+                for q in &p[1..] {
+                    assert!(dist(*q, to) <= near * 1.4 + 10.0, "{style:?} {q:?}");
+                }
+            }
+        }
+        // A drag goes the whole way; a short reach has no jump.
+        let d = travel_near(from, to, Kind::Drag, Style::Hand, &mut Rng::seeded(1));
+        assert!(dist(d[0], from) < 30.0);
+        let short = travel_near(
+            (100.0, 100.0),
+            (160.0, 100.0),
+            Kind::Reach,
+            Style::Hand,
+            &mut Rng::seeded(1),
+        );
+        assert!(dist(short[0], (100.0, 100.0)) < 20.0);
     }
 
     #[test]

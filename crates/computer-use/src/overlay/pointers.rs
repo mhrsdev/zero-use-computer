@@ -28,6 +28,82 @@ struct Picture {
     image: Pixmap,
     tip: (f32, f32),
     origin: (f32, f32),
+    /// The picture halved again and again (`mips[0]` is the picture), each
+    /// with its solid part's outline in white and in black: a picture
+    /// shrunk eightfold in one step loses its edges and its fine light to
+    /// speckle, from a level near its size it stays clean.
+    mips: Vec<Level>,
+}
+
+/// One size of a picture: the picture, and its solid part in white and in
+/// black (for the rim that keeps it clear on any background).
+struct Level {
+    image: Pixmap,
+    white: Pixmap,
+    black: Pixmap,
+}
+
+impl Picture {
+    fn new(image: Pixmap, tip: (f32, f32), origin: (f32, f32)) -> Picture {
+        let mut mips = vec![level(image.clone())];
+        while let Some(last) = mips.last() {
+            if last.image.width() <= 24 || last.image.height() <= 24 {
+                break;
+            }
+            match halve(&last.image) {
+                Some(next) => mips.push(level(next)),
+                None => break,
+            }
+        }
+        Picture {
+            image,
+            tip,
+            origin,
+            mips,
+        }
+    }
+}
+
+/// Half the size, each pixel the average of four (premultiplied).
+fn halve(src: &Pixmap) -> Option<Pixmap> {
+    let (w, h) = (src.width() / 2, src.height() / 2);
+    let mut out = Pixmap::new(w.max(1), h.max(1))?;
+    let (from, sw) = (src.data(), src.width() as usize);
+    let to = out.data_mut();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            for c in 0..4 {
+                let at = |dx: usize, dy: usize| {
+                    u32::from(from[((2 * y + dy) * sw + 2 * x + dx) * 4 + c])
+                };
+                let sum = at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1);
+                to[(y * w as usize + x) * 4 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A level of `image`: it and its solid part (not the soft glow around
+/// it) in white and in black.
+fn level(image: Pixmap) -> Level {
+    let solid = |v: u8| -> Pixmap {
+        let mut out = image.clone();
+        for px in out.data_mut().chunks_mut(4) {
+            let a = f32::from(px[3]) / 255.0;
+            let k = ((a - 0.35) / 0.35).clamp(0.0, 1.0);
+            let a = (k * k * (3.0 - 2.0 * k) * 255.0).round() as u8;
+            let c = (u16::from(v) * u16::from(a) / 255) as u8;
+            px.copy_from_slice(&[c, c, c, a]);
+        }
+        out
+    };
+    let (white, black) = (solid(255), solid(0));
+    Level {
+        image,
+        white,
+        black,
+    }
 }
 
 /// A picture's file: its style, bytes, tip and top left corner (as above).
@@ -80,14 +156,7 @@ fn picture(style: CursorStyle) -> Option<&'static Picture> {
                 .iter()
                 .filter_map(|(style, png, tip, origin)| {
                     let image = Pixmap::decode_png(png).ok()?;
-                    Some((
-                        *style,
-                        Picture {
-                            image,
-                            tip: *tip,
-                            origin: *origin,
-                        },
-                    ))
+                    Some((*style, Picture::new(image, *tip, *origin)))
                 })
                 .collect()
         })
@@ -202,6 +271,10 @@ pub(super) fn draw(
 
 // ---- helpers ---------------------------------------------------------------
 
+/// Draw `pic` through `t` (picture px to the canvas), from the level
+/// nearest its size on screen. Drawn plainly (not a light pass), it gets a
+/// rim first: a thin light edge and a soft dark one below it, so it stays
+/// clear on a light, a grey or a dark background.
 fn image(
     pm: &mut Pixmap,
     pic: &Picture,
@@ -210,18 +283,49 @@ fn image(
     blend_mode: BlendMode,
     mask: Option<&Mask>,
 ) {
-    pm.draw_pixmap(
-        0,
-        0,
-        pic.image.as_ref(),
-        &PixmapPaint {
-            opacity,
-            blend_mode,
-            quality: FilterQuality::Bicubic,
-        },
-        t,
-        mask,
-    );
+    // Canvas px per picture px, and the smallest level still at least as big.
+    let scale = (t.sx * t.sy - t.kx * t.ky).abs().sqrt();
+    let mut k = 0;
+    while k + 1 < pic.mips.len() && scale * (1u32 << (k + 1)) as f32 <= 1.0 {
+        k += 1;
+    }
+    let lv = &pic.mips[k];
+    let t = t.pre_scale((1u32 << k) as f32, (1u32 << k) as f32);
+    let draw = |pm: &mut Pixmap, img: &Pixmap, t: Transform, opacity: f32, mode: BlendMode| {
+        pm.draw_pixmap(
+            0,
+            0,
+            img.as_ref(),
+            &PixmapPaint {
+                opacity,
+                blend_mode: mode,
+                quality: FilterQuality::Bicubic,
+            },
+            t,
+            mask,
+        );
+    };
+    if blend_mode == BlendMode::SourceOver && opacity > 0.5 {
+        // A soft shadow below and right, then a light edge all round.
+        let a = opacity;
+        draw(
+            pm,
+            &lv.black,
+            t.post_translate(0.8, 1.6),
+            0.35 * a,
+            BlendMode::SourceOver,
+        );
+        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            draw(
+                pm,
+                &lv.white,
+                t.post_translate(dx, dy),
+                0.5 * a,
+                BlendMode::SourceOver,
+            );
+        }
+    }
+    draw(pm, &lv.image, t, opacity, blend_mode);
 }
 
 /// A mask over the canvas letting through `path` (as `t` places it).
@@ -466,11 +570,7 @@ fn ice(pm: &mut Pixmap, pic: &Picture, t: Transform, render: Transform, click: O
         return;
     };
     let m = (k * PI).sin();
-    let melted = Picture {
-        image: melt(&pic.image, m),
-        tip: pic.tip,
-        origin: pic.origin,
-    };
+    let melted = Picture::new(melt(&pic.image, m), pic.tip, pic.origin);
     image(pm, &melted, t, 1.0, BlendMode::SourceOver, None);
     // Wet: a cold sheen while it runs.
     image(pm, pic, t, 0.25 * m, BlendMode::Plus, None);

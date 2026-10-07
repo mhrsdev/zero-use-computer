@@ -1,3 +1,9 @@
+# Upgrading to v4.0.1
+
+Nothing to change. Where an action uses the real mouse, your pointer is
+taken for about a third of a second (it was up to 0.8 s in v4.0.0). The
+agent's pointer is a little bigger, with its name tag under it.
+
 # Upgrading to v4.0.0
 
 Nothing to change. What looks or works differently:
