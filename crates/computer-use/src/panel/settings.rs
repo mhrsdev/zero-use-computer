@@ -119,6 +119,7 @@ pub fn schema_json() -> &'static str {
             "blurbs": schema::blurbs(),
             "entries": entries,
             "builtin_profiles": profiles::builtin_list(),
+            "help": super::help::list(),
         })
         .to_string()
     })

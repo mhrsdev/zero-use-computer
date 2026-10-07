@@ -17,6 +17,7 @@
 //! the engine refuses to act on (see [`is_panel_window`]).
 
 mod connecting;
+mod help;
 mod profiles;
 mod raw;
 mod schema;
@@ -428,6 +429,10 @@ impl Page {
                     settings::schema_json().as_bytes(),
                 ),
                 "ping" => respond(&mut stream, 200, "text/plain", b"zero-panel"),
+                r if r.starts_with("help/") => match help::page(&r[5..]) {
+                    Some(h) => respond(&mut stream, 200, "text/html; charset=utf-8", h.as_bytes()),
+                    None => respond(&mut stream, 404, "text/plain", b"not found"),
+                },
                 r => match r
                     .strip_prefix("cursor/")
                     .and_then(|n| n.strip_suffix(".png"))

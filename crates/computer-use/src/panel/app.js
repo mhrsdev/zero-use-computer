@@ -526,6 +526,15 @@ async function connectPage(main) {
     h("div", { class: "note" }, "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.")].flat().filter(Boolean));
 }
 
+/* ---------- the guide ---------- */
+function helpPage(slug) {
+  return async (main) => {
+    const r = await fetch("help/" + slug);
+    if (!r.ok) return main.append(h("div", { class: "empty" }, "That page isn't here."));
+    main.append(h("div", { class: "card pad prose", innerHTML: await r.text() }));
+  };
+}
+
 /* ---------- pages made from the settings groups ---------- */
 function groupPage(g) {
   return async (main) => {
@@ -560,6 +569,7 @@ function registerPages() {
   page_("audit-log", "Audit log", "Tools", auditPage);
   page_("settings-file", "Settings file", "Tools", filePage);
   page_("import-export", "Import and export", "Tools", importPage);
+  for (const p of schema.help) page_("help-" + p.slug, p.title, "Guide", helpPage(p.slug));
 }
 
 function renderNav() {

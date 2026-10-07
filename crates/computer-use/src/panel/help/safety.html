@@ -1,0 +1,13 @@
+<h3>What keeps you in charge</h3>
+<ul>
+<li><b>The stop key.</b> One press stops every agent; every tool call is refused until you press it again. It works from any app. Change it under <a href="#your-control">Your control</a>.</li>
+<li><b>It waits for you.</b> Before each action it waits while you are using the mouse or keyboard, and goes on after 1.5 seconds of quiet. Only the system's idle time is read, never what you type or where you click. After two minutes it gives up and tells the agent why.</li>
+<li><b>The indicator.</b> While the agent works there is a border, a label and its pointer on the screen. They are click-through and left out of its screenshots.</li>
+<li><b>Private data is masked</b> before anything reaches the model: password fields, card numbers (only the last four digits stay) and fields labelled with words like <i>cvv</i> or <i>verification code</i>. Pictures have those areas blacked out. See <a href="#privacy">Privacy</a>.</li>
+<li><b>Keystrokes go to the app they are meant for,</b> and typed values are never written to the audit log.</li>
+<li><b>The audit log</b> (off by default) is one line a call: the tool, the app and how it ended. <a href="#audit-log">Audit log</a> shows it.</li>
+</ul>
+<h3>What it does not do</h3>
+<p>This program does not decide which apps the agent may use. That is the job of the security skill the agent loads (<code>skills/computer-use-security</code>), so a client that doesn't load it has no such rule. Hiding a tool from the list, or telling the agent not to use something, is not a lock.</p>
+<h3>Protected settings</h3>
+<p>Settings that limit what the agent can do or see, or how the program updates, ask you to confirm each change, and the server asks too, so a page script can't skip it. This panel's own window is refused by every tool, so the agent can't use it to change its own limits.</p>

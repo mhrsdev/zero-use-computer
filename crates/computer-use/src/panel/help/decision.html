@@ -1,0 +1,7 @@
+<h3>What it is for</h3>
+<p>A fast model that answers small typed questions about what is on screen, so the agent doesn't have to read and judge everything itself: yes or no (the probability of yes), one of some options, or a score. Which of fifty reviews are positive; has the page loaded; which element is the add-to-cart button.</p>
+<p>It is optional and nothing depends on it. The server also asks it on its own where that saves the agent a turn (<code>decision.auto</code>), answers the same question once for five minutes, and never makes the agent wait on it: after three seconds it judges by itself.</p>
+<h3>Setting it up</h3>
+<p>On <a href="#decision-model">Decision model</a>, choose Jev (TypeSafe's System One, or a server that speaks its API) or any OpenAI-compatible chat model (OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio). A small, fast model works best. Paste the key and press Save; Test asks it one easy question. The key is saved in the settings file, readable by you only, and is never shown here again, only its last four characters.</p>
+<h3>What is sent</h3>
+<p>Only what is being judged: text the agent passes, or a window's elements as text. Private fields are masked first, as for the main model. A key typed here never goes through the chat. You can also keep the key in an environment variable and name it in <code>decision.api_key_env</code>.</p>

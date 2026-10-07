@@ -523,6 +523,18 @@ fn the_panel_is_english_only() {
         ("profiles.rs", include_str!("profiles.rs")),
         ("raw.rs", include_str!("raw.rs")),
         ("status.rs", include_str!("status.rs")),
+        ("updates.rs", include_str!("updates.rs")),
+        ("connecting.rs", include_str!("connecting.rs")),
+        ("help.rs", include_str!("help.rs")),
+        ("help/start.html", include_str!("help/start.html")),
+        ("help/pointers.html", include_str!("help/pointers.html")),
+        ("help/tokens.html", include_str!("help/tokens.html")),
+        ("help/agents.html", include_str!("help/agents.html")),
+        ("help/safety.html", include_str!("help/safety.html")),
+        ("help/updates.html", include_str!("help/updates.html")),
+        ("help/decision.html", include_str!("help/decision.html")),
+        ("help/files.html", include_str!("help/files.html")),
+        ("help/trouble.html", include_str!("help/trouble.html")),
         ("tests.rs", include_str!("tests.rs")),
     ] {
         if let Some(c) = text.chars().find(|&c| arabic_script(c)) {
