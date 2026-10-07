@@ -110,6 +110,10 @@ pub struct Env {
     pub path: Vec<PathBuf>,
     /// `$CODEX_HOME`, if set.
     pub codex_home: Option<PathBuf>,
+    /// `$XDG_CONFIG_HOME`, if set (Linux: where VS Code keeps its settings).
+    pub config_home: Option<PathBuf>,
+    /// `$CLAUDE_CONFIG_DIR`, if set (where Claude Code keeps `.claude.json`).
+    pub claude_dir: Option<PathBuf>,
     /// The server's own folder (`~/.computer-use`): where a stable copy of
     /// the program lives.
     pub zero_home: PathBuf,
@@ -131,6 +135,12 @@ impl Env {
                 .map(|p| std::env::split_paths(&p).collect())
                 .unwrap_or_default(),
             codex_home: std::env::var_os("CODEX_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            config_home: std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            claude_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             zero_home: crate::config::home_dir(),
@@ -161,7 +171,10 @@ impl Env {
                 .appdata
                 .clone()
                 .unwrap_or_else(|| self.home.join("AppData/Roaming")),
-            Os::Linux => self.home.join(".config"),
+            Os::Linux => self
+                .config_home
+                .clone()
+                .unwrap_or_else(|| self.home.join(".config")),
         }
     }
 
@@ -301,44 +314,82 @@ fn write_pairs(pairs: &Pairs, level: &str) -> String {
     format!("{{\n{}\n{level}}}", body.join(",\n"))
 }
 
-/// `text` (a JSON file, or nothing) with `servers.NAME` set to `entry`, or
-/// removed with `None`; everything else as it was, in its order.
+fn has_twice(p: &Pairs) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    p.0.iter()
+        .map(|(k, _)| k.as_str())
+        .find(|k| !seen.insert(*k))
+}
+
+fn raw(text: String) -> std::result::Result<Box<RawValue>, String> {
+    RawValue::from_string(text).map_err(|e| e.to_string())
+}
+
+/// `text` (a JSON file, or nothing) with `servers.NAME` pointing at
+/// `program` for client `c`, or with it taken out (`None`); everything else
+/// as it was, in its order. An entry already there keeps what the user added
+/// to it (`env`, say): only its command and arguments change. `None` back:
+/// nothing to change.
 fn edit_json(
     text: Option<&str>,
     servers: &str,
-    entry: Option<&str>,
-) -> std::result::Result<String, String> {
+    c: Client,
+    program: Option<&Path>,
+) -> std::result::Result<Option<String>, String> {
     let text = text.filter(|t| !t.trim().is_empty()).unwrap_or("{}");
     let mut top = parse_pairs(text)
         .map_err(|e| format!("it isn't plain JSON (comments aren't allowed here): {e}"))?;
+    // A member named twice: programs disagree on which one counts.
+    if let Some(k) = has_twice(&top) {
+        return Err(format!("it names `{k}` twice; leave one and try again"));
+    }
     let at = top.0.iter().position(|(k, _)| k == servers);
-    let mut inner = match at {
-        Some(i) => parse_pairs(top.0[i].1.get())
-            .map_err(|e| format!("`{servers}` isn't an object: {e}"))?,
-        None => Pairs(Vec::new()),
+    let mut inner = match at.map(|i| top.0[i].1.get().trim()) {
+        None | Some("null") => Pairs(Vec::new()),
+        Some(t) => parse_pairs(t).map_err(|e| format!("`{servers}` isn't an object: {e}"))?,
     };
+    if let Some(k) = has_twice(&inner) {
+        return Err(format!(
+            "`{servers}` names `{k}` twice; leave one and try again"
+        ));
+    }
     let existing = inner.0.iter().position(|(k, _)| k == NAME);
-    match (entry, existing) {
-        (Some(v), found) => {
-            let raw = RawValue::from_string(indent(v, "    ")).map_err(|e| e.to_string())?;
-            match found {
-                Some(i) => inner.0[i].1 = raw,
-                None => inner.0.push((NAME.into(), raw)),
+    match (program, existing) {
+        (Some(p), Some(i)) => {
+            // Ours already: its command and arguments, the rest as it was.
+            let mut entry = parse_pairs(inner.0[i].1.get()).unwrap_or(Pairs(Vec::new()));
+            let needs_type = c == Client::VsCode && !entry.0.iter().any(|(k, _)| k == "type");
+            let command =
+                serde_json::to_string(&p.display().to_string()).map_err(|e| e.to_string())?;
+            let mut sets = vec![("command", command), ("args", "[\"serve\"]".to_string())];
+            if needs_type {
+                sets.push(("type", "\"stdio\"".into()));
             }
+            for (k, v) in sets {
+                let v = raw(v)?;
+                match entry.0.iter().position(|(x, _)| x == k) {
+                    Some(j) => entry.0[j].1 = v,
+                    None => entry.0.push((k.into(), v)),
+                }
+            }
+            inner.0[i].1 = raw(write_pairs(&entry, "    "))?;
         }
+        (Some(p), None) => inner
+            .0
+            .push((NAME.into(), raw(indent(&json_entry(c, p), "    "))?)),
         (None, Some(i)) => {
             inner.0.remove(i);
         }
-        (None, None) => {}
+        (None, None) => return Ok(None),
     }
-    let raw = RawValue::from_string(write_pairs(&inner, "  ")).map_err(|e| e.to_string())?;
+    let inner = raw(write_pairs(&inner, "  "))?;
     match at {
-        Some(i) => top.0[i].1 = raw,
-        None => top.0.push((servers.into(), raw)),
+        Some(i) => top.0[i].1 = inner,
+        None => top.0.push((servers.into(), inner)),
     }
     let out = format!("{}\n", write_pairs(&top, ""));
     serde_json::from_str::<Value>(&out).map_err(|e| format!("the result wouldn't be JSON: {e}"))?;
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// The entry as text, its members in the order people write them.
@@ -368,7 +419,13 @@ fn registered_json(text: &str, servers: &str) -> std::result::Result<Option<Valu
 
 // ---- Codex's TOML -----------------------------------------------------------------
 
-fn edit_toml(text: Option<&str>, program: Option<&Path>) -> std::result::Result<String, String> {
+/// Codex's settings with `mcp_servers.NAME` pointing at `program`, or taken
+/// out (`None`); an entry already there keeps what the user added to it.
+/// `None` back: nothing to change.
+fn edit_toml(
+    text: Option<&str>,
+    program: Option<&Path>,
+) -> std::result::Result<Option<String>, String> {
     let mut doc: toml_edit::DocumentMut = text
         .unwrap_or_default()
         .parse()
@@ -377,26 +434,42 @@ fn edit_toml(text: Option<&str>, program: Option<&Path>) -> std::result::Result<
         Some(p) => {
             let servers = doc
                 .entry("mcp_servers")
-                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+                .or_insert_with(|| {
+                    // Only its subtables show: no empty [mcp_servers].
+                    let mut t = toml_edit::Table::new();
+                    t.set_implicit(true);
+                    toml_edit::Item::Table(t)
+                })
                 .as_table_like_mut()
                 .ok_or("`mcp_servers` isn't a table")?;
-            let mut t = toml_edit::Table::new();
-            t.insert("command", toml_edit::value(p.display().to_string()));
             let mut args = toml_edit::Array::new();
             args.push("serve");
-            t.insert("args", toml_edit::value(args));
-            servers.insert(NAME, toml_edit::Item::Table(t));
+            match servers.get_mut(NAME).and_then(|e| e.as_table_like_mut()) {
+                Some(entry) => {
+                    entry.insert("command", toml_edit::value(p.display().to_string()));
+                    entry.insert("args", toml_edit::value(args));
+                }
+                None => {
+                    let mut t = toml_edit::Table::new();
+                    t.insert("command", toml_edit::value(p.display().to_string()));
+                    t.insert("args", toml_edit::value(args));
+                    servers.insert(NAME, toml_edit::Item::Table(t));
+                }
+            }
         }
         None => {
-            if let Some(s) = doc
+            let Some(s) = doc
                 .get_mut("mcp_servers")
                 .and_then(|i| i.as_table_like_mut())
-            {
-                s.remove(NAME);
+            else {
+                return Ok(None);
+            };
+            if s.remove(NAME).is_none() {
+                return Ok(None);
             }
         }
     }
-    Ok(doc.to_string())
+    Ok(Some(doc.to_string()))
 }
 
 fn registered_toml(text: &str) -> std::result::Result<Option<String>, String> {
@@ -447,7 +520,11 @@ pub fn info(env: &Env, c: Client, program: &Path) -> Info {
     let state = (|| -> std::result::Result<State, String> {
         let registered: Option<String> = match c {
             Client::ClaudeCode => {
-                let file = env.home.join(".claude.json");
+                let file = env
+                    .claude_dir
+                    .clone()
+                    .unwrap_or_else(|| env.home.clone())
+                    .join(".claude.json");
                 match read(&file).map_err(|e| format!("{}: {e}", file.display()))? {
                     // A big file with a lot of other things in it: only its
                     // user-level servers are looked at.
@@ -530,6 +607,20 @@ pub fn program_for_clients(env: &Env, exe: &Path) -> (PathBuf, Option<String>) {
     if same_program(&stable.display().to_string(), exe) {
         return (exe.to_path_buf(), None);
     }
+    // A copy there already that is this version or newer (it updates
+    // itself): that one, not an older program the user happens to run.
+    if stable.is_file()
+        && let Some(kept) = crate::update::version_of(&stable)
+        && kept >= crate::update::Version::current()
+    {
+        return (
+            stable.clone(),
+            Some(format!(
+                "The copy of the program at {} (version {kept}) is the one the agents are given.",
+                stable.display()
+            )),
+        );
+    }
     let tmp = stable.with_extension(format!("new.{}", std::process::id()));
     let made = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(stable.parent().unwrap_or(Path::new(".")))?;
@@ -539,7 +630,25 @@ pub fn program_for_clients(env: &Env, exe: &Path) -> (PathBuf, Option<String>) {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         }
-        std::fs::rename(&tmp, &stable)
+        if std::fs::rename(&tmp, &stable).is_ok() {
+            return Ok(());
+        }
+        // Windows: a program that is running can't be written over, but it
+        // can be moved aside (the next start of the server clears it).
+        let name = stable
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let aside = stable.with_file_name(format!("{name}.{secs}.old"));
+        std::fs::rename(&stable, &aside)?;
+        if let Err(e) = std::fs::rename(&tmp, &stable) {
+            let _ = std::fs::rename(&aside, &stable);
+            return Err(e);
+        }
+        Ok(())
     })();
     match made {
         Ok(()) => (
@@ -551,6 +660,17 @@ pub fn program_for_clients(env: &Env, exe: &Path) -> (PathBuf, Option<String>) {
         ),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
+            // A copy there already (older): still better than a folder that
+            // may go away.
+            if stable.is_file() {
+                return (
+                    stable.clone(),
+                    Some(format!(
+                        "Couldn't update the copy at {} ({e}); the agents are given that copy, which may be older.",
+                        stable.display()
+                    )),
+                );
+            }
             (
                 exe.to_path_buf(),
                 Some(format!(
@@ -625,43 +745,51 @@ pub fn install(env: &Env, c: Client, program: &Path) -> Result<String> {
     let bad = |m: String| Error::Platform(m);
     match c {
         Client::ClaudeCode => {
-            // Replace, as the installers do: an old one pointing elsewhere goes.
-            let _ = run_claude(env, &["mcp", "remove", NAME, "--scope", "user"]);
-            run_claude(
-                env,
-                &[
-                    "mcp",
-                    "add",
-                    "--scope",
-                    "user",
-                    NAME,
-                    "--",
-                    &program.display().to_string(),
-                    "serve",
-                ],
-            )?;
+            // Replace, as the installers do: an old one, under either name,
+            // pointing elsewhere goes.
+            for n in [NAME, ALT_NAME] {
+                let _ = run_claude(env, &["mcp", "remove", n, "--scope", "user"]);
+            }
+            let path = program.display().to_string();
+            let add = |n: &str| {
+                run_claude(
+                    env,
+                    &["mcp", "add", "--scope", "user", n, "--", &path, "serve"],
+                )
+            };
+            if let Err(e) = add(NAME) {
+                // Newer Claude Code keeps `computer-use` for its own.
+                if !e.to_string().to_ascii_lowercase().contains("reserved") {
+                    return Err(e);
+                }
+                add(ALT_NAME)?;
+                return Ok(format!(
+                    "Added to Claude Code as \"{ALT_NAME}\" (it keeps \"{NAME}\" for itself). {}",
+                    c.after()
+                ));
+            }
         }
         Client::Codex => {
             let file = env
                 .config_file(c)
                 .ok_or_else(|| bad("no settings file".into()))?;
             let old = read(&file).map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            let text = edit_toml(old.as_deref(), Some(program))
-                .map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            write_file(&file, &text)?;
+            if let Some(text) = edit_toml(old.as_deref(), Some(program))
+                .map_err(|e| bad(format!("{}: {e}", file.display())))?
+            {
+                write_file(&file, &text)?;
+            }
         }
         _ => {
             let file = env
                 .config_file(c)
                 .ok_or_else(|| bad(format!("{} isn't available on this system", c.label())))?;
             let old = read(&file).map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            let text = edit_json(
-                old.as_deref(),
-                servers_key(c),
-                Some(&json_entry(c, program)),
-            )
-            .map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            write_file(&file, &text)?;
+            if let Some(text) = edit_json(old.as_deref(), servers_key(c), c, Some(program))
+                .map_err(|e| bad(format!("{}: {e}", file.display())))?
+            {
+                write_file(&file, &text)?;
+            }
         }
     }
     Ok(format!("Added to {}. {}", c.label(), c.after()))
@@ -670,6 +798,7 @@ pub fn install(env: &Env, c: Client, program: &Path) -> Result<String> {
 /// Take the entry out of client `c`.
 pub fn remove(env: &Env, c: Client) -> Result<String> {
     let bad = |m: String| Error::Platform(m);
+    let nothing = || Ok(format!("{} didn't have it.", c.label()));
     match c {
         Client::ClaudeCode => {
             let a = run_claude(env, &["mcp", "remove", NAME, "--scope", "user"]);
@@ -684,11 +813,14 @@ pub fn remove(env: &Env, c: Client) -> Result<String> {
                 .ok_or_else(|| bad("no settings file".into()))?;
             let Some(old) = read(&file).map_err(|e| bad(format!("{}: {e}", file.display())))?
             else {
-                return Ok("Nothing to remove.".into());
+                return nothing();
             };
-            let text =
-                edit_toml(Some(&old), None).map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            write_file(&file, &text)?;
+            match edit_toml(Some(&old), None)
+                .map_err(|e| bad(format!("{}: {e}", file.display())))?
+            {
+                Some(text) => write_file(&file, &text)?,
+                None => return nothing(),
+            }
         }
         _ => {
             let file = env
@@ -696,11 +828,14 @@ pub fn remove(env: &Env, c: Client) -> Result<String> {
                 .ok_or_else(|| bad(format!("{} isn't available on this system", c.label())))?;
             let Some(old) = read(&file).map_err(|e| bad(format!("{}: {e}", file.display())))?
             else {
-                return Ok("Nothing to remove.".into());
+                return nothing();
             };
-            let text = edit_json(Some(&old), servers_key(c), None)
-                .map_err(|e| bad(format!("{}: {e}", file.display())))?;
-            write_file(&file, &text)?;
+            match edit_json(Some(&old), servers_key(c), c, None)
+                .map_err(|e| bad(format!("{}: {e}", file.display())))?
+            {
+                Some(text) => write_file(&file, &text)?,
+                None => return nothing(),
+            }
         }
     }
     Ok(format!(

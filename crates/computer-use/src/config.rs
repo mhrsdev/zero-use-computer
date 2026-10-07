@@ -1245,8 +1245,9 @@ pub struct Config {
     /// How fast the real mouse moves, as a multiple of a hand's pace
     /// (0.5 to 2).
     pub mouse_speed: f64,
-    /// How often a reach goes a touch past its target and back, as a share
-    /// of how often a hand does (0 to 100 percent; the hand style only).
+    /// How often a long reach (over 250 px) goes a touch past its target and
+    /// back, in percent (0 to 100; the "hand" style). 0: never, as the real
+    /// mouse has done since it travels only the last stretch.
     pub mouse_overshoot: u32,
     /// How much the real mouse's path trembles, as a share of a hand's
     /// (0 to 200 percent).
@@ -1288,7 +1289,7 @@ impl Default for Config {
             natural_mouse: true,
             mouse_path: "mixed".into(),
             mouse_speed: 1.0,
-            mouse_overshoot: 100,
+            mouse_overshoot: 0,
             mouse_jitter: 100,
             hot_reload: true,
             launch_timeout_secs: 15.0,
@@ -1767,14 +1768,17 @@ fn decode_text(bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// Held by whatever reads the settings file, changes it and writes it back
+/// (an edit, the settings panel's text editor), so two never mix.
+pub(crate) static EDIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Several settings changed at once (all or none), as `edit_file` does
 /// one: validated as a whole before anything is written. A file that
 /// holds an API key is kept readable by its owner only.
 pub fn edit_file_many(path: &Path, edits: &[(&str, Edit)]) -> Result<()> {
     // One edit at a time in this process: each reads the file, changes it
     // and writes it back, so two at once would lose one of them.
-    static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = EDITING.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = EDIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut text = match read_text(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1877,11 +1881,12 @@ fn edit_text(text: &str, key: &str, edit: Edit) -> Result<String> {
             .get(parts[0])
             .and_then(|i| i.as_table())
             .is_some_and(|t| {
-                t.is_empty()
-                    && t.decor()
-                        .prefix()
-                        .and_then(|p| p.as_str())
+                let blank = |d: Option<&toml_edit::RawString>| {
+                    d.and_then(|p| p.as_str())
                         .is_none_or(|p| p.trim().is_empty())
+                };
+                // A comment above the header or on its line keeps it.
+                t.is_empty() && blank(t.decor().prefix()) && blank(t.decor().suffix())
             });
         if empty {
             doc.remove(parts[0]);
@@ -2181,6 +2186,14 @@ mod tests {
         assert!(!out.contains("[screenshot]"), "{out}");
         let out = edit_text(&out, "tree.max_nodes", Edit::Unset).unwrap();
         assert!(out.contains("# mine") && out.contains("[tree]"), "{out}");
+        // A comment on the header's own line keeps the section too.
+        let mine = edit_text(
+            "[screenshot] # mine\nattach = \"always\"\n",
+            "screenshot.attach",
+            Edit::Unset,
+        )
+        .unwrap();
+        assert!(mine.contains("# mine"), "{mine}");
         // Top-level keys and sections that still hold something stay.
         let out = edit_text("clipboard = false\n", "clipboard", Edit::Unset).unwrap();
         assert_eq!(out.trim(), "");

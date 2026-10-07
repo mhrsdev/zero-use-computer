@@ -170,9 +170,8 @@ fn read_back(os: Os, f: &Path) -> (Option<String>, bool) {
             let ours = script.contains(MARK);
             let exec = script
                 .lines()
-                .find_map(|l| l.strip_prefix("exec "))
-                .and_then(|r| r.strip_suffix(" settings"))
-                .map(|q| q.trim_matches('\'').replace("'\\''", "'"));
+                .find_map(|l| l.strip_prefix("prog="))
+                .map(unquote_sh);
             (exec, ours)
         }
         // A .lnk is binary: it is ours by its name.
@@ -182,32 +181,52 @@ fn read_back(os: Os, f: &Path) -> (Option<String>, bool) {
 
 // ---- making one ---------------------------------------------------------------------
 
-/// A value for a .desktop file's Exec line: in double quotes, with the
-/// characters the format reserves escaped.
+/// A value for a .desktop file's Exec line. The format quotes an argument
+/// in double quotes with `"`, `` ` ``, `$` and `\` escaped by a backslash,
+/// and then reads the whole line as a string in which a backslash is
+/// escaped again: `$` is written `\\$` in the file, a backslash `\\\\`.
 fn quote_exec(arg: &str) -> String {
-    let mut out = String::from("\"");
+    let mut quoted = String::from("\"");
     for c in arg.chars() {
         match c {
             '"' | '`' | '$' | '\\' => {
-                out.push('\\');
-                out.push(c);
+                quoted.push('\\');
+                quoted.push(c);
             }
-            '%' => out.push_str("%%"),
-            c => out.push(c),
+            '%' => quoted.push_str("%%"),
+            c => quoted.push(c),
         }
     }
-    out.push('"');
-    out
+    quoted.push('"');
+    quoted.replace('\\', "\\\\")
 }
 
+/// The program an Exec line starts (its first argument), read back the
+/// way a desktop reads it.
 fn unquote_exec(line: &str) -> String {
-    let line = line.trim();
-    let Some(rest) = line.strip_prefix('"') else {
-        return line
+    // The string level first: `\\` is one backslash (and \s \n \t \r).
+    let mut text = String::new();
+    let mut chars = line.trim().chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('s') => text.push(' '),
+                Some('n') => text.push('\n'),
+                Some('t') => text.push('\t'),
+                Some('r') => text.push('\r'),
+                Some(o) => text.push(o),
+                None => {}
+            }
+        } else {
+            text.push(c);
+        }
+    }
+    let Some(rest) = text.strip_prefix('"') else {
+        return text
             .split_whitespace()
             .next()
             .unwrap_or_default()
-            .to_string();
+            .replace("%%", "%");
     };
     let mut out = String::new();
     let mut chars = rest.chars();
@@ -225,14 +244,17 @@ fn unquote_exec(line: &str) -> String {
     out
 }
 
+/// A value written by [`quote_sh`], read back.
+fn unquote_sh(q: &str) -> String {
+    q.strip_prefix('\'')
+        .and_then(|r| r.strip_suffix('\''))
+        .unwrap_or(q)
+        .replace("'\\''", "'")
+}
+
 /// A path for a POSIX shell, in single quotes.
 fn quote_sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// A string for PowerShell, in single quotes.
-fn quote_ps(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
 }
 
 pub fn desktop_file(program: &Path, icon: &Path) -> String {
@@ -245,8 +267,11 @@ pub fn desktop_file(program: &Path, icon: &Path) -> String {
 }
 
 fn mac_script(program: &Path) -> String {
+    // Started in the background, and the app is done: a second click starts
+    // it again, which shows the panel already open (a running app would
+    // only be brought forward, with nothing to show).
     format!(
-        "#!/bin/sh\n# {MARK}: opens the settings panel of Zero Use Computer\nexec {} settings\n",
+        "#!/bin/sh\n# {MARK}: opens the settings panel of Zero Use Computer\nprog={}\nnohup \"$prog\" settings >/dev/null 2>&1 &\n",
         quote_sh(&program.display().to_string())
     )
 }
@@ -271,15 +296,10 @@ fn mac_plist() -> String {
     )
 }
 
-/// The PowerShell that makes the Windows shortcut.
-pub fn windows_script(lnk: &Path, program: &Path, icon: &Path) -> String {
-    format!(
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; $s.Arguments = 'settings'; $s.WindowStyle = 7; $s.IconLocation = {}; $s.Description = 'Settings for Zero Use Computer'; $s.Save()",
-        quote_ps(&lnk.display().to_string()),
-        quote_ps(&program.display().to_string()),
-        quote_ps(&icon.display().to_string()),
-    )
-}
+/// The PowerShell that makes the Windows shortcut. The paths come in
+/// environment variables, never in the script's text: a name with a quote
+/// in it (O’Brien) can't end a string and run as code.
+pub const WINDOWS_SCRIPT: &str = "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:ZERO_PANEL_LNK); $s.TargetPath = $env:ZERO_PANEL_PROGRAM; $s.Arguments = 'settings'; $s.WindowStyle = 7; $s.IconLocation = $env:ZERO_PANEL_ICON; $s.Description = 'Settings for Zero Use Computer'; $s.Save()";
 
 /// An .ico holding the PNG as it is (Windows reads PNG inside an icon).
 fn ico_from_png(png: &[u8]) -> Vec<u8> {
@@ -363,12 +383,10 @@ pub fn create(p: &Places, place: Place, program: &Path) -> Result<PathBuf> {
         }
         Os::Windows => {
             let out = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &windows_script(&path, program, &icon),
-                ])
+                .args(["-NoProfile", "-NonInteractive", "-Command", WINDOWS_SCRIPT])
+                .env("ZERO_PANEL_LNK", &path)
+                .env("ZERO_PANEL_PROGRAM", program)
+                .env("ZERO_PANEL_ICON", &icon)
                 .stdin(std::process::Stdio::null())
                 .output()
                 .map_err(|e| Error::Platform(format!("can't run PowerShell: {e}")))?;
@@ -442,7 +460,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Terminal=false") && text.contains(&format!("{MARK}=true")));
-        let icon = d.join("home/icons/zero-panel.png");
+        let icon = p.icons.join("zero-panel.png");
         assert!(text.contains(&format!("Icon={}", icon.display())));
         assert_eq!(std::fs::read(&icon).unwrap(), ICON_PNG);
         #[cfg(unix)]
@@ -494,24 +512,24 @@ mod tests {
 
     #[test]
     fn odd_paths_survive_every_format() {
+        // The form the desktop entry spec asks for: escaped for the quotes,
+        // then every backslash doubled for the string level.
+        assert_eq!(quote_exec("/a$b"), r#""/a\\$b""#);
+        assert_eq!(quote_exec(r"/a\b"), r#""/a\\\\b""#);
+        assert_eq!(quote_exec("/a 100%"), r#""/a 100%%""#);
         let odd = r#"/home/a "b" $c `d` 100%\e's/computer-use-mcp"#;
         let q = quote_exec(odd);
         assert_eq!(unquote_exec(&format!("{q} settings")), odd);
         assert!(!q.contains('\n'));
         let sh = mac_script(Path::new(odd));
-        let line = sh.lines().find(|l| l.starts_with("exec ")).unwrap();
-        assert_eq!(line, format!("exec {} settings", quote_sh(odd)));
+        let line = sh.lines().find(|l| l.starts_with("prog=")).unwrap();
+        assert_eq!(line, format!("prog={}", quote_sh(odd)));
+        assert_eq!(unquote_sh(&quote_sh(odd)), odd);
+        assert!(sh.contains("nohup \"$prog\" settings >/dev/null 2>&1 &"));
         assert_eq!(quote_sh("it's"), r"'it'\''s'");
-        assert_eq!(quote_ps("C:\\it's"), "'C:\\it''s'");
-        let ps = windows_script(
-            Path::new("C:\\D\\Zero panel.lnk"),
-            Path::new("C:\\a'b\\x.exe"),
-            Path::new("C:\\i.ico"),
-        );
+        // The Windows script carries no path at all.
         assert!(
-            ps.contains("$s.TargetPath = 'C:\\a''b\\x.exe'")
-                && ps.contains("$s.Arguments = 'settings'"),
-            "{ps}"
+            WINDOWS_SCRIPT.contains("$env:ZERO_PANEL_PROGRAM") && !WINDOWS_SCRIPT.contains(":\\")
         );
         // A newline in a path can't add a line to a desktop file.
         let f = desktop_file(Path::new("/a\nExec=evil"), Path::new("/i"));

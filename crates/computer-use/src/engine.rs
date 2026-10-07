@@ -1091,12 +1091,30 @@ impl<B: Backend> Engine<B> {
     ) -> Result<WindowInfo> {
         let w = self.pick_window_any(app, query, fresh)?;
         if crate::panel::is_panel_window(&w.title) {
-            return Err(Error::Blocked(
-                app.name.clone(),
-                "that window is the user's settings panel, which the agent never uses".into(),
-            ));
+            return Err(panel_refused(&app.name));
         }
         Ok(w)
+    }
+
+    /// Keys, typing and pointer input never go to the settings panel: not
+    /// when it is the window in front of the app, nor when it is the window
+    /// the agent last worked in (the user may have opened it there since).
+    fn refuse_panel_input(&mut self, query: &str) -> Result<()> {
+        let Ok(app) = self.resolve_app(query) else {
+            return Ok(()); // the action itself says what is wrong
+        };
+        let Ok(windows) = self.list_windows(&app, true) else {
+            return Ok(());
+        };
+        let remembered = self.states.get(&app.pid).and_then(|s| s.window_id);
+        let only = windows.len() == 1;
+        if windows.iter().any(|w| {
+            crate::panel::is_panel_window(&w.title)
+                && (w.focused || only || Some(w.id) == remembered)
+        }) {
+            return Err(panel_refused(&app.name));
+        }
+        Ok(())
     }
 
     fn pick_window_any(
@@ -1249,10 +1267,13 @@ impl<B: Backend> Engine<B> {
         }
         let windows = self.list_windows(app, true)?;
         let current = self.states.get(&app.pid).and_then(|s| s.window_id);
+        // Never the settings panel, whichever window comes first.
+        let allowed = |w: &&WindowInfo| !crate::panel::is_panel_window(&w.title);
         let window = windows
             .iter()
+            .filter(allowed)
             .find(|w| Some(w.id) == current)
-            .or_else(|| windows.first())
+            .or_else(|| windows.iter().find(allowed))
             .cloned()
             .ok_or_else(|| Error::NoWindows {
                 app: app.name.clone(),
@@ -1536,6 +1557,10 @@ impl<B: Backend> Engine<B> {
             self.wait_for_user()?;
             // …nor while another agent on the desktop is: one at a time.
             self.take_turn()?;
+            // …nor into the user's settings panel.
+            if let Some(app) = acting.as_deref().filter(|a| !a.trim().is_empty()) {
+                self.refuse_panel_input(app)?;
+            }
         }
         let report_app = acting.filter(|_| {
             self.store.config.tree.report_changes && self.ctx.quiet_depth != Some(self.ctx.depth)
@@ -2187,6 +2212,13 @@ fn mutating_app(call: &ToolCall) -> Option<String> {
         ToolCall::TypeText(a) => Some(a.app.clone()),
         _ => None,
     }
+}
+
+/// What the agent is told when the window is the user's settings panel.
+fn panel_refused(app: &str) -> Error {
+    Error::ActionFailed(format!(
+        "that window of {app} is the user's settings panel (Zero panel [private]), which the agent never uses: nothing was done there. Work in another window of {app} (window=…), or ask the user to switch away from the panel."
+    ))
 }
 
 fn text_hash(text: &str) -> u64 {

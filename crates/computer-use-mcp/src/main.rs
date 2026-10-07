@@ -476,6 +476,16 @@ fn install_waiting_update(cfg: &Config) {
     let Some(p) = update::pending(&dir).filter(|_| cfg.update.enabled) else {
         return;
     };
+    // Skipped, another version pinned, or the pre-release channel left
+    // since it was downloaded: it doesn't go in.
+    if !update::allowed(&p, &cfg.update) {
+        log::info!(
+            "updates: {} is no longer wanted by the settings; it is forgotten",
+            p.version
+        );
+        update::discard(&dir);
+        return;
+    }
     if !update::due(&p, cfg.update.install) {
         log::info!(
             "updates: {} is waiting; it goes in {}",
@@ -702,6 +712,14 @@ fn update_cmd(
     let Some(p) = waiting else {
         return Ok(());
     };
+    if !update::allowed(&p, &cfg.update) {
+        update::discard(&dir);
+        println!(
+            "{} was waiting, but the settings no longer take it (update.skip_version, pin or channel); it is forgotten",
+            p.version
+        );
+        return Ok(());
+    }
     if install {
         let exe = std::env::current_exe()?;
         update::install(&p, &exe, &dir)?;

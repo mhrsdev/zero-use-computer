@@ -120,7 +120,14 @@ fn target(home: &Path, id: &str) -> Option<Vec<(String, Value)>> {
         return Some(out);
     }
     let file = read_custom(&custom_path(home, id)?)?;
-    Some(file.values.into_iter().collect())
+    // Only what a profile may hold, whatever the file says (it is a file
+    // anyone's program could write).
+    Some(
+        file.values
+            .into_iter()
+            .filter(|(k, _)| may_hold(k))
+            .collect(),
+    )
 }
 
 pub fn changes_for(home: &Path, id: &str) -> Option<Vec<(String, Value)>> {
@@ -225,6 +232,17 @@ pub fn list(home: &Path, cfg: &Config) -> Value {
     json!({"ok": true, "profiles": out})
 }
 
+/// Whether a profile may set `key`: never a secret, a protected setting, a
+/// port or the panel's own look.
+fn may_hold(key: &str) -> bool {
+    schema::entry(key).is_some_and(|e| {
+        !e.confirm
+            && !e.restart
+            && !matches!(e.kind, Kind::Secret | Kind::Custom)
+            && !e.key.starts_with("panel.")
+    })
+}
+
 /// Keep the settings that differ from the defaults as a profile of the
 /// user's own. What a profile may not hold (secrets, protected settings,
 /// ports, the panel's own look) is left out; how many that was comes back.
@@ -253,11 +271,7 @@ pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
         if v == d {
             continue;
         }
-        let kept = !e.confirm
-            && !e.restart
-            && !matches!(e.kind, Kind::Secret | Kind::Custom)
-            && !e.key.starts_with("panel.");
-        if kept {
+        if may_hold(e.key) {
             values.insert(e.key.into(), v);
         } else {
             left_out += 1;

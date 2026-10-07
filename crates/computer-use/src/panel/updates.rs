@@ -26,10 +26,17 @@ pub fn status(cfg: &Config, dir: &Path) -> Value {
     let next = if !u.enabled {
         Value::Null
     } else if last == 0 {
-        json!(u.check_after_mins * 60)
+        json!(u.check_after_mins.saturating_mul(60))
     } else {
-        json!((last + every).saturating_sub(now()).max(backoff))
+        json!(
+            last.saturating_add(every)
+                .saturating_sub(now())
+                .max(backoff)
+        )
     };
+    // A waiting update the settings no longer take is shown as such; it
+    // is forgotten when a server starts or it would be put in place.
+    let wanted = pending.as_ref().is_none_or(|p| update::allowed(p, u));
     json!({
         "ok": true,
         "current": update::Version::current().to_string(),
@@ -46,6 +53,7 @@ pub fn status(cfg: &Config, dir: &Path) -> Value {
         "pending": pending.as_ref().map(|p| json!({
             "version": p.version,
             "since_secs": now().saturating_sub(p.downloaded),
+            "wanted": wanted,
         })),
         "previous": update::previous(dir).map(|p| json!({"version": p.version})),
         "notes": update::release_notes(dir).map(|n| json!({"version": n.version, "text": n.notes, "page": n.page})),
@@ -79,10 +87,17 @@ fn confirm_text(text: &str) -> Value {
 
 /// Put the waiting update in place of the program at `exe` now. The
 /// servers already running keep the old one until they start again.
-pub fn install(dir: &Path, exe: &Path, confirmed: bool) -> Value {
+pub fn install(cfg: &Config, dir: &Path, exe: &Path, confirmed: bool) -> Value {
     let Some(p) = update::pending(dir) else {
         return fail("no update is waiting");
     };
+    if !update::allowed(&p, &cfg.update) {
+        update::discard(dir);
+        return fail(&format!(
+            "{} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten",
+            p.version
+        ));
+    }
     if !confirmed {
         return confirm_text(&format!(
             "Put version {} in place of this program now? Your MCP clients use it the next time they start.",

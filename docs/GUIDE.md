@@ -887,9 +887,12 @@ you can read. It listens only while it is open, and closes after
   (a snapshot of what you changed). A profile never holds a secret or a
   protected setting.
 - **Tools**: the tool list with a switch for each and what it costs on every
-  request; the apps that needed pixels most; the audit log; the settings
-  file as text, checked as a whole before it is written, secrets covered;
-  import and export as TOML.
+  request; the apps that needed pixels most; the audit log (only its own
+  records are shown, whatever file `audit.path` names); the settings file as
+  text, checked as a whole before it is written, secrets covered (a file with
+  a mistake that may hold a secret isn't shown at all, a kept key never
+  follows a new address, and a file changed since it was shown isn't
+  written over); import and export as TOML.
 - **Updates**: how often it looks (never, every 5 or 10 minutes, hourly,
   daily…), what waits and its notes, look now, put it in place now, go back.
 - **Connect an agent**: add the program to Claude Code, Claude Desktop,
@@ -909,8 +912,10 @@ confirm, in the page and in the server (so a script on the page can't skip
 it), and no profile, import or file edit sets one without the same yes.
 
 **The agent never uses the panel.** Its window's title carries a mark
-(`Zero panel [private]`) and every tool refuses a window that has it, so
-the agent can't open it and change its own limits. It is a defence in depth,
+(`Zero panel [private]`) and every tool refuses a window that has it: no
+look, and no key, typing, click or scroll while it is the app's window in
+front or the one the agent last worked in. So the agent can't change its own
+limits there. It is a defence in depth,
 not a lock: the panel's address is never given to the agent, and a second
 window (a screenshot of the whole screen, say) could still show it.
 

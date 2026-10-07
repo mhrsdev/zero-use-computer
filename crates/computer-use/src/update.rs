@@ -107,6 +107,8 @@ pub struct Release {
     pub notes: String,
     /// Its page on GitHub, or empty.
     pub page: String,
+    /// GitHub marks it a pre-release.
+    pub prerelease: bool,
 }
 
 /// An update downloaded and waiting to go in.
@@ -118,6 +120,9 @@ pub struct Pending {
     /// When it was downloaded (seconds since 1970).
     pub downloaded: u64,
     pub sha256: String,
+    /// GitHub marks it a pre-release.
+    #[serde(default)]
+    pub prerelease: bool,
 }
 
 impl Pending {
@@ -386,6 +391,7 @@ pub fn release_from_with(
             .filter(|u| u.starts_with(&format!("https://github.com/{repo}/")))
             .unwrap_or_default()
             .to_string(),
+        prerelease: json["prerelease"].as_bool() == Some(true),
     }))
 }
 
@@ -439,6 +445,7 @@ pub fn download(rel: &Release, dir: &Path) -> Result<Pending> {
             dir: final_dir,
             downloaded: now_secs(),
             sha256: rel.sha256.clone(),
+            prerelease: rel.prerelease,
         };
         write_pending(dir, &p)?;
         Ok(p)
@@ -451,7 +458,7 @@ pub fn download(rel: &Release, dir: &Path) -> Result<Pending> {
 }
 
 /// `bin --version`, with a time limit.
-fn run_version(bin: &Path) -> Result<String> {
+pub(crate) fn run_version(bin: &Path) -> Result<String> {
     let mut child = Command::new(bin)
         .arg("--version")
         .stdin(std::process::Stdio::null())
@@ -555,6 +562,12 @@ pub fn due(p: &Pending, install: UpdateInstall) -> bool {
 /// files, when `exe` runs from an unpacked package: its folder has
 /// `.claude-plugin/plugin.json`), then clear it from the waiting folder.
 pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
+    // Already there (put in place by another server, or twice from the
+    // panel): nothing to replace, and the copy kept to go back to stays.
+    if version_of(exe).map(|v| v.to_string()).as_deref() == Some(p.version.as_str()) {
+        discard(dir);
+        return Ok(());
+    }
     let home = exe
         .parent()
         .ok_or_else(|| Error::Platform(format!("{} has no folder", exe.display())))?;
@@ -566,6 +579,42 @@ pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
     let _ = std::fs::remove_dir_all(&p.dir);
     let _ = std::fs::remove_file(dir.join("pending.json"));
     Ok(())
+}
+
+/// The version the program at `path` says it is.
+pub(crate) fn version_of(path: &Path) -> Option<Version> {
+    let said = run_version(path).ok()?;
+    Version::parse(said.split_whitespace().last().unwrap_or_default())
+}
+
+/// Whether the waiting update may still go in under these settings: the
+/// user may have skipped it, pinned another version or left the
+/// pre-release channel since it was downloaded.
+pub fn allowed(p: &Pending, cfg: &UpdateConfig) -> bool {
+    let Some(v) = Version::parse(&p.version) else {
+        return false;
+    };
+    if Version::parse(&cfg.skip_version) == Some(v) {
+        return false;
+    }
+    if let Some(pin) = Version::parse(&cfg.pin) {
+        return v == pin;
+    }
+    !(p.prerelease && cfg.channel.trim() != "prerelease")
+}
+
+/// Forget the waiting update: its files, and GitHub's tags, so the next
+/// look reads the answer in full again.
+pub fn discard(dir: &Path) {
+    if let Some(p) = std::fs::read(dir.join("pending.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
+        && p.dir.starts_with(dir)
+    {
+        let _ = std::fs::remove_dir_all(&p.dir);
+    }
+    let _ = std::fs::remove_file(dir.join("pending.json"));
+    let _ = std::fs::remove_file(etag_file(dir));
 }
 
 /// Copy everything under `from` into `to`, but `skip`.
@@ -681,8 +730,15 @@ pub fn check_with(
     let Some(asset) = asset_name() else {
         return Ok(Found::UpToDate);
     };
+    // One look at a time in this process (the watcher, and the panel's
+    // "look now"): they would share their files.
+    static LOOKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = LOOKING.lock().unwrap_or_else(|e| e.into_inner());
     let url = endpoint(cfg);
-    let held = if force { None } else { read_etag(dir, &url) };
+    // The tag stands for an answer under these settings and this version:
+    // another version, or another skipped one, reads the answer again.
+    let key = etag_key(cfg);
+    let held = if force { None } else { read_etag(dir, &key) };
     let (body, etag) = match fetch(&url, held.as_deref())? {
         Fetched::NotModified => return Ok(Found::UpToDate),
         Fetched::Body(b, t) => (b, t),
@@ -700,9 +756,19 @@ pub fn check_with(
     // Kept only once this look is over: one that failed is looked at again
     // in full, not answered "nothing new".
     if let Some(t) = etag {
-        write_etag(dir, &url, &t);
+        write_etag(dir, &key, &t);
     }
     Ok(result)
+}
+
+/// What a kept tag stands for: the page, this version and the skipped one.
+fn etag_key(cfg: &UpdateConfig) -> String {
+    format!(
+        "{} {} {}",
+        endpoint(cfg),
+        Version::current(),
+        cfg.skip_version.trim()
+    )
 }
 
 fn etag_file(dir: &Path) -> PathBuf {
@@ -787,8 +853,12 @@ const BACKOFF: u64 = 3600;
 
 /// Whether an error is GitHub saying "too many requests".
 fn rate_limited(e: &Error) -> bool {
-    let m = e.to_string();
-    m.contains("403") || m.contains("429") || m.to_ascii_lowercase().contains("rate limit")
+    let m = e.to_string().to_ascii_lowercase();
+    // curl -f says "The requested URL returned error: 403"; a number
+    // elsewhere in the text (a time, a checksum) doesn't count.
+    m.contains("returned error: 403")
+        || m.contains("returned error: 429")
+        || m.contains("rate limit")
 }
 
 /// Look at the first time after `check_after_mins`, then whenever the shared
@@ -873,8 +943,9 @@ fn keep_previous(exe: &Path, dir: &Path) {
         let _ = std::fs::remove_dir_all(&keep);
         std::fs::create_dir_all(&keep)?;
         std::fs::copy(exe, keep.join(BIN_NAME))?;
+        // The program on disk, which may be newer than the one running.
         let p = Previous {
-            version: Version::current().to_string(),
+            version: version_of(exe).unwrap_or_else(Version::current).to_string(),
             saved: now_secs(),
         };
         std::fs::write(
@@ -914,7 +985,7 @@ pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
         .and_then(|said| Version::parse(said.split_whitespace().last().unwrap_or_default()))
         .unwrap_or_else(Version::current);
     replace_program(&bin, exe)?;
-    let _ = std::fs::remove_file(dir.join("pending.json"));
+    discard(dir);
     let _ = std::fs::remove_dir_all(previous_dir(dir));
     Ok((from, want.unwrap_or(from)))
 }
@@ -1185,10 +1256,18 @@ mod tests {
 
     const ASSET: &str = "computer-use-mcp-linux-x64.zip";
 
+    /// This system's zip (a look takes only that), or Linux's elsewhere.
+    fn asset() -> &'static str {
+        asset_name().unwrap_or(ASSET)
+    }
+
     fn rel(tag: &str, pre: bool) -> serde_json::Value {
-        let url =
-            format!("https://github.com/mhrsdev/zero-use-computer/releases/download/{tag}/{ASSET}");
+        let url = format!(
+            "https://github.com/mhrsdev/zero-use-computer/releases/download/{tag}/{}",
+            asset()
+        );
         let mut j = release_json(tag, Some(&format!("sha256:{}", "cd".repeat(32))), &url);
+        j["assets"][1]["name"] = asset().into();
         j["prerelease"] = pre.into();
         j["body"] = format!("Notes of {tag}").into();
         j["html_url"] =
@@ -1208,25 +1287,25 @@ mod tests {
         let stable = cfg_with(|_| {});
         assert!(endpoint(&stable).ends_with("/releases/latest"));
         assert_eq!(
-            choose(&rel("v4.8.0", false), &stable, ASSET, now)
+            choose(&rel("v4.8.0", false), &stable, asset(), now)
                 .unwrap()
                 .unwrap()
                 .version,
             Version(4, 8, 0)
         );
         assert_eq!(
-            choose(&rel("v4.9.0", true), &stable, ASSET, now).unwrap(),
+            choose(&rel("v4.9.0", true), &stable, asset(), now).unwrap(),
             None
         );
         let pre = cfg_with(|c| c.channel = "prerelease".into());
         assert!(endpoint(&pre).contains("/releases?per_page=30"));
         assert_eq!(
-            choose(&all, &pre, ASSET, now).unwrap().unwrap().version,
+            choose(&all, &pre, asset(), now).unwrap().unwrap().version,
             Version(4, 8, 0)
         );
         let all = serde_json::json!([rel("v4.9.0", true), rel("v4.8.0", false)]);
         assert_eq!(
-            choose(&all, &pre, ASSET, now).unwrap().unwrap().version,
+            choose(&all, &pre, asset(), now).unwrap().unwrap().version,
             Version(4, 9, 0)
         );
         // Skipped: the next one down.
@@ -1235,27 +1314,27 @@ mod tests {
             c.skip_version = "4.9.0".into();
         });
         assert_eq!(
-            choose(&all, &skip, ASSET, now).unwrap().unwrap().version,
+            choose(&all, &skip, asset(), now).unwrap().unwrap().version,
             Version(4, 8, 0)
         );
         // Stable with the newest skipped: nothing (it isn't looking further back).
         let skip = cfg_with(|c| c.skip_version = "4.8.0".into());
         assert_eq!(
-            choose(&rel("v4.8.0", false), &skip, ASSET, now).unwrap(),
+            choose(&rel("v4.8.0", false), &skip, asset(), now).unwrap(),
             None
         );
         // Pinned: that release, a pre-release too, and nothing else.
         let pin = cfg_with(|c| c.pin = "4.7.0".into());
         assert!(endpoint(&pin).ends_with("/releases/tags/v4.7.0"));
         assert_eq!(
-            choose(&rel("v4.7.0", false), &pin, ASSET, now)
+            choose(&rel("v4.7.0", false), &pin, asset(), now)
                 .unwrap()
                 .unwrap()
                 .version,
             Version(4, 7, 0)
         );
         assert_eq!(
-            choose(&rel("v4.7.0", true), &pin, ASSET, now)
+            choose(&rel("v4.7.0", true), &pin, asset(), now)
                 .unwrap()
                 .unwrap()
                 .version,
@@ -1263,22 +1342,25 @@ mod tests {
         );
         // Already there or beyond it: nothing.
         assert_eq!(
-            choose(&rel("v4.7.0", false), &pin, ASSET, Version(4, 7, 0)).unwrap(),
+            choose(&rel("v4.7.0", false), &pin, asset(), Version(4, 7, 0)).unwrap(),
             None
         );
         assert_eq!(
-            choose(&rel("v4.7.0", false), &pin, ASSET, Version(4, 8, 0)).unwrap(),
+            choose(&rel("v4.7.0", false), &pin, asset(), Version(4, 8, 0)).unwrap(),
             None
         );
         // The notes and page come along, the page only from the repository.
-        let r = choose(&rel("v4.8.0", false), &stable, ASSET, now)
+        let r = choose(&rel("v4.8.0", false), &stable, asset(), now)
             .unwrap()
             .unwrap();
         assert_eq!(r.notes, "Notes of v4.8.0");
         assert!(r.page.ends_with("/releases/tag/v4.8.0"));
         let mut odd = rel("v4.8.0", false);
         odd["html_url"] = "https://evil.example/x".into();
-        assert_eq!(choose(&odd, &stable, ASSET, now).unwrap().unwrap().page, "");
+        assert_eq!(
+            choose(&odd, &stable, asset(), now).unwrap().unwrap().page,
+            ""
+        );
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1294,6 +1376,7 @@ mod tests {
             dir: dir.join("x"),
             downloaded: 1,
             sha256: rel.sha256.clone(),
+            prerelease: rel.prerelease,
         }
     }
 
@@ -1317,7 +1400,7 @@ mod tests {
         let mut fail =
             |_: &Release, _: &Path| -> Result<Pending> { Err(Error::Platform("no".into())) };
         assert!(check_with(&cfg, &dir, false, &mut fetch, &mut fail).is_err());
-        assert!(read_etag(&dir, &endpoint(&cfg)).is_none());
+        assert!(read_etag(&dir, &etag_key(&cfg)).is_none());
         // One that works keeps it, and the next look asks "changed?".
         let mut ok = |r: &Release, d: &Path| -> Result<Pending> { Ok(pending_for(r, d)) };
         let mut again = vec![
@@ -1334,7 +1417,7 @@ mod tests {
             check_with(&cfg, &dir, false, &mut fetch2, &mut ok).unwrap(),
             Found::Waiting(_)
         ));
-        assert_eq!(read_etag(&dir, &endpoint(&cfg)).as_deref(), Some("\"one\""));
+        assert_eq!(read_etag(&dir, &etag_key(&cfg)).as_deref(), Some("\"one\""));
         assert_eq!(
             check_with(&cfg, &dir, false, &mut fetch2, &mut ok).unwrap(),
             Found::UpToDate
@@ -1398,6 +1481,7 @@ mod tests {
             dir: newer,
             downloaded: 1,
             sha256: String::new(),
+            prerelease: false,
         };
         install(&p, &exe, &dir).unwrap();
         assert!(std::fs::read_to_string(&exe).unwrap().contains("99.0.0"));
@@ -1426,6 +1510,145 @@ mod tests {
         )
         .unwrap();
         assert!(rollback(&exe, &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_waiting_update_goes_in_only_while_the_settings_still_allow_it() {
+        let p = |v: &str, pre: bool| Pending {
+            version: v.into(),
+            dir: PathBuf::from("/x"),
+            downloaded: 1,
+            sha256: String::new(),
+            prerelease: pre,
+        };
+        let cfg = |f: &dyn Fn(&mut UpdateConfig)| {
+            let mut c = UpdateConfig::default();
+            f(&mut c);
+            c
+        };
+        assert!(allowed(&p("9.1.0", false), &cfg(&|_| {})));
+        assert!(!allowed(
+            &p("9.1.0", false),
+            &cfg(&|c| c.skip_version = "9.1".into())
+        ));
+        assert!(!allowed(
+            &p("9.1.0", false),
+            &cfg(&|c| c.pin = "9.0.5".into())
+        ));
+        assert!(allowed(
+            &p("9.0.5", true),
+            &cfg(&|c| c.pin = "9.0.5".into())
+        ));
+        assert!(!allowed(&p("9.2.0", true), &cfg(&|_| {})));
+        assert!(allowed(
+            &p("9.2.0", true),
+            &cfg(&|c| c.channel = "prerelease".into())
+        ));
+        assert!(!allowed(&p("not a version", false), &cfg(&|_| {})));
+        // An old pending.json without the field reads as a proper release.
+        let old: Pending =
+            serde_json::from_str(r#"{"version":"9.1.0","dir":"/x","downloaded":1,"sha256":""}"#)
+                .unwrap();
+        assert!(!old.prerelease);
+    }
+
+    #[test]
+    fn only_a_refusal_from_github_waits_an_hour() {
+        let e = |m: &str| Error::Platform(m.into());
+        assert!(rate_limited(&e(
+            "could not fetch x: The requested URL returned error: 403"
+        )));
+        assert!(rate_limited(&e(
+            "could not fetch x: The requested URL returned error: 429"
+        )));
+        assert!(rate_limited(&e("API rate limit exceeded for 1.2.3.4")));
+        assert!(!rate_limited(&e(
+            "curl: (28) Failed to connect to api.github.com port 443 after 21403 ms"
+        )));
+        assert!(!rate_limited(&e(
+            "the download's SHA-256 is ab403cd, GitHub says 4291: not taken"
+        )));
+    }
+
+    #[test]
+    fn forgetting_a_waiting_update_forgets_githubs_tag_too() {
+        let dir = temp_dir("discard");
+        let waiting = dir.join("v9.9.9");
+        std::fs::create_dir_all(&waiting).unwrap();
+        write_pending(
+            &dir,
+            &Pending {
+                version: "9.9.9".into(),
+                dir: waiting.clone(),
+                downloaded: 1,
+                sha256: String::new(),
+                prerelease: false,
+            },
+        )
+        .unwrap();
+        write_etag(&dir, "k", "\"t\"");
+        discard(&dir);
+        assert!(
+            !waiting.exists()
+                && !dir.join("pending.json").exists()
+                && read_etag(&dir, "k").is_none()
+        );
+        // A pending.json pointing outside the folder: the folder there stays.
+        let outside = temp_dir("discard-outside");
+        write_pending(
+            &dir,
+            &Pending {
+                version: "9.9.9".into(),
+                dir: outside.clone(),
+                downloaded: 1,
+                sha256: String::new(),
+                prerelease: false,
+            },
+        )
+        .unwrap();
+        discard(&dir);
+        assert!(outside.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installing_twice_keeps_the_version_to_go_back_to() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("twice");
+        let exe = dir.join(BIN_NAME);
+        let put = |path: &Path, v: &str| {
+            std::fs::write(path, format!("#!/bin/sh\necho computer-use-mcp {v}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        put(&exe, "5.0.0");
+        let pending_of = |v: &str| {
+            let d = dir.join(format!("v{v}"));
+            std::fs::create_dir_all(&d).unwrap();
+            put(&d.join(BIN_NAME), v);
+            Pending {
+                version: v.into(),
+                dir: d,
+                downloaded: 1,
+                sha256: String::new(),
+                prerelease: false,
+            }
+        };
+        install(&pending_of("99.1.0"), &exe, &dir).unwrap();
+        assert_eq!(previous(&dir).unwrap().version, "5.0.0");
+        // The same update again (this server still thinks it is older):
+        // nothing replaced, the kept 5.0.0 stays.
+        install(&pending_of("99.1.0"), &exe, &dir).unwrap();
+        assert_eq!(previous(&dir).unwrap().version, "5.0.0");
+        // A newer one: the kept copy is the one on disk, named by itself.
+        install(&pending_of("99.2.0"), &exe, &dir).unwrap();
+        assert_eq!(previous(&dir).unwrap().version, "99.1.0");
+        assert_eq!(
+            rollback(&exe, &dir).unwrap(),
+            (Version(99, 2, 0), Version(99, 1, 0))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1520,6 +1743,7 @@ mod tests {
             dir: unpacked,
             downloaded: now_secs(),
             sha256: String::new(),
+            prerelease: false,
         };
         write_pending(&dir, &p).unwrap();
         assert_eq!(pending(&dir), Some(p.clone()));
@@ -1569,6 +1793,7 @@ mod tests {
             dir: unpacked.clone(),
             downloaded: 0,
             sha256: String::new(),
+            prerelease: false,
         };
         write_pending(&dir, &p).unwrap();
         assert!(pending(&dir).is_none());

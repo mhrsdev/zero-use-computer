@@ -54,7 +54,8 @@ function theme(t) {
   applyPalette(document.documentElement.dataset.accent, isDark());
   for (const b of document.querySelectorAll("#themes button")) b.setAttribute("aria-pressed", String(b.dataset.t === t));
 }
-mq.addEventListener("change", () => { theme(document.documentElement.dataset.theme); if (ready) render(); });
+// A change of colours repaints; it never rebuilds the page (typed text stays).
+mq.addEventListener("change", () => theme(document.documentElement.dataset.theme));
 
 /* ---------- state ---------- */
 let schema = null, S = null, ready = false, page = "overview", snackTimer = 0, overview = null;
@@ -210,6 +211,11 @@ function pathPreview(key, who) {
     r.paths.forEach((p, i) => {
       ctx.strokeStyle = cols[i % 3]; ctx.lineWidth = 2.4 * k / 2; ctx.lineJoin = "round"; ctx.globalAlpha = .9; ctx.beginPath();
       p.points.forEach(([x, y], j) => (j ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.stroke();
+      if (r.jumps && p.points.length) {
+        // The jump: no path, the pointer is simply there.
+        ctx.setLineDash([4 * k / 2, 6 * k / 2]); ctx.globalAlpha = .35; ctx.beginPath();
+        ctx.moveTo(r.from[0] * k, r.from[1] * k); ctx.lineTo(p.points[0][0] * k, p.points[0][1] * k); ctx.stroke(); ctx.setLineDash([]);
+      }
     });
     ctx.globalAlpha = 1; ctx.fillStyle = cs.getPropertyValue("--outline");
     ctx.beginPath(); ctx.arc(r.from[0] * k, r.from[1] * k, 5 * k / 2, 0, 7); ctx.fill();
@@ -222,7 +228,7 @@ function pathPreview(key, who) {
       h("div", { class: "chips2", role: "group", "aria-label": "Path style" }, STYLES.map((s) => h("button", { class: "chip", "aria-pressed": String(v === s), onclick: () => v !== s && change([[key, s]]) }, s)),
         h("button", { class: "chip", onclick: draw }, "Another set")),
       canvas, info,
-      key === "mouse_path" && h("div", { class: "note pad0" }, "The real mouse only travels the last 70 to 140 px of a reach, then goes back to where you left it. The pointer in the overlay glides the whole way.")));
+      key === "mouse_path" && h("div", { class: "note pad0" }, "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.")));
 }
 
 const STATES = [["thinking", "Thinking"], ["working", "Working"], ["done", "Done"], ["error", "Error"], ["paused", "Paused"], ["stopped", "Stopped"]];
@@ -280,7 +286,7 @@ function decisionCard() {
     h("button", { class: "btn filled", onclick: run(async () => {
       if (!prov()) return say("Choose a kind of model first.", false);
       say("Saving…"); const r = await post("save", form());
-      if (r.ok) { key.value = ""; if (r.key_hint) keyHint.textContent = "Saved: " + r.key_hint + ". Leave empty to keep it."; D.provider = prov(); }
+      if (r.ok) { key.value = ""; S.decision = (await post("state")).decision; Object.assign(D, S.decision); keyHint.textContent = D.key_hint ? "Saved: " + D.key_hint + ". Leave empty to keep it." : ""; }
       say(r.ok ? r.message : r.error, r.ok);
     }) }, "Save"),
     h("button", { class: "btn", onclick: run(async () => {
@@ -290,7 +296,7 @@ function decisionCard() {
     h("button", { class: "btn danger", onclick: run(async () => {
       if (!confirm("Remove the decision model and its key?")) return;
       const r = await post("remove");
-      if (r.ok) { radios.forEach((x) => { x.checked = false; }); url.value = model.value = key.value = ""; keyHint.textContent = ""; refresh(); }
+      if (r.ok) { radios.forEach((x) => { x.checked = false; }); url.value = model.value = key.value = ""; keyHint.textContent = ""; S.decision = (await post("state")).decision; Object.assign(D, S.decision); refresh(); }
       say(r.ok ? r.message : r.error, r.ok);
     }) }, "Remove"));
   return h("div", { class: "card pad" }, h("h3", {}, "Model and API key"),
@@ -428,7 +434,8 @@ async function filePage(main) {
     h("p", { class: "help" }, "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file."),
     area, h("div", { class: "actions" },
       h("button", { class: "btn filled", onclick: async () => {
-        const x = await ask("raw_save", { text: area.value });
+        clearTimeout(timer); // a check still to come mustn't hide what the save says
+        const x = await ask("raw_save", { text: area.value, hash: r.hash });
         if (x.cancelled) return;
         if (!x.ok) return say(x.error, false);
         snack("Saved. Running servers use it now."); const s = await post("state"); S.values = s.values; filePage_reset();
@@ -485,13 +492,13 @@ async function updatesCard() {
       fact("Looking", !u.enabled ? "Off. Nothing is looked for or downloaded." : "Every " + span(u.every_secs) + (u.last_check_secs_ago == null ? ", not yet" : "; last " + ago(u.last_check_secs_ago)) + (u.next_in_secs != null ? "; next in about " + span(u.next_in_secs) : "") + "."),
       u.rate_limited_for_secs && fact("GitHub", "Asked us to slow down; looking again in about " + span(u.rate_limited_for_secs) + "."),
       fact("Which", (u.pin ? "Staying on " + u.pin + "." : u.channel === "prerelease" ? "The newest, pre-releases included." : "The newest stable release.") + (u.skip_version ? " Never " + u.skip_version + "." : "")),
-      fact("Waiting", u.pending ? "Version " + u.pending.version + ", downloaded " + ago(u.pending.since_secs) + ". It goes in " + u.when + "." : "Nothing."),
+      fact("Waiting", !u.pending ? "Nothing." : u.pending.wanted ? "Version " + u.pending.version + ", downloaded " + ago(u.pending.since_secs) + ". It goes in " + u.when + "." : "Version " + u.pending.version + ", but the settings no longer take it (skipped, pinned or a pre-release): it will not go in."),
       fact("Can go back to", u.previous ? "Version " + u.previous.version + " (kept when the last update went in)." : "Nothing kept yet.")),
     u.notes && h("div", { class: "preview" }, h("div", { class: "help" }, "What " + u.notes.version + " says about itself"),
       h("pre", { class: "log", style: "padding:12px 0" }, u.notes.text || "(no notes)"), u.notes.page && h("a", { href: u.notes.page, target: "_blank", rel: "noopener noreferrer" }, u.notes.page)),
     h("div", { class: "actions", style: "padding:0 24px 20px" },
       h("button", { class: "btn filled", disabled: !u.can_update, onclick: async (ev) => { ev.target.disabled = true; snack("Looking…"); await act("update_check")(); } }, "Check now"),
-      h("button", { class: "btn", disabled: !u.pending, onclick: act("update_install") }, "Put it in place now"),
+      h("button", { class: "btn", disabled: !u.pending || !u.pending.wanted, onclick: act("update_install") }, "Put it in place now"),
       h("button", { class: "btn danger", disabled: !u.previous, onclick: act("update_rollback") }, "Go back" + (u.previous ? " to " + u.previous.version : ""))),
     h("div", { class: "note" }, "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count)."));
 }
@@ -653,7 +660,7 @@ window.addEventListener("keydown", (ev) => { if (ev.key === "/" && !/^(INPUT|TEX
 for (const b of document.querySelectorAll("#themes button")) b.onclick = async () => {
   theme(b.dataset.t); if (!ready) return;
   const r = await post("set", { confirmed: false, changes: [{ key: "panel.theme", value: b.dataset.t }] });
-  if (r.ok) { take(r); render(); } else snack(r.error, true);
+  if (r.ok) { take(r); if (page === "panel") render(); else renderNav(); } else snack(r.error, true);
 };
 $("done").onclick = async () => { try { await post("close"); } catch (e) {} document.body.textContent = "You can close this tab."; window.close(); };
 window.addEventListener("hashchange", () => { if (!ready) return; const p = PAGES.find((x) => x.id === location.hash.slice(1)); if (p && p.id !== page) { page = p.id; render(); } });

@@ -151,10 +151,10 @@ pub const ENTRIES: &[Entry] = &[
     e("hot_reload", GENERAL, "Apply changes to the settings file to running servers without a restart."),
     e("launch_timeout_secs", GENERAL, "How long launch_app waits for a new app to show a window.").number("seconds"),
     // Real mouse
-    e("natural_mouse", MOUSE, "Move the real mouse like a hand does: along a curve, speeding up and slowing down, sometimes a touch past the target and back. Off: it jumps."),
+    e("natural_mouse", MOUSE, "Move the real mouse like a hand does: along a curve, speeding up and slowing down, with a faint tremor. Off: it jumps."),
     e("mouse_path", MOUSE, "The way the real mouse goes. Mixed picks one at random for each move. Drags always go straight.").choice(PATHS),
     e("mouse_speed", MOUSE, "How fast the real mouse moves, as a multiple of a hand's pace. 2 is twice as quick; some apps are slow to notice a very fast pointer.").range(0.5, 2.0, 0.1, "×"),
-    e("mouse_overshoot", MOUSE, "How often a long reach goes a touch past its target and back, as a share of how often a hand does. Only the hand style does this; the spring style always does.").range(0.0, 100.0, 5.0, "%"),
+    e("mouse_overshoot", MOUSE, "How often a long reach (over 250 px) goes a touch past its target and back, in percent of reaches. 0 never does. Only the hand style overshoots this way.").range(0.0, 100.0, 5.0, "%"),
     e("mouse_jitter", MOUSE, "How much the path trembles, as a share of a hand's. 0 is a clean curve.").range(0.0, 200.0, 10.0, "%"),
     e("restore_pointer", MOUSE, "Put your mouse pointer back where it was after the agent clicks, scrolls or drags, so it never takes your mouse away."),
     // Pointer

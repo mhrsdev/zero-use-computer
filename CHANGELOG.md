@@ -51,7 +51,9 @@ released as v5.0 ([plan](docs/PANEL-SPEC.md),
 - **A guide inside the panel:** nine short pages.
 - **More to turn:** the pointer's `trail`, `lean_strength` and `breathe`
   (and how strong each is), and the real mouse's `mouse_speed`,
-  `mouse_overshoot` and `mouse_jitter`.
+  `mouse_overshoot` and `mouse_jitter`. The real mouse travels only the last
+  stretch of a reach, so `mouse_overshoot` (0 by default, as before) decides
+  how often a long reach comes in a touch past its target.
 - A reset leaves no empty section in the settings file.
 
 ## v4.0.1

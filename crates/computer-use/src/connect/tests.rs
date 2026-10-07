@@ -15,6 +15,8 @@ fn env_in(root: &Path, os: Os) -> Env {
         os,
         path: vec![root.join("bin")],
         codex_home: None,
+        config_home: None,
+        claude_dir: None,
         zero_home: root.join("home/.computer-use"),
     }
 }
@@ -370,4 +372,156 @@ fn the_entry_is_shown_as_it_will_be_written() {
         j["mcpServers"]["computer-use"]["command"],
         "C:\\Tools\\computer-use-mcp.exe"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_gets_the_other_name_when_it_keeps_this_one() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = temp("reserved");
+    let env = env_in(&root, Os::Linux);
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let log = root.join("calls.log");
+    let fake = root.join("bin/claude");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> {}\ncase \"$*\" in *\"add --scope user computer-use \"*) echo 'Cannot add MCP server \"computer-use\": this name is reserved.' >&2; exit 1;; esac\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let said = install(&env, Client::ClaudeCode, Path::new("/p/computer-use-mcp")).unwrap();
+    assert!(said.contains("zero-use-computer"), "{said}");
+    let calls = std::fs::read_to_string(&log).unwrap();
+    // Both old names are cleared first, then the other name is used.
+    assert!(
+        calls.contains("mcp remove computer-use --scope user"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("mcp remove zero-use-computer --scope user"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("mcp add --scope user zero-use-computer -- /p/computer-use-mcp serve"),
+        "{calls}"
+    );
+    // Another failure is reported, not hidden behind the other name.
+    std::fs::write(&fake, "#!/bin/sh\necho 'no network' >&2\nexit 1\n").unwrap();
+    let err = install(&env, Client::ClaudeCode, Path::new("/p/x"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no network"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn what_the_user_added_to_the_entry_stays_and_odd_files_are_handled() {
+    let root = temp("merge");
+    let env = env_in(&root, Os::Linux);
+    let file = env.config_file(Client::Cursor).unwrap();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    // The user's env on our entry survives a reinstall.
+    std::fs::write(&file, r#"{"mcpServers": {"computer-use": {"command": "/old", "args": ["serve", "--log", "debug"], "env": {"COMPUTER_USE_HOME": "/z"}}}}"#).unwrap();
+    install(&env, Client::Cursor, Path::new("/new/computer-use-mcp")).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let e = &v["mcpServers"]["computer-use"];
+    assert_eq!(e["command"], "/new/computer-use-mcp");
+    assert_eq!(e["args"], json!(["serve"]));
+    assert_eq!(e["env"]["COMPUTER_USE_HOME"], "/z");
+    // `null` where the servers go is an empty list.
+    std::fs::write(&file, r#"{"mcpServers": null}"#).unwrap();
+    install(&env, Client::Cursor, Path::new("/p")).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(v["mcpServers"]["computer-use"]["command"], "/p");
+    // A member named twice is refused, the file untouched.
+    let twice = r#"{"mcpServers": {}, "mcpServers": {"other": {}}}"#;
+    std::fs::write(&file, twice).unwrap();
+    let err = install(&env, Client::Cursor, Path::new("/p"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("twice"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), twice);
+    // Taking out what isn't there changes nothing, not even a backup.
+    let _ = std::fs::remove_file(format!("{}.bak", file.display()));
+    let plain = r#"{"theme": "dark"}"#;
+    std::fs::write(&file, plain).unwrap();
+    assert!(
+        remove(&env, Client::Cursor)
+            .unwrap()
+            .contains("didn't have it")
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), plain);
+    assert!(!PathBuf::from(format!("{}.bak", file.display())).exists());
+    // Codex: the user's own keys stay, and a new file has no empty header.
+    let codex = env.config_file(Client::Codex).unwrap();
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::fs::write(
+        &codex,
+        "[mcp_servers.computer-use]\ncommand = \"/old\"\nenv = { A = \"1\" }\n",
+    )
+    .unwrap();
+    install(&env, Client::Codex, Path::new("/new")).unwrap();
+    let t = std::fs::read_to_string(&codex).unwrap();
+    assert!(
+        t.contains("command = \"/new\"") && t.contains("env = { A = \"1\" }"),
+        "{t}"
+    );
+    std::fs::remove_file(&codex).unwrap();
+    install(&env, Client::Codex, Path::new("/new")).unwrap();
+    let t = std::fs::read_to_string(&codex).unwrap();
+    assert!(!t.contains("[mcp_servers]\n"), "{t}");
+    assert!(t.contains("[mcp_servers.computer-use]"), "{t}");
+    std::fs::write(&codex, "model = \"o3\"\n").unwrap();
+    assert!(
+        remove(&env, Client::Codex)
+            .unwrap()
+            .contains("didn't have it")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_places_people_move_their_settings_to_are_followed() {
+    let root = temp("moved");
+    let mut env = env_in(&root, Os::Linux);
+    env.config_home = Some(root.join("xdg"));
+    assert_eq!(
+        env.config_file(Client::VsCode).unwrap(),
+        root.join("xdg/Code/User/mcp.json")
+    );
+    env.claude_dir = Some(root.join("claude-home"));
+    std::fs::create_dir_all(root.join("claude-home")).unwrap();
+    std::fs::write(
+        root.join("claude-home/.claude.json"),
+        r#"{"mcpServers": {"computer-use": {"command": "/p/x"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        state(&env, Client::ClaudeCode, Path::new("/p/x")),
+        State::Installed
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_newer_kept_copy_is_not_replaced_by_an_older_program() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = temp("newer");
+    let env = env_in(&root, Os::Linux);
+    let stable = stable_program_path(&env);
+    std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+    std::fs::write(&stable, "#!/bin/sh\necho computer-use-mcp 99.0.0\n").unwrap();
+    std::fs::set_permissions(&stable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let exe = root.join("Downloads/computer-use-mcp");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "older").unwrap();
+    let (given, note) = program_for_clients(&env, &exe);
+    assert_eq!(given, stable);
+    assert!(note.unwrap().contains("99.0.0"));
+    assert!(std::fs::read_to_string(&stable).unwrap().contains("99.0.0"));
+    let _ = std::fs::remove_dir_all(&root);
 }

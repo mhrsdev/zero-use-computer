@@ -5864,3 +5864,55 @@ fn the_agent_never_acts_on_the_settings_panel() {
         e.backend().events
     );
 }
+
+#[test]
+fn keys_typing_and_clicks_never_reach_the_settings_panel() {
+    // The agent looked at the app; then the user opened the panel in that
+    // same window (a browser tab).
+    let mut backend = MockBackend::new();
+    backend.add_app(MockBackend::text_editor(4242));
+    let mut e = Engine::new(backend, ConfigStore::in_memory(Config::default()))
+        .with_time(Instant::now, |_| {});
+    e.call(ToolCall::GetAppState(GetAppStateArgs {
+        app: "TextEdit".into(),
+        ..Default::default()
+    }))
+    .unwrap();
+    let bold = e
+        .state(4242)
+        .unwrap()
+        .nodes
+        .iter()
+        .position(|n| n.name.as_deref() == Some("Bold"))
+        .unwrap() as u32;
+    e.backend_mut().app_mut(4242).unwrap().windows[0].title =
+        "Zero panel [private] - Browser".into();
+    let calls: Vec<serde_json::Value> = vec![
+        serde_json::json!({"tool": "press_key", "args": {"app": "TextEdit", "key": "ctrl+a"}}),
+        serde_json::json!({"tool": "type_text", "args": {"app": "TextEdit", "text": "hello"}}),
+        serde_json::json!({"tool": "click", "args": {"app": "TextEdit", "element_index": bold}}),
+        serde_json::json!({"tool": "scroll", "args": {"app": "TextEdit", "direction": "down"}}),
+    ];
+    for c in calls {
+        let out = e.call_tool(c["tool"].as_str().unwrap(), c["args"].clone());
+        assert!(
+            out.is_error && out.text.contains("settings panel"),
+            "{}: {}",
+            c["tool"],
+            out.text
+        );
+    }
+    assert!(
+        e.backend().events.iter().all(|ev| !matches!(
+            ev,
+            Event::Click(..)
+                | Event::Key(..)
+                | Event::Type(..)
+                | Event::Action(..)
+                | Event::ScrollWheel(..)
+                | Event::ScrollElement(..)
+        )),
+        "{:?}",
+        e.backend().events
+    );
+}

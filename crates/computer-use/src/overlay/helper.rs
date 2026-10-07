@@ -857,12 +857,17 @@ impl Machine {
             fx.tilt = (14.0 * (lean / 2.0).tanh()) as f32
                 * (self.cfg.lean_strength.min(100) as f32 / 100.0);
             // How much of the trail: 8 points at full strength.
-            let keep = if self.cfg.trail {
-                (8 * self.cfg.trail_strength.min(100) + 50) / 100
-            } else {
-                0
+            // (a trail is two points at least: any strength above 0 shows one)
+            let keep = match (self.cfg.trail, self.cfg.trail_strength.min(100)) {
+                (false, _) | (_, 0) => 0,
+                (true, s) => ((8 * s + 50) / 100).max(2),
             };
-            for k in 1..=u64::from(keep) {
+            // The last 8 moments at most (as at full strength); a weaker
+            // trail stops sooner.
+            for k in 1..=8u64 {
+                if fx.trail.len() >= keep as usize {
+                    break;
+                }
                 let Some(t) = ago(14 * k).filter(|t| *t >= g.start) else {
                     break;
                 };
@@ -877,8 +882,14 @@ impl Machine {
         if self.cfg.cursor_motion {
             let still =
                 self.glide_progress(now) >= 1.0 && self.ripple_at.is_none() && !self.click_pending;
-            if still && self.cfg.breathe {
-                fx.calm = 1.0 - self.cfg.breathe_strength.min(100) as f32 / 100.0;
+            if still {
+                // Not breathing is breathing at depth 0: the glint some
+                // pointers show while they wait stays.
+                fx.calm = if self.cfg.breathe {
+                    1.0 - self.cfg.breathe_strength.min(100) as f32 / 100.0
+                } else {
+                    1.0
+                };
                 let since = self.glide.as_ref().map_or(self.since, |g| {
                     g.start + Duration::from_millis(self.cfg.move_ms)
                 });
@@ -2183,6 +2194,11 @@ mod tests {
         };
         let t = avg(&half, &trail);
         assert!(t > 1.0 && t < full_trail * 0.75, "{t} of {full_trail}");
+        let faint = || OverlayConfig {
+            trail_strength: 5,
+            ..base()
+        };
+        assert!(avg(&faint, &trail) >= 1.5, "a faint trail still shows");
         let none = || OverlayConfig {
             trail_strength: 0,
             ..base()
@@ -2209,7 +2225,9 @@ mod tests {
             breathe: false,
             ..base()
         };
-        assert_eq!(avg(&still, &breathing), 0.0);
+        // Still waiting (its glint stays), only not breathing.
+        assert_eq!(avg(&still, &breathing), 1.0);
+        assert_eq!(avg(&still, &calm), 1.0);
         let soft = || OverlayConfig {
             breathe_strength: 25,
             ..base()

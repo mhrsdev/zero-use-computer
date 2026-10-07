@@ -181,18 +181,57 @@ fn persistent_token(home: &Path, port: u16) -> String {
     if let Ok(t) = std::fs::read_to_string(&file) {
         let t = t.trim();
         if t.len() == 32 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+            // Kept from before, perhaps by an older version: made private.
+            config::owner_only(&file);
             return t.to_string();
         }
     }
     let t = token();
-    if std::fs::create_dir_all(home).is_ok() && std::fs::write(&file, &t).is_ok() {
-        config::owner_only(&file);
+    if std::fs::create_dir_all(home).is_ok() {
+        let _ = std::fs::remove_file(&file);
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        // Readable by this user only from the moment it exists.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            o.mode(0o600);
+        }
+        if let Ok(mut f) = o.open(&file) {
+            let _ = f.write_all(t.as_bytes());
+        }
     }
     t
 }
 
+/// HMAC-SHA256 of `msg` under `key`, as hex.
+fn hmac(key: &[u8], msg: &[u8]) -> String {
+    let unhex = |h: String| -> Vec<u8> {
+        (0..h.len() / 2)
+            .filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok())
+            .collect()
+    };
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        let d = unhex(crate::update::sha256_hex(key));
+        k[..d.len()].copy_from_slice(&d);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let inner: Vec<u8> = k
+        .iter()
+        .map(|b| b ^ 0x36)
+        .chain(msg.iter().copied())
+        .collect();
+    let inner = unhex(crate::update::sha256_hex(&inner));
+    let outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).chain(inner).collect();
+    crate::update::sha256_hex(&outer)
+}
+
 /// Whether a panel with this token answers on `port` (another process of
-/// this user serving it).
+/// this user serving it). The token is never sent: the other side proves it
+/// holds it by answering a fresh challenge with its HMAC, so a program of
+/// someone else's that took the port learns nothing and can't pass.
 fn probe(port: u16, token: &str) -> bool {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
@@ -200,15 +239,18 @@ fn probe(port: u16, token: &str) -> bool {
     };
     let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
     let _ = s.set_write_timeout(Some(Duration::from_millis(800)));
+    let nonce = self::token();
     let req = format!(
-        "GET /{token}/ping HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        "GET /zero-panel-ping/{nonce} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
     );
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
     let mut out = String::new();
-    let _ = s.take(512).read_to_string(&mut out);
-    out.starts_with("HTTP/1.1 200") && out.contains("zero-panel")
+    let _ = s.take(1024).read_to_string(&mut out);
+    let want = hmac(token.as_bytes(), nonce.as_bytes());
+    out.starts_with("HTTP/1.1 200")
+        && out.split("\r\n\r\n").nth(1).map(str::trim) == Some(want.as_str())
 }
 
 enum Bound {
@@ -298,12 +340,16 @@ impl Server {
                 )));
             }
             // Taken by another program: a free port, and a token for it
-            // alone.
-            Err(_) => (
-                TcpListener::bind("127.0.0.1:0")
-                    .map_err(|e| Error::Platform(format!("can't serve the panel: {e}")))?,
-                self::token(),
-            ),
+            // alone; the kept token is replaced, in case that program
+            // ever saw it.
+            Err(_) => {
+                let _ = std::fs::remove_file(token_path(home, cfg.port));
+                (
+                    TcpListener::bind("127.0.0.1:0")
+                        .map_err(|e| Error::Platform(format!("can't serve the panel: {e}")))?,
+                    self::token(),
+                )
+            }
         };
         let port = listener
             .local_addr()
@@ -411,13 +457,21 @@ impl Page {
                 return None;
             }
         };
-        if let Ok(mut t) = self.last.lock() {
-            *t = Instant::now();
-        }
         // DNS rebinding: a page of another site under a name that points
         // here sends its own Host.
         if req.header("host") != Some(self.host.as_str()) {
             respond(&mut stream, 421, "text/plain", b"wrong host");
+            return None;
+        }
+        // Another process of this user asking whether this is the panel:
+        // the challenge's HMAC under the token (see `probe`).
+        if let Some(nonce) = req.path.strip_prefix("/zero-panel-ping/")
+            && req.method == "GET"
+            && nonce.len() == 32
+            && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            let answer = hmac(self.token.as_bytes(), nonce.as_bytes());
+            respond(&mut stream, 200, "text/plain", answer.as_bytes());
             return None;
         }
         let prefix = format!("/{}/", self.token);
@@ -426,6 +480,10 @@ impl Page {
             return None;
         };
         let route = route.split('?').next().unwrap_or_default().to_string();
+        // Only requests that got this far keep the panel open.
+        if let Ok(mut t) = self.last.lock() {
+            *t = Instant::now();
+        }
         if req.method == "GET" {
             match route.as_str() {
                 "" => {
@@ -443,7 +501,6 @@ impl Page {
                     "application/json",
                     settings::schema_json().as_bytes(),
                 ),
-                "ping" => respond(&mut stream, 200, "text/plain", b"zero-panel"),
                 r if r.starts_with("help/") => match help::page(&r[5..]) {
                     Some(h) => respond(&mut stream, 200, "text/html; charset=utf-8", h.as_bytes()),
                     None => respond(&mut stream, 404, "text/plain", b"not found"),
@@ -559,7 +616,16 @@ impl Page {
             "raw_check" | "raw_save" => {
                 let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
                 let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
-                self.with_path(|p| raw::run(p, text, confirmed, route == "raw_save"))
+                let save = route == "raw_save";
+                // The page always says which file it was shown.
+                let seen = body.get("hash").and_then(Value::as_str);
+                if save && seen.is_none() {
+                    return Some((
+                        fail("reload the page: it didn't say which version of the file it showed"),
+                        false,
+                    ));
+                }
+                self.with_path(|p| raw::run(p, text, confirmed, save, seen))
             }
             "export" => self.with_config(export),
             "import" => self.import(body),
@@ -581,7 +647,7 @@ impl Page {
                     } else {
                         Default::default()
                     };
-                    status::path_preview(style, feel)
+                    status::path_preview(style, feel, real)
                 })
             }
             "shortcut_list" => shortcuts::list(&self.places, &self.env, &self.exe),
@@ -592,7 +658,7 @@ impl Page {
             "update_check" => self.with_config(|c| updates::check(c, &self.updates_dir())),
             "update_install" => {
                 let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
-                updates::install(&self.updates_dir(), &self.exe, yes)
+                self.with_config(|c| updates::install(c, &self.updates_dir(), &self.exe, yes))
             }
             "update_rollback" => {
                 let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);

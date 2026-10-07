@@ -123,7 +123,7 @@ Pointer effects (v4.8):
 Real mouse (v4.8):
 
 - `mouse_speed` (0.5x to 2x)
-- `mouse_overshoot` (0 to 100: how often it goes past and back)
+- `mouse_overshoot` (0 to 100: how often a long reach goes past and back; 0 by default)
 - `mouse_jitter` (0 to 100: hand tremor)
 - `natural_mouse` and `mouse_path` stay.
 

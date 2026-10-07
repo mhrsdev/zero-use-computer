@@ -158,14 +158,21 @@ pub fn audit(cfg: &Config, lines: usize) -> Value {
     if len > take && !all.is_empty() {
         all.remove(0); // cut in the middle
     }
+    // Only the log's own records (one JSON object with a tool, each): the
+    // path may name any file, and nothing else in it is shown.
+    let before = all.len();
+    all.retain(|l| {
+        serde_json::from_str::<Value>(l).is_ok_and(|v| v.get("tool").is_some_and(Value::is_string))
+    });
+    let other = before - all.len();
     let from = all.len().saturating_sub(lines.clamp(1, 500));
     let lines: Vec<&str> = all[from..].iter().map(|l| l.trim_end()).collect();
-    json!({"ok": true, "enabled": cfg.audit.enabled, "file": path.display().to_string(), "lines": lines, "exists": true, "size": len})
+    json!({"ok": true, "enabled": cfg.audit.enabled, "file": path.display().to_string(), "lines": lines, "exists": true, "size": len, "other_lines": other})
 }
 
 /// Sample paths of the pointer's gliding in a style (the real routes the
 /// pointer takes, drawn from the program's own path maker).
-pub fn path_preview(style: &str, feel: motion::Feel) -> Value {
+pub fn path_preview(style: &str, feel: motion::Feel, real: bool) -> Value {
     let from = (30.0, 190.0);
     let to = (450.0, 50.0);
     let mut rng = motion::Rng::new();
@@ -178,7 +185,13 @@ pub fn path_preview(style: &str, feel: motion::Feel) -> Value {
     let paths: Vec<Value> = styles
         .into_iter()
         .map(|s| {
-            let pts = motion::travel_feel(from, to, motion::Kind::Reach, s, &mut rng, feel);
+            // The real mouse jumps to the last stretch of a long reach and
+            // travels only that; the overlay's pointer glides the whole way.
+            let pts = if real {
+                motion::travel_near_feel(from, to, motion::Kind::Reach, s, &mut rng, feel)
+            } else {
+                motion::travel_feel(from, to, motion::Kind::Reach, s, &mut rng, feel)
+            };
             let ms = pts.len() as f64 * motion::STEP.as_secs_f64() * 1000.0;
             let thin: Vec<[f64; 2]> = pts
                 .iter()
@@ -189,7 +202,7 @@ pub fn path_preview(style: &str, feel: motion::Feel) -> Value {
             json!({"style": s.name(), "ms": ms.round(), "points": thin})
         })
         .collect();
-    json!({"ok": true, "from": [from.0, from.1], "to": [to.0, to.1], "paths": paths})
+    json!({"ok": true, "from": [from.0, from.1], "to": [to.0, to.1], "paths": paths, "jumps": real})
 }
 
 #[cfg(test)]
@@ -199,7 +212,7 @@ mod tests {
     #[test]
     fn paths_start_near_and_end_on_the_target() {
         for style in ["hand", "sine", "arc", "spring", "spiral", "mixed"] {
-            let v = path_preview(style, motion::Feel::default());
+            let v = path_preview(style, motion::Feel::default(), false);
             assert_eq!(v["paths"].as_array().unwrap().len(), 3);
             for p in v["paths"].as_array().unwrap() {
                 let pts = p["points"].as_array().unwrap();
@@ -216,7 +229,7 @@ mod tests {
     #[test]
     fn the_preview_shows_the_real_mouses_feel() {
         let avg = |feel: motion::Feel| {
-            let v = path_preview("hand", feel);
+            let v = path_preview("hand", feel, false);
             v["paths"]
                 .as_array()
                 .unwrap()
@@ -243,7 +256,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cu-audit-view-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("audit.log");
-        let body: String = (0..1000).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        let body: String = (0..1000)
+            .map(|i| format!("{{\"tool\":\"click\",\"n\":{i}}}\n"))
+            .collect();
         std::fs::write(&log, body).unwrap();
         let mut cfg = Config::default();
         cfg.audit.enabled = true;
@@ -255,7 +270,21 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        assert_eq!(lines, ["{\"n\":997}", "{\"n\":998}", "{\"n\":999}"]);
+        assert_eq!(
+            lines,
+            [
+                "{\"tool\":\"click\",\"n\":997}",
+                "{\"tool\":\"click\",\"n\":998}",
+                "{\"tool\":\"click\",\"n\":999}"
+            ]
+        );
+        // A path that names another file shows nothing of it.
+        let other = dir.join("config.toml");
+        std::fs::write(&other, "[decision]\napi_key = \"sk-AUDIT-LEAK-1234\"\n").unwrap();
+        cfg.audit.path = Some(other);
+        let v = audit(&cfg, 50);
+        assert!(!v.to_string().contains("sk-AUDIT"), "{v}");
+        assert_eq!(v["other_lines"], 2);
         cfg.audit.path = Some(dir.join("nothing.log"));
         assert_eq!(audit(&cfg, 3)["exists"], false);
         let _ = std::fs::remove_dir_all(&dir);

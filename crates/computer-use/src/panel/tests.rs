@@ -635,9 +635,9 @@ fn profiles_apply_undo_and_are_kept() {
         r#"{"label":"Sneaky","values":{"control.pause_on_user_input":false}}"#,
     )
     .unwrap();
+    // What a profile may not hold is left out, whatever the file says.
     let r = call("profile_apply", r#"{"id":"sneaky"}"#);
-    assert_eq!(r["ok"], false);
-    assert_eq!(r["confirm"], json!(["control.pause_on_user_input"]));
+    assert_eq!(r["ok"], true, "{r}");
     assert!(load().control.pause_on_user_input);
 
     up.alive.store(false, Ordering::SeqCst);
@@ -659,13 +659,21 @@ fn the_settings_file_is_edited_as_text_through_the_page() {
     let r = call("raw_check", json!({"text": edited}));
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["changed"], json!(["tree.max_nodes"]));
-    assert_eq!(call("raw_save", json!({"text": edited}))["ok"], true);
+    // The page must say which version of the file it showed.
+    assert_eq!(call("raw_save", json!({"text": edited}))["ok"], false);
+    assert_eq!(
+        call("raw_save", json!({"text": edited, "hash": v["hash"]}))["ok"],
+        true
+    );
     let c = ConfigStore::load(Some(&path)).unwrap().config;
     assert_eq!(
         (c.tree.max_nodes, c.decision.api_key.as_str()),
         (77, "sk-hidden-0000")
     );
-    let r = call("raw_save", json!({"text": "tree = [1"}));
+    let r = call(
+        "raw_save",
+        json!({"text": "tree = [1", "hash": call("raw_get", json!({}))["hash"]}),
+    );
     assert_eq!(r["ok"], false);
     assert!(r["error"].as_str().unwrap().len() > 3);
     assert_eq!(
@@ -875,6 +883,7 @@ fn an_update_goes_in_and_comes_out_only_when_the_user_says_so() {
             dir: waiting,
             downloaded: 1,
             sha256: String::new(),
+            prerelease: false,
         })
         .unwrap(),
     )
@@ -950,6 +959,8 @@ fn an_agent_is_added_and_removed_from_the_connect_page_only_with_a_yes() {
         os: crate::connect::Os::Linux,
         path: vec![],
         codex_home: None,
+        config_home: None,
+        claude_dir: None,
         zero_home: dir.join("home/.computer-use"),
     };
     std::fs::create_dir_all(env.home.join(".cursor")).unwrap();
@@ -1015,7 +1026,12 @@ fn an_agent_is_added_and_removed_from_the_connect_page_only_with_a_yes() {
     assert!(r["note"].as_str().unwrap().contains("copy"), "{r}");
     let text = std::fs::read_to_string(&cursor_file).unwrap();
     let stable = crate::connect::stable_program_path(&env);
-    assert!(text.contains(&stable.display().to_string()), "{text}");
+    let written: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        written["mcpServers"]["computer-use"]["command"],
+        stable.display().to_string(),
+        "{text}"
+    );
     assert!(stable.is_file());
     assert_eq!(
         find(&call("connect_list", json!({})), "cursor")["state"]["kind"],
@@ -1092,6 +1108,8 @@ fn the_panels_shortcut_is_made_and_taken_away_from_the_page_with_a_yes() {
         os: crate::connect::Os::Linux,
         path: vec![],
         codex_home: None,
+        config_home: None,
+        claude_dir: None,
         zero_home: dir.join("home/.computer-use"),
     };
     let places = crate::shortcut::Places {
@@ -1132,12 +1150,12 @@ fn the_panels_shortcut_is_made_and_taken_away_from_the_page_with_a_yes() {
     );
     assert_eq!(r["ok"], true, "{r}");
     let stable = crate::connect::stable_program_path(&env);
-    assert!(
-        std::fs::read_to_string(&file)
-            .unwrap()
-            .contains(&stable.display().to_string())
-    );
     let l = call("shortcut_list", json!({}));
+    assert_eq!(
+        l["shortcuts"][0]["starts"],
+        stable.display().to_string(),
+        "{l}"
+    );
     assert_eq!(
         (
             l["shortcuts"][0]["exists"].clone(),
@@ -1169,5 +1187,115 @@ fn the_panels_shortcut_is_made_and_taken_away_from_the_page_with_a_yes() {
         false
     );
     alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_waiting_update_the_settings_no_longer_take_is_not_put_in_place() {
+    let dir = temp("upd-skip");
+    let path = config_with_port(&dir, "[update]\nskip_version = \"99.0.0\"\n");
+    let exe = dir.join("the-program");
+    std::fs::write(&exe, "old").unwrap();
+    let updates = dir.join("updates");
+    let waiting = updates.join("v99.0.0");
+    std::fs::create_dir_all(&waiting).unwrap();
+    std::fs::write(waiting.join(crate::update::BIN_NAME), "new").unwrap();
+    std::fs::write(
+        updates.join("pending.json"),
+        serde_json::to_vec(&crate::update::Pending {
+            version: "99.0.0".into(),
+            dir: waiting.clone(),
+            downloaded: 1,
+            sha256: String::new(),
+            prerelease: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let Bound::Mine(server) = Server::bind_with(
+        Some(path),
+        &dir,
+        exe.clone(),
+        crate::connect::Env::real(),
+        crate::shortcut::Places::real(),
+    )
+    .unwrap() else {
+        panic!("another panel answered");
+    };
+    let (host, token, alive) = (
+        server.page.host.clone(),
+        server.page.token.clone(),
+        server.page.alive.clone(),
+    );
+    std::thread::spawn(move || server.run());
+    let s = json_of(&post(&host, &token, "update_status", "{}"));
+    assert_eq!(s["pending"]["wanted"], false, "{s}");
+    let r = json_of(&post(
+        &host,
+        &token,
+        "update_install",
+        r#"{"confirmed":true}"#,
+    ));
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+    assert!(!waiting.exists() && !updates.join("pending.json").exists());
+    alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hmac_is_hmac_sha256() {
+    // RFC 4231, test case 2.
+    assert_eq!(
+        hmac(b"Jefe", b"what do ya want for nothing?"),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+    // A key longer than a block (test case 6).
+    assert_eq!(
+        hmac(
+            &[0xaa; 131],
+            b"Test Using Larger Than Block-Size Key - Hash Key First"
+        ),
+        "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+    );
+}
+
+#[test]
+fn a_program_that_took_the_port_never_sees_the_token_and_isnt_believed() {
+    let dir = temp("impostor");
+    let path = config_with_port(&dir, "");
+    let port = panel_settings(Some(&path)).port;
+    let token = persistent_token(&dir, port);
+    // Someone else's program on the panel's port, answering like the old
+    // panel did, and writing down what it is sent.
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for s in listener.incoming().take(3) {
+            let Ok(mut s) = s else { continue };
+            let mut buf = [0u8; 2048];
+            let n = s.read(&mut buf).unwrap_or(0);
+            seen2
+                .lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buf[..n]));
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nzero-panel");
+        }
+    });
+    match Server::bind(Some(path), &dir).unwrap() {
+        Bound::Mine(server) => {
+            assert_ne!(server.page.host, format!("127.0.0.1:{port}"));
+            assert_ne!(server.page.token, token);
+        }
+        Bound::Elsewhere(url) => panic!("believed an impostor at {url}"),
+    }
+    assert!(
+        !seen.lock().unwrap().contains(&token),
+        "{}",
+        seen.lock().unwrap()
+    );
+    // The kept token is replaced.
+    assert_ne!(persistent_token(&dir, port), token);
     let _ = std::fs::remove_dir_all(&dir);
 }
