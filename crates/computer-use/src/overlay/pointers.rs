@@ -9,8 +9,9 @@ use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, Mask, Paint, Path,
-    PathBuilder, Pixmap, PixmapPaint, Point, RadialGradient, Rect, SpreadMode, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient,
+    Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Point, RadialGradient, Rect, SpreadMode,
+    Stroke, Transform,
 };
 
 use super::draw::CursorStyle;
@@ -206,6 +207,23 @@ fn radial(c: (f32, f32), r: f32, s: &[(f32, Color)]) -> Paint<'static> {
         Point::from_xy(c.0, c.1),
         Point::from_xy(c.0, c.1),
         r.max(0.01),
+        s.iter().map(|(p, c)| GradientStop::new(*p, *c)).collect(),
+        SpreadMode::Pad,
+        Transform::identity(),
+    ) {
+        Some(shader) => Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        },
+        None => solid(s.first().map_or(Color::WHITE, |s| s.1)),
+    }
+}
+
+fn linear(a: (f32, f32), b: (f32, f32), s: &[(f32, Color)]) -> Paint<'static> {
+    match LinearGradient::new(
+        Point::from_xy(a.0, a.1),
+        Point::from_xy(b.0, b.1),
         s.iter().map(|(p, c)| GradientStop::new(*p, *c)).collect(),
         SpreadMode::Pad,
         Transform::identity(),
@@ -557,4 +575,103 @@ fn orbit(pm: &mut Pixmap, pic: &Picture, t: Transform, render: Transform, click:
         rgba(45, 38, 80, 1.0),
         ring,
     );
+}
+
+/// The name tag's pill in the pointer's own material (glass, satin paper,
+/// jelly, frost, chrome, dark crystal); returns the colour for its text.
+pub(super) fn tag(
+    pm: &mut Pixmap,
+    style: CursorStyle,
+    pill: &Path,
+    (x, y, w, h): (f32, f32, f32, f32),
+    s: f32,
+) -> Color {
+    let id = Transform::identity();
+    let down = |stops: &[(f32, Color)]| linear((x, y), (x, y + h), stops);
+    let across = |stops: &[(f32, Color)]| linear((x, y), (x + w, y + h), stops);
+    let (body, rim, text) = match style {
+        CursorStyle::Paper => (
+            down(&[
+                (0.0, rgba(255, 240, 214, 1.0)),
+                (0.55, rgba(240, 196, 140, 1.0)),
+                (1.0, rgba(214, 150, 88, 1.0)),
+            ]),
+            across(&[
+                (0.0, rgba(196, 128, 66, 1.0)),
+                (1.0, rgba(140, 82, 36, 1.0)),
+            ]),
+            rgba(92, 50, 18, 1.0),
+        ),
+        CursorStyle::Jelly => (
+            across(&[
+                (0.0, rgba(120, 160, 255, 0.96)),
+                (0.6, rgba(150, 110, 245, 0.96)),
+                (1.0, rgba(205, 120, 240, 0.96)),
+            ]),
+            solid(rgba(236, 228, 255, 0.9)),
+            rgba(255, 255, 255, 1.0),
+        ),
+        CursorStyle::Ice => (
+            down(&[
+                (0.0, rgba(240, 252, 255, 0.95)),
+                (1.0, rgba(150, 218, 244, 0.95)),
+            ]),
+            across(&[
+                (0.0, rgba(255, 255, 255, 1.0)),
+                (1.0, rgba(60, 200, 235, 1.0)),
+            ]),
+            rgba(14, 84, 124, 1.0),
+        ),
+        CursorStyle::Metal => (
+            down(&[
+                (0.0, rgba(250, 250, 252, 1.0)),
+                (0.48, rgba(196, 198, 206, 1.0)),
+                (0.52, rgba(170, 172, 182, 1.0)),
+                (1.0, rgba(232, 232, 238, 1.0)),
+            ]),
+            across(&[
+                (0.0, rgba(236, 180, 104, 1.0)),
+                (1.0, rgba(172, 108, 48, 1.0)),
+            ]),
+            rgba(28, 28, 34, 1.0),
+        ),
+        CursorStyle::Orbit => (
+            down(&[(0.0, rgba(46, 34, 78, 1.0)), (1.0, rgba(16, 12, 32, 1.0))]),
+            across(&[
+                (0.0, rgba(170, 120, 255, 1.0)),
+                (0.5, rgba(255, 176, 222, 1.0)),
+                (1.0, rgba(120, 146, 255, 1.0)),
+            ]),
+            rgba(232, 218, 255, 1.0),
+        ),
+        // Crystal (and anything else): clear glass with a rainbow edge.
+        _ => (
+            down(&[
+                (0.0, rgba(252, 253, 255, 0.94)),
+                (1.0, rgba(222, 230, 246, 0.94)),
+            ]),
+            across(&[
+                (0.0, rgba(255, 120, 200, 1.0)),
+                (0.25, rgba(255, 210, 110, 1.0)),
+                (0.5, rgba(120, 230, 170, 1.0)),
+                (0.75, rgba(100, 200, 255, 1.0)),
+                (1.0, rgba(170, 120, 255, 1.0)),
+            ]),
+            rgba(38, 46, 70, 1.0),
+        ),
+    };
+    pm.fill_path(pill, &body, FillRule::Winding, id, None);
+    // A soft shine across the top half, as on the pointer itself.
+    let shine = if style == CursorStyle::Orbit {
+        0.18
+    } else {
+        0.5
+    };
+    let gloss = down(&[
+        (0.0, rgba(255, 255, 255, shine)),
+        (0.5, rgba(255, 255, 255, 0.0)),
+    ]);
+    pm.fill_path(pill, &gloss, FillRule::Winding, id, None);
+    pm.stroke_path(pill, &rim, &stroke(1.5 * s), id, None);
+    text
 }

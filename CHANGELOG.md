@@ -18,7 +18,9 @@ New pointers for the agent, and the overlay kept out of screenshots on X11
 
   Each session picks one at random; agents working at once each get a
   different one while there are pointers to go round. The state colour
-  glows behind the pointer and the name tag is as before; a click shows
+  glows behind the pointer, and the name tag takes the pointer's own
+  look (clear glass with a rainbow edge, satin paper, jelly, frost,
+  chrome edged in gold, dark crystal); a click shows
   for 0.7 s (was 0.45). `overlay.cursor_style` names one (`"jelly"`, …),
   `"classic"` keeps the plain arrow, `"random"` is the default.
 - **The overlay could be in the agent's screenshots on X11** without a

@@ -312,8 +312,8 @@ pub fn cursor(
             (c + tag_x, c + tag_y),
             (tag_w, tag_h),
             s,
-            body,
-            ring,
+            (body, ring),
+            CursorStyle::Classic,
         );
     }
 
@@ -323,25 +323,31 @@ pub fn cursor(
     }
 }
 
-/// The name tag beside the pointer: a pill in `body`, edged in `ring`.
+/// The name tag beside the pointer: a pill in `body`, edged in `ring`, or
+/// in a drawn pointer's own material.
 fn name_tag(
     pm: &mut Pixmap,
     t: &text::TextPath,
     (x, y): (f32, f32),
     (tag_w, tag_h): (f32, f32),
     s: f32,
-    body: Color,
-    ring: Color,
+    (body, ring): (Color, Color),
+    style: CursorStyle,
 ) {
     let id = Transform::identity();
+    let mut ink = Color::from_rgba8(255, 255, 255, 255);
     if let Some(pill) = rounded_rect(x, y, tag_w, tag_h, tag_h / 2.0) {
-        pm.fill_path(&pill, &paint(body), FillRule::Winding, id, None);
-        pm.stroke_path(&pill, &paint(ring), &stroke(1.5 * s), id, None);
+        if style == CursorStyle::Classic {
+            pm.fill_path(&pill, &paint(body), FillRule::Winding, id, None);
+            pm.stroke_path(&pill, &paint(ring), &stroke(1.5 * s), id, None);
+        } else {
+            ink = pointers::tag(pm, style, &pill, (x, y, tag_w, tag_h), s);
+        }
     }
     if let Some(p) = &t.path {
         pm.fill_path(
             p,
-            &paint(Color::from_rgba8(255, 255, 255, 255)),
+            &paint(ink),
             FillRule::Winding,
             Transform::from_translate(x + (tag_w - t.width) / 2.0, y + (tag_h - t.height) / 2.0),
             None,
@@ -409,8 +415,8 @@ fn styled_cursor(
             (c + tag_x, c + tag_y),
             (tag_w, tag_h),
             s,
-            body,
-            ring,
+            (body, ring),
+            style,
         );
     }
 
