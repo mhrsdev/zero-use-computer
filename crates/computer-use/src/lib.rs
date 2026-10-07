@@ -54,6 +54,7 @@ pub mod apps_log;
 pub mod backend;
 pub mod cells;
 pub mod config;
+pub mod connect;
 pub mod coverage;
 pub mod decision;
 pub mod design;

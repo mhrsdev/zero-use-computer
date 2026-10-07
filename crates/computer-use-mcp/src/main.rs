@@ -120,6 +120,22 @@ enum Command {
         #[arg(long)]
         rollback: bool,
     },
+    /// Add this program to the agents you use (Claude Code, Claude Desktop,
+    /// Codex, Cursor, VS Code), or take it out. Only its own entry is
+    /// touched; the settings file of each is copied to `.bak` first.
+    Install {
+        /// Which agent: claude-code, claude-desktop, codex, cursor or
+        /// vscode. Repeat for several. Without it: every one found here.
+        #[arg(long = "client", value_name = "NAME")]
+        clients: Vec<String>,
+        /// Take this program out of them instead.
+        #[arg(long)]
+        remove: bool,
+        /// Only say which agents are here, whether the program is in each,
+        /// and what would be written.
+        #[arg(long)]
+        list: bool,
+    },
     /// Open the settings panel in your browser (what Ctrl+Alt+J does), and
     /// serve it until you press Done.
     Settings {
@@ -297,6 +313,16 @@ fn run() -> Result<()> {
         std::process::exit(code);
     }
 
+    // Adding it to the agents needs no settings.
+    if let Some(Command::Install {
+        clients,
+        remove,
+        list,
+    }) = &cli.command
+    {
+        return install_cmd(clients, *remove, *list);
+    }
+
     // Settings commands work even when the file is invalid.
     if let Some(Command::Config { action }) = &cli.command {
         init_logging(cli.common.log.as_deref().unwrap_or("error"));
@@ -389,7 +415,10 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Command::Config { .. } | Command::Overlay { .. } | Command::Hub { .. } => {
+        Command::Config { .. }
+        | Command::Overlay { .. }
+        | Command::Hub { .. }
+        | Command::Install { .. } => {
             unreachable!("handled above")
         }
         Command::Doctor => doctor(&cli.common, store),
@@ -452,6 +481,87 @@ fn restart(exe: &std::path::Path) {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => log::error!("updates: can't start the new version: {e}"),
     }
+}
+
+/// `install`: add the program to the agents, or take it out.
+fn install_cmd(names: &[String], remove: bool, list: bool) -> Result<()> {
+    use computer_use::connect::{self, Client, Env, State};
+    let env = Env::real();
+    let exe = std::env::current_exe()?;
+    let planned = connect::stable_program_path(&env);
+    let mut chosen = Vec::new();
+    for n in names {
+        chosen.push(Client::parse(n).ok_or_else(|| {
+            anyhow::anyhow!(
+                "\"{n}\" is not an agent: claude-code, claude-desktop, codex, cursor or vscode"
+            )
+        })?);
+    }
+    let all = connect::detect(&env, &planned);
+    if list {
+        for i in &all {
+            let state = match &i.state {
+                State::NotFound => "not found here".to_string(),
+                State::NotInstalled => "here; not added".to_string(),
+                State::Installed => "added".to_string(),
+                State::Different(p) => format!("added, but pointing at {p}"),
+                State::Unreadable(why) => format!("can't be changed safely: {why}"),
+            };
+            println!("{:<26} {state}\n{:<26} {}", i.client.label(), "", i.where_);
+        }
+        println!("\nThe program would be registered as {}", planned.display());
+        return Ok(());
+    }
+    // Without a name: every agent that is here (and, for removing, has it).
+    if chosen.is_empty() {
+        chosen = all
+            .iter()
+            .filter(|i| match (&i.state, remove) {
+                (State::Installed | State::Different(_), true) => true,
+                (State::NotInstalled | State::Different(_), false) => true,
+                _ => false,
+            })
+            .map(|i| i.client)
+            .collect();
+        if chosen.is_empty() {
+            println!(
+                "No agent to {} (run with --list to see what is here).",
+                if remove {
+                    "remove it from"
+                } else {
+                    "add it to"
+                }
+            );
+            return Ok(());
+        }
+    }
+    let (program, note) = if remove {
+        (exe.clone(), None)
+    } else {
+        connect::program_for_clients(&env, &exe)
+    };
+    if let Some(n) = note {
+        println!("{n}");
+    }
+    let mut failed = 0;
+    for c in chosen {
+        let done = if remove {
+            connect::remove(&env, c)
+        } else {
+            connect::install(&env, c, &program)
+        };
+        match done {
+            Ok(m) => println!("✓ {m}"),
+            Err(e) => {
+                failed += 1;
+                println!("✗ {}: {e}", c.label());
+            }
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} of them failed");
+    }
+    Ok(())
 }
 
 fn update_cmd(

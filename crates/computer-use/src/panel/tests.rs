@@ -866,8 +866,13 @@ fn an_update_goes_in_and_comes_out_only_when_the_user_says_so() {
         .unwrap(),
     )
     .unwrap();
-    let Bound::Mine(server) = Server::bind_with(Some(path.clone()), &dir, exe.clone()).unwrap()
-    else {
+    let Bound::Mine(server) = Server::bind_with(
+        Some(path.clone()),
+        &dir,
+        exe.clone(),
+        crate::connect::Env::real(),
+    )
+    .unwrap() else {
         panic!("another panel answered");
     };
     let (host, token, alive) = (
@@ -914,6 +919,144 @@ fn an_update_goes_in_and_comes_out_only_when_the_user_says_so() {
     let c = ConfigStore::load(Some(&path)).unwrap().config;
     assert_eq!(c.update.skip_version, "99.0.0");
     assert!(call("update_status", "{}")["previous"].is_null());
+    alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_agent_is_added_and_removed_from_the_connect_page_only_with_a_yes() {
+    let dir = temp("connect");
+    let path = config_with_port(&dir, "");
+    let exe = dir.join("Downloads").join("computer-use-mcp");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "#!/bin/sh\necho hi\n").unwrap();
+    let env = crate::connect::Env {
+        home: dir.join("home"),
+        appdata: None,
+        os: crate::connect::Os::Linux,
+        path: vec![],
+        codex_home: None,
+        zero_home: dir.join("home/.computer-use"),
+    };
+    std::fs::create_dir_all(env.home.join(".cursor")).unwrap();
+    let cursor_file = env.home.join(".cursor/mcp.json");
+    let Bound::Mine(server) =
+        Server::bind_with(Some(path), &dir, exe.clone(), env.clone()).unwrap()
+    else {
+        panic!("another panel answered");
+    };
+    let (host, token, alive) = (
+        server.page.host.clone(),
+        server.page.token.clone(),
+        server.page.alive.clone(),
+    );
+    std::thread::spawn(move || server.run());
+    let call = |route: &str, body: Value| json_of(&post(&host, &token, route, &body.to_string()));
+    let find = |l: &Value, id: &str| {
+        l["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap()
+            .clone()
+    };
+
+    let l = call("connect_list", json!({}));
+    assert_eq!(l["ok"], true, "{l}");
+    assert_eq!(find(&l, "cursor")["state"]["kind"], "not_installed");
+    assert_eq!(find(&l, "claude-code")["state"]["kind"], "not_found");
+    assert_eq!(l["unstable"], true);
+    assert_eq!(l["will_copy"], true);
+    assert!(
+        find(&l, "cursor")["entry"]
+            .as_str()
+            .unwrap()
+            .contains("mcpServers")
+    );
+
+    // No yes, no change; the question names the file and the entry.
+    let r = call(
+        "connect_do",
+        json!({"client": "cursor", "action": "install"}),
+    );
+    assert_eq!(r["ok"], false);
+    let q = r["confirm_text"].as_str().unwrap();
+    assert!(
+        q.contains("mcp.json") && q.contains("computer-use") && q.contains("copy of this program"),
+        "{q}"
+    );
+    assert!(!cursor_file.exists());
+    // Yes: it is in, and the program is kept where it stays.
+    let r = call(
+        "connect_do",
+        json!({"client": "cursor", "action": "install", "confirmed": true}),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(r["note"].as_str().unwrap().contains("copy"), "{r}");
+    let text = std::fs::read_to_string(&cursor_file).unwrap();
+    let stable = crate::connect::stable_program_path(&env);
+    assert!(text.contains(&stable.display().to_string()), "{text}");
+    assert!(stable.is_file());
+    assert_eq!(
+        find(&call("connect_list", json!({})), "cursor")["state"]["kind"],
+        "installed"
+    );
+    // Taking it out asks too.
+    let r = call(
+        "connect_do",
+        json!({"client": "cursor", "action": "remove"}),
+    );
+    assert_eq!(r["ok"], false);
+    assert!(
+        cursor_file.exists()
+            && std::fs::read_to_string(&cursor_file)
+                .unwrap()
+                .contains("computer-use")
+    );
+    assert_eq!(
+        call(
+            "connect_do",
+            json!({"client": "cursor", "action": "remove", "confirmed": true})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        find(&call("connect_list", json!({})), "cursor")["state"]["kind"],
+        "not_installed"
+    );
+    // Not an agent, no action, one that isn't here, a settings file we won't touch.
+    assert_eq!(
+        call(
+            "connect_do",
+            json!({"client": "emacs", "action": "install", "confirmed": true})
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        call(
+            "connect_do",
+            json!({"client": "cursor", "action": "frobnicate", "confirmed": true})
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        call(
+            "connect_do",
+            json!({"client": "claude-code", "action": "install", "confirmed": true})
+        )["ok"],
+        false
+    );
+    std::fs::write(&cursor_file, "{ // mine\n}").unwrap();
+    let r = call(
+        "connect_do",
+        json!({"client": "cursor", "action": "install", "confirmed": true}),
+    );
+    assert_eq!(r["ok"], false);
+    assert_eq!(
+        std::fs::read_to_string(&cursor_file).unwrap(),
+        "{ // mine\n}"
+    );
     alive.store(false, Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&dir);
 }

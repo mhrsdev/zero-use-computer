@@ -496,6 +496,36 @@ async function updatesCard() {
     h("div", { class: "note" }, "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count)."));
 }
 
+async function connectPage(main) {
+  const r = await post("connect_list");
+  if (!r.ok) return main.append(h("div", { class: "empty" }, r.error));
+  const badge = (st) => ({ not_found: ["Not found here", ""], not_installed: ["Not added", ""], installed: ["Added", "changed"], different: ["Added, other program", "warn"], unreadable: ["Can't change safely", "warn"] }[st.kind]);
+  const act = (c, action) => async () => {
+    const x = await ask("connect_do", { client: c.id, action });
+    if (x.cancelled) return;
+    if (!x.ok) return snack(x.error, true);
+    snack(x.message + (x.note ? " " + x.note : "")); render();
+  };
+  main.append(...[h("p", { class: "lead" }, "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak."),
+    r.unstable && h("div", { class: "card pad" }, h("p", { class: "msg bad" }, "This program runs from " + r.running_from + ", a place that gets cleaned out or moved. A copy is kept at " + r.program + " and that is what the agents are given.")),
+    r.clients.map((c) => {
+      const [text, cls] = badge(c.state), st = c.state.kind, can = st !== "not_found" && st !== "unreadable" || c.id === "codex";
+      return h("div", { class: "card" },
+        h("div", { class: "row" },
+          h("div", { class: "text" }, h("div", { class: "label" }, c.label), h("div", { class: "help" }, c.where),
+            h("div", { class: "meta" }, h("span", { class: "badge " + cls }, text),
+              st === "different" && h("span", {}, "points at ", h("code", {}, c.state.points_at)),
+              st === "unreadable" && h("span", {}, c.state.why))),
+          h("div", { class: "ctl" },
+            h("button", { class: "btn filled", disabled: !can || st === "installed", onclick: act(c, "install") }, st === "different" ? "Replace" : "Add"),
+            h("button", { class: "btn", disabled: st !== "installed" && st !== "different", onclick: act(c, "remove") }, "Remove"),
+            h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(c.entry); snack("Copied."); } catch (e) { snack("Press Ctrl+C on the text below.", true); } } }, "Copy"))),
+        h("pre", { class: "log", tabindex: 0, "aria-label": "What would be written for " + c.label }, c.entry),
+        h("div", { class: "note" }, "After adding: " + c.after));
+    }),
+    h("div", { class: "note" }, "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.")].flat().filter(Boolean));
+}
+
 /* ---------- pages made from the settings groups ---------- */
 function groupPage(g) {
   return async (main) => {
@@ -522,6 +552,7 @@ function visible(e) {
 /* ---------- shell ---------- */
 function registerPages() {
   page_("overview", "Overview", "Home", overviewPage);
+  page_("connect", "Connect an agent", "Home", connectPage);
   for (const g of schema.groups) page_(slug(g), g, "Settings", groupPage(g));
   page_("profiles", "Profiles", "Tools", profilesPage);
   page_("tool-list", "Tool list", "Tools", toolsPage);

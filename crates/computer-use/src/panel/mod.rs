@@ -16,6 +16,7 @@
 //! The agent never uses it: the page's window title carries a mark that
 //! the engine refuses to act on (see [`is_panel_window`]).
 
+mod connecting;
 mod profiles;
 mod raw;
 mod schema;
@@ -227,6 +228,8 @@ struct Page {
     home: PathBuf,
     /// The program an update replaces: the one running.
     exe: PathBuf,
+    /// Where the agents' settings are on this computer.
+    env: crate::connect::Env,
     idle: Duration,
     alive: Arc<AtomicBool>,
     /// When the last request came.
@@ -258,10 +261,17 @@ fn panel_settings(path: Option<&Path>) -> config::PanelConfig {
 
 impl Server {
     fn bind(path: Option<PathBuf>, home: &Path) -> Result<Bound> {
-        Self::bind_with(path, home, std::env::current_exe().unwrap_or_default())
+        let mut env = crate::connect::Env::real();
+        env.zero_home = home.to_path_buf();
+        Self::bind_with(path, home, std::env::current_exe().unwrap_or_default(), env)
     }
 
-    fn bind_with(path: Option<PathBuf>, home: &Path, exe: PathBuf) -> Result<Bound> {
+    fn bind_with(
+        path: Option<PathBuf>,
+        home: &Path,
+        exe: PathBuf,
+        env: crate::connect::Env,
+    ) -> Result<Bound> {
         let cfg = panel_settings(path.as_deref());
         let token = persistent_token(home, cfg.port);
         let (listener, token) = match TcpListener::bind(("127.0.0.1", cfg.port)) {
@@ -294,6 +304,7 @@ impl Server {
                 path,
                 home: home.to_path_buf(),
                 exe,
+                env,
                 idle: Duration::from_secs(cfg.idle_minutes.clamp(1, 240) * 60),
                 alive: Arc::new(AtomicBool::new(true)),
                 last: Mutex::new(Instant::now()),
@@ -543,6 +554,8 @@ impl Page {
                 let style = body.get("style").and_then(Value::as_str).unwrap_or("mixed");
                 status::path_preview(style)
             }
+            "connect_list" => connecting::list(&self.env, &self.exe),
+            "connect_do" => connecting::act(&self.env, &self.exe, body),
             "update_status" => self.with_config(|c| updates::status(c, &self.updates_dir())),
             "update_check" => self.with_config(|c| updates::check(c, &self.updates_dir())),
             "update_install" => {
