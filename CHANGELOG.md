@@ -5,15 +5,16 @@
 New pointers for the agent, and the overlay kept out of screenshots on X11
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
 
-- **Six new pointers, drawn by hand, each clicking its own way**:
-  - crystal (cut glass, rainbow edges): light breaks out of it in colours;
-  - paper (a folded sheet, warm inside): its folded wing opens out flat
-    and folds back;
-  - jelly (violet): it squashes flat and wobbles back;
-  - ice (with a glowing crystal inside): it melts and drips, then freezes
-    again;
-  - metal (liquid chrome, a hanging drop): drops of metal splash out;
-  - orbit (a dark crystal in a ring): the pearl races once round the ring.
+- **Six new pointers, each clicking its own way**: crystal, paper, jelly,
+  ice, liquid metal and orbit, 3D renders cut out with their glow (about
+  65 KB each, in `assets/cursors`). A click moves the picture itself:
+  - jelly: it squashes flat and wobbles back;
+  - ice: it runs down in drips, drops fall from its points, then it
+    freezes back;
+  - paper: the wing opens out from the fold and folds back;
+  - metal: it gives a little and drops of chrome splash out;
+  - crystal: light floods through it and breaks out in colours;
+  - orbit: the pearl leaves its place and races once round the ring.
 
   Each session picks one at random; agents working at once each get a
   different one while there are pointers to go round. The state colour
