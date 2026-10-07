@@ -67,7 +67,7 @@ impl<B: Backend> Engine<B> {
             } else {
                 None
             };
-            let cfg = &self.store.config.overlay;
+            let cfg = &self.overlay_settings();
             // One hub for every agent on the desktop; an overlay of this
             // server's own when it can't be had.
             let hub = &self.store.config.hub;
@@ -142,8 +142,15 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// The overlay settings for this agent: its own pointer when
+    /// `agent_cursors` names its client or its tag.
+    pub(super) fn overlay_settings(&self) -> crate::config::OverlayConfig {
+        let o = &self.store.config.overlay;
+        o.for_agent(&[&self.client, &o.cursor_tag])
+    }
+
     pub(super) fn overlay_reconfigure(&mut self) {
-        let cfg = self.store.config.overlay.clone();
+        let cfg = self.overlay_settings();
         let keys = self.global_keys();
         // As in `overlay`: the hub needs the connection too (dropping it
         // would give up this agent's turn and number).
@@ -314,6 +321,53 @@ impl<B: Backend> Engine<B> {
                 id: None,
             });
         }
+    }
+
+    /// The glide just started is a drag: the cursor draws its line.
+    pub(super) fn overlay_dragging(&mut self) {
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Dragging);
+        }
+    }
+
+    /// Show a key combination being pressed by the agent cursor.
+    pub(super) fn overlay_keys(&mut self, combo: &KeyCombo) {
+        if self.overlay.is_some() && self.store.config.overlay.show_keys {
+            self.overlay_send(OverlayCmd::Keys {
+                keys: combo.to_string(),
+            });
+        }
+    }
+
+    /// Show text being typed by the agent cursor: dots for a password.
+    pub(super) fn overlay_typed(&mut self, text: &str, secret: bool) {
+        if self.overlay.is_none() || !self.store.config.overlay.show_keys {
+            return;
+        }
+        let text = if secret {
+            "•".repeat(text.chars().count().min(12))
+        } else {
+            text.to_string()
+        };
+        self.overlay_send(OverlayCmd::Typed { text });
+    }
+
+    /// Show the way the agent scrolls (wheel clicks; +: right, down).
+    pub(super) fn overlay_scroll(&mut self, dx: i32, dy: i32) {
+        if self.overlay.is_some() && self.store.config.overlay.cursor_motion {
+            self.overlay_send(OverlayCmd::Scroll { dx, dy });
+        }
+    }
+
+    /// Whether the focused element (as last read) is a password field.
+    pub(super) fn focused_is_password(&self, app: &AppInfo) -> bool {
+        self.state(app.pid).ok().is_some_and(|st| {
+            st.nodes
+                .iter()
+                .rev()
+                .find(|n| n.states.focused)
+                .is_some_and(|n| crate::privacy::is_password(&n.role))
+        })
     }
 
     /// Point the agent cursor at the element keys go to (the focused one),

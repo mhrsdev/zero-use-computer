@@ -15,6 +15,8 @@ dirs.workspace = true
 image.workspace = true
 log.workspace = true
 memmap2 = "0.9"
+# Unpacking an update's zip (already in the tree through the image crates).
+miniz_oxide = "0.8"
 regex = "1"
 rhai = { version = "1.26", features = ["serde", "only_i64", "no_custom_syntax"] }
 rustybuzz = "0.20"

@@ -270,6 +270,7 @@ impl<B: Backend> Engine<B> {
         let (ux, uy) = args.direction.unit();
         // ~3 wheel lines per page.
         let lines = (pages * 3.0).round().max(1.0) as i32;
+        self.overlay_scroll(ux * lines, uy * lines);
 
         if let Anchor::Element(h) = &anchor
             && !crate::ocr::is_ocr(*h)
@@ -348,6 +349,7 @@ impl<B: Backend> Engine<B> {
         // At the start before the button goes down, then along with the drag.
         self.overlay_point(p0, true);
         self.overlay_glide(p1);
+        self.overlay_dragging();
         let target = self.input_target(&app)?;
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
@@ -395,6 +397,7 @@ impl<B: Backend> Engine<B> {
             if self.halted() {
                 return Err(self.stopped_error());
             }
+            self.overlay_keys(combo);
             self.backend.press_key(&target, combo)?;
             (self.sleep)(Duration::from_millis(self.store.config.timing.key_delay_ms));
         }
@@ -452,7 +455,11 @@ impl<B: Backend> Engine<B> {
             self.overlay_point_focus(&app);
         }
         let back = self.hover(&app, args.x, args.y)?;
-        let typed = self.type_into_focus(&app, &args.text);
+        let secret = match &field {
+            Some((_, node)) => crate::privacy::is_password(&node.role),
+            None => self.focused_is_password(&app),
+        };
+        let typed = self.type_into_focus(&app, &args.text, secret);
         self.unhover(back);
         typed?;
         self.settle_on(&app);
@@ -480,7 +487,9 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Type `text` into the app's focused element (newlines press Return).
-    fn type_into_focus(&mut self, app: &AppInfo, text: &str) -> Result<()> {
+    /// Type `text` where the keyboard focus is (`secret`: into a password
+    /// field, so the pointer shows dots for it).
+    fn type_into_focus(&mut self, app: &AppInfo, text: &str, secret: bool) -> Result<()> {
         // Every path that types (set_value's fallback too) has the limit.
         let count = text.chars().count();
         if count > MAX_TYPED_CHARS {
@@ -489,6 +498,7 @@ impl<B: Backend> Engine<B> {
             )));
         }
         let target = self.input_target(app)?;
+        self.overlay_typed(text, secret);
         // A Windows line break is one Return, not two.
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         // Split on newlines so each becomes a Return press (works everywhere).
@@ -555,7 +565,7 @@ impl<B: Backend> Engine<B> {
             self.backend
                 .press_key(&target, &keys::parse_combo("primary+a")?)?;
         }
-        self.type_into_focus(app, text)
+        self.type_into_focus(app, text, crate::privacy::is_password(&node.role))
     }
 
     /// Whether element `index` now holds `want` (after a set_value). `None`

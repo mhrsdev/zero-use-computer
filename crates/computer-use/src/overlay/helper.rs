@@ -12,6 +12,7 @@ use super::draw;
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
+use crate::motion;
 use crate::types::Rect;
 
 /// A piece of one agent's overlay.
@@ -23,16 +24,19 @@ pub enum Part {
     Left,
     Label,
     Cursor,
+    /// What a pointer draws across the screen (a drag's line).
+    Fx,
 }
 
 impl Part {
-    pub const ALL: [Part; 6] = [
+    pub const ALL: [Part; 7] = [
         Part::Top,
         Part::Right,
         Part::Bottom,
         Part::Left,
         Part::Label,
         Part::Cursor,
+        Part::Fx,
     ];
 }
 
@@ -240,13 +244,107 @@ impl Colors {
     }
 }
 
+/// The look a `cursor_style` setting names; "random" (or anything else)
+/// picks a pointer, avoiding `taken`.
+fn style_for(setting: &str, taken: &[draw::CursorStyle]) -> draw::CursorStyle {
+    draw::CursorStyle::named(setting).unwrap_or_else(|| draw::CursorStyle::random(taken))
+}
+
 struct Glide {
     from: (f64, f64),
     to: (f64, f64),
     start: Instant,
+    /// The way it goes (`cursor_path`): for a reach from rest. A glide
+    /// that takes over from one under way (a drawing's pen) goes straight.
+    path: Option<motion::Path>,
 }
 
-const RIPPLE: Duration = Duration::from_millis(450);
+/// How long a click shows (the pointers each click in their own way).
+const RIPPLE: Duration = Duration::from_millis(700);
+/// One breath of a pointer waiting.
+const IDLE_CYCLE: f32 = 3.2;
+/// How long keys pressed show.
+const KEYS_SHOW: Duration = Duration::from_millis(1300);
+/// How long the scroll arrows show.
+const SCROLL_SHOW: Duration = Duration::from_millis(800);
+/// A drag's line stays this long once the pointer is there, then fades
+/// over `DRAG_FADE`.
+const DRAG_HOLD: Duration = Duration::from_millis(250);
+const DRAG_FADE: Duration = Duration::from_millis(450);
+/// Typed text stays this long once it is all out, then fades over
+/// `TYPED_FADE`.
+const TYPED_HOLD: Duration = Duration::from_millis(1000);
+const TYPED_FADE: Duration = Duration::from_millis(350);
+/// The most typed characters shown at once.
+const TYPED_SHOWN: usize = 18;
+
+/// A drag's line: from where it started to where it goes; it fades once
+/// the pointer is there (`arrived`).
+struct DragState {
+    from: (f64, f64),
+    to: (f64, f64),
+    arrived: Option<Instant>,
+}
+
+/// Text being typed: it runs out a letter at a time from `start`.
+struct Typed {
+    text: Vec<char>,
+    start: Instant,
+}
+
+impl Typed {
+    /// Time per letter: quick for long text, the whole of it in about a
+    /// second.
+    fn per_char(&self) -> f32 {
+        (1100.0 / self.text.len().max(1) as f32).clamp(18.0, 45.0)
+    }
+
+    fn all_out(&self) -> Duration {
+        Duration::from_secs_f32(self.per_char() * self.text.len() as f32 / 1000.0)
+    }
+
+    fn over(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.start) >= self.all_out() + TYPED_HOLD + TYPED_FADE
+    }
+
+    /// The end of what is out so far, and its opacity.
+    fn shown(&self, now: Instant) -> Option<(String, f32)> {
+        let t = now.saturating_duration_since(self.start);
+        let out = ((t.as_secs_f32() * 1000.0 / self.per_char()) as usize + 1).min(self.text.len());
+        let after = t.saturating_sub(self.all_out() + TYPED_HOLD);
+        let alpha = 1.0 - after.as_secs_f32() / TYPED_FADE.as_secs_f32();
+        if alpha <= 0.0 || out == 0 {
+            return None;
+        }
+        let from = out.saturating_sub(TYPED_SHOWN);
+        let mut shown: String = if from > 0 {
+            "…".into()
+        } else {
+            String::new()
+        };
+        shown.extend(
+            self.text[from..out]
+                .iter()
+                .map(|c| if c.is_control() { ' ' } else { *c }),
+        );
+        Some((shown, alpha))
+    }
+}
+
+/// Keycaps for a combo as written ("ctrl+shift+s" → Ctrl, Shift, S).
+fn caps(keys: &str) -> Vec<String> {
+    let pretty = pretty_key(keys);
+    let mut out: Vec<String> = pretty
+        .split('+')
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+        .collect();
+    // The plus key itself.
+    if pretty.ends_with('+') {
+        out.push("+".into());
+    }
+    out
+}
 
 /// A value easing from one level to another over time.
 #[derive(Debug, Clone, Copy)]
@@ -328,13 +426,25 @@ pub struct Machine {
     hotkey: String,
     /// Put before the label ("2 · "): which of the hub's agents it is.
     badge: String,
+    /// The pointer's look, and the setting it came from ("random" picks
+    /// once, so the pointer stays the same through the session).
+    style: draw::CursorStyle,
+    style_setting: String,
+    /// What goes on around the pointer (see `draw::CursorFx`).
+    drag: Option<DragState>,
+    keys: Option<(Vec<String>, Instant)>,
+    typed: Option<Typed>,
+    scroll: Option<((i8, i8), Instant)>,
 }
 
 impl Machine {
     pub fn new(cfg: OverlayConfig, now: Instant) -> Self {
         let colors = Colors::from(&cfg);
         let start = colors.working;
+        let style_setting = cfg.cursor_style.trim().to_ascii_lowercase();
         Self {
+            style: style_for(&style_setting, &[]),
+            style_setting,
             colors,
             cfg,
             phase: Phase::Off,
@@ -355,7 +465,26 @@ impl Machine {
             stopped: false,
             hotkey: String::new(),
             badge: String::new(),
+            drag: None,
+            keys: None,
+            typed: None,
+            scroll: None,
         }
+    }
+
+    /// The pointer's look.
+    pub fn style(&self) -> draw::CursorStyle {
+        self.style
+    }
+
+    /// Whether the look was picked at random (and may be picked again).
+    pub fn style_random(&self) -> bool {
+        draw::CursorStyle::named(&self.style_setting).is_none()
+    }
+
+    /// Pick a random look other than those in `taken` (other agents').
+    pub fn pick_style(&mut self, taken: &[draw::CursorStyle]) {
+        self.style = draw::CursorStyle::random(taken);
     }
 
     /// Whether the agent is stopped (the stop key toggles this).
@@ -460,6 +589,11 @@ impl Machine {
                 ..
             } => {
                 self.colors = Colors::from(&config);
+                let setting = config.cursor_style.trim().to_ascii_lowercase();
+                if setting != self.style_setting {
+                    self.style = style_for(&setting, &[]);
+                    self.style_setting = setting;
+                }
                 self.cfg = *config;
                 self.hotkey = hotkey;
                 if !self.cfg.enabled {
@@ -507,10 +641,16 @@ impl Machine {
                 } else {
                     now
                 };
+                let path = (self.cfg.cursor_motion && self.glide_progress(now) >= 1.0).then(|| {
+                    let mut rng = motion::Rng::new();
+                    let style = motion::Style::pick(&self.cfg.cursor_path, &mut rng);
+                    motion::Path::new(from, (x, y), style, motion::Kind::Reach, &mut rng)
+                });
                 self.glide = Some(Glide {
                     from,
                     to: (x, y),
                     start,
+                    path,
                 });
                 self.click_pending = click && self.cfg.click_effect;
                 if id.is_some() {
@@ -520,6 +660,33 @@ impl Machine {
                     let p = self.active_phase();
                     self.set_phase(p, now);
                 }
+            }
+            Cmd::Dragging => {
+                if let Some(g) = &mut self.glide {
+                    // A drag goes straight on, as the real one does.
+                    let mut rng = motion::Rng::new();
+                    g.path = g.path.as_ref().map(|_| {
+                        let hand = motion::Style::Hand;
+                        motion::Path::new(g.from, g.to, hand, motion::Kind::Drag, &mut rng)
+                    });
+                    self.drag = Some(DragState {
+                        from: g.from,
+                        to: g.to,
+                        arrived: None,
+                    });
+                }
+            }
+            Cmd::Keys { keys } => {
+                let caps = caps(&keys);
+                self.keys = (!caps.is_empty()).then_some((caps, now));
+            }
+            Cmd::Typed { text } => {
+                let text: Vec<char> = text.chars().collect();
+                self.typed = (!text.is_empty()).then_some(Typed { text, start: now });
+            }
+            Cmd::Scroll { dx, dy } => {
+                let sign = |v: i32| v.signum() as i8;
+                self.scroll = (dx != 0 || dy != 0).then_some(((sign(dx), sign(dy)), now));
             }
             Cmd::Status { state } => {
                 let p = match state {
@@ -617,6 +784,27 @@ impl Machine {
         {
             self.ripple_at = None;
         }
+        let arrived = self.glide_progress(now) >= 1.0;
+        if let Some(d) = &mut self.drag {
+            if d.arrived.is_none() && arrived {
+                d.arrived = Some(now);
+            }
+            if d.arrived
+                .is_some_and(|t| now.saturating_duration_since(t) >= DRAG_HOLD + DRAG_FADE)
+            {
+                self.drag = None;
+            }
+        }
+        let gone = |t: Instant, d: Duration| now.saturating_duration_since(t) >= d;
+        if self.keys.as_ref().is_some_and(|(_, t)| gone(*t, KEYS_SHOW)) {
+            self.keys = None;
+        }
+        if self.scroll.is_some_and(|(_, t)| gone(t, SCROLL_SHOW)) {
+            self.scroll = None;
+        }
+        if self.typed.as_ref().is_some_and(|t| t.over(now)) {
+            self.typed = None;
+        }
     }
 
     /// The pointer whose arrival the engine waits for, once the cursor is
@@ -640,18 +828,109 @@ impl Machine {
         let g = self.glide.as_ref()?;
         let t = self.glide_progress(now);
         let e = 1.0 - (1.0 - t).powi(3); // ease-out
-        Some((
-            g.from.0 + (g.to.0 - g.from.0) * e,
-            g.from.1 + (g.to.1 - g.from.1) * e,
-        ))
+        let (dx, dy) = (g.to.0 - g.from.0, g.to.1 - g.from.1);
+        match g.path.as_ref().filter(|_| self.cfg.cursor_motion) {
+            // Its own way: a hand's curve, a wave, an arc, a spring, a spiral.
+            Some(path) => Some(path.at(t)),
+            None => Some((g.from.0 + dx * e, g.from.1 + dy * e)),
+        }
+    }
+
+    /// What goes on around the pointer now (see `draw::CursorFx`); the
+    /// trail in screen units.
+    fn fx(&self, now: Instant) -> draw::CursorFx {
+        let mut fx = draw::CursorFx::default();
+        let at = |t: Instant| self.cursor_pos(t);
+        let ago = |ms: u64| now.checked_sub(Duration::from_millis(ms));
+        if self.cfg.cursor_motion
+            && let (Some(g), Some(p)) = (&self.glide, at(now))
+        {
+            // Leaning with the speed across, eased over the last frames.
+            let speed = |t: Instant| {
+                let before = t.checked_sub(Duration::from_millis(16));
+                match (at(t), before.filter(|b| *b >= g.start).and_then(at)) {
+                    (Some(a), Some(b)) => (a.0 - b.0) / 16.0,
+                    _ => 0.0,
+                }
+            };
+            let lean: f64 = (0..5).filter_map(|k| ago(16 * k)).map(speed).sum::<f64>() / 5.0;
+            fx.tilt = (14.0 * (lean / 2.0).tanh()) as f32;
+            for k in 1..=8 {
+                let Some(t) = ago(14 * k).filter(|t| *t >= g.start) else {
+                    break;
+                };
+                if let Some(q) = at(t) {
+                    let rel = ((q.0 - p.0) as f32, (q.1 - p.1) as f32);
+                    if rel.0.hypot(rel.1) >= 1.5 {
+                        fx.trail.push(rel);
+                    }
+                }
+            }
+        }
+        if self.cfg.cursor_motion {
+            let still =
+                self.glide_progress(now) >= 1.0 && self.ripple_at.is_none() && !self.click_pending;
+            if still {
+                let since = self.glide.as_ref().map_or(self.since, |g| {
+                    g.start + Duration::from_millis(self.cfg.move_ms)
+                });
+                let t = now.saturating_duration_since(since).as_secs_f32();
+                fx.idle = Some((t / IDLE_CYCLE).fract());
+            }
+            fx.scroll = self.scroll.map(|(d, t)| {
+                let k = now.saturating_duration_since(t).as_secs_f32() / SCROLL_SHOW.as_secs_f32();
+                (d, k.min(1.0))
+            });
+        }
+        if self.cfg.show_keys {
+            fx.keys = self.keys.as_ref().map(|(k, t)| {
+                let p = now.saturating_duration_since(*t).as_secs_f32() / KEYS_SHOW.as_secs_f32();
+                (k.clone(), p.min(1.0))
+            });
+            fx.typed = self.typed.as_ref().and_then(|t| t.shown(now));
+        }
+        fx
+    }
+
+    /// A drag's line as it shows now: the way the pointer went so far,
+    /// and its opacity.
+    fn drag_now(&self, now: Instant) -> Option<(Vec<(f64, f64)>, f32)> {
+        let d = self.drag.as_ref().filter(|_| self.cfg.cursor_motion)?;
+        let alpha = d.arrived.map_or(1.0, |t| {
+            let after = now.saturating_duration_since(t).saturating_sub(DRAG_HOLD);
+            1.0 - after.as_secs_f32() / DRAG_FADE.as_secs_f32()
+        });
+        if alpha <= 0.0 {
+            return None;
+        }
+        let path = match &self.glide {
+            // Along the glide, up to where the pointer is now.
+            Some(g) if g.to == d.to => {
+                let gone = now.saturating_duration_since(g.start);
+                (0..=24)
+                    .filter_map(|i| self.cursor_pos(g.start + gone.mul_f64(f64::from(i) / 24.0)))
+                    .collect()
+            }
+            _ => vec![d.from, d.to],
+        };
+        Some((path, alpha))
     }
 
     /// Something is moving (draw at frame rate).
     pub fn animating(&self, now: Instant) -> bool {
+        // The trail catches up a moment after the pointer gets there.
+        let trailing = self.glide.as_ref().is_some_and(|g| {
+            now.saturating_duration_since(g.start) < Duration::from_millis(self.cfg.move_ms + 130)
+        });
         self.phase != Phase::Off
             && (self.glide_progress(now) < 1.0
+                || trailing
                 || self.click_pending
                 || self.ripple_at.is_some()
+                || self.drag.is_some()
+                || self.keys.is_some()
+                || self.typed.is_some()
+                || self.scroll.is_some()
                 || !self.fade.done(now)
                 || !self.color_ramp.done(now))
     }
@@ -720,6 +999,18 @@ impl Machine {
                     ring: color,
                     body: self.colors.cursor,
                     ripple,
+                    style: self.style,
+                    fx: self.fx(now),
+                })
+            } else {
+                None
+            },
+            drag: if self.cfg.show_cursor {
+                self.drag_now(now).map(|(path, alpha)| DragLook {
+                    path,
+                    alpha,
+                    style: self.style,
+                    ring: color,
                 })
             } else {
                 None
@@ -732,12 +1023,24 @@ impl Machine {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CursorLook {
     pub pos: (f64, f64),
     pub ring: Color,
     pub body: Color,
     pub ripple: Option<f32>,
+    pub style: draw::CursorStyle,
+    pub fx: draw::CursorFx,
+}
+
+/// A drag's line on screen (the way it went, screen units), in the
+/// pointer's material.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragLook {
+    pub path: Vec<(f64, f64)>,
+    pub alpha: f32,
+    pub style: draw::CursorStyle,
+    pub ring: Color,
 }
 
 /// What is on screen.
@@ -749,6 +1052,7 @@ pub struct Scene {
     pub border: Option<(Option<Rect>, Color)>,
     pub label: Option<(String, Color)>,
     pub cursor: Option<CursorLook>,
+    pub drag: Option<DragLook>,
 }
 
 fn color_key(c: Color) -> [u8; 4] {
@@ -762,7 +1066,20 @@ type BorderKey = ([i64; 16], [u8; 4], u32, u8);
 type LabelKey = (String, [u8; 4], u8, i64, i64, u32);
 /// What the cursor image was drawn with: ring, body, ripple, opacity, tag,
 /// and the scale (per cent) of the monitor it is on.
-type CursorKey = ([u8; 4], [u8; 4], i32, u8, String, u32);
+/// And what goes on around it (`CursorFx::key`).
+type CursorKey = (
+    [u8; 4],
+    [u8; 4],
+    i32,
+    u8,
+    String,
+    u32,
+    draw::CursorStyle,
+    u64,
+);
+/// What a drag's line was drawn with: its ends, opacity, look, colour and
+/// scale (per cent).
+type DragKey = (Vec<(i64, i64)>, u8, draw::CursorStyle, [u8; 4], u32);
 
 /// Turns scenes into surface calls, redrawing only what changed.
 #[derive(Default)]
@@ -772,6 +1089,7 @@ pub struct Painter {
     label_size: (f64, f64),
     cursor_img: Option<CursorKey>,
     cursor_pos: Option<(i64, i64)>,
+    drag: Option<DragKey>,
     /// Where the arrow tip sits in the cursor image (screen units).
     cursor_hot: (f64, f64),
     /// Whether the surface fades natively, and the opacity last given to it.
@@ -812,7 +1130,16 @@ impl Painter {
         if self.tag != tag {
             self.tag = tag;
             if self.cursor_img.is_some() {
-                self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
+                self.cursor_img = Some((
+                    [0; 4],
+                    [0; 4],
+                    i32::MIN,
+                    0,
+                    String::new(),
+                    0,
+                    draw::CursorStyle::Classic,
+                    u64::MAX,
+                ));
             }
         }
     }
@@ -839,6 +1166,7 @@ impl Painter {
         self.label = None;
         self.cursor_img = None;
         self.cursor_pos = None;
+        self.drag = None;
     }
 
     pub fn paint(
@@ -1032,8 +1360,42 @@ impl Painter {
             }
         }
 
+        // A drag's line, under way or fading.
+        match scene.drag.as_ref().filter(|d| !d.path.is_empty()) {
+            Some(d) => {
+                let sc = scale_at(&*s, d.path[0].0, d.path[0].1);
+                let key = (
+                    d.path
+                        .iter()
+                        .map(|p| (p.0.round() as i64, p.1.round() as i64))
+                        .collect(),
+                    (d.alpha * alpha * 40.0) as u8,
+                    d.style,
+                    color_key(d.ring),
+                    (sc * 100.0).round() as u32,
+                );
+                if self.drag.as_ref() != Some(&key) {
+                    let ppu64 = f64::from(ppu);
+                    let px: Vec<(f32, f32)> = d
+                        .path
+                        .iter()
+                        .map(|p| ((p.0 * ppu64) as f32, (p.1 * ppu64) as f32))
+                        .collect();
+                    let (img, at) = draw::drag_line(&px, sc, d.style, d.ring, d.alpha * alpha);
+                    let unit = |v: f32| f64::from(v) / ppu64;
+                    s.show(self.layer(Part::Fx), &img, unit(at.0), unit(at.1));
+                    self.drag = Some(key);
+                }
+            }
+            None => {
+                if self.drag.take().is_some() {
+                    s.hide(self.layer(Part::Fx));
+                }
+            }
+        }
+
         // Cursor: redraw the image only when its look changes; move it cheaply.
-        match scene.cursor {
+        match &scene.cursor {
             Some(c) => {
                 let tag = self.tag.as_deref().unwrap_or(&cfg.cursor_tag);
                 let cursor_scale = scale_at(&*s, c.pos.0, c.pos.1);
@@ -1044,10 +1406,27 @@ impl Painter {
                     ak,
                     tag.to_string(),
                     (cursor_scale * 100.0).round() as u32,
+                    c.style,
+                    c.fx.key(),
                 );
                 let redraw = self.cursor_img.as_ref() != Some(&key);
-                let art = redraw
-                    .then(|| draw::cursor(fonts, tag, cursor_scale, c.body, c.ring, c.ripple));
+                let art = redraw.then(|| {
+                    // The trail in image px.
+                    let mut fx = c.fx.clone();
+                    for p in &mut fx.trail {
+                        *p = (p.0 * ppu, p.1 * ppu);
+                    }
+                    draw::cursor(
+                        fonts,
+                        tag,
+                        cursor_scale,
+                        c.body,
+                        c.ring,
+                        c.ripple,
+                        c.style,
+                        &fx,
+                    )
+                });
                 if let Some(a) = &art {
                     self.cursor_hot = (
                         f64::from(a.hotspot.0) / f64::from(ppu),
@@ -1088,7 +1467,16 @@ impl Painter {
             self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN, 0));
         }
         if self.cursor_img.is_some() {
-            self.cursor_img = Some(([0; 4], [0; 4], i32::MIN, 0, String::new(), 0));
+            self.cursor_img = Some((
+                [0; 4],
+                [0; 4],
+                i32::MIN,
+                0,
+                String::new(),
+                0,
+                draw::CursorStyle::Classic,
+                u64::MAX,
+            ));
         }
     }
 
@@ -1520,6 +1908,8 @@ mod tests {
             fade_in_ms: 100,
             fade_out_ms: 400,
             transition_ms: 100,
+            // One way, so where the pointer is mid-glide is known.
+            cursor_path: "hand".into(),
             ..OverlayConfig::default()
         }
     }
@@ -1656,8 +2046,142 @@ mod tests {
         let end = m.scene(at(130)).cursor.unwrap();
         assert_eq!(end.pos, (110.0, 10.0));
         assert!(end.ripple.is_some(), "ripple on arrival");
-        m.tick(at(700));
-        assert!(m.scene(at(700)).cursor.unwrap().ripple.is_none());
+        m.tick(at(1000));
+        assert!(m.scene(at(1000)).cursor.unwrap().ripple.is_none());
+    }
+
+    #[test]
+    fn the_pointer_swings_leans_and_leaves_a_trail() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(
+            OverlayConfig {
+                cursor_path: "arc".into(),
+                ..cfg()
+            },
+            t0,
+        );
+        let to = |x: f64, y: f64| Cmd::Pointer {
+            x,
+            y,
+            click: false,
+            id: None,
+        };
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 300.0), t0);
+        m.apply(to(410.0, 300.0), at(0));
+        let mid = m.scene(at(50)).cursor.unwrap();
+        // An arc, not a straight line across.
+        assert!((mid.pos.1 - 300.0).abs() > 10.0, "{:?}", mid.pos);
+        assert!(mid.fx.tilt > 3.0, "leans into the move: {}", mid.fx.tilt);
+        assert!(mid.fx.trail.len() >= 2, "{:?}", mid.fx.trail);
+        assert!(mid.fx.trail.iter().all(|p| p.0 < 0.0), "behind it");
+        assert!(mid.fx.idle.is_none());
+        // There: upright, the trail gone, and breathing while it waits.
+        m.tick(at(400));
+        let still = m.scene(at(400)).cursor.unwrap();
+        assert_eq!(still.pos, (410.0, 300.0));
+        assert_eq!(still.fx.tilt, 0.0);
+        assert!(still.fx.trail.is_empty());
+        assert!(still.fx.idle.is_some());
+        // A glide that takes over from one under way (a drawing's pen)
+        // goes straight on from where the pointer is.
+        m.apply(to(10.0, 300.0), at(500));
+        let from = m.scene(at(540)).cursor.unwrap().pos;
+        m.apply(to(10.0, 100.0), at(540));
+        let p = m.scene(at(580)).cursor.unwrap().pos;
+        let cross = (p.0 - from.0) * (100.0 - from.1) - (p.1 - from.1) * (10.0 - from.0);
+        assert!(cross.abs() < 1.0, "{from:?} → {p:?}");
+        // Without the motion: straight, no trail, no breathing.
+        let mut plain = Machine::new(
+            OverlayConfig {
+                cursor_motion: false,
+                ..cfg()
+            },
+            t0,
+        );
+        plain.apply(Cmd::Begin, t0);
+        plain.apply(to(10.0, 300.0), t0);
+        plain.apply(to(410.0, 300.0), at(0));
+        let c = plain.scene(at(50)).cursor.unwrap();
+        assert_eq!(c.pos.1, 300.0);
+        assert_eq!(c.fx, draw::CursorFx::default());
+    }
+
+    #[test]
+    fn keys_typing_scrolls_and_drags_show_then_go() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        m.apply(
+            Cmd::Pointer {
+                x: 50.0,
+                y: 50.0,
+                click: false,
+                id: None,
+            },
+            t0,
+        );
+        m.apply(
+            Cmd::Keys {
+                keys: "ctrl+shift+s".into(),
+            },
+            at(200),
+        );
+        m.apply(
+            Cmd::Typed {
+                text: "hello\nworld".into(),
+            },
+            at(200),
+        );
+        m.apply(Cmd::Scroll { dx: 0, dy: -5 }, at(200));
+        let fx = m.scene(at(300)).cursor.unwrap().fx;
+        let (keys, k) = fx.keys.unwrap();
+        // Named as on this system's keyboard ("Control" on a Mac).
+        let ctrl = pretty_key("ctrl");
+        assert_eq!(keys, [ctrl.as_str(), "Shift", "S"]);
+        assert!(k > 0.0 && k < 0.2);
+        // The text runs out a letter at a time; a line break shows as a space.
+        let (early, _) = fx.typed.unwrap();
+        assert!(!early.is_empty() && early.len() < 11, "{early}");
+        let (all, a) = m.scene(at(1500)).cursor.unwrap().fx.typed.unwrap();
+        assert_eq!((all.as_str(), a), ("hello world", 1.0));
+        assert_eq!(fx.scroll.unwrap().0, (0, -1));
+        assert!(m.animating(at(300)));
+        // All gone after a while.
+        m.tick(at(3000));
+        let fx = m.scene(at(3000)).cursor.unwrap().fx;
+        assert!(fx.keys.is_none() && fx.typed.is_none() && fx.scroll.is_none());
+        // A drag draws the way it goes, then fades.
+        m.apply(
+            Cmd::Pointer {
+                x: 250.0,
+                y: 150.0,
+                click: false,
+                id: None,
+            },
+            at(3000),
+        );
+        m.apply(Cmd::Dragging, at(3000));
+        let d = m.scene(at(3050)).drag.unwrap();
+        assert_eq!(d.path[0], (50.0, 50.0));
+        assert_eq!(d.alpha, 1.0);
+        m.tick(at(3200));
+        assert_eq!(
+            *m.scene(at(3200)).drag.unwrap().path.last().unwrap(),
+            (250.0, 150.0)
+        );
+        m.tick(at(4000));
+        assert!(m.scene(at(4000)).drag.is_none());
+    }
+
+    #[test]
+    fn keycaps_are_named_for_people() {
+        let ctrl = pretty_key("ctrl");
+        assert_eq!(caps("ctrl+s"), [ctrl.as_str(), "S"]);
+        assert_eq!(caps("ctrl++"), [ctrl.as_str(), "+"]);
+        assert_eq!(caps("Return"), ["Return"]);
     }
 
     #[test]

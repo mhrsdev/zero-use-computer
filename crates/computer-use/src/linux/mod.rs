@@ -57,6 +57,7 @@ pub struct LinuxBackend {
     /// When to try connecting to the X server again (after a failure).
     x11_retry: Option<Instant>,
     restore_pointer: bool,
+    natural_mouse: bool,
     /// pid → application accessible.
     app_refs: HashMap<u32, ObjRef>,
     /// pid → app name, from the last listing (for messages).
@@ -128,6 +129,7 @@ impl LinuxBackend {
             x11,
             x11_retry,
             restore_pointer: true,
+            natural_mouse: true,
             app_refs: HashMap::new(),
             app_names: HashMap::new(),
             handles: HashMap::new(),
@@ -161,7 +163,8 @@ impl LinuxBackend {
             && self.wl_retry.is_none_or(|t| Instant::now() >= t)
         {
             match Wl::connect() {
-                Ok(w) => {
+                Ok(mut w) => {
+                    w.natural = self.natural_mouse;
                     self.wl = Some(w);
                     self.wl_retry = None;
                 }
@@ -231,6 +234,7 @@ impl LinuxBackend {
             match X11::connect() {
                 Ok(mut x) => {
                     x.restore_pointer = self.restore_pointer;
+                    x.natural = self.natural_mouse;
                     self.x11 = Some(x);
                     self.x11_retry = None;
                 }
@@ -1101,8 +1105,13 @@ impl Backend for LinuxBackend {
         self.batch_size = cfg.linux.batch_size.max(1);
         self.text_max = cfg.linux.text_max_chars.max(1);
         self.restore_pointer = cfg.restore_pointer;
+        self.natural_mouse = cfg.natural_mouse;
         if let Some(x) = self.x11.as_mut() {
             x.restore_pointer = cfg.restore_pointer;
+            x.natural = cfg.natural_mouse;
+        }
+        if let Some(w) = self.wl.as_mut() {
+            w.natural = cfg.natural_mouse;
         }
         let n = &cfg.notifications;
         match (&self.notifications, n.enabled) {

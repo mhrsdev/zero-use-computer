@@ -484,6 +484,7 @@ impl Backend for MacBackend {
         self.batch_attributes = cfg.macos.batch_attributes;
         self.messaging_timeout = cfg.macos.messaging_timeout_secs.max(0.1);
         self.apply_timeout();
+        cg::set_natural(cfg.natural_mouse);
     }
 
     fn permissions(&mut self) -> Vec<PermissionStatus> {

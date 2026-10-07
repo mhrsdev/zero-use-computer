@@ -440,10 +440,25 @@ their mouse:
   the agent acts and ripples where it clicks. Each action waits until the
   cursor is shown there (at most `move_ms`), so what the user sees happens
   where the cursor is, not before it gets there; it follows a drawing as the
-  pen moves, and goes to the focused element for typing. The real mouse is never moved, locked or restyled:
-  element actions go through accessibility APIs, and the coordinate fallbacks
-  on Windows and Linux put the pointer straight back (`restore_pointer`;
-  macOS posts events to the app without moving it).
+  pen moves, and goes to the focused element for typing. It swings there in
+  a gentle arc, leaning into the move and leaving a trail of its own
+  material; it breathes while it waits; keys it presses show as keycaps
+  beside it and what it types runs out in a bubble (dots for a password
+  field); a drag draws its line, a scroll shows arrows the way it goes
+  (`cursor_motion`, `show_keys`). The real mouse is never locked or
+  restyled: element actions go through accessibility APIs. The coordinate
+  fallbacks move it the way a hand does: quick to start, slower to
+  settle, in a hand's time for the distance, with the wheel turned a notch
+  at a time (`natural_mouse`; some apps notice a pointer that jumps or goes
+  dead straight). Each move goes one of five ways (`mouse_path`, "mixed"
+  picks one at random each time): a hand's curve (a bow to one side, a
+  tremor, sometimes a touch past and back), a sine wave, a circular arc, a
+  spring (past the target and back, settling) or a spiral in to the
+  target. A drag goes straight, whatever the setting (it may be drawing a
+  line). On Windows and Linux the pointer then goes straight back where
+  the user left it (`restore_pointer`); macOS posts the same path of
+  events to the app without moving the user's cursor. The agent's own
+  pointer glides the same five ways (`overlay.cursor_path`).
 - **A glow around the screen** (or around the window being worked on:
   `overlay.border_target = "window"`) and a small **label** such as
   "Zero is using the computer".
@@ -505,9 +520,14 @@ whichever client started it:
   next ones are 2, 3… in the order they join. A number freed by an agent
   that left goes to the next one. The hub ends a few seconds after the
   last agent leaves.
-- **A cursor each.** One overlay draws every agent's purple cursor, tagged
-  with its number once there are two or more ("Zero" when alone), and its
-  glow and label ("2 · Zero is thinking…") in its own part of the screen.
+- **A cursor each.** One overlay draws every agent's cursor, tagged with
+  its number once there are two or more ("Zero" when alone), and its glow
+  and label ("2 · Zero is thinking…") in its own part of the screen. Each
+  agent gets a pointer none of the others has (six: crystal, paper, jelly,
+  ice, metal, orbit, each clicking its own way), picked at random when it
+  starts; `overlay.cursor_style` names one instead, or `"classic"` for the
+  plain arrow, and `overlay.agent_cursors` gives an agent its own by its
+  client's name or its tag (`{ codex = "metal", "claude-code" = "jelly" }`).
 - **One stop key** stops them all. (Before v3.9 a second server couldn't
   even register it: the system gives a key to one program.)
 - **The screen shared out:** halves for two, thirds for three, a 2×2 grid
@@ -766,6 +786,8 @@ computer-use-mcp call click '{"app":"TextEdit","element_index":3}'
 computer-use-mcp tools                          # tool definitions the model will see
 computer-use-mcp config show                    # settings (see "Settings" below)
 computer-use-mcp settings                       # the decision model's page (= Ctrl+Alt+J)
+computer-use-mcp update                         # download a newer release now (see "Updates")
+computer-use-mcp update --install               # ... and put it in place now
 ```
 
 Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
@@ -773,6 +795,30 @@ Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
 
 `doctor` also checks that the emergency stop key and the settings key work
 on this machine, and asks the decision model a test question.
+
+### Updates
+
+From v4.0 the server keeps itself up to date (`[update]`):
+
+1. Five minutes after it starts (`check_after_mins`), and then every 12
+   hours (`check_every_hours`, shared by every server on the computer),
+   it asks GitHub for the latest release of `repo`.
+2. A newer one is downloaded: its zip for this system, checked against the
+   SHA-256 GitHub gives for it (no checksum, no update), unpacked into
+   `~/.computer-use/updates/` and its program asked its version. Pre-releases
+   and files from anywhere but the repository's releases are never taken.
+3. There it waits. Nothing an agent may be using is replaced mid-work.
+4. When the server next starts after the computer has restarted
+   (`install = "restart"`, the default), the waiting version takes the
+   program's place before anything else runs, and the server goes on as
+   the new version. When the program runs from an unpacked package or
+   plugin (its folder has `.claude-plugin/plugin.json`), the skills and
+   the other files of the package are replaced too.
+
+`install = "start"` puts it in at the next start of the server, `"manual"`
+only with `computer-use-mcp update --install`; `enabled = false` stops
+looking. `doctor` shows what is waiting. Updates use `curl`, which every
+supported system has.
 
 ## Embed the library
 
@@ -830,8 +876,9 @@ applying after a reload. The agent has no tool to change settings.
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
 | `[hub]` | several agents on one desktop: `enabled`, `port`, `arrange`, `chat`, `turn_wait_secs` |
+| `[update]` | updates: `enabled`, `check_after_mins`, `check_every_hours`, `install` (`restart`, `start`, `manual`), `repo` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
+| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `natural_mouse`, `mouse_path`, `hot_reload`, `launch_timeout_secs` |
 
 ### Token use
 

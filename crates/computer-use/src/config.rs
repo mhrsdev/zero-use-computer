@@ -46,6 +46,50 @@ impl Default for HubConfig {
     }
 }
 
+/// Updates ([update]): a while after the server starts it asks GitHub for
+/// the latest release; a newer one is downloaded, checked and set aside,
+/// never put in place while the agent may be working. It goes in when the
+/// server starts again after the computer has restarted (see `install`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Look for updates and download them.
+    pub enabled: bool,
+    /// Minutes after the server starts before the first look.
+    pub check_after_mins: u64,
+    /// Hours between looks while the server runs (every server on the
+    /// computer shares them).
+    pub check_every_hours: u64,
+    /// When a downloaded update goes in: "restart" (the first start after
+    /// the computer restarts), "start" (the next time the server starts),
+    /// or "manual" (only `computer-use-mcp update --install`).
+    pub install: UpdateInstall,
+    /// The GitHub repository releases come from (owner/name).
+    pub repo: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_after_mins: 5,
+            check_every_hours: 12,
+            install: UpdateInstall::Restart,
+            repo: "mhrsdev/zero-use-computer".into(),
+        }
+    }
+}
+
+/// When a downloaded update goes in ([`UpdateConfig::install`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateInstall {
+    #[default]
+    Restart,
+    Start,
+    Manual,
+}
+
 /// Optional JSONL audit log of every tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -468,6 +512,24 @@ pub struct OverlayConfig {
     pub cursor_color: String,
     /// Name tag shown beside the agent cursor ("" = none).
     pub cursor_tag: String,
+    /// The agent cursor's look: "random" (one of the pointers, another for
+    /// each agent working at once), "classic" (the plain arrow), or one:
+    /// crystal, paper, jelly, ice, metal, orbit.
+    pub cursor_style: String,
+    /// A pointer for an agent by its name: the MCP client's ("claude-code",
+    /// "codex") or its `cursor_tag`, e.g. { codex = "metal" }. Matched
+    /// without regard to case, before `cursor_style`.
+    pub agent_cursors: std::collections::BTreeMap<String, String>,
+    /// The pointer leans into its moves and leaves a trail of its own
+    /// material, breathes while it waits, draws a line where it drags and
+    /// shows the way it scrolls.
+    pub cursor_motion: bool,
+    /// The way the pointer glides to where it acts (as `mouse_path`):
+    /// "mixed", "hand", "sine", "arc", "spring" or "spiral".
+    pub cursor_path: String,
+    /// Keys the agent presses show as keycaps by its pointer, and what it
+    /// types runs out beside it.
+    pub show_keys: bool,
     /// No new action for this long after the last one: done (green), then hidden.
     pub done_after_ms: u64,
     /// How long "done" stays on screen before everything disappears.
@@ -519,6 +581,11 @@ impl Default for OverlayConfig {
             color_stopped: "#FF6D00".into(),
             cursor_color: "#9C27B0".into(),
             cursor_tag: "Zero".into(),
+            cursor_style: "random".into(),
+            agent_cursors: Default::default(),
+            cursor_motion: true,
+            cursor_path: "mixed".into(),
+            show_keys: true,
             done_after_ms: 20_000,
             done_linger_ms: 1_500,
             error_hold_ms: 2_500,
@@ -530,6 +597,28 @@ impl Default for OverlayConfig {
             font: String::new(),
             command: String::new(),
         }
+    }
+}
+
+impl OverlayConfig {
+    /// These settings for an agent called any of `names` (its MCP client,
+    /// its tag): the pointer `agent_cursors` gives it, if any.
+    pub fn for_agent(&self, names: &[&str]) -> OverlayConfig {
+        let mut cfg = self.clone();
+        let picked = names.iter().find_map(|n| {
+            let n = n.trim();
+            (!n.is_empty())
+                .then(|| {
+                    self.agent_cursors
+                        .iter()
+                        .find(|(k, _)| k.trim().eq_ignore_ascii_case(n))
+                })
+                .flatten()
+        });
+        if let Some((_, style)) = picked {
+            cfg.cursor_style = style.clone();
+        }
+        cfg
     }
 }
 
@@ -1071,6 +1160,7 @@ pub struct Config {
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub hub: HubConfig,
+    pub update: UpdateConfig,
     pub linux: LinuxConfig,
     pub macos: MacosConfig,
     pub windows: WindowsConfig,
@@ -1084,6 +1174,15 @@ pub struct Config {
     /// Put the real mouse pointer back where it was after a synthesized
     /// click, scroll or drag (Linux, Windows; macOS never moves it).
     pub restore_pointer: bool,
+    /// Move the mouse the way a hand does when an action uses it: along a
+    /// gentle curve, speeding up and slowing down, rather than jumping or
+    /// going in a straight line (some apps notice). Off: it jumps there.
+    pub natural_mouse: bool,
+    /// The way the mouse goes (with `natural_mouse`): "mixed" (one at random
+    /// for each move), "hand" (a hand's curve), "sine" (a wave), "arc" (a
+    /// circle's arc), "spring" (past the target and back) or "spiral" (in
+    /// to the target). Drags go straight whatever this says.
+    pub mouse_path: String,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -1109,6 +1208,7 @@ impl Default for Config {
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             hub: HubConfig::default(),
+            update: UpdateConfig::default(),
             linux: LinuxConfig::default(),
             macos: MacosConfig::default(),
             windows: WindowsConfig::default(),
@@ -1116,6 +1216,8 @@ impl Default for Config {
             text_only: false,
             follow_new_windows: true,
             restore_pointer: true,
+            natural_mouse: true,
+            mouse_path: "mixed".into(),
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
@@ -1154,6 +1256,48 @@ impl Config {
             if crate::overlay::draw::parse_color(value).is_none() {
                 return Err(format!(
                     "{key} must be a colour like \"#1E88E5\" (got \"{value}\")"
+                ));
+            }
+        }
+        let style = o.cursor_style.trim().to_ascii_lowercase();
+        if !crate::overlay::draw::CURSOR_STYLES.contains(&style.as_str()) {
+            return Err(format!(
+                "overlay.cursor_style must be one of {} (got \"{}\")",
+                crate::overlay::draw::CURSOR_STYLES.join(", "),
+                o.cursor_style
+            ));
+        }
+        let repo = self.update.repo.trim();
+        let part_ok = |p: &str| {
+            !p.is_empty()
+                && p != "."
+                && p != ".."
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        };
+        if !matches!(repo.split_once('/'), Some((o, n)) if part_ok(o) && part_ok(n)) {
+            return Err(format!(
+                "update.repo must be a GitHub repository as owner/name (got \"{repo}\")"
+            ));
+        }
+        for (key, value) in [
+            ("mouse_path", &self.mouse_path),
+            ("overlay.cursor_path", &o.cursor_path),
+        ] {
+            let v = value.trim().to_ascii_lowercase();
+            if !crate::motion::PATH_STYLES.contains(&v.as_str()) {
+                return Err(format!(
+                    "{key} must be one of {} (got \"{value}\")",
+                    crate::motion::PATH_STYLES.join(", ")
+                ));
+            }
+        }
+        for (agent, style) in &o.agent_cursors {
+            let style = style.trim().to_ascii_lowercase();
+            if !crate::overlay::draw::CURSOR_STYLES.contains(&style.as_str()) {
+                return Err(format!(
+                    "overlay.agent_cursors.{agent} must be one of {} (got \"{style}\")",
+                    crate::overlay::draw::CURSOR_STYLES.join(", ")
                 ));
             }
         }
@@ -1744,6 +1888,25 @@ impl ConfigStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_agent_can_have_its_own_pointer() {
+        let mut o = OverlayConfig::default();
+        o.agent_cursors.insert("Codex".into(), "metal".into());
+        o.agent_cursors.insert("Zero".into(), "ice".into());
+        assert_eq!(o.for_agent(&["codex", "Zero"]).cursor_style, "metal");
+        assert_eq!(o.for_agent(&["claude-code", "zero"]).cursor_style, "ice");
+        assert_eq!(o.for_agent(&["claude-code", "Ada"]).cursor_style, "random");
+        let mut c = Config::default();
+        c.overlay
+            .agent_cursors
+            .insert("codex".into(), "velvet".into());
+        assert!(
+            c.validate()
+                .unwrap_err()
+                .contains("overlay.agent_cursors.codex")
+        );
+    }
+
     use super::*;
 
     #[test]

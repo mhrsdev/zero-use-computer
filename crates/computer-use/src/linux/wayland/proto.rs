@@ -39,6 +39,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 
 use crate::error::{Error, Result};
 use crate::keys::{Key, KeyCombo, NamedKey, Pad};
+use crate::motion::{self as hand, Kind};
 use crate::types::{Capture, Rect};
 
 /// How long the compositor gets to answer a roundtrip.
@@ -140,6 +141,11 @@ pub struct Wl {
     next_frame: u32,
     /// The connection broke: the owner reconnects.
     lost: bool,
+    /// Move the pointer along a hand's path rather than jumping.
+    pub natural: bool,
+    /// Where this pointer was last sent (Wayland never says where the
+    /// user's is).
+    at: Option<(f64, f64)>,
 }
 
 /// Everything the compositor's events update.
@@ -353,6 +359,8 @@ impl Wl {
             next_sync: 0,
             next_frame: 0,
             lost: false,
+            natural: true,
+            at: None,
         };
         // The globals (outputs are bound as they are announced).
         wl.roundtrip()?;
@@ -795,8 +803,33 @@ impl Wl {
     /// to read the user's pointer position, so it can't be put back.
     pub fn move_pointer(&mut self, x: f64, y: f64) -> Result<()> {
         let (p, area) = self.pointer()?;
-        motion(&p, area, x, y);
+        self.go(&p, area, (x, y), Kind::Reach)?;
         self.roundtrip()
+    }
+
+    /// Bring the pointer to `to`: along a hand's path from where it was
+    /// last sent (`natural_mouse`; from a reach away the first time), else
+    /// straight there. Only motion: a held button stays held.
+    fn go(
+        &mut self,
+        p: &zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+        area: Rect,
+        to: (f64, f64),
+        kind: Kind,
+    ) -> Result<()> {
+        if self.natural {
+            let from = self
+                .at
+                .unwrap_or_else(|| hand::somewhere_near(to, &mut hand::Rng::new()));
+            for (x, y) in hand::travel(from, to, kind) {
+                motion(p, area, x, y);
+                self.pause(hand::STEP)?;
+            }
+        } else {
+            motion(p, area, to.0, to.1);
+        }
+        self.at = Some(to);
+        Ok(())
     }
 
     /// Click `button` (1 left, 2 middle, 3 right, 8 back, 9 forward)
@@ -805,7 +838,7 @@ impl Wl {
     pub fn click(&mut self, x: f64, y: f64, button: u8, count: u8) -> Result<()> {
         let code = button_code(button)?;
         let (p, area) = self.pointer()?;
-        motion(&p, area, x, y);
+        self.go(&p, area, (x, y), Kind::Reach)?;
         for _ in 0..count.max(1) {
             press_button(&p, code, true);
             press_button(&p, code, false);
@@ -836,11 +869,18 @@ impl Wl {
         to: (f64, f64),
         held: &mut bool,
     ) -> Result<()> {
-        motion(p, area, from.0, from.1);
+        self.go(p, area, from, Kind::Reach)?;
         self.pause(DRAG_STEP)?;
         press_button(p, BTN_LEFT, true);
         *held = true;
         self.pause(DRAG_STEP)?;
+        if self.natural {
+            self.go(p, area, to, Kind::Drag)?;
+            self.pause(DRAG_STEP)?;
+            press_button(p, BTN_LEFT, false);
+            *held = false;
+            return self.pause(DRAG_STEP);
+        }
         // A few intermediate motions so drag-aware widgets follow.
         for step in 1..=8 {
             let t = f64::from(step) / 8.0;
@@ -900,7 +940,8 @@ impl Wl {
                 continue;
             };
             pace(0.0)?;
-            motion(p, area, x, y);
+            // To the stroke's start with the button up, as a hand would.
+            self.go(p, area, (x, y), Kind::Reach)?;
             self.pause(DRAG_STEP)?;
             press_button(p, code, true);
             *held = true;
@@ -915,6 +956,7 @@ impl Wl {
                 self.flush()?;
                 last = (px, py);
             }
+            self.at = Some(last);
             std::thread::sleep(DRAG_STEP);
             press_button(p, code, false);
             *held = false;
@@ -927,7 +969,8 @@ impl Wl {
     /// sent as a mouse wheel's clicks (apps scroll by their step per click).
     pub fn scroll(&mut self, x: f64, y: f64, dx: i32, dy: i32) -> Result<()> {
         let (p, area) = self.pointer()?;
-        motion(&p, area, x, y);
+        self.go(&p, area, (x, y), Kind::Reach)?;
+        let mut rng = hand::Rng::new();
         for (axis, n) in [
             (wl_pointer::Axis::VerticalScroll, dy),
             (wl_pointer::Axis::HorizontalScroll, dx),
@@ -941,7 +984,13 @@ impl Wl {
                     n.signum(),
                 );
                 p.frame();
-                self.pause(WHEEL_PAUSE)?;
+                // A finger rolls the wheel a notch at a time.
+                let pause = if self.natural {
+                    hand::wheel_pause(n.unsigned_abs(), &mut rng)
+                } else {
+                    WHEEL_PAUSE
+                };
+                self.pause(pause)?;
             }
         }
         self.roundtrip()
