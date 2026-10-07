@@ -2,23 +2,47 @@
 
 ## Unreleased (v4.8)
 
-The settings panel, built in steps
-([plan](docs/PANEL-SPEC.md)).
+The settings panel, and everything it needed
+([plan](docs/PANEL-SPEC.md), [guide](docs/GUIDE.md#settings-panel)).
 
 - **One panel for every setting** (`computer-use-mcp settings`,
-  Ctrl+Alt+J, or `decide setup="open"`): all 171 settings in 22 groups, with
-  help, defaults, a reset button each, search, "changed from default" and
-  light, dark and automatic themes in Material Design 3 style. The decision
-  model's page is a tab of it. A new test fails when a setting has no entry
-  in the panel.
-- **A stable address**: `[panel]` `port` (47382, a free port if taken), a
-  token kept in a file only the user can read, and a panel already served by
-  another process is shown instead of a second one. It listens only while it
-  is open and closes after `panel.idle_minutes`.
-- **The agent never uses it**: a window whose title says "Zero panel
+  Ctrl+Alt+J, or `decide setup="open"`): 187 settings in 22 groups, each with
+  its help, its default and a reset, search, "changed from default", light,
+  dark and automatic themes in Material Design 3 style with an accent colour.
+  A test fails when a setting has no entry in the panel. Its address is the
+  same every time (`panel.port`, a token in a file only you can read); it
+  listens only while it is open. It sends its schema once and only the
+  values that differ from the defaults after that (45 KB a request to 0.2 KB).
+- **The agent never uses it.** A window whose title says "Zero panel
   [private]" is refused by every tool. Settings that limit the agent or the
-  updates ask the user to confirm, in the page and in the server.
-- Secrets (the API key, the HTTP token) are written but never sent back.
+  updates ask you to confirm, in the page and in the server; secrets are
+  written but never sent back.
+- **Previews:** how the pointer glides (from the program's own path maker),
+  how the overlay's border, label and colours fit, what a picture costs in
+  tokens.
+- **Profiles** (Low tokens, Balanced, Best quality, Showcase, and your own),
+  the **tool list** with what each tool costs, the **apps report**, the
+  **audit log**, the **settings file as text** (checked as a whole, secrets
+  covered) and **import and export** as TOML.
+- **Update controls:** look every 5 minutes or more (`check_every_mins`) or
+  never, stable or pre-release channel, pin a version, skip a version. A look
+  asks GitHub only "has it changed?" (the tag is kept once a look is over);
+  GitHub's "slow down" is waited out for an hour. The program an update
+  replaces is kept, and **Go back** / `update --rollback` puts it in place.
+  The panel shows when it last looked, what waits and its notes.
+- **One button to add it to the agents you use:** the Connect page and
+  `computer-use-mcp install` for Claude Code, Claude Desktop, Codex, Cursor
+  and VS Code. Only its own entry is written, the rest of each file stays in
+  its own order with its comments, a `.bak` copy is kept, a file with
+  mistakes is left alone, and the program is kept at
+  `~/.computer-use/bin` so it stays where the agents look. Newer Claude Code
+  keeps the name `computer-use`; the program is then added as
+  `zero-use-computer`.
+- **A guide inside the panel:** nine short pages.
+- **More to turn:** the pointer's `trail`, `lean_strength` and `breathe`
+  (and how strong each is), and the real mouse's `mouse_speed`,
+  `mouse_overshoot` and `mouse_jitter`.
+- A reset leaves no empty section in the settings file.
 
 ## v4.0.1
 

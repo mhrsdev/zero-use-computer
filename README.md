@@ -83,6 +83,14 @@ State after the steps:
   card numbers, and keystrokes that only ever go to the app they're meant
   for. Which apps the agent may touch is set by a
   [security skill](skills/computer-use-security/SKILL.md).
+- **Everything is a setting, and one page shows them.** `computer-use-mcp
+  settings` (or Ctrl+Alt+J) opens a [panel](docs/GUIDE.md#settings-panel)
+  in your browser: every setting with its help and a reset, light and dark
+  themes, previews of how the pointer glides and what the overlay looks
+  like, profiles (Low tokens, Best quality, Showcase, your own), the tool
+  list with what each tool costs, update controls (never, or every 5
+  minutes) with a way back, and a button that adds the program to Claude
+  Code, Claude Desktop, Codex, Cursor and VS Code. The agent can't use it.
 
 ## Numbers
 
@@ -174,6 +182,9 @@ benchmark can stand behind.
    and extract it somewhere permanent.
 2. **Claude Code:** run `./install.sh` (macOS, Linux) or `install.cmd`
    (Windows). It registers the server; `claude mcp list` shows it.
+   **Any of Claude Code, Claude Desktop, Codex, Cursor, VS Code:** run
+   `computer-use-mcp install`, or press a button on the settings panel's
+   Connect page.
    **Anything else:** point your client at `computer-use-mcp serve`.
    Configs for Codex, Cursor, VS Code and Claude Desktop are in
    [`examples/`](examples) and [docs/CONNECT.md](docs/CONNECT.md).
@@ -197,7 +208,8 @@ Or embed the library (`computer-use`) in your own agent:
 ## Docs
 
 - [Guide](docs/GUIDE.md): every tool, setting, platform detail and
-  architecture note.
+  architecture note. The [settings panel](docs/GUIDE.md#settings-panel) has
+  a shorter guide of its own inside it.
 - [Connect a client](docs/CONNECT.md) · [Upgrading](docs/MIGRATING.md) ·
   [Roadmap](docs/ROADMAP.md)
 - [Benchmarks](bench/README.md): how tasks are measured, and how to run

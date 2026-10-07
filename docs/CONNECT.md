@@ -43,6 +43,27 @@ clients the server offers the same files over MCP (section 4).
 
 ## 2. Clients
 
+**The quick way.** `computer-use-mcp install` adds the program to every agent
+it finds on this computer, `--client NAME` to one (`claude-code`,
+`claude-desktop`, `codex`, `cursor`, `vscode`), `--list` says which are here
+and whether it is in each, and `--remove` takes it out. The settings panel's
+**Connect an agent** page does the same with buttons, and shows the exact
+entry before it writes it. Either way:
+
+- only the `computer-use` entry is written; the rest of the file stays as
+  it was, in its own order and with its comments, and a copy is kept next to
+  it as `.bak`;
+- a file that isn't plain JSON (VS Code's may hold comments) or TOML is left
+  alone, with the entry to add by hand;
+- the program is registered at `~/.computer-use/bin/computer-use-mcp`, a
+  copy made there if it runs from somewhere else (a Downloads folder), so
+  moving or deleting what you downloaded breaks nothing. Updates replace
+  that file in place;
+- newer Claude Code versions keep the name `computer-use` for their own
+  feature; the program is then added to Claude Code as `zero-use-computer`.
+
+By hand, for each client:
+
 ### Claude Code
 
 The release zip has installers: `install.cmd` (Windows) or `./install.sh`

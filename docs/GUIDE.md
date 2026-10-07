@@ -176,8 +176,9 @@ milliseconds, and writes no text. The agent asks it through:
   so a saved script can judge as it goes.
 
 **Setting it up:** press **Ctrl+Alt+J** (Ctrl+Option+J on a Mac;
-`control.settings_hotkey`) from any app, or run `computer-use-mcp settings`. A page opens in your browser:
-choose **Jev** (TypeSafe's System One API, or a server that speaks it, like
+`control.settings_hotkey`) from any app, or run `computer-use-mcp settings`.
+The [settings panel](#settings-panel) opens in your browser on its
+Decision model page: choose **Jev** (TypeSafe's System One API, or a server that speaks it, like
 local-jev) or an **OpenAI-compatible** model (OpenAI, Groq, Cerebras,
 OpenRouter, Ollama…), give its address, model and API key, press Test and
 Save. The server uses it at once. The agent's skill suggests Ctrl+Alt+J the
@@ -547,8 +548,8 @@ whichever client started it:
 - **Messages** (`hub.chat`, off): agents send each other short notes
   (`agents` send, at most 20 a minute and 1,000 characters each); they come
   with the recipient's next result, marked as another agent's words,
-  never instructions. The user switches them on and off on the settings
-  page (Ctrl+Alt+J) or with `computer-use-mcp config set hub.chat true`.
+  never instructions. The user switches them on and off in the settings
+  panel (Ctrl+Alt+J) or with `computer-use-mcp config set hub.chat true`.
 
 The model hears of it in its results ("2 agents share this desktop: you
 are agent 1, your part of the screen: x 0–960, y 0–1080") and through the
@@ -588,7 +589,7 @@ own, as before.
   combination, a warning is logged: pick another one. Hosts can stop the agent
   too (`Engine::stop_handle`, `set_stopped`).
 - **Settings key** — `Ctrl+Alt+J` (`control.settings_hotkey`) opens the
-  decision model's settings page, registered the same way (a binding in
+  [settings panel](#settings-panel), registered the same way (a binding in
   Hyprland or sway).
 - **Pause while you work** (`control.pause_on_user_input`, on by default).
   Before each action, the engine checks how long ago anyone last used the
@@ -788,9 +789,13 @@ computer-use-mcp state "TextEdit" --screenshot shot.png
 computer-use-mcp call click '{"app":"TextEdit","element_index":3}'
 computer-use-mcp tools                          # tool definitions the model will see
 computer-use-mcp config show                    # settings (see "Settings" below)
-computer-use-mcp settings                       # the decision model's page (= Ctrl+Alt+J)
+computer-use-mcp settings                       # the settings panel (= Ctrl+Alt+J)
+computer-use-mcp install                        # add it to the agents found here (see "Connect")
+computer-use-mcp install --list                 # which agents are here, and is it in each
+computer-use-mcp install --client cursor --remove
 computer-use-mcp update                         # download a newer release now (see "Updates")
 computer-use-mcp update --install               # ... and put it in place now
+computer-use-mcp update --rollback              # go back to the version the last update replaced
 ```
 
 Flags: `--config <path>`, `--http <addr>`, `--http-token <token>`,
@@ -803,25 +808,39 @@ on this machine, and asks the decision model a test question.
 
 From v4.0 the server keeps itself up to date (`[update]`):
 
-1. Five minutes after it starts (`check_after_mins`), and then every 12
-   hours (`check_every_hours`, shared by every server on the computer),
-   it asks GitHub for the latest release of `repo`.
+1. A while after it starts (`check_after_mins`, 5), and then every
+   `check_every_mins` (5 at the least) or, when that is 0,
+   `check_every_hours` (12), it asks GitHub for the release to take. Every
+   server on the computer shares one clock, so two of them never ask twice.
+   Which release: the latest stable one, or with `channel = "prerelease"`
+   the newest that GitHub marks as a pre-release too (its tag must be plain
+   numbers, such as `v4.9.0`); `pin = "4.8.2"` takes only that one and
+   nothing newer; `skip_version` is never taken.
 2. A newer one is downloaded: its zip for this system, checked against the
    SHA-256 GitHub gives for it (no checksum, no update), unpacked into
-   `~/.computer-use/updates/` and its program asked its version. Pre-releases
-   and files from anywhere but the repository's releases are never taken.
+   `~/.computer-use/updates/` and its program asked its version. Files from
+   anywhere but the repository's releases are never taken.
 3. There it waits. Nothing an agent may be using is replaced mid-work.
 4. When the server next starts after the computer has restarted
    (`install = "restart"`, the default), the waiting version takes the
    program's place before anything else runs, and the server goes on as
    the new version. When the program runs from an unpacked package or
    plugin (its folder has `.claude-plugin/plugin.json`), the skills and
-   the other files of the package are replaced too.
+   the other files of the package are replaced too. The program it
+   replaced is kept (one only) in `updates/previous`.
 
 `install = "start"` puts it in at the next start of the server, `"manual"`
 only with `computer-use-mcp update --install`; `enabled = false` stops
-looking. `doctor` shows what is waiting. Updates use `curl`, which every
-supported system has.
+looking. `computer-use-mcp update --rollback` (or **Go back** in the panel)
+puts the kept version back and sets `skip_version` to the one left, so it
+isn't downloaded again. `doctor` shows what is waiting. Updates use `curl`,
+which every supported system has.
+
+GitHub allows 60 anonymous requests an hour for each address. A look asks
+"has it changed?" with the tag of the last answer, and an unchanged answer
+doesn't count against that; after a look that is refused for asking too
+often the program waits an hour. Looking every 10 minutes is 6 requests an
+hour at most.
 
 ## Embed the library
 
@@ -842,6 +861,52 @@ for a full, runnable session against the in-memory mock backend:
 ```bash
 cargo run -p computer-use --example mock_session
 ```
+
+## Settings panel
+
+`computer-use-mcp settings` (or **Ctrl+Alt+J** from any app) opens a page in
+your browser with every setting on it. It is served by this program on your
+own computer (`127.0.0.1`), at the same address each time (`panel.port`,
+47382; a free port if that one is taken), behind a token kept in a file only
+you can read. It listens only while it is open, and closes after
+`panel.idle_minutes` (15) without a request.
+
+- **Settings** in 22 groups, each with its help, its default and a Reset;
+  search across all of them (press `/`); a filter for what differs from the
+  defaults; light, dark or automatic, with an accent colour
+  (`panel.theme`, `panel.accent`). Changes are written to the settings file
+  with its comments kept and used by running servers at once. A secret (the
+  decision model's key, the HTTP token) is written but never shown again,
+  only its last four characters.
+- **Previews**: how the pointer glides (the real path maker, so each press
+  of "Another set" is a fresh sample), how the overlay's border, label and
+  colours fit together, what a picture costs in tokens.
+- **Profiles**: Low tokens, Balanced, Best quality and Showcase, and your own
+  (a snapshot of what you changed). A profile never holds a secret or a
+  protected setting.
+- **Tools**: the tool list with a switch for each and what it costs on every
+  request; the apps that needed pixels most; the audit log; the settings
+  file as text, checked as a whole before it is written, secrets covered;
+  import and export as TOML.
+- **Updates**: how often it looks (never, every 5 or 10 minutes, hourly,
+  daily…), what waits and its notes, look now, put it in place now, go back.
+- **Connect an agent**: add the program to Claude Code, Claude Desktop,
+  Codex, Cursor and VS Code with a button (see [Connect](CONNECT.md)).
+- **A guide**: nine short pages inside the panel.
+
+**Protected settings** are those that limit what the agent can do or see
+(`[control]`, `[privacy]`, the script file and web access, the audit log)
+and those of `[update]` and the HTTP server. Changing one asks you to
+confirm, in the page and in the server (so a script on the page can't skip
+it), and no profile, import or file edit sets one without the same yes.
+
+**The agent never uses the panel.** Its window's title carries a mark
+(`Zero panel [private]`) and every tool refuses a window that has it, so
+the agent can't open it and change its own limits. It is a defence in depth,
+not a lock: the panel's address is never given to the agent, and a second
+window (a screenshot of the whole screen, say) could still show it.
+
+The panel's own settings are `[panel]`.
 
 ## Settings
 
@@ -865,7 +930,9 @@ rejected with a clear message) and your comments are preserved. A running
 server **reloads the file automatically** (`hot_reload = true`) and tells MCP
 clients when the tool list changed — no restart needed. Command-line flags
 (`--text-only`, `--log`, `--http`, …) override the file and keep
-applying after a reload. The agent has no tool to change settings.
+applying after a reload. The agent has no tool to change settings. Every
+setting is also on the [settings panel](#settings-panel), which checks each
+value before it is written.
 
 | Section | What you control |
 |---|---|
@@ -873,15 +940,16 @@ applying after a reload. The agent has no tool to change settings.
 | `[screenshot]` | on/off, `attach` = `auto` / `always` / `never`, max size, PNG/JPEG, quality, compression, resize filter |
 | `[tree]` | size limits, text length, indentation, shown actions/states, diffs, `compact`, change reports and their level (`report`), `quiet_volatile` |
 | `[timing]` | settle delay, key delay, app-list cache, `wait_for` defaults, how long `expect` waits |
-| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings |
+| `[overlay]` | the on-screen indicator: on/off, cursor/glow/label/click effect, screen or window glow, sizes, label texts, state colours, timings; the pointer's style, motion, `trail`, `lean_strength`, `breathe` and how strong each is |
 | `[cache]` | screen memory on/off, how many screens and how much memory, match threshold, screenshot dedupe and its sensitivity, read reuse window, `rebase_after_tokens` |
 | `[script]` | saved scripts as tools on/off, which files scripts may read and write, web access, time limit, where saved scripts live |
 | `[audit]` | JSONL audit log on/off and path |
 | `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
 | `[hub]` | several agents on one desktop: `enabled`, `port`, `arrange`, `chat`, `turn_wait_secs` |
-| `[update]` | updates: `enabled`, `check_after_mins`, `check_every_hours`, `install` (`restart`, `start`, `manual`), `repo` |
+| `[update]` | updates: `enabled`, `check_after_mins`, `check_every_mins` or `check_every_hours`, `install` (`restart`, `start`, `manual`), `channel`, `pin`, `skip_version`, `repo` |
+| `[panel]` | the settings panel: `port`, `idle_minutes`, `theme`, `accent` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `natural_mouse`, `mouse_path`, `hot_reload`, `launch_timeout_secs` |
+| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `natural_mouse`, `mouse_path`, `mouse_speed`, `mouse_overshoot`, `mouse_jitter`, `hot_reload`, `launch_timeout_secs` |
 
 ### Token use
 

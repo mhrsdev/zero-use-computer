@@ -1,3 +1,32 @@
+# Upgrading to v4.8
+
+Nothing you have to change. What is different:
+
+- **`computer-use-mcp settings` and Ctrl+Alt+J open the settings panel**,
+  not only the decision model's page. The decision model is one of its
+  pages, and `decide setup="open"` opens the panel there. The panel keeps
+  one address (`panel.port`, 47382) and a token in
+  `~/.computer-use/panel-47382.token` instead of a new random address each
+  time.
+- **New settings:** `[panel]` (`port`, `idle_minutes`, `theme`, `accent`);
+  `update.check_every_mins` (0: use the hours as before), `update.channel`,
+  `update.pin`, `update.skip_version`; `overlay.trail`, `trail_strength`,
+  `lean_strength`, `breathe`, `breathe_strength`; `mouse_speed`,
+  `mouse_overshoot`, `mouse_jitter`. Their defaults are what it did before.
+- **A reset leaves no empty section** in the settings file
+  (`computer-use-mcp config unset` too).
+- **Updates keep the version they replace** (one only, in
+  `~/.computer-use/updates/previous`) and ask GitHub only "has it changed?"
+  after the first look. `computer-use-mcp update --rollback` goes back.
+- **New command:** `computer-use-mcp install` adds the program to Claude
+  Code, Claude Desktop, Codex, Cursor and VS Code.
+- **A window titled "Zero panel [private]" is refused by every tool.**
+- **For programs that embed the library:** `decision::page::open` and
+  `decision::page::serve` are now `panel::open(path, tab)` and
+  `panel::serve`. `decision::page` keeps `save_settings`, `remove_settings`,
+  `try_model` and `try_decider`. `update::latest` takes the `UpdateConfig`
+  instead of the repository name, and `Release` has two more fields.
+
 # Upgrading to v4.0.1
 
 Nothing to change. Where an action uses the real mouse, your pointer is

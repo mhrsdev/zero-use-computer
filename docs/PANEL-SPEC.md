@@ -1,9 +1,21 @@
 # Control panel: specification for v4.8
 
-Status: step 1 of section 10 is built (server, token file, theme shell,
-schema with its test, the decision model tab, the agent protection) and
-first check of the settings groups, search and reset. Steps 2 to 7 are not.
-Written against v4.0.0, now on v4.0.1.
+Status: built in v4.8 (see the changelog). Where it differs from the plan
+below:
+
+- The update setting "install when idle" was left out: an update goes in
+  only when a server starts, never while an agent may be working, and that
+  is the safe way to avoid two versions of the program talking to one hub.
+  The other update controls are as planned.
+- `update.check_every_hours` stays (it is used when `check_every_mins` is
+  0), rather than being replaced.
+- The clients after the first five (Windsurf, Gemini CLI, Cline, Zed,
+  Continue, OpenCode) are not added: their settings files weren't checked.
+- Not yet on the panel: an editor for `overlay.agent_cursors` (a table,
+  which the settings keys don't list; write it in the settings file) and a
+  per-app picture setting (it is kept per session, not in a file).
+- The Windows and macOS locations of each agent's file are from their
+  documentation and the project's own, not seen on those systems.
 
 All text in the panel, its help pages, this spec, the changelog entry and
 the code comments is English only.
