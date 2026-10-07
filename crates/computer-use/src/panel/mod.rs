@@ -22,6 +22,7 @@ mod profiles;
 mod raw;
 mod schema;
 mod settings;
+mod shortcuts;
 mod status;
 mod updates;
 
@@ -111,8 +112,10 @@ pub fn serve(path: Option<PathBuf>, browser: bool, ready: impl FnOnce(&str)) -> 
     match Server::bind(path, &config::home_dir())? {
         Bound::Mine(server) => {
             ready(&server.url);
-            if browser {
-                open_browser(&server.url)?;
+            // No browser to open (none set, a session without a desktop):
+            // the page is served all the same, at the address just given.
+            if browser && let Err(e) = open_browser(&server.url) {
+                log::warn!("settings panel: couldn't open a browser: {e}");
             }
             server.run();
         }
@@ -231,6 +234,8 @@ struct Page {
     exe: PathBuf,
     /// Where the agents' settings are on this computer.
     env: crate::connect::Env,
+    /// Where shortcuts to the panel go.
+    places: crate::shortcut::Places,
     idle: Duration,
     alive: Arc<AtomicBool>,
     /// When the last request came.
@@ -264,7 +269,15 @@ impl Server {
     fn bind(path: Option<PathBuf>, home: &Path) -> Result<Bound> {
         let mut env = crate::connect::Env::real();
         env.zero_home = home.to_path_buf();
-        Self::bind_with(path, home, std::env::current_exe().unwrap_or_default(), env)
+        let mut places = crate::shortcut::Places::real();
+        places.icons = home.join("icons");
+        Self::bind_with(
+            path,
+            home,
+            std::env::current_exe().unwrap_or_default(),
+            env,
+            places,
+        )
     }
 
     fn bind_with(
@@ -272,6 +285,7 @@ impl Server {
         home: &Path,
         exe: PathBuf,
         env: crate::connect::Env,
+        places: crate::shortcut::Places,
     ) -> Result<Bound> {
         let cfg = panel_settings(path.as_deref());
         let token = persistent_token(home, cfg.port);
@@ -306,6 +320,7 @@ impl Server {
                 home: home.to_path_buf(),
                 exe,
                 env,
+                places,
                 idle: Duration::from_secs(cfg.idle_minutes.clamp(1, 240) * 60),
                 alive: Arc::new(AtomicBool::new(true)),
                 last: Mutex::new(Instant::now()),
@@ -569,6 +584,8 @@ impl Page {
                     status::path_preview(style, feel)
                 })
             }
+            "shortcut_list" => shortcuts::list(&self.places, &self.env, &self.exe),
+            "shortcut_do" => shortcuts::act(&self.places, &self.env, &self.exe, body),
             "connect_list" => connecting::list(&self.env, &self.exe),
             "connect_do" => connecting::act(&self.env, &self.exe, body),
             "update_status" => self.with_config(|c| updates::status(c, &self.updates_dir())),

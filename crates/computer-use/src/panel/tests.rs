@@ -525,6 +525,7 @@ fn the_panel_is_english_only() {
         ("status.rs", include_str!("status.rs")),
         ("updates.rs", include_str!("updates.rs")),
         ("connecting.rs", include_str!("connecting.rs")),
+        ("shortcuts.rs", include_str!("shortcuts.rs")),
         ("help.rs", include_str!("help.rs")),
         ("help/start.html", include_str!("help/start.html")),
         ("help/pointers.html", include_str!("help/pointers.html")),
@@ -883,6 +884,7 @@ fn an_update_goes_in_and_comes_out_only_when_the_user_says_so() {
         &dir,
         exe.clone(),
         crate::connect::Env::real(),
+        crate::shortcut::Places::real(),
     )
     .unwrap() else {
         panic!("another panel answered");
@@ -952,9 +954,14 @@ fn an_agent_is_added_and_removed_from_the_connect_page_only_with_a_yes() {
     };
     std::fs::create_dir_all(env.home.join(".cursor")).unwrap();
     let cursor_file = env.home.join(".cursor/mcp.json");
-    let Bound::Mine(server) =
-        Server::bind_with(Some(path), &dir, exe.clone(), env.clone()).unwrap()
-    else {
+    let Bound::Mine(server) = Server::bind_with(
+        Some(path),
+        &dir,
+        exe.clone(),
+        env.clone(),
+        crate::shortcut::Places::real(),
+    )
+    .unwrap() else {
         panic!("another panel answered");
     };
     let (host, token, alive) = (
@@ -1068,6 +1075,98 @@ fn an_agent_is_added_and_removed_from_the_connect_page_only_with_a_yes() {
     assert_eq!(
         std::fs::read_to_string(&cursor_file).unwrap(),
         "{ // mine\n}"
+    );
+    alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_panels_shortcut_is_made_and_taken_away_from_the_page_with_a_yes() {
+    let dir = temp("shortcut");
+    let path = config_with_port(&dir, "");
+    let exe = dir.join("computer-use-mcp");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    let env = crate::connect::Env {
+        home: dir.join("home"),
+        appdata: None,
+        os: crate::connect::Os::Linux,
+        path: vec![],
+        codex_home: None,
+        zero_home: dir.join("home/.computer-use"),
+    };
+    let places = crate::shortcut::Places {
+        os: crate::connect::Os::Linux,
+        desktop: Some(dir.join("Desktop")),
+        menu: Some(dir.join("apps")),
+        icons: dir.join("home/.computer-use/icons"),
+    };
+    let Bound::Mine(server) =
+        Server::bind_with(Some(path), &dir, exe, env.clone(), places).unwrap()
+    else {
+        panic!("another panel answered");
+    };
+    let (host, token, alive) = (
+        server.page.host.clone(),
+        server.page.token.clone(),
+        server.page.alive.clone(),
+    );
+    std::thread::spawn(move || server.run());
+    let call = |route: &str, body: Value| json_of(&post(&host, &token, route, &body.to_string()));
+
+    let l = call("shortcut_list", json!({}));
+    assert_eq!(l["ok"], true, "{l}");
+    assert_eq!(l["shortcuts"][0]["exists"], false);
+    let file = dir.join("Desktop/zero-panel.desktop");
+    let r = call(
+        "shortcut_do",
+        json!({"place": "desktop", "action": "create"}),
+    );
+    assert!(
+        r["confirm_text"].as_str().unwrap().contains("settings"),
+        "{r}"
+    );
+    assert!(!file.exists());
+    let r = call(
+        "shortcut_do",
+        json!({"place": "desktop", "action": "create", "confirmed": true}),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    let stable = crate::connect::stable_program_path(&env);
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains(&stable.display().to_string())
+    );
+    let l = call("shortcut_list", json!({}));
+    assert_eq!(
+        (
+            l["shortcuts"][0]["exists"].clone(),
+            l["shortcuts"][0]["current"].clone()
+        ),
+        (json!(true), json!(true))
+    );
+    assert_eq!(
+        call(
+            "shortcut_do",
+            json!({"place": "desktop", "action": "remove"})
+        )["ok"],
+        false
+    );
+    assert!(file.exists());
+    assert_eq!(
+        call(
+            "shortcut_do",
+            json!({"place": "desktop", "action": "remove", "confirmed": true})
+        )["ok"],
+        true
+    );
+    assert!(!file.exists());
+    assert_eq!(
+        call(
+            "shortcut_do",
+            json!({"place": "roof", "action": "create", "confirmed": true})
+        )["ok"],
+        false
     );
     alive.store(false, Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&dir);

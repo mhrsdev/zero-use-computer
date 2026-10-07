@@ -75,6 +75,7 @@ pub mod roles;
 pub mod scene;
 pub mod screens;
 pub mod script;
+pub mod shortcut;
 pub mod target;
 pub mod text;
 pub mod tools;

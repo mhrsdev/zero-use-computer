@@ -535,6 +535,30 @@ function helpPage(slug) {
   };
 }
 
+async function shortcutPage(main) {
+  const r = await post("shortcut_list");
+  if (!r.ok) return main.append(h("div", { class: "empty" }, r.error));
+  const act = (s, action) => async () => {
+    const x = await ask("shortcut_do", { place: s.id, action });
+    if (x.cancelled) return;
+    if (!x.ok) return snack(x.error, true);
+    snack(x.message + (x.note ? " " + x.note : "")); render();
+  };
+  main.append(...[
+    h("p", { class: "lead" }, "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open)."),
+    r.shortcuts.map((s) => h("div", { class: "card" }, h("div", { class: "row" },
+      h("div", { class: "text" }, h("div", { class: "label" }, s.label),
+        h("div", { class: "help" }, s.path || "This system has no such place."),
+        h("div", { class: "meta" },
+          h("span", { class: "badge " + (s.exists ? (s.ours ? "changed" : "warn") : "") }, s.exists ? (s.ours ? "There" : "Another file of that name") : "Not there"),
+          s.exists && s.starts && !s.current && h("span", {}, "starts ", h("code", {}, s.starts), "; make it again to start ", h("code", {}, r.program)))),
+      h("div", { class: "ctl" },
+        h("button", { class: "btn filled", disabled: !s.path || (s.exists && !s.ours), onclick: act(s, "create") }, s.exists ? "Make again" : "Make"),
+        h("button", { class: "btn", disabled: !s.exists || !s.ours, onclick: act(s, "remove") }, "Remove"))))),
+    h("div", { class: "note" }, "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed."),
+  ].flat().filter(Boolean));
+}
+
 /* ---------- pages made from the settings groups ---------- */
 function groupPage(g) {
   return async (main) => {
@@ -562,6 +586,7 @@ function visible(e) {
 function registerPages() {
   page_("overview", "Overview", "Home", overviewPage);
   page_("connect", "Connect an agent", "Home", connectPage);
+  page_("shortcut", "Desktop shortcut", "Home", shortcutPage);
   for (const g of schema.groups) page_(slug(g), g, "Settings", groupPage(g));
   page_("profiles", "Profiles", "Tools", profilesPage);
   page_("tool-list", "Tool list", "Tools", toolsPage);

@@ -136,6 +136,23 @@ enum Command {
         #[arg(long)]
         list: bool,
     },
+    /// Put a shortcut that opens the settings panel on the desktop (and,
+    /// with --menu or --both, with the system's apps), or take it away.
+    Shortcut {
+        /// With the system's apps (Start menu, ~/Applications, the app
+        /// menu) instead of the desktop.
+        #[arg(long)]
+        menu: bool,
+        /// On the desktop and with the apps.
+        #[arg(long)]
+        both: bool,
+        /// Take it away instead.
+        #[arg(long)]
+        remove: bool,
+        /// Only say where they are.
+        #[arg(long)]
+        list: bool,
+    },
     /// Open the settings panel in your browser (what Ctrl+Alt+J does), and
     /// serve it until you press Done.
     Settings {
@@ -323,6 +340,16 @@ fn run() -> Result<()> {
         return install_cmd(clients, *remove, *list);
     }
 
+    if let Some(Command::Shortcut {
+        menu,
+        both,
+        remove,
+        list,
+    }) = &cli.command
+    {
+        return shortcut_cmd(*menu, *both, *remove, *list);
+    }
+
     // Settings commands work even when the file is invalid.
     if let Some(Command::Config { action }) = &cli.command {
         init_logging(cli.common.log.as_deref().unwrap_or("error"));
@@ -418,7 +445,8 @@ fn run() -> Result<()> {
         Command::Config { .. }
         | Command::Overlay { .. }
         | Command::Hub { .. }
-        | Command::Install { .. } => {
+        | Command::Install { .. }
+        | Command::Shortcut { .. } => {
             unreachable!("handled above")
         }
         Command::Doctor => doctor(&cli.common, store),
@@ -481,6 +509,69 @@ fn restart(exe: &std::path::Path) {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => log::error!("updates: can't start the new version: {e}"),
     }
+}
+
+/// `shortcut`: a shortcut that opens the panel, made or taken away.
+fn shortcut_cmd(menu: bool, both: bool, remove: bool, list: bool) -> Result<()> {
+    use computer_use::shortcut::{self, Place, Places};
+    let places = Places::real();
+    if list {
+        for s in shortcut::status(&places) {
+            let state = match (s.exists, s.ours) {
+                (false, _) => "not there".to_string(),
+                (true, false) => "another file of that name".to_string(),
+                (true, true) => match &s.starts {
+                    Some(p) => format!("there; starts {p}"),
+                    None => "there".to_string(),
+                },
+            };
+            let at = s
+                .path
+                .map_or("this system has none".into(), |p| p.display().to_string());
+            println!("{:<12} {state}\n{:<12} {at}", s.place.label(places.os), "");
+        }
+        return Ok(());
+    }
+    let chosen: Vec<Place> = match (menu, both) {
+        (_, true) => Place::ALL.to_vec(),
+        (true, false) => vec![Place::Menu],
+        (false, false) => vec![Place::Desktop],
+    };
+    let program = if remove {
+        None
+    } else {
+        let env = computer_use::connect::Env::real();
+        let (p, note) = computer_use::connect::program_for_clients(&env, &std::env::current_exe()?);
+        if let Some(n) = note {
+            println!("{n}");
+        }
+        Some(p)
+    };
+    let mut failed = 0;
+    for place in chosen {
+        let done = match &program {
+            None => shortcut::remove(&places, place).map(|had| {
+                if had {
+                    format!("Removed the {} shortcut.", place.label(places.os))
+                } else {
+                    format!("No {} shortcut to remove.", place.label(places.os))
+                }
+            }),
+            Some(p) => shortcut::create(&places, place, p)
+                .map(|f| format!("Made {}: it opens the settings panel.", f.display())),
+        };
+        match done {
+            Ok(m) => println!("✓ {m}"),
+            Err(e) => {
+                failed += 1;
+                println!("✗ {}: {e}", place.label(places.os));
+            }
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} of them failed");
+    }
+    Ok(())
 }
 
 /// `install`: add the program to the agents, or take it out.

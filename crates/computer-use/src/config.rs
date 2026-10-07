@@ -93,7 +93,7 @@ pub struct UpdateConfig {
     /// Which releases are taken: "stable", or "prerelease" (also those
     /// GitHub marks as pre-releases; their tags are plain numbers).
     pub channel: String,
-    /// A version to stay on (for example "4.8.2"): only that release is
+    /// A version to stay on (for example "5.0.2"): only that release is
     /// looked for, and nothing newer is taken. Empty: the newest.
     pub pin: String,
     /// A version never to take, for example one that went wrong here.
@@ -1380,7 +1380,7 @@ impl Config {
             let v = value.trim();
             if !v.is_empty() && crate::update::Version::parse(v).is_none() {
                 return Err(format!(
-                    "{key} must be a version like 4.8.2, or empty (got \"{v}\")"
+                    "{key} must be a version like 5.0.2, or empty (got \"{v}\")"
                 ));
             }
         }

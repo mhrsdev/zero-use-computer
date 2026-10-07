@@ -4,7 +4,7 @@
 screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
-[Download v4.0.1](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+[Download v5.0.0](https://github.com/mhrsdev/zero-use-computer/releases/latest)
 (from v4.0 it keeps itself up to date: [Updates](docs/GUIDE.md#updates))
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
@@ -90,7 +90,8 @@ State after the steps:
   like, profiles (Low tokens, Best quality, Showcase, your own), the tool
   list with what each tool costs, update controls (never, or every 5
   minutes) with a way back, and a button that adds the program to Claude
-  Code, Claude Desktop, Codex, Cursor and VS Code. The agent can't use it.
+  Code, Claude Desktop, Codex, Cursor and VS Code. A shortcut on the
+  desktop (`computer-use-mcp shortcut`) opens it. The agent can't use it.
 
 ## Numbers
 

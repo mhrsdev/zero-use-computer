@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/computer-use", "crates/computer-use-mcp"]
 
 [workspace.package]
-version = "4.0.1"
+version = "5.0.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["mhrsdev"]

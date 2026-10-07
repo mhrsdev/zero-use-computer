@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased (v4.8)
+## v5.0.0
 
-The settings panel, and everything it needed
-([plan](docs/PANEL-SPEC.md), [guide](docs/GUIDE.md#settings-panel)).
+The settings panel, and everything it needed: what was planned as v4.8,
+released as v5.0 ([plan](docs/PANEL-SPEC.md),
+[guide](docs/GUIDE.md#settings-panel),
+[all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.1...v5.0.0)).
 
 - **One panel for every setting** (`computer-use-mcp settings`,
   Ctrl+Alt+J, or `decide setup="open"`): 187 settings in 22 groups, each with
@@ -38,6 +40,14 @@ The settings panel, and everything it needed
   `~/.computer-use/bin` so it stays where the agents look. Newer Claude Code
   keeps the name `computer-use`; the program is then added as
   `zero-use-computer`.
+- **A shortcut that opens the panel:** on the desktop and with the system's
+  apps (a `.desktop` file on Linux, a small app on a Mac, a `.lnk` on
+  Windows), made, made again or taken away from the panel's Desktop shortcut
+  page or with `computer-use-mcp shortcut`. It starts
+  `computer-use-mcp settings`, which serves the panel on its own port and
+  opens it in the browser, or shows the one already open. Only shortcuts the
+  program made are ever removed. `settings` now serves the panel even when no
+  browser can be opened, and prints its address.
 - **A guide inside the panel:** nine short pages.
 - **More to turn:** the pointer's `trail`, `lean_strength` and `breathe`
   (and how strong each is), and the real mouse's `mouse_speed`,

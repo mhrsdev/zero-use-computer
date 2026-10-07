@@ -1,6 +1,7 @@
-# Control panel: specification for v4.8
+# Control panel: specification (planned as v4.8, released as v5.0)
 
-Status: built in v4.8 (see the changelog). Where it differs from the plan
+Status: built and released as v5.0.0 (see the changelog), with a desktop
+shortcut that opens the panel added. Where it differs from the plan
 below:
 
 - The update setting "install when idle" was left out: an update goes in

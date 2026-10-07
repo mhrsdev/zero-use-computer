@@ -793,6 +793,8 @@ computer-use-mcp settings                       # the settings panel (= Ctrl+Alt
 computer-use-mcp install                        # add it to the agents found here (see "Connect")
 computer-use-mcp install --list                 # which agents are here, and is it in each
 computer-use-mcp install --client cursor --remove
+computer-use-mcp shortcut                       # a shortcut on the desktop that opens the panel
+computer-use-mcp shortcut --menu                # ... with the system's apps (--both, --remove, --list)
 computer-use-mcp update                         # download a newer release now (see "Updates")
 computer-use-mcp update --install               # ... and put it in place now
 computer-use-mcp update --rollback              # go back to the version the last update replaced
@@ -814,7 +816,7 @@ From v4.0 the server keeps itself up to date (`[update]`):
    server on the computer shares one clock, so two of them never ask twice.
    Which release: the latest stable one, or with `channel = "prerelease"`
    the newest that GitHub marks as a pre-release too (its tag must be plain
-   numbers, such as `v4.9.0`); `pin = "4.8.2"` takes only that one and
+   numbers, such as `v5.1.0`); `pin = "5.0.2"` takes only that one and
    nothing newer; `skip_version` is never taken.
 2. A newer one is downloaded: its zip for this system, checked against the
    SHA-256 GitHub gives for it (no checksum, no update), unpacked into
@@ -892,6 +894,12 @@ you can read. It listens only while it is open, and closes after
   daily…), what waits and its notes, look now, put it in place now, go back.
 - **Connect an agent**: add the program to Claude Code, Claude Desktop,
   Codex, Cursor and VS Code with a button (see [Connect](CONNECT.md)).
+- **Desktop shortcut**: an icon on the desktop and one with the system's
+  apps that open the panel (a `.desktop` file on Linux, a small app on a
+  Mac, a `.lnk` on Windows), made or taken away here or with
+  `computer-use-mcp shortcut`. It starts `computer-use-mcp settings`, which
+  serves the panel on its port and opens it, or shows the one already open.
+  Only shortcuts this program made are ever removed.
 - **A guide**: nine short pages inside the panel.
 
 **Protected settings** are those that limit what the agent can do or see

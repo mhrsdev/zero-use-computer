@@ -79,6 +79,7 @@ mod tests {
             [
                 "overview",
                 "connect",
+                "shortcut",
                 "profiles",
                 "tool-list",
                 "apps-report",

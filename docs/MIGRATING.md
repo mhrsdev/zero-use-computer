@@ -1,4 +1,4 @@
-# Upgrading to v4.8
+# Upgrading to v5.0.0
 
 Nothing you have to change. What is different:
 
@@ -18,8 +18,10 @@ Nothing you have to change. What is different:
 - **Updates keep the version they replace** (one only, in
   `~/.computer-use/updates/previous`) and ask GitHub only "has it changed?"
   after the first look. `computer-use-mcp update --rollback` goes back.
-- **New command:** `computer-use-mcp install` adds the program to Claude
-  Code, Claude Desktop, Codex, Cursor and VS Code.
+- **New commands:** `computer-use-mcp install` adds the program to Claude
+  Code, Claude Desktop, Codex, Cursor and VS Code; `computer-use-mcp
+  shortcut` puts a shortcut that opens the panel on the desktop (`--menu`,
+  `--both`, `--remove`, `--list`).
 - **A window titled "Zero panel [private]" is refused by every tool.**
 - **For programs that embed the library:** `decision::page::open` and
   `decision::page::serve` are now `panel::open(path, tab)` and
