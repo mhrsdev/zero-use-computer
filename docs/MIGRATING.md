@@ -1,4 +1,4 @@
-# Upgrading to v3.9.8
+# Upgrading to v4.0.0
 
 Nothing to change. What looks or works differently:
 

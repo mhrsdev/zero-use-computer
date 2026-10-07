@@ -1,11 +1,11 @@
 # Changelog
 
-## v3.9.8
+## v4.0.0
 
 New pointers for the agent that move like a hand, a mouse that moves like
 one too in five ways, updates that install themselves after a restart,
 and the overlay kept out of screenshots on X11
-([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v4.0.0)).
 
 - **Six new pointers, each clicking its own way**: crystal, paper, jelly,
   ice, liquid metal and orbit, 3D renders cut out with their glow (about
@@ -99,7 +99,7 @@ and the overlay kept out of screenshots on X11
   the real v3.9.7 from GitHub (its SHA-256 matched), waited while the
   computer had not restarted, and with `install = "start"` put v3.9.7 and
   its package in place and went on as it; the look five minutes in found
-  3.9.8 the latest. Not seen on a Windows or macOS desktop, nor on
+  this version the latest. Not seen on a Windows or macOS desktop, nor on
   Wayland.
 
 ## v3.9.7

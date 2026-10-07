@@ -798,7 +798,7 @@ on this machine, and asks the decision model a test question.
 
 ### Updates
 
-From v3.9.8 the server keeps itself up to date (`[update]`):
+From v4.0 the server keeps itself up to date (`[update]`):
 
 1. Five minutes after it starts (`check_after_mins`), and then every 12
    hours (`check_every_hours`, shared by every server on the computer),
