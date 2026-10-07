@@ -96,6 +96,15 @@ fn picture(style: CursorStyle) -> Option<&'static Picture> {
         .map(|(_, p)| p)
 }
 
+/// How a pointer stands at a moment: leaning as it moves (degrees,
+/// clockwise: the body swings behind), and breathing while it waits (the
+/// phase 0–1 of a slow cycle).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct Pose {
+    pub tilt: f32,
+    pub idle: Option<f32>,
+}
+
 /// Draw `style` with its tip at `tip` (px), `s` px per unit; `click` runs
 /// 0–1 through a click.
 pub(super) fn draw(
@@ -104,11 +113,23 @@ pub(super) fn draw(
     tip: (f32, f32),
     s: f32,
     click: Option<f32>,
+    pose: Pose,
 ) {
     let Some(pic) = picture(style) else {
         return;
     };
-    let base = Transform::from_scale(s, s).post_translate(tip.0, tip.1);
+    // Waiting, each breathes its own way (about the tip, which stays put).
+    let wave = pose.idle.map_or(0.0, |p| (p * TAU).sin());
+    let breath = match style {
+        CursorStyle::Jelly => Transform::from_scale(1.0 + 0.035 * wave, 1.0 - 0.035 * wave),
+        CursorStyle::Paper => Transform::from_rotate(2.5 * wave),
+        CursorStyle::Orbit => Transform::from_scale(1.0 + 0.02 * wave, 1.0 + 0.02 * wave),
+        _ => Transform::from_scale(1.0 + 0.015 * wave, 1.0 + 0.015 * wave),
+    };
+    let base = Transform::from_translate(tip.0, tip.1)
+        .pre_rotate(pose.tilt)
+        .pre_scale(s, s)
+        .pre_concat(breath);
     let click = click.filter(|t| (0.0..1.0).contains(t));
     // Picture px, and render px (for the parts of a picture), to the screen.
     let on_pic = |t: Transform| {
@@ -157,6 +178,25 @@ pub(super) fn draw(
             }
         }
         CursorStyle::Orbit => orbit(pm, pic, on_pic(base), on_render(base), click),
+    }
+    // A glint runs over glass, ice and chrome now and then while waiting.
+    if let (Some(p), None, CursorStyle::Crystal | CursorStyle::Ice | CursorStyle::Metal) =
+        (pose.idle, click, style)
+        && p < 0.4
+    {
+        let k = p / 0.4;
+        let (w, h) = (pic.image.width() as f32, pic.image.height() as f32);
+        let at = -60.0 + (w + h + 120.0) * k;
+        let band = poly(&[
+            (at + 10.0, -10.0),
+            (at + 46.0, -10.0),
+            (at - 600.0 + 46.0, 600.0),
+            (at - 600.0, 600.0),
+        ]);
+        if let Some(m) = mask_of(pm, &band, FillRule::Winding, on_pic(base)) {
+            let a = 0.5 * (k * PI).sin();
+            image(pm, pic, on_pic(base), a, BlendMode::Plus, Some(&m));
+        }
     }
 }
 
@@ -244,6 +284,19 @@ fn stroke(width: f32) -> Stroke {
         line_join: LineJoin::Round,
         ..Stroke::default()
     }
+}
+
+/// An open line through `pts`.
+fn polyline(pts: &[(f32, f32)]) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    for (i, p) in pts.iter().enumerate() {
+        if i == 0 {
+            pb.move_to(p.0, p.1);
+        } else {
+            pb.line_to(p.0, p.1);
+        }
+    }
+    pb.finish()
 }
 
 fn poly(pts: &[(f32, f32)]) -> Option<Path> {
@@ -674,4 +727,249 @@ pub(super) fn tag(
     pm.fill_path(pill, &gloss, FillRule::Winding, id, None);
     pm.stroke_path(pill, &rim, &stroke(1.5 * s), id, None);
     text
+}
+
+// ---- motion: trails, drag lines, scroll marks ----------------------------------
+
+/// A pointer's own colours for what it draws around it: its main colour and
+/// a light one (`ring` for the classic arrow).
+pub(super) fn accent(style: CursorStyle, ring: Color) -> (Color, Color) {
+    match style {
+        CursorStyle::Classic => (ring, Color::WHITE),
+        CursorStyle::Crystal => (rgba(170, 140, 255, 1.0), rgba(255, 255, 255, 1.0)),
+        CursorStyle::Paper => (rgba(222, 142, 64, 1.0), rgba(255, 228, 176, 1.0)),
+        CursorStyle::Jelly => (rgba(146, 108, 246, 1.0), rgba(206, 188, 255, 1.0)),
+        CursorStyle::Ice => (rgba(64, 196, 238, 1.0), rgba(232, 250, 255, 1.0)),
+        CursorStyle::Metal => (rgba(150, 152, 162, 1.0), rgba(236, 182, 106, 1.0)),
+        CursorStyle::Orbit => (rgba(168, 108, 255, 1.0), rgba(255, 176, 222, 1.0)),
+    }
+}
+
+/// A four-pointed sparkle.
+fn sparkle(pm: &mut Pixmap, (x, y): (f32, f32), r: f32, c: Color) {
+    let k = r * 0.28;
+    let star = poly(&[
+        (x, y - r),
+        (x + k, y - k),
+        (x + r, y),
+        (x + k, y + k),
+        (x, y + r),
+        (x - k, y + k),
+        (x - r, y),
+        (x - k, y - k),
+    ]);
+    fill(pm, &star, &solid(c), Transform::identity());
+}
+
+/// What a moving pointer leaves behind, at `points` (px, newest first):
+/// sparkles of colour (crystal), gold flecks (paper), a gooey tail (jelly),
+/// frost (ice), chrome drops (metal), a glowing streak (orbit).
+pub(super) fn trail(pm: &mut Pixmap, style: CursorStyle, points: &[(f32, f32)], s: f32) {
+    let n = points.len().max(1) as f32;
+    let id = Transform::identity();
+    if style == CursorStyle::Orbit && points.len() >= 2 {
+        for (i, w) in points.windows(2).enumerate() {
+            let a = 1.0 - i as f32 / n;
+            let line = polyline(&[w[0], w[1]]);
+            if let Some(p) = &line {
+                let glow = stroke(7.0 * s * a);
+                pm.stroke_path(p, &solid(rgba(168, 108, 255, 0.22 * a)), &glow, id, None);
+                let core = stroke(2.2 * s * a);
+                pm.stroke_path(p, &solid(rgba(255, 176, 222, 0.85 * a)), &core, id, None);
+            }
+        }
+        return;
+    }
+    for (i, &(x, y)) in points.iter().enumerate() {
+        let a = 1.0 - i as f32 / n;
+        // Off the line a little, the same way each time for each point.
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 } * 2.5 * s * ((i * 7 % 5) as f32 / 4.0);
+        let (x, y) = (x + side, y - side * 0.6);
+        match style {
+            CursorStyle::Crystal => {
+                if i % 2 == 0 {
+                    sparkle(pm, (x, y), 4.2 * s * a, hue(i as f32 * 0.13, 0.95 * a));
+                }
+            }
+            CursorStyle::Paper => {
+                let r = 2.6 * s * a;
+                let fleck = poly(&[
+                    (x, y - r),
+                    (x + r * 0.7, y),
+                    (x, y + r * 0.5),
+                    (x - r * 0.7, y),
+                ]);
+                let c = if i % 3 == 0 {
+                    rgba(255, 226, 170, 0.9 * a)
+                } else {
+                    rgba(222, 142, 64, 0.85 * a)
+                };
+                fill(pm, &fleck, &solid(c), id);
+            }
+            CursorStyle::Jelly => {
+                let r = (6.5 * a + 1.0) * s;
+                fill(
+                    pm,
+                    &circle(x, y, r),
+                    &radial(
+                        (x - r * 0.3, y - r * 0.3),
+                        r * 1.2,
+                        &[
+                            (0.0, rgba(236, 228, 255, 0.55 * a)),
+                            (0.5, rgba(150, 120, 250, 0.4 * a)),
+                            (1.0, rgba(110, 150, 255, 0.0)),
+                        ],
+                    ),
+                    id,
+                );
+            }
+            CursorStyle::Ice => {
+                if i % 2 == 0 {
+                    sparkle(pm, (x, y), 3.4 * s * a, rgba(255, 255, 255, 0.95 * a));
+                } else {
+                    fill(
+                        pm,
+                        &circle(x, y, 1.6 * s * a),
+                        &solid(rgba(120, 220, 250, 0.8 * a)),
+                        id,
+                    );
+                }
+            }
+            CursorStyle::Metal => {
+                if i % 2 == 1 {
+                    let r = 2.8 * s * a + 0.5;
+                    bead(pm, x, y, r, rgba(176, 178, 188, a), rgba(70, 70, 80, a), id);
+                }
+            }
+            CursorStyle::Classic | CursorStyle::Orbit => {}
+        }
+    }
+}
+
+/// The line a drag draws along `path` (px), in the pointer's own material,
+/// at `alpha`.
+pub(super) fn drag_line(
+    pm: &mut Pixmap,
+    style: CursorStyle,
+    ring: Color,
+    path: &[(f32, f32)],
+    s: f32,
+    alpha: f32,
+) {
+    let id = Transform::identity();
+    let (Some(&from), Some(&to), Some(line)) = (path.first(), path.last(), polyline(path)) else {
+        return;
+    };
+    let (main, light) = accent(style, ring);
+    let fade = |c: Color, a: f32| {
+        let mut c = c;
+        c.set_alpha((c.alpha() * a * alpha).clamp(0.0, 1.0));
+        c
+    };
+    // A soft glow under every line.
+    pm.stroke_path(&line, &solid(fade(main, 0.22)), &stroke(10.0 * s), id, None);
+    match style {
+        CursorStyle::Crystal => {
+            let stops: Vec<(f32, Color)> = (0..=6)
+                .map(|i| (i as f32 / 6.0, fade(hue(i as f32 / 6.0, 1.0), 1.0)))
+                .collect();
+            pm.stroke_path(&line, &linear(from, to, &stops), &stroke(3.2 * s), id, None);
+        }
+        CursorStyle::Paper => {
+            let mut dashed = stroke(2.6 * s);
+            dashed.dash = tiny_skia::StrokeDash::new(vec![7.0 * s, 4.5 * s], 0.0);
+            pm.stroke_path(&line, &solid(fade(main, 1.0)), &dashed, id, None);
+        }
+        CursorStyle::Jelly => {
+            pm.stroke_path(&line, &solid(fade(main, 0.55)), &stroke(7.0 * s), id, None);
+            pm.stroke_path(&line, &solid(fade(light, 0.8)), &stroke(2.0 * s), id, None);
+        }
+        CursorStyle::Metal => {
+            pm.stroke_path(
+                &line,
+                &solid(fade(rgba(96, 98, 108, 1.0), 1.0)),
+                &stroke(4.4 * s),
+                id,
+                None,
+            );
+            pm.stroke_path(
+                &line,
+                &solid(fade(rgba(236, 236, 242, 1.0), 1.0)),
+                &stroke(1.6 * s),
+                id,
+                None,
+            );
+        }
+        CursorStyle::Ice => {
+            pm.stroke_path(&line, &solid(fade(main, 0.9)), &stroke(3.6 * s), id, None);
+            pm.stroke_path(&line, &solid(fade(light, 1.0)), &stroke(1.4 * s), id, None);
+            // Frost along the way, every so far.
+            let mut run = 0.0;
+            for w in path.windows(2) {
+                run += (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                if run >= 22.0 * s {
+                    run = 0.0;
+                    sparkle(pm, w[1], 3.0 * s, fade(light, 0.9));
+                }
+            }
+        }
+        CursorStyle::Orbit => {
+            pm.stroke_path(&line, &solid(fade(main, 0.9)), &stroke(3.4 * s), id, None);
+            pm.stroke_path(&line, &solid(fade(light, 1.0)), &stroke(1.3 * s), id, None);
+        }
+        CursorStyle::Classic => {
+            pm.stroke_path(&line, &solid(fade(main, 1.0)), &stroke(3.0 * s), id, None);
+        }
+    }
+    // Where it was picked up.
+    fill(
+        pm,
+        &circle(from.0, from.1, 4.5 * s),
+        &solid(fade(light, 0.95)),
+        id,
+    );
+    if let Some(dot) = circle(from.0, from.1, 4.5 * s) {
+        pm.stroke_path(&dot, &solid(fade(main, 1.0)), &stroke(1.6 * s), id, None);
+    }
+}
+
+/// Arrows the way the pointer scrolls (`dir`: -1, 0 or 1 across and down),
+/// three in a row from `at` (px), each lit in turn as `k` runs 0–1.
+pub(super) fn chevrons(
+    pm: &mut Pixmap,
+    style: CursorStyle,
+    ring: Color,
+    at: (f32, f32),
+    dir: (f32, f32),
+    s: f32,
+    k: f32,
+) {
+    let (main, light) = accent(style, ring);
+    let id = Transform::identity();
+    let (ux, uy) = dir;
+    let (px, py) = (-uy, ux);
+    for i in 0..3 {
+        // Lit one after another down the row, then all fading together.
+        let on = ((k * 3.2 - i as f32 * 0.45) * 2.0).clamp(0.0, 1.0);
+        let a = on * (1.0 - ((k - 0.7) / 0.3).clamp(0.0, 1.0));
+        if a <= 0.0 {
+            continue;
+        }
+        let d = i as f32 * 7.0 * s;
+        let (cx, cy) = (at.0 + ux * d, at.1 + uy * d);
+        let (w, h) = (5.0 * s, 3.4 * s);
+        let Some(v) = polyline(&[
+            (cx - ux * h + px * w, cy - uy * h + py * w),
+            (cx, cy),
+            (cx - ux * h - px * w, cy - uy * h - py * w),
+        ]) else {
+            continue;
+        };
+        let mut c = light;
+        c.set_alpha(0.9 * a);
+        pm.stroke_path(&v, &solid(c), &stroke(4.2 * s), id, None);
+        let mut c = main;
+        c.set_alpha(a);
+        pm.stroke_path(&v, &solid(c), &stroke(2.2 * s), id, None);
+    }
 }

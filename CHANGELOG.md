@@ -2,7 +2,8 @@
 
 ## v3.9.8
 
-New pointers for the agent, and the overlay kept out of screenshots on X11
+New pointers for the agent that move like a hand, a mouse that moves like
+one too, and the overlay kept out of screenshots on X11
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
 
 - **Six new pointers, each clicking its own way**: crystal, paper, jelly,
@@ -23,6 +24,33 @@ New pointers for the agent, and the overlay kept out of screenshots on X11
   chrome edged in gold, dark crystal); a click shows
   for 0.7 s (was 0.45). `overlay.cursor_style` names one (`"jelly"`, …),
   `"classic"` keeps the plain arrow, `"random"` is the default.
+- **The pointer moves like a hand** (`overlay.cursor_motion`, on): it
+  swings to where it acts in a gentle arc, leans into the move and leaves
+  a trail of its own material (sparkles of colour, gold flecks, a gooey
+  tail, frost, drops of chrome, a glowing streak); waiting, it breathes
+  (the jelly wobbles, the paper sways, a glint runs over glass, ice and
+  chrome). A drag draws its line along the way it went, in the pointer's
+  material, and fades; a scroll shows arrows the way it goes.
+- **Keys and typing by the pointer** (`overlay.show_keys`, on): keys
+  pressed show as keycaps in the pointer's material that go down and come
+  up ("Ctrl" "S"); typed text runs out a letter at a time in a bubble
+  under the name tag, with a caret. Into a password field it shows dots.
+- **A pointer per agent** (`overlay.agent_cursors`): `{ codex = "metal",
+  "claude-code" = "jelly" }` gives an agent its pointer by its MCP
+  client's name or its tag, whatever `cursor_style` says.
+- **The real mouse moves like a hand** (`natural_mouse`, on): where an
+  action falls back to the mouse (a click, a drag, a scroll, a hover, the
+  way to a drawing's strokes), the pointer no longer jumps there or goes
+  in a straight line at an even speed, which some apps notice. It goes
+  along a gentle curve to one side, quick to start and slower to settle,
+  with a slight tremor, a long reach sometimes a touch past and back
+  (Fitts's law timing: about 0.3 s for a short reach, 0.6 s across the
+  screen); a drag goes the same way with the button held, steadier; the
+  wheel turns a notch at a time. On X11, Wayland (wlroots) and Windows the
+  real pointer moves so; on macOS the app gets the same path of events
+  without the user's cursor moving. Afterwards the pointer still goes
+  straight back where the user left it (`restore_pointer`). `natural_mouse
+  = false` brings back the jump.
 - **The overlay could be in the agent's screenshots on X11** without a
   compositor: the engine waited 150 ms for the overlay to say it was
   hidden, and a helper busy drawing (a glide, a fade) answered later, so
@@ -31,12 +59,18 @@ New pointers for the agent, and the overlay kept out of screenshots on X11
 
 ### Checked
 
-- 504 tests in the library (new: every pointer keeps its tip on the spot
-  through a click; agents at once get different pointers), 55 in the server;
-  clippy on Linux, Windows and macOS; Rust 1.88; the live Linux tests
-  10 of 10, the overlay test 10 runs of 10 (5 of 10 before); four agents
-  on one hub under Xvfb showed four different pointers. Not seen on a
-  Windows or macOS desktop.
+- 514 tests in the library (new: every pointer keeps its tip on the spot
+  through a click and while it breathes; agents at once get different
+  pointers; a hand's path ends on the target, curves, speeds up then
+  slows; the swing, lean and trail; keys, typing, scrolls and drags show
+  and go; an agent's own pointer), 55 in the server; clippy on Linux,
+  Windows and macOS; Rust 1.88; the live Linux tests 10 of 10 with the
+  natural mouse on, the overlay test 10 runs of 10 (5 of 10 before); four
+  agents on one hub under Xvfb showed four different pointers. Under Xvfb
+  the real pointer was traced through a click: 650 px along a curve up to
+  54 px off the straight line in about 0.55 s, then back where it was;
+  keycaps, the typed bubble and a drag's line were seen on the live
+  overlay. Not seen on a Windows or macOS desktop, nor on Wayland.
 
 ## v3.9.7
 

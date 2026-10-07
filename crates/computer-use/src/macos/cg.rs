@@ -2,6 +2,8 @@
 //! windows without moving the user's cursor) and window capture.
 
 use std::ffi::c_void;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use core_graphics::base::{
@@ -23,6 +25,7 @@ use foreign_types::ForeignType;
 use super::{ffi, layout};
 use crate::error::{Error, Result};
 use crate::keys::{Key, KeyCombo, Modifiers, NamedKey, Pad};
+use crate::motion::{self, Kind};
 use crate::types::{Capture, MouseButton, Rect};
 
 fn source() -> Result<CGEventSource> {
@@ -63,6 +66,50 @@ fn mouse_event(
     e.set_flags(CGEventFlags::empty());
     aim(&e, window);
     Ok(e)
+}
+
+/// Send the app a hand's path of moves rather than one jump (`natural_mouse`).
+static NATURAL: AtomicBool = AtomicBool::new(true);
+
+/// Where the last path ended: the user's cursor never moves, so the next
+/// one starts from there.
+static LAST: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+pub fn set_natural(on: bool) {
+    NATURAL.store(on, Ordering::Relaxed);
+}
+
+fn natural() -> bool {
+    NATURAL.load(Ordering::Relaxed)
+}
+
+/// Tell the app the pointer comes to `to` with `ty` events (moved, or
+/// dragged with a button held): along a hand's path from where the last
+/// one ended (`natural_mouse`; a reach away the first time), else one event.
+fn go(
+    pid: u32,
+    window: Option<u32>,
+    src: &CGEventSource,
+    to: CGPoint,
+    (ty, button): (CGEventType, CGMouseButton),
+    kind: Kind,
+) -> Result<()> {
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if natural() {
+        let end = (to.x, to.y);
+        let from = last.unwrap_or_else(|| motion::somewhere_near(end, &mut motion::Rng::new()));
+        for (x, y) in motion::travel(from, end, kind) {
+            post(
+                pid,
+                &mouse_event(src, ty, CGPoint { x, y }, button, window)?,
+            );
+            std::thread::sleep(motion::STEP);
+        }
+    } else {
+        post(pid, &mouse_event(src, ty, to, button, window)?);
+    }
+    *last = Some((to.x, to.y));
+    Ok(())
 }
 
 /// Pace of synthesized drag steps: apps that start a drag on a timer or a
@@ -112,8 +159,16 @@ pub fn click(
         ),
     };
     // Move first so hover state is correct.
-    if let Ok(mv) = mouse_event(&src, CGEventType::MouseMoved, at, cg_btn, window) {
-        post(pid, &mv);
+    let reached = go(
+        pid,
+        window,
+        &src,
+        at,
+        (CGEventType::MouseMoved, cg_btn),
+        Kind::Reach,
+    );
+    if let Err(e) = reached {
+        log::debug!("moving there first: {e}");
     }
     for i in 1..=count.max(1) as i64 {
         // Build the release before pressing, so a failure never leaves the
@@ -131,8 +186,16 @@ pub fn click(
 pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result<()> {
     let src = source()?;
     let mk = |ty, p| mouse_event(&src, ty, p, CGMouseButton::Left, window);
-    if let Ok(e) = mk(CGEventType::MouseMoved, from) {
-        post(pid, &e);
+    let left = CGMouseButton::Left;
+    if let Err(e) = go(
+        pid,
+        window,
+        &src,
+        from,
+        (CGEventType::MouseMoved, left),
+        Kind::Reach,
+    ) {
+        log::debug!("moving to the drag's start: {e}");
     }
     std::thread::sleep(DRAG_STEP);
     // A press that can't be made is an error, not a silent no-op. A spare
@@ -141,15 +204,24 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
     let spare_up = mk(CGEventType::LeftMouseUp, from)?;
     post(pid, &down);
     std::thread::sleep(DRAG_STEP);
-    for step in 1..=8 {
-        let p = CGPoint {
-            x: from.x + (to.x - from.x) * f64::from(step) / 8.0,
-            y: from.y + (to.y - from.y) * f64::from(step) / 8.0,
-        };
-        if let Ok(e) = mk(CGEventType::LeftMouseDragged, p) {
-            post(pid, &e);
+    if natural() {
+        let dragged = (CGEventType::LeftMouseDragged, left);
+        if let Err(e) = go(pid, window, &src, to, dragged, Kind::Drag) {
+            post(pid, &spare_up);
+            return Err(e);
         }
         std::thread::sleep(DRAG_STEP);
+    } else {
+        for step in 1..=8 {
+            let p = CGPoint {
+                x: from.x + (to.x - from.x) * f64::from(step) / 8.0,
+                y: from.y + (to.y - from.y) * f64::from(step) / 8.0,
+            };
+            if let Ok(e) = mk(CGEventType::LeftMouseDragged, p) {
+                post(pid, &e);
+            }
+            std::thread::sleep(DRAG_STEP);
+        }
     }
     match mk(CGEventType::LeftMouseUp, to) {
         Ok(up) => {
@@ -167,15 +239,14 @@ pub fn drag(pid: u32, window: Option<u32>, from: CGPoint, to: CGPoint) -> Result
 /// cursor doesn't move).
 pub fn hover(pid: u32, window: Option<u32>, at: CGPoint) -> Result<()> {
     let src = source()?;
-    let e = mouse_event(
-        &src,
-        CGEventType::MouseMoved,
-        at,
-        CGMouseButton::Left,
+    go(
+        pid,
         window,
-    )?;
-    post(pid, &e);
-    Ok(())
+        &src,
+        at,
+        (CGEventType::MouseMoved, CGMouseButton::Left),
+        Kind::Reach,
+    )
 }
 
 /// Draw `strokes` with `button` held (see `Backend::draw`). Posted to the
@@ -217,7 +288,15 @@ pub fn draw(
             continue;
         };
         pace(0.0)?;
-        send(CGEventType::MouseMoved, first)?;
+        // To the stroke's start with the button up, as a hand would.
+        go(
+            pid,
+            window,
+            &src,
+            first,
+            (CGEventType::MouseMoved, cg_btn),
+            Kind::Reach,
+        )?;
         std::thread::sleep(DRAG_STEP);
         send(down, first)?;
         std::thread::sleep(DRAG_STEP);
@@ -233,6 +312,7 @@ pub fn draw(
         std::thread::sleep(DRAG_STEP);
         // Never leave the button held down, whatever stopped the stroke.
         let released = send(up, last);
+        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((last.x, last.y));
         moved?;
         released?;
     }
@@ -241,25 +321,41 @@ pub fn draw(
 
 pub fn scroll(pid: u32, window: Option<u32>, at: CGPoint, dx: i32, dy: i32) -> Result<()> {
     let src = source()?;
-    if let Ok(mv) = mouse_event(
-        &src,
-        CGEventType::MouseMoved,
-        at,
-        CGMouseButton::Left,
-        window,
-    ) {
-        post(pid, &mv);
+    let moved = (CGEventType::MouseMoved, CGMouseButton::Left);
+    if let Err(e) = go(pid, window, &src, at, moved, Kind::Reach) {
+        log::debug!("moving there first: {e}");
     }
-    // Negative dy scrolls content up in CG's convention (wheel1 positive = up).
-    let event = CGEvent::new_scroll_event(src, ScrollEventUnit::LINE, 2, -dy, -dx, 0)
-        .map_err(|_| Error::action("scroll event"))?;
-    // A new scroll event sits at the user's cursor: the app scrolls the
-    // view under its location, so put it at the target. And a held ⌘ or
-    // ⇧ would turn it into a zoom or a sideways scroll.
-    event.set_location(at);
-    event.set_flags(CGEventFlags::empty());
-    aim(&event, window);
-    post(pid, &event);
+    // Lines in one event, or one at a time as a finger rolls the wheel.
+    let mut rng = motion::Rng::new();
+    let notches = dx.unsigned_abs().max(dy.unsigned_abs());
+    let lines: Vec<(i32, i32)> = if natural() && notches > 1 {
+        let (mut x, mut y) = (dx, dy);
+        (0..notches)
+            .map(|_| {
+                let step = (y.signum(), x.signum());
+                y -= step.0;
+                x -= step.1;
+                step
+            })
+            .collect()
+    } else {
+        vec![(dy, dx)]
+    };
+    for (i, (ly, lx)) in lines.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(motion::wheel_pause(notches, &mut rng));
+        }
+        // Negative dy scrolls content up in CG's convention (wheel1 positive = up).
+        let event = CGEvent::new_scroll_event(src.clone(), ScrollEventUnit::LINE, 2, -ly, -lx, 0)
+            .map_err(|_| Error::action("scroll event"))?;
+        // A new scroll event sits at the user's cursor: the app scrolls the
+        // view under its location, so put it at the target. And a held ⌘ or
+        // ⇧ would turn it into a zoom or a sideways scroll.
+        event.set_location(at);
+        event.set_flags(CGEventFlags::empty());
+        aim(&event, window);
+        post(pid, &event);
+    }
     Ok(())
 }
 

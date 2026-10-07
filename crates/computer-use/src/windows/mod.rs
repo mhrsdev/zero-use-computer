@@ -1152,6 +1152,7 @@ impl Backend for WindowsBackend {
     fn configure(&mut self, cfg: &crate::config::Config) {
         self.use_cache_request = cfg.windows.use_cache_request;
         input::set_restore_pointer(cfg.restore_pointer);
+        input::set_natural(cfg.natural_mouse);
     }
 
     fn capture(&mut self, app: &AppInfo, window: &WindowInfo) -> Result<Capture> {

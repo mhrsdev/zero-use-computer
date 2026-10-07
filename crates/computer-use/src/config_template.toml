@@ -26,6 +26,10 @@ follow_new_windows = true
 # Put the real mouse pointer back after a synthesized click/scroll/drag, so the
 # agent never takes the user's mouse away (Linux, Windows).
 restore_pointer = true
+# Move the mouse like a hand when an action uses it: along a gentle curve,
+# speeding up and slowing down, sometimes a touch past and back, instead of
+# jumping or going in a straight line (some apps notice). false = jump.
+natural_mouse = true
 # Re-read this file when it changes, without restarting the server.
 hot_reload = true
 # Seconds launch_app waits for the new app's window.
@@ -213,6 +217,9 @@ cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the sta
 cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
 cursor_style = "random"      # "random" (a pointer per session, another per agent at once), "classic" (the plain arrow),
                              # or one: "crystal", "paper", "jelly", "ice", "metal", "orbit"
+agent_cursors = {}           # a pointer per agent, by MCP client or tag: { codex = "metal", "claude-code" = "jelly" }
+cursor_motion = true         # the pointer leans as it moves, leaves a trail, breathes, shows drags and scrolls
+show_keys = true             # keys pressed show as keycaps by the pointer; typed text runs out beside it
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
 error_hold_ms = 2500

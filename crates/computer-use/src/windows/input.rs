@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::error::{Error, Result};
 use crate::keys::{Key, KeyCombo, NamedKey, Pad};
+use crate::motion::{self, Kind};
 use crate::types::{MouseButton, Point};
 
 fn send(inputs: &[INPUT]) -> Result<()> {
@@ -96,6 +97,34 @@ pub fn set_restore_pointer(on: bool) {
     RESTORE_POINTER.store(on, Ordering::Relaxed);
 }
 
+/// Move the pointer along a hand's path rather than jumping (`natural_mouse`).
+static NATURAL: AtomicBool = AtomicBool::new(true);
+
+pub fn set_natural(on: bool) {
+    NATURAL.store(on, Ordering::Relaxed);
+}
+
+fn natural() -> bool {
+    NATURAL.load(Ordering::Relaxed)
+}
+
+/// Bring the pointer to `to`: along a hand's path from where it is
+/// (`natural_mouse`), else straight there. Only motion: a held button
+/// stays held, so a drag goes this way too.
+fn go(to: Point, kind: Kind) -> Result<()> {
+    let mut p = POINT::default();
+    // SAFETY: reading the cursor position into a local.
+    if natural() && unsafe { GetCursorPos(&mut p) }.is_ok() {
+        let from = (f64::from(p.x), f64::from(p.y));
+        for (x, y) in motion::travel(from, (to.x, to.y), kind) {
+            send(&[move_to(Point::new(x, y))])?;
+            std::thread::sleep(motion::STEP);
+        }
+        return Ok(());
+    }
+    send(&[move_to(to)])
+}
+
 /// Pause before putting the pointer back, so the app has handled the click
 /// (or wheel) where it happened before the pointer leaves: some apps look
 /// at the pointer's position when the event arrives, not where it was sent.
@@ -148,7 +177,8 @@ pub fn click(at: Point, button: MouseButton, count: u8) -> Result<()> {
     on_screen(at)?;
     let (down, up) = button_flags(button);
     let back = home();
-    let mut inputs = vec![move_to(at)];
+    go(at, Kind::Reach)?;
+    let mut inputs = Vec::new();
     for _ in 0..count.max(1) {
         inputs.push(mouse_input(down, 0, 0, 0));
         inputs.push(mouse_input(up, 0, 0, 0));
@@ -194,9 +224,15 @@ fn drag_steps(
         std::thread::sleep(DRAG_STEP);
         Ok(())
     };
-    step(move_to(from))?;
+    go(from, Kind::Reach)?;
+    std::thread::sleep(DRAG_STEP);
     step(mouse_input(down, 0, 0, 0))?;
     *pressed = true;
+    if natural() {
+        go(to, Kind::Drag)?;
+        std::thread::sleep(DRAG_STEP);
+        return send(&[mouse_input(up, 0, 0, 0)]);
+    }
     for n in 1..=8 {
         step(move_to(Point::new(
             from.x + (to.x - from.x) * f64::from(n) / 8.0,
@@ -218,7 +254,7 @@ pub fn move_pointer(at: Point) -> Result<Option<Point>> {
     } else {
         None
     };
-    send(&[move_to(at)])?;
+    go(at, Kind::Reach)?;
     Ok(back)
 }
 
@@ -252,7 +288,8 @@ fn draw_strokes(
             continue;
         };
         pace(0.0)?;
-        send(&[move_to(first)])?;
+        // To the stroke's start with the button up, as a hand would.
+        go(first, Kind::Reach)?;
         std::thread::sleep(DRAG_STEP);
         send(&[mouse_input(down, 0, 0, 0)])?;
         *held = true;
@@ -282,6 +319,22 @@ pub fn scroll(at: Point, dx: i32, dy: i32) -> Result<()> {
             .saturating_mul(WHEEL_DELTA)
     };
     let back = home();
+    if natural() {
+        // There as a hand goes, then the wheel a notch at a time.
+        let sent = go(at, Kind::Reach).and_then(|()| {
+            let mut rng = motion::Rng::new();
+            for (flag, n, sign) in [(MOUSEEVENTF_WHEEL, dy, -1), (MOUSEEVENTF_HWHEEL, dx, 1)] {
+                let n = n.clamp(-MAX_WHEEL_NOTCHES, MAX_WHEEL_NOTCHES);
+                for _ in 0..n.unsigned_abs() {
+                    send(&[mouse_input(flag, 0, 0, sign * n.signum() * WHEEL_DELTA)])?;
+                    std::thread::sleep(motion::wheel_pause(n.unsigned_abs(), &mut rng));
+                }
+            }
+            Ok(())
+        });
+        restore(back);
+        return sent;
+    }
     let mut inputs = vec![move_to(at)];
     if dy != 0 {
         inputs.push(mouse_input(

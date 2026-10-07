@@ -16,6 +16,7 @@ use x11rb::rust_connection::{DefaultStream, RustConnection};
 
 use crate::error::{Error, Result};
 use crate::keys::{Key, KeyCombo, Modifiers, NamedKey, Pad};
+use crate::motion::{self, Kind};
 use crate::types::{Capture, Rect};
 
 const KEY_PRESS: u8 = 2;
@@ -85,6 +86,8 @@ pub struct X11 {
     blue_mask: u32,
     /// Put the pointer back after synthesized mouse input.
     pub restore_pointer: bool,
+    /// Move the pointer along a hand's path rather than jumping.
+    pub natural: bool,
 }
 
 impl Drop for X11 {
@@ -168,6 +171,7 @@ impl X11 {
             green_mask,
             blue_mask,
             restore_pointer: true,
+            natural: true,
         };
         x.load_keymap()?;
         Ok(x)
@@ -327,8 +331,32 @@ impl X11 {
         if !self.restore_pointer {
             return None;
         }
+        self.here()
+    }
+
+    /// Where the pointer is now.
+    fn here(&self) -> Option<(i16, i16)> {
         let r = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
         Some((r.root_x, r.root_y))
+    }
+
+    /// Bring the pointer to `to`: along a hand's path from where it is
+    /// (`natural_mouse`), else straight there. Only motion: a held button
+    /// stays held, so a drag goes this way too.
+    fn go(&self, to: (i16, i16), kind: Kind) -> Result<()> {
+        if let Some(from) = self.here().filter(|_| self.natural) {
+            let f = |p: (i16, i16)| (f64::from(p.0), f64::from(p.1));
+            for (x, y) in motion::travel(f(from), f(to), kind) {
+                let (x, y) = (clamp16(x.round() as i32), clamp16(y.round() as i32));
+                self.warp(x, y)?;
+                self.fake(6, 0, x, y)?;
+                self.flush()?;
+                std::thread::sleep(motion::STEP);
+            }
+            return Ok(());
+        }
+        self.warp(to.0, to.1)?;
+        self.fake(6, 0, to.0, to.1) // MotionNotify absolute
     }
 
     /// Return the pointer to where the user left it.
@@ -344,8 +372,7 @@ impl X11 {
         self.need_xtest()?;
         let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
-        self.warp(x, y)?;
-        self.fake(6, 0, x, y)?; // MotionNotify absolute
+        self.go((x, y), Kind::Reach)?;
         for _ in 0..count.max(1) {
             self.fake(BUTTON_PRESS, button, x, y)?;
             self.fake(BUTTON_RELEASE, button, x, y)?;
@@ -358,11 +385,17 @@ impl X11 {
         self.need_xtest()?;
         let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
-        self.warp(x, y)?;
-        let tick = |button: u8, n: i32| -> Result<()> {
+        self.go((x, y), Kind::Reach)?;
+        let mut rng = motion::Rng::new();
+        let mut tick = |button: u8, n: i32| -> Result<()> {
             for _ in 0..n.unsigned_abs() {
                 self.fake(BUTTON_PRESS, button, x, y)?;
                 self.fake(BUTTON_RELEASE, button, x, y)?;
+                if self.natural {
+                    // A finger rolls the wheel a notch at a time.
+                    self.flush()?;
+                    std::thread::sleep(motion::wheel_pause(n.unsigned_abs(), &mut rng));
+                }
             }
             Ok(())
         };
@@ -391,14 +424,16 @@ impl X11 {
             std::thread::sleep(DRAG_STEP);
             Ok(())
         };
-        self.warp(fx, fy)?;
-        self.fake(6, 0, fx, fy)?;
+        self.go((fx, fy), Kind::Reach)?;
         pause()?;
         self.fake(BUTTON_PRESS, 1, fx, fy)?;
-        // A few intermediate motions so drag-aware widgets follow. Whatever
-        // goes wrong on the way, the button is let go (never left held).
+        // Motions on the way so drag-aware widgets follow. Whatever goes
+        // wrong on the way, the button is let go (never left held).
         let moved = (|| -> Result<()> {
             pause()?;
+            if self.natural {
+                return self.go((tx, ty), Kind::Drag).and_then(|()| pause());
+            }
             for step in 1..=8 {
                 let x = clamp16(from.0 + (to.0 - from.0) * step / 8);
                 let y = clamp16(from.1 + (to.1 - from.1) * step / 8);
@@ -424,8 +459,7 @@ impl X11 {
         self.need_xtest()?;
         let (x, y) = (coord(x)?, coord(y)?);
         let home = self.pointer();
-        self.warp(x, y)?;
-        self.fake(6, 0, x, y)?;
+        self.go((x, y), Kind::Reach)?;
         self.flush()?;
         Ok(home.map(|(x, y)| (i32::from(x), i32::from(y))))
     }
@@ -472,8 +506,8 @@ impl X11 {
                 continue;
             };
             pace(0.0)?;
-            self.warp(x, y)?;
-            self.fake(6, 0, x, y)?;
+            // To the stroke's start with the button up, as a hand would.
+            self.go((x, y), Kind::Reach)?;
             self.flush()?;
             std::thread::sleep(DRAG_STEP);
             self.fake(BUTTON_PRESS, button, x, y)?;

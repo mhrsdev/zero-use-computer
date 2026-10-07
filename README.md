@@ -353,8 +353,11 @@ possible, and far more tools behind `find_tools`.
     old place after a window moved.
   - v3.9.8: six new pointers for the agent (3D renders), each clicking its
     own (a jelly squashes, ice melts, paper unfolds, metal splashes; one at
-    random, another for each agent at once); the overlay no longer gets
-    into screenshots on X11 when its helper is busy drawing.
+    random, another for each agent at once, or one per agent by name);
+    they swing, lean, leave a trail and breathe, and show keys, typing,
+    drags and scrolls; the real mouse moves like a hand (a curve, a hand's
+    timing) instead of jumping; the overlay no longer gets into
+    screenshots on X11 when its helper is busy drawing.
   Windows and Wayland fixes in these were checked by CI, not on real
   desktops.
 

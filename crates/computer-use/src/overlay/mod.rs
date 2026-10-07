@@ -121,6 +121,21 @@ pub enum Cmd {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<u64>,
     },
+    /// The glide just asked for is a drag (a button held): draw its line.
+    Dragging,
+    /// Keys pressed together ("ctrl+s"), shown as keycaps by the pointer.
+    Keys {
+        keys: String,
+    },
+    /// Text being typed, run out beside the pointer.
+    Typed {
+        text: String,
+    },
+    /// Scrolling where the pointer is (wheel clicks; +: right, down).
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
     /// An explicit status from the host agent.
     Status {
         state: Status,
@@ -1083,6 +1098,14 @@ mod tests {
             },
             Cmd::Paused { on: true },
             Cmd::Stopped { on: false },
+            Cmd::Dragging,
+            Cmd::Keys {
+                keys: "ctrl+s".into(),
+            },
+            Cmd::Typed {
+                text: "héllo".into(),
+            },
+            Cmd::Scroll { dx: 0, dy: -3 },
             Cmd::Config {
                 config: Box::default(),
                 hotkey: "ctrl+alt+escape".into(),

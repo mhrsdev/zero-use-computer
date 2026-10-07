@@ -37,11 +37,16 @@ impl<B: Backend> Engine<B> {
         if name.is_empty() || self.client == name {
             return;
         }
+        let style = self.overlay_settings().cursor_style;
         self.client = name.to_string();
         if let Some(o) = self.overlay.as_ref().filter(|o| o.hub().is_some()) {
             o.send(&HubCmd::Client {
                 name: self.client.clone(),
             });
+        }
+        // `agent_cursors` may give this client its own pointer.
+        if self.overlay.is_some() && self.overlay_settings().cursor_style != style {
+            self.overlay_reconfigure();
         }
     }
 

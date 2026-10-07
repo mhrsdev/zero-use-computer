@@ -440,10 +440,19 @@ their mouse:
   the agent acts and ripples where it clicks. Each action waits until the
   cursor is shown there (at most `move_ms`), so what the user sees happens
   where the cursor is, not before it gets there; it follows a drawing as the
-  pen moves, and goes to the focused element for typing. The real mouse is never moved, locked or restyled:
-  element actions go through accessibility APIs, and the coordinate fallbacks
-  on Windows and Linux put the pointer straight back (`restore_pointer`;
-  macOS posts events to the app without moving it).
+  pen moves, and goes to the focused element for typing. It swings there in
+  a gentle arc, leaning into the move and leaving a trail of its own
+  material; it breathes while it waits; keys it presses show as keycaps
+  beside it and what it types runs out in a bubble (dots for a password
+  field); a drag draws its line, a scroll shows arrows the way it goes
+  (`cursor_motion`, `show_keys`). The real mouse is never locked or
+  restyled: element actions go through accessibility APIs. The coordinate
+  fallbacks move it the way a hand does, along a gentle curve that speeds
+  up and slows down, sometimes a touch past the target and back, with the
+  wheel turned a notch at a time (`natural_mouse`; some apps notice a
+  pointer that jumps or goes dead straight), and on Windows and Linux put
+  it straight back where the user left it (`restore_pointer`). macOS posts
+  the same path of events to the app without moving the user's cursor.
 - **A glow around the screen** (or around the window being worked on:
   `overlay.border_target = "window"`) and a small **label** such as
   "Zero is using the computer".
@@ -511,7 +520,8 @@ whichever client started it:
   agent gets a pointer none of the others has (six: crystal, paper, jelly,
   ice, metal, orbit, each clicking its own way), picked at random when it
   starts; `overlay.cursor_style` names one instead, or `"classic"` for the
-  plain arrow.
+  plain arrow, and `overlay.agent_cursors` gives an agent its own by its
+  client's name or its tag (`{ codex = "metal", "claude-code" = "jelly" }`).
 - **One stop key** stops them all. (Before v3.9 a second server couldn't
   even register it: the system gives a key to one program.)
 - **The screen shared out:** halves for two, thirds for three, a 2×2 grid
@@ -835,7 +845,7 @@ applying after a reload. The agent has no tool to change settings.
 | `[server]` | log level, HTTP address and token, `instructions` (full, short, off), `result_meta`, `structured_output` |
 | `[hub]` | several agents on one desktop: `enabled`, `port`, `arrange`, `chat`, `turn_wait_secs` |
 | `[linux]` / `[macos]` / `[windows]` | per-platform tuning (batch sizes, batched attribute reads, UIA cache) |
-| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `hot_reload`, `launch_timeout_secs` |
+| top level | `clipboard`, `text_only`, `follow_new_windows`, `restore_pointer`, `natural_mouse`, `hot_reload`, `launch_timeout_secs` |
 
 ### Token use
 

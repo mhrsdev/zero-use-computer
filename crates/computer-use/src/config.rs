@@ -472,6 +472,17 @@ pub struct OverlayConfig {
     /// each agent working at once), "classic" (the plain arrow), or one:
     /// crystal, paper, jelly, ice, metal, orbit.
     pub cursor_style: String,
+    /// A pointer for an agent by its name: the MCP client's ("claude-code",
+    /// "codex") or its `cursor_tag`, e.g. { codex = "metal" }. Matched
+    /// without regard to case, before `cursor_style`.
+    pub agent_cursors: std::collections::BTreeMap<String, String>,
+    /// The pointer leans into its moves and leaves a trail of its own
+    /// material, breathes while it waits, draws a line where it drags and
+    /// shows the way it scrolls.
+    pub cursor_motion: bool,
+    /// Keys the agent presses show as keycaps by its pointer, and what it
+    /// types runs out beside it.
+    pub show_keys: bool,
     /// No new action for this long after the last one: done (green), then hidden.
     pub done_after_ms: u64,
     /// How long "done" stays on screen before everything disappears.
@@ -524,6 +535,9 @@ impl Default for OverlayConfig {
             cursor_color: "#9C27B0".into(),
             cursor_tag: "Zero".into(),
             cursor_style: "random".into(),
+            agent_cursors: Default::default(),
+            cursor_motion: true,
+            show_keys: true,
             done_after_ms: 20_000,
             done_linger_ms: 1_500,
             error_hold_ms: 2_500,
@@ -535,6 +549,28 @@ impl Default for OverlayConfig {
             font: String::new(),
             command: String::new(),
         }
+    }
+}
+
+impl OverlayConfig {
+    /// These settings for an agent called any of `names` (its MCP client,
+    /// its tag): the pointer `agent_cursors` gives it, if any.
+    pub fn for_agent(&self, names: &[&str]) -> OverlayConfig {
+        let mut cfg = self.clone();
+        let picked = names.iter().find_map(|n| {
+            let n = n.trim();
+            (!n.is_empty())
+                .then(|| {
+                    self.agent_cursors
+                        .iter()
+                        .find(|(k, _)| k.trim().eq_ignore_ascii_case(n))
+                })
+                .flatten()
+        });
+        if let Some((_, style)) = picked {
+            cfg.cursor_style = style.clone();
+        }
+        cfg
     }
 }
 
@@ -1089,6 +1125,10 @@ pub struct Config {
     /// Put the real mouse pointer back where it was after a synthesized
     /// click, scroll or drag (Linux, Windows; macOS never moves it).
     pub restore_pointer: bool,
+    /// Move the mouse the way a hand does when an action uses it: along a
+    /// gentle curve, speeding up and slowing down, rather than jumping or
+    /// going in a straight line (some apps notice). Off: it jumps there.
+    pub natural_mouse: bool,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -1121,6 +1161,7 @@ impl Default for Config {
             text_only: false,
             follow_new_windows: true,
             restore_pointer: true,
+            natural_mouse: true,
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
@@ -1169,6 +1210,15 @@ impl Config {
                 crate::overlay::draw::CURSOR_STYLES.join(", "),
                 o.cursor_style
             ));
+        }
+        for (agent, style) in &o.agent_cursors {
+            let style = style.trim().to_ascii_lowercase();
+            if !crate::overlay::draw::CURSOR_STYLES.contains(&style.as_str()) {
+                return Err(format!(
+                    "overlay.agent_cursors.{agent} must be one of {} (got \"{style}\")",
+                    crate::overlay::draw::CURSOR_STYLES.join(", ")
+                ));
+            }
         }
         if !(0.0..=1.0).contains(&self.ocr.min_confidence) {
             return Err(format!(
@@ -1757,6 +1807,25 @@ impl ConfigStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_agent_can_have_its_own_pointer() {
+        let mut o = OverlayConfig::default();
+        o.agent_cursors.insert("Codex".into(), "metal".into());
+        o.agent_cursors.insert("Zero".into(), "ice".into());
+        assert_eq!(o.for_agent(&["codex", "Zero"]).cursor_style, "metal");
+        assert_eq!(o.for_agent(&["claude-code", "zero"]).cursor_style, "ice");
+        assert_eq!(o.for_agent(&["claude-code", "Ada"]).cursor_style, "random");
+        let mut c = Config::default();
+        c.overlay
+            .agent_cursors
+            .insert("codex".into(), "velvet".into());
+        assert!(
+            c.validate()
+                .unwrap_err()
+                .contains("overlay.agent_cursors.codex")
+        );
+    }
+
     use super::*;
 
     #[test]

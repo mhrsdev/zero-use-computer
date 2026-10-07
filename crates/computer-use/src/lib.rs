@@ -64,6 +64,7 @@ pub mod imaging;
 pub mod keys;
 pub mod launch;
 pub mod mock;
+pub mod motion;
 pub mod ocr;
 pub mod overlay;
 pub mod paint;

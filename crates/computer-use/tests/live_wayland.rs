@@ -28,6 +28,9 @@ mod error {
 mod keys {
     pub use computer_use::keys::*;
 }
+mod motion {
+    pub use computer_use::motion::*;
+}
 mod types {
     pub use computer_use::types::*;
 }

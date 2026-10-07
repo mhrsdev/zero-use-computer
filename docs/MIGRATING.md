@@ -1,8 +1,15 @@
 # Upgrading to v3.9.8
 
-Nothing to change. The agent's pointer is now one of six new ones, picked
-at random (another for each agent at once); `overlay.cursor_style =
-"classic"` brings back the plain arrow.
+Nothing to change. What looks or works differently:
+
+- The agent's pointer is one of six new ones, picked at random (another
+  for each agent at once); `overlay.cursor_style = "classic"` brings back
+  the plain arrow. It swings, leans, leaves a trail and breathes
+  (`overlay.cursor_motion = false` stops that), and shows keys and typed
+  text beside it (`overlay.show_keys = false`).
+- Where an action uses the real mouse, the pointer travels there along a
+  curve, as a hand would, instead of jumping: such a click takes about
+  0.3–0.7 s longer. `natural_mouse = false` brings back the jump.
 
 # Upgrading to v3.9.7
 
