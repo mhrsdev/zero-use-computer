@@ -529,6 +529,7 @@ enum Anchor {
 impl<B: Backend> Engine<B> {
     pub fn new(mut backend: B, store: ConfigStore) -> Self {
         backend.configure(&store.config);
+        crate::motion::configure(&store.config);
         let config_mtime = store.path.as_deref().and_then(file_mtime);
         let scripts = crate::script::Library::new(store.config.script.library());
         Self {
@@ -628,6 +629,7 @@ impl<B: Backend> Engine<B> {
                 log::info!("reloaded settings from {}", path.display());
                 self.settings_problem = None;
                 self.backend.configure(&store.config);
+                crate::motion::configure(&store.config);
                 if store.config.decision != self.store.config.decision {
                     self.judge.forget();
                 }
@@ -680,6 +682,7 @@ impl<B: Backend> Engine<B> {
     ) -> Self {
         f(&mut self.store.config);
         self.backend.configure(&self.store.config);
+        crate::motion::configure(&self.store.config);
         self.overrides = Some(Box::new(f));
         self
     }
@@ -691,6 +694,7 @@ impl<B: Backend> Engine<B> {
             f(&mut store.config);
         }
         self.backend.configure(&store.config);
+        crate::motion::configure(&store.config);
         // Another model: the old one's failures and answers aren't its.
         if store.config.decision != self.store.config.decision {
             self.judge.forget();

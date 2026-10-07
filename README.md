@@ -5,6 +5,7 @@ screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
 [Download v3.9.8](https://github.com/mhrsdev/zero-use-computer/releases/latest)
+(from v3.9.8 it keeps itself up to date: [Updates](docs/GUIDE.md#updates))
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
 · [Benchmarks](bench/README.md)
@@ -355,9 +356,11 @@ possible, and far more tools behind `find_tools`.
     own (a jelly squashes, ice melts, paper unfolds, metal splashes; one at
     random, another for each agent at once, or one per agent by name);
     they swing, lean, leave a trail and breathe, and show keys, typing,
-    drags and scrolls; the real mouse moves like a hand (a curve, a hand's
-    timing) instead of jumping; the overlay no longer gets into
-    screenshots on X11 when its helper is busy drawing.
+    drags and scrolls; the real mouse moves like a hand (a hand's timing,
+    five ways: a hand's curve, a sine, an arc, a spring, a spiral) instead
+    of jumping; updates download by themselves and go in after the
+    computer restarts; the overlay no longer gets into screenshots on X11
+    when its helper is busy drawing.
   Windows and Wayland fixes in these were checked by CI, not on real
   desktops.
 

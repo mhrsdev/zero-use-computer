@@ -30,6 +30,10 @@ restore_pointer = true
 # speeding up and slowing down, sometimes a touch past and back, instead of
 # jumping or going in a straight line (some apps notice). false = jump.
 natural_mouse = true
+# The way it goes: "mixed" (one at random each move), "hand" (a hand's curve),
+# "sine" (a wave), "arc" (a circle's arc), "spring" (past and back), "spiral".
+# Drags always go straight (a drag can draw a line).
+mouse_path = "mixed"
 # Re-read this file when it changes, without restarting the server.
 hot_reload = true
 # Seconds launch_app waits for the new app's window.
@@ -219,6 +223,7 @@ cursor_style = "random"      # "random" (a pointer per session, another per agen
                              # or one: "crystal", "paper", "jelly", "ice", "metal", "orbit"
 agent_cursors = {}           # a pointer per agent, by MCP client or tag: { codex = "metal", "claude-code" = "jelly" }
 cursor_motion = true         # the pointer leans as it moves, leaves a trail, breathes, shows drags and scrolls
+cursor_path = "mixed"        # how it glides there: "mixed", "hand", "sine", "arc", "spring" or "spiral"
 show_keys = true             # keys pressed show as keycaps by the pointer; typed text runs out beside it
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
@@ -363,6 +368,17 @@ port = 47381                # this computer only, with a token only you can read
 arrange = true              # move each agent's window into its part of the screen
 chat = false                # let the agents send each other short messages
 turn_wait_secs = 60         # longest wait for the keyboard and mouse
+
+[update]
+# A while after the server starts it asks GitHub for the latest release; a
+# newer one is downloaded, checked against GitHub's checksum and set aside.
+# It is never put in place while an agent may be working: it goes in when
+# the server starts again after the computer has restarted.
+enabled = true
+check_after_mins = 5        # minutes after the server starts before the first look
+check_every_hours = 12      # then this often (shared by every server on the computer)
+install = "restart"         # "restart" (after the computer restarts), "start" (next server start), "manual"
+repo = "mhrsdev/zero-use-computer"
 
 [linux]
 batch_size = 48             # elements whose AT-SPI queries run concurrently

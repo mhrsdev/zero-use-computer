@@ -105,6 +105,17 @@ enum Command {
     },
     /// Report platform, permissions and config.
     Doctor,
+    /// Look for a newer release now and download it (it goes in as
+    /// `update.install` says, after the computer restarts by default).
+    Update {
+        /// Only say whether there is a newer release.
+        #[arg(long)]
+        check: bool,
+        /// Put a downloaded update in place now (download it first if
+        /// needed); start your MCP client again to use it.
+        #[arg(long)]
+        install: bool,
+    },
     /// Open the decision model's settings page in your browser (what
     /// Ctrl+Alt+J does), and serve it until you press Done.
     Settings {
@@ -310,8 +321,25 @@ fn run() -> Result<()> {
     }
     warn_unknown_keys(&config_path(&cli.common));
 
+    if matches!(command, Command::Serve) {
+        install_waiting_update(&store.config);
+        // Look for updates a while from now, then now and then, with the
+        // settings of the moment (none when the file can't be read).
+        let path = config_path(&cli.common);
+        computer_use::update::watch(move || {
+            ConfigStore::load(Some(&path)).map_or(
+                config::UpdateConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                |s| s.config.update,
+            )
+        });
+    }
+
     match command {
         Command::Serve => serve(&cli.common, store, problem),
+        Command::Update { check, install } => update_cmd(&store.config, check, install),
         Command::Apps => run_and_print(&cli.common, store, "list_apps", json!({})),
         Command::State {
             app,
@@ -362,6 +390,97 @@ fn run() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Before serving: an update waiting since before the computer restarted
+/// (or as `update.install` says) takes this program's place, and the
+/// server starts again as the new version. Whatever fails, this one serves.
+fn install_waiting_update(cfg: &Config) {
+    use computer_use::update;
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    update::tidy(&exe);
+    let dir = update::updates_dir();
+    let Some(p) = update::pending(&dir).filter(|_| cfg.update.enabled) else {
+        return;
+    };
+    if !update::due(&p, cfg.update.install) {
+        log::info!(
+            "updates: {} is waiting; it goes in {}",
+            p.version,
+            update::when(cfg.update.install)
+        );
+        return;
+    }
+    match update::install(&p, &exe, &dir) {
+        Ok(()) => {
+            log::info!("updates: {} is in place; starting it", p.version);
+            restart(&exe);
+        }
+        Err(e) => log::warn!("updates: couldn't put {} in place: {e}", p.version),
+    }
+}
+
+/// Run `exe` (the new version) with this one's arguments in this one's
+/// place: Unix replaces the process; Windows runs it with the same input
+/// and output and exits with its code. Returns only if it can't start.
+fn restart(exe: &std::path::Path) {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = std::process::Command::new(exe).args(&args).exec();
+        log::error!("updates: can't start the new version: {e}");
+    }
+    #[cfg(not(unix))]
+    match std::process::Command::new(exe).args(&args).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(e) => log::error!("updates: can't start the new version: {e}"),
+    }
+}
+
+fn update_cmd(cfg: &Config, check: bool, install: bool) -> Result<()> {
+    use computer_use::update::{self, Found};
+    let current = update::Version::current();
+    let dir = update::updates_dir();
+    if check {
+        match update::latest(cfg.update.repo.trim())? {
+            Some(r) => println!(
+                "{} is out (this is {current}); `update` downloads it",
+                r.version
+            ),
+            None => println!("{current} is the latest"),
+        }
+        return Ok(());
+    }
+    let waiting = match update::check_now(&cfg.update)? {
+        Found::UpToDate => {
+            println!("{current} is the latest");
+            update::pending(&dir)
+        }
+        Found::Waiting(p) => Some(p),
+    };
+    let Some(p) = waiting else {
+        return Ok(());
+    };
+    if install {
+        let exe = std::env::current_exe()?;
+        update::install(&p, &exe, &dir)?;
+        println!(
+            "{} is in place ({}); start your MCP client again to use it",
+            p.version,
+            exe.display()
+        );
+    } else {
+        println!(
+            "{} is downloaded ({}); it goes in {}",
+            p.version,
+            p.dir.display(),
+            update::when(cfg.update.install)
+        );
+    }
+    Ok(())
 }
 
 /// The settings as they may be shown: an API key and the HTTP token only
@@ -621,6 +740,29 @@ fn doctor(common: &Common, store: ConfigStore) -> Result<()> {
             }
         }
     }
+
+    // Updates.
+    let u = &c.update;
+    let waiting = computer_use::update::pending(&computer_use::update::updates_dir());
+    println!(
+        "updates:  {}{}",
+        if u.enabled {
+            format!(
+                "on (a look {} min after the server starts, then every {} h, from {})",
+                u.check_after_mins, u.check_every_hours, u.repo
+            )
+        } else {
+            "off".into()
+        },
+        match &waiting {
+            Some(p) => format!(
+                "; {} downloaded, it goes in {}",
+                p.version,
+                computer_use::update::when(u.install)
+            ),
+            None => String::new(),
+        }
+    );
 
     // Several agents on this desktop share one hub.
     let mut hub_running = false;

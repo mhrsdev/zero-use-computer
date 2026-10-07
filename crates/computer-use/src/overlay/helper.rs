@@ -12,6 +12,7 @@ use super::draw;
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
+use crate::motion;
 use crate::types::Rect;
 
 /// A piece of one agent's overlay.
@@ -253,9 +254,9 @@ struct Glide {
     from: (f64, f64),
     to: (f64, f64),
     start: Instant,
-    /// Swung in an arc: a reach from rest. A glide that takes over from
-    /// one under way (a drawing's pen) goes straight.
-    arc: bool,
+    /// The way it goes (`cursor_path`): for a reach from rest. A glide
+    /// that takes over from one under way (a drawing's pen) goes straight.
+    path: Option<motion::Path>,
 }
 
 /// How long a click shows (the pointers each click in their own way).
@@ -640,12 +641,16 @@ impl Machine {
                 } else {
                     now
                 };
-                let arc = self.cfg.cursor_motion && self.glide_progress(now) >= 1.0;
+                let path = (self.cfg.cursor_motion && self.glide_progress(now) >= 1.0).then(|| {
+                    let mut rng = motion::Rng::new();
+                    let style = motion::Style::pick(&self.cfg.cursor_path, &mut rng);
+                    motion::Path::new(from, (x, y), style, motion::Kind::Reach, &mut rng)
+                });
                 self.glide = Some(Glide {
                     from,
                     to: (x, y),
                     start,
-                    arc,
+                    path,
                 });
                 self.click_pending = click && self.cfg.click_effect;
                 if id.is_some() {
@@ -657,7 +662,13 @@ impl Machine {
                 }
             }
             Cmd::Dragging => {
-                if let Some(g) = &self.glide {
+                if let Some(g) = &mut self.glide {
+                    // A drag goes straight on, as the real one does.
+                    let mut rng = motion::Rng::new();
+                    g.path = g.path.as_ref().map(|_| {
+                        let hand = motion::Style::Hand;
+                        motion::Path::new(g.from, g.to, hand, motion::Kind::Drag, &mut rng)
+                    });
                     self.drag = Some(DragState {
                         from: g.from,
                         to: g.to,
@@ -818,18 +829,11 @@ impl Machine {
         let t = self.glide_progress(now);
         let e = 1.0 - (1.0 - t).powi(3); // ease-out
         let (dx, dy) = (g.to.0 - g.from.0, g.to.1 - g.from.1);
-        let line = (g.from.0 + dx * e, g.from.1 + dy * e);
-        if !g.arc || !self.cfg.cursor_motion {
-            return Some(line);
+        match g.path.as_ref().filter(|_| self.cfg.cursor_motion) {
+            // Its own way: a hand's curve, a wave, an arc, a spring, a spiral.
+            Some(path) => Some(path.at(t)),
+            None => Some((g.from.0 + dx * e, g.from.1 + dy * e)),
         }
-        // A hand's swing: bowed a little, upward whichever way it goes.
-        let d = dx.hypot(dy);
-        if d < 1.0 {
-            return Some(line);
-        }
-        let bow = (d * 0.12).min(60.0) * if dx >= 0.0 { -1.0 } else { 1.0 };
-        let lift = 4.0 * e * (1.0 - e) * bow;
-        Some((line.0 - dy / d * lift, line.1 + dx / d * lift))
     }
 
     /// What goes on around the pointer now (see `draw::CursorFx`); the
@@ -1904,6 +1908,8 @@ mod tests {
             fade_in_ms: 100,
             fade_out_ms: 400,
             transition_ms: 100,
+            // One way, so where the pointer is mid-glide is known.
+            cursor_path: "hand".into(),
             ..OverlayConfig::default()
         }
     }
@@ -2048,7 +2054,13 @@ mod tests {
     fn the_pointer_swings_leans_and_leaves_a_trail() {
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let mut m = Machine::new(cfg(), t0);
+        let mut m = Machine::new(
+            OverlayConfig {
+                cursor_path: "arc".into(),
+                ..cfg()
+            },
+            t0,
+        );
         let to = |x: f64, y: f64| Cmd::Pointer {
             x,
             y,
@@ -2059,8 +2071,8 @@ mod tests {
         m.apply(to(10.0, 300.0), t0);
         m.apply(to(410.0, 300.0), at(0));
         let mid = m.scene(at(50)).cursor.unwrap();
-        // A swing upward, not a straight line across.
-        assert!(mid.pos.1 < 290.0, "{:?}", mid.pos);
+        // An arc, not a straight line across.
+        assert!((mid.pos.1 - 300.0).abs() > 10.0, "{:?}", mid.pos);
         assert!(mid.fx.tilt > 3.0, "leans into the move: {}", mid.fx.tilt);
         assert!(mid.fx.trail.len() >= 2, "{:?}", mid.fx.trail);
         assert!(mid.fx.trail.iter().all(|p| p.0 < 0.0), "behind it");

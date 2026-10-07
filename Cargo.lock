@@ -380,6 +380,7 @@ dependencies = [
  "libc",
  "log",
  "memmap2",
+ "miniz_oxide 0.8.9",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

@@ -3,7 +3,8 @@
 ## v3.9.8
 
 New pointers for the agent that move like a hand, a mouse that moves like
-one too, and the overlay kept out of screenshots on X11
+one too in five ways, updates that install themselves after a restart,
+and the overlay kept out of screenshots on X11
 ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v3.9.7...v3.9.8)).
 
 - **Six new pointers, each clicking its own way**: crystal, paper, jelly,
@@ -45,12 +46,32 @@ one too, and the overlay kept out of screenshots on X11
   along a gentle curve to one side, quick to start and slower to settle,
   with a slight tremor, a long reach sometimes a touch past and back
   (Fitts's law timing: about 0.3 s for a short reach, 0.6 s across the
-  screen); a drag goes the same way with the button held, steadier; the
-  wheel turns a notch at a time. On X11, Wayland (wlroots) and Windows the
+  screen); the wheel turns a notch at a time. On X11, Wayland (wlroots) and Windows the
   real pointer moves so; on macOS the app gets the same path of events
   without the user's cursor moving. Afterwards the pointer still goes
   straight back where the user left it (`restore_pointer`). `natural_mouse
   = false` brings back the jump.
+- **Five ways to move** (`mouse_path` for the real mouse,
+  `overlay.cursor_path` for the agent's pointer; "mixed", the default,
+  picks one at random for each move): a hand's curve, a sine wave (one or
+  two swings across the way, calm at both ends), a circular arc, a spring
+  (an underdamped step: 6–10% past the target and back, settling) and a
+  spiral in to the target (a sixth to a third of a turn). Each takes a
+  hand's time and ends exactly on the target. A drag goes straight
+  whatever the setting, with a hand's timing and a faint tremor: it may be
+  drawing a line in a paint program.
+- **Updates** (`[update]`, on): five minutes after the server starts,
+  then every 12 hours (shared by the servers on the computer), it asks
+  GitHub for the latest release. A newer one is downloaded, checked
+  against GitHub's SHA-256 for it (none, no update; only the repository's
+  own release files, no pre-releases), unpacked into
+  `~/.computer-use/updates/` and its program asked its version, then left
+  waiting: nothing is replaced while an agent may be working. The first
+  time the server starts after the computer restarts, the new version
+  takes the program's place (and the package's skills and files, when it
+  runs from an unpacked package or plugin) and the server goes on as it.
+  `install = "start"` or `"manual"` changes when; `computer-use-mcp update`
+  looks now, `update --install` puts it in now; `doctor` shows what waits.
 - **The overlay could be in the agent's screenshots on X11** without a
   compositor: the engine waited 150 ms for the overlay to say it was
   hidden, and a helper busy drawing (a glide, a fade) answered later, so
@@ -59,18 +80,27 @@ one too, and the overlay kept out of screenshots on X11
 
 ### Checked
 
-- 514 tests in the library (new: every pointer keeps its tip on the spot
+- 522 tests in the library (new: every pointer keeps its tip on the spot
   through a click and while it breathes; agents at once get different
-  pointers; a hand's path ends on the target, curves, speeds up then
-  slows; the swing, lean and trail; keys, typing, scrolls and drags show
-  and go; an agent's own pointer), 55 in the server; clippy on Linux,
+  pointers; every path style ends on the target in a hand's time without
+  jumps, has its own shape, and a drag goes straight; the swing, lean and
+  trail; keys, typing, scrolls and drags show and go; an agent's own
+  pointer; versions, SHA-256 and CRC-32 against known values, only a newer
+  checked release of the repository is taken, a zip unpacks and a bad or
+  escaping one is refused, an update goes in as `install` says and
+  replaces the program and the package), 55 in the server; clippy on Linux,
   Windows and macOS; Rust 1.88; the live Linux tests 10 of 10 with the
   natural mouse on, the overlay test 10 runs of 10 (5 of 10 before); four
   agents on one hub under Xvfb showed four different pointers. Under Xvfb
   the real pointer was traced through a click: 650 px along a curve up to
   54 px off the straight line in about 0.55 s, then back where it was;
   keycaps, the typed bubble and a drag's line were seen on the live
-  overlay. Not seen on a Windows or macOS desktop, nor on Wayland.
+  overlay. Updates end to end: a build calling itself 3.9.6 downloaded
+  the real v3.9.7 from GitHub (its SHA-256 matched), waited while the
+  computer had not restarted, and with `install = "start"` put v3.9.7 and
+  its package in place and went on as it; the look five minutes in found
+  3.9.8 the latest. Not seen on a Windows or macOS desktop, nor on
+  Wayland.
 
 ## v3.9.7
 

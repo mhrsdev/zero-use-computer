@@ -46,6 +46,50 @@ impl Default for HubConfig {
     }
 }
 
+/// Updates ([update]): a while after the server starts it asks GitHub for
+/// the latest release; a newer one is downloaded, checked and set aside,
+/// never put in place while the agent may be working. It goes in when the
+/// server starts again after the computer has restarted (see `install`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Look for updates and download them.
+    pub enabled: bool,
+    /// Minutes after the server starts before the first look.
+    pub check_after_mins: u64,
+    /// Hours between looks while the server runs (every server on the
+    /// computer shares them).
+    pub check_every_hours: u64,
+    /// When a downloaded update goes in: "restart" (the first start after
+    /// the computer restarts), "start" (the next time the server starts),
+    /// or "manual" (only `computer-use-mcp update --install`).
+    pub install: UpdateInstall,
+    /// The GitHub repository releases come from (owner/name).
+    pub repo: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_after_mins: 5,
+            check_every_hours: 12,
+            install: UpdateInstall::Restart,
+            repo: "mhrsdev/zero-use-computer".into(),
+        }
+    }
+}
+
+/// When a downloaded update goes in ([`UpdateConfig::install`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateInstall {
+    #[default]
+    Restart,
+    Start,
+    Manual,
+}
+
 /// Optional JSONL audit log of every tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -480,6 +524,9 @@ pub struct OverlayConfig {
     /// material, breathes while it waits, draws a line where it drags and
     /// shows the way it scrolls.
     pub cursor_motion: bool,
+    /// The way the pointer glides to where it acts (as `mouse_path`):
+    /// "mixed", "hand", "sine", "arc", "spring" or "spiral".
+    pub cursor_path: String,
     /// Keys the agent presses show as keycaps by its pointer, and what it
     /// types runs out beside it.
     pub show_keys: bool,
@@ -537,6 +584,7 @@ impl Default for OverlayConfig {
             cursor_style: "random".into(),
             agent_cursors: Default::default(),
             cursor_motion: true,
+            cursor_path: "mixed".into(),
             show_keys: true,
             done_after_ms: 20_000,
             done_linger_ms: 1_500,
@@ -1112,6 +1160,7 @@ pub struct Config {
     pub audit: AuditConfig,
     pub server: ServerConfig,
     pub hub: HubConfig,
+    pub update: UpdateConfig,
     pub linux: LinuxConfig,
     pub macos: MacosConfig,
     pub windows: WindowsConfig,
@@ -1129,6 +1178,11 @@ pub struct Config {
     /// gentle curve, speeding up and slowing down, rather than jumping or
     /// going in a straight line (some apps notice). Off: it jumps there.
     pub natural_mouse: bool,
+    /// The way the mouse goes (with `natural_mouse`): "mixed" (one at random
+    /// for each move), "hand" (a hand's curve), "sine" (a wave), "arc" (a
+    /// circle's arc), "spring" (past the target and back) or "spiral" (in
+    /// to the target). Drags go straight whatever this says.
+    pub mouse_path: String,
     /// Re-read this file when it changes, without restarting the server.
     pub hot_reload: bool,
     /// Seconds launch_app waits for the app to show a window.
@@ -1154,6 +1208,7 @@ impl Default for Config {
             audit: AuditConfig::default(),
             server: ServerConfig::default(),
             hub: HubConfig::default(),
+            update: UpdateConfig::default(),
             linux: LinuxConfig::default(),
             macos: MacosConfig::default(),
             windows: WindowsConfig::default(),
@@ -1162,6 +1217,7 @@ impl Default for Config {
             follow_new_windows: true,
             restore_pointer: true,
             natural_mouse: true,
+            mouse_path: "mixed".into(),
             hot_reload: true,
             launch_timeout_secs: 15.0,
         }
@@ -1210,6 +1266,31 @@ impl Config {
                 crate::overlay::draw::CURSOR_STYLES.join(", "),
                 o.cursor_style
             ));
+        }
+        let repo = self.update.repo.trim();
+        let part_ok = |p: &str| {
+            !p.is_empty()
+                && p != "."
+                && p != ".."
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        };
+        if !matches!(repo.split_once('/'), Some((o, n)) if part_ok(o) && part_ok(n)) {
+            return Err(format!(
+                "update.repo must be a GitHub repository as owner/name (got \"{repo}\")"
+            ));
+        }
+        for (key, value) in [
+            ("mouse_path", &self.mouse_path),
+            ("overlay.cursor_path", &o.cursor_path),
+        ] {
+            let v = value.trim().to_ascii_lowercase();
+            if !crate::motion::PATH_STYLES.contains(&v.as_str()) {
+                return Err(format!(
+                    "{key} must be one of {} (got \"{value}\")",
+                    crate::motion::PATH_STYLES.join(", ")
+                ));
+            }
         }
         for (agent, style) in &o.agent_cursors {
             let style = style.trim().to_ascii_lowercase();
