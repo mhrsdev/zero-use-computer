@@ -1,3 +1,22 @@
+# Upgrading to v5.0.1-preview
+
+From v5.0.0-preview: nothing to change. What is different:
+
+- **Linux: Qt apps, KWin and Plasma are read safely**, and the desktop's
+  own processes are never asked anything. `doctor` no longer switches the
+  session's accessibility on (a server does, and the last one to end
+  switches it off again).
+- **The screen goes only to agents at work, by what each needs.** A
+  server that was only started (another chat that never used the
+  computer) has no part, and one quiet for `hub.release_after_secs` (new,
+  120) gives its part up until its next call. A window the agent moved
+  itself stays where it put it. `agents` area also takes a share ("35%").
+- **The hub speaks version 2:** a server of this version and a hub of an
+  older one (still running for older servers) don't mix; the new server
+  draws its own overlay until the old ones end.
+- **`install.sh` / `install.cmd`** add the program as `zero-use-computer`
+  when Claude Code keeps `computer-use` for itself.
+
 # Upgrading to v5.0.0-preview
 
 A preview of v5.0. When the finished v5.0.0 comes out, a preview build

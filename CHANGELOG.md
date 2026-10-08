@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## v5.0.1-preview
 
 A fix for every Linux version so far (one call could take a KDE session
 down), and a hub that shares the screen out by what each agent at work
-needs.
+needs ([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v5.0.0-preview...v5.0.1-preview)).
 
 - **Qt apps crashed when the server read them, KWin and Plasma too.** The
   server asked each app for all of an element's properties at once
