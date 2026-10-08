@@ -107,6 +107,24 @@ pub const PLATFORM: &str = if cfg!(target_os = "macos") {
     "unsupported"
 };
 
+/// Let this process switch the desktop's accessibility on while it works
+/// (Linux, where it is off by default outside GNOME). A server does; a
+/// command that only reports (`doctor`) doesn't. See
+/// [`put_accessibility_back`].
+pub fn may_switch_accessibility_on() {
+    #[cfg(target_os = "linux")]
+    linux::may_switch_accessibility_on();
+}
+
+/// Switch the desktop's accessibility off again if this program switched
+/// it on and no other server of `program` (this program's file name) runs.
+pub fn put_accessibility_back(program: &str) {
+    #[cfg(target_os = "linux")]
+    linux::put_accessibility_back(program);
+    #[cfg(not(target_os = "linux"))]
+    let _ = program;
+}
+
 /// Build the native backend for this platform.
 pub fn platform_backend() -> Result<Box<dyn Backend>> {
     #[cfg(target_os = "macos")]

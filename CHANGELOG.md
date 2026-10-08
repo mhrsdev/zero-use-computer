@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+A fix for every Linux version so far: one call could take a KDE session
+down.
+
+- **Qt apps crashed when the server read them, KWin and Plasma too.** The
+  server asked each app for all of an element's properties at once
+  (`Properties.GetAll`). Qt's accessibility bridge, up to Qt 6.9, reads a
+  second argument from every such call, and that one has only one: the app
+  crashes. KWin is a Qt program, so one `list_apps` (or `doctor`, which
+  `install.sh` runs) closed every window, and a restarted KWin was crashed
+  again by the next look. Each property is now asked for on its own, as Qt
+  expects, and an element is asked for its extents and actions only when it
+  says it has them (GTK printed warnings for the others). A new live test
+  in CI reads, clicks and types in a real Qt app; the old code fails it.
+- **The desktop's own processes are never asked anything:** the compositor
+  (KWin, GNOME Shell, Xwayland), Plasma, the session manager, portals,
+  kded, KWallet, the polkit agent. Their pid comes from the bus, not from
+  them, and they aren't listed as apps.
+- **An app that quits while answering is left alone for 10 minutes** (by
+  its program, so a restarted copy is too): a call that crashes an app is
+  never made to it again and again. Its windows are still listed, for
+  screenshots and the mouse and keyboard.
+- **`doctor` no longer switches the desktop's accessibility on**; it says
+  whether it is on. A server switches it on when it is off (Qt, Firefox and
+  Chromium show nothing without it) and the last server to end switches it
+  off again.
+- **`install.sh` and `install.cmd` add the program as `zero-use-computer`
+  when Claude Code keeps the name `computer-use` for itself** ("this name
+  is reserved"), as the panel's Connect page already did, and say if adding
+  it failed. `--uninstall` removes either name.
+
+If a KDE session crashed: log out and back in (or restart), then update. To
+switch accessibility off again: `busctl --user set-property org.a11y.Bus
+/org/a11y/bus org.a11y.Status IsEnabled b false` and, on GNOME-based
+desktops, `gsettings set org.gnome.desktop.interface toolkit-accessibility
+false`.
+
 ## v5.0.0-preview
 
 A preview of v5.0: the settings panel, and everything it needed (what was

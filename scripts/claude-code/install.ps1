@@ -16,18 +16,29 @@ param(
   [switch] $Uninstall
 )
 $ErrorActionPreference = 'Stop'
+# Newer Claude Code keeps "computer-use" for itself ("this name is
+# reserved"): then the program goes in under this name, as the panel's
+# Connect page does.
+$AltName = 'zero-use-computer'
+$NameGiven = $PSBoundParameters.ContainsKey('Name')
 
 if ((-not $NoRegister) -and (-not (Get-Command claude -ErrorAction SilentlyContinue))) {
   throw 'claude (Claude Code) is not on PATH. Install it first: https://docs.claude.com/claude-code'
 }
 if ($Uninstall) {
-  # A failing native command doesn't throw: check its exit code.
-  claude mcp remove $Name --scope $Scope
-  if ($LASTEXITCODE -ne 0) {
+  $names = @($Name)
+  if (-not $NameGiven) { $names += $AltName }
+  $removed = $false
+  # A failed removal's error output must not stop the script: its exit code tells.
+  $ErrorActionPreference = 'Continue'
+  foreach ($n in $names) {
+    claude mcp remove $n --scope $Scope 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "Removed '$n' ($Scope scope)."; $removed = $true }
+  }
+  if (-not $removed) {
     Write-Host "Nothing removed: '$Name' wasn't found in the $Scope scope (see claude mcp list)."
     exit 1
   }
-  Write-Host "Removed '$Name' ($Scope scope)."
   return
 }
 
@@ -72,8 +83,26 @@ try {
   if ($cfg) { Write-Host "Settings file: $cfg" }
 } catch {}
 
-try { claude mcp remove $Name --scope $Scope 2>$null | Out-Null } catch {}
-claude mcp add --scope $Scope $Name -- $exe @serverArgs
+# A native command's error output must not stop the script here (Windows
+# PowerShell turns it into an error under 'Stop'): its exit code tells.
+function Add-ToClaude([string] $n) {
+  $ErrorActionPreference = 'Continue'
+  try { claude mcp remove $n --scope $Scope 2>&1 | Out-Null } catch {}
+  # Each line as text (an error line would print with PowerShell's own notes).
+  $out = (claude mcp add --scope $Scope $n -- $exe @serverArgs 2>&1 | ForEach-Object { "$_" } | Out-String).Trim()
+  return @{ Code = $LASTEXITCODE; Out = $out }
+}
+$added = Add-ToClaude $Name
+if ($added.Code -ne 0 -and -not $NameGiven -and $added.Out -match 'reserved') {
+  Write-Host "Claude Code keeps the name '$Name' for itself: adding the program as '$AltName'."
+  $Name = $AltName
+  $added = Add-ToClaude $Name
+}
+if ($added.Out) { Write-Host $added.Out }
+if ($added.Code -ne 0) {
+  Write-Host "Could not add '$Name' to Claude Code (see above)."
+  exit $added.Code
+}
 Write-Host ''
 Write-Host "Added '$Name' ($Scope scope). Check with:  claude mcp list"
 Write-Host 'Apps running as administrator cannot be controlled from a normal process.'

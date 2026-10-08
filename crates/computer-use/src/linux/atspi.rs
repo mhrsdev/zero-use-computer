@@ -157,6 +157,27 @@ impl Fail {
         }
     }
 
+    /// Whether `e` says the app quit (or crashed) while it held the call:
+    /// the bus answers for it ("NoReply", "… disconnected …") as for one
+    /// that is merely slow, but the message differs.
+    fn died(e: &zbus::Error) -> bool {
+        let said = |name: &str, msg: &str| {
+            name == "org.freedesktop.DBus.Error.NoReply"
+                && msg.to_ascii_lowercase().contains("disconnected")
+        };
+        match e {
+            zbus::Error::MethodError(name, msg, _) => {
+                said(name.as_str(), msg.as_deref().unwrap_or_default())
+            }
+            zbus::Error::FDO(e) => match &**e {
+                zbus::fdo::Error::ZBus(e) => Fail::died(e),
+                zbus::fdo::Error::NoReply(msg) => said("org.freedesktop.DBus.Error.NoReply", msg),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// The most telling of several failures of one element's queries.
     fn worst(fails: &[Fail]) -> Fail {
         [Fail::Disconnected, Fail::Timeout, Fail::Gone]
@@ -229,6 +250,9 @@ pub struct AtspiConnection {
     /// Per app (its bus name): whether a path, once gone, never names
     /// another element.
     unique_paths: std::sync::Mutex<HashMap<String, bool>>,
+    /// Apps (their bus names) that quit while answering a call, perhaps
+    /// because of it; taken by [`AtspiConnection::take_died`].
+    died: std::sync::Mutex<Vec<String>>,
 }
 
 /// What doesn't change while an element lives.
@@ -400,28 +424,133 @@ fn status(session: &Connection) -> Option<bool> {
     bool::try_from(v).ok()
 }
 
-/// Switch accessibility on for the session when it is off: it is off by
-/// default outside GNOME (KDE, Xfce, sway, Hyprland), and Qt, Firefox and
-/// Chromium then don't expose their elements. Apps started from then on
-/// (and Qt ones that are running) do.
+/// Whether this process may switch the session's accessibility on: a
+/// server (and the commands that act like one) may, `doctor` never does.
+static MAY_SWITCH_ON: AtomicBool = AtomicBool::new(false);
+
+/// Let this process switch the session's accessibility on when it is off
+/// (see [`put_back`] for switching it off again).
+pub fn may_switch_on() {
+    MAY_SWITCH_ON.store(true, Ordering::Relaxed);
+}
+
+/// The file that says accessibility was off until this program switched
+/// it on (so that it is switched off again when no server needs it).
+fn switched_mark() -> std::path::PathBuf {
+    crate::config::home_dir().join("a11y-switched-on")
+}
+
+fn set_enabled(session: &Connection, on: bool) -> zbus::Result<()> {
+    session
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some(PROPS_IFACE),
+            "Set",
+            &(
+                "org.a11y.Status",
+                "IsEnabled",
+                zbus::zvariant::Value::from(on),
+            ),
+        )
+        .map(|_| ())
+}
+
+/// Switch accessibility on for the session when it is off, if this process
+/// may: it is off by default outside GNOME (KDE, Xfce, sway, Hyprland), and
+/// Qt, Firefox and Chromium then don't expose their elements. Apps started
+/// from then on (and Qt ones that are running) do. A mark is left so that
+/// it is switched off again when the last server ends ([`put_back`]).
 fn switch_on() {
+    if !MAY_SWITCH_ON.load(Ordering::Relaxed) {
+        return;
+    }
     let Ok(session) = session() else {
         return;
     };
     if status(&session) != Some(false) {
         return;
     }
-    let on = zbus::zvariant::Value::from(true);
-    match session.call_method(
-        Some("org.a11y.Bus"),
-        "/org/a11y/bus",
-        Some(PROPS_IFACE),
-        "Set",
-        &("org.a11y.Status", "IsEnabled", on),
-    ) {
-        Ok(_) => log::info!("switched accessibility on (org.a11y.Status.IsEnabled)"),
+    match set_enabled(&session, true) {
+        Ok(()) => {
+            log::warn!(
+                "switched accessibility on for this session (org.a11y.Status.IsEnabled); it is switched off again when the last server ends"
+            );
+            let mark = switched_mark();
+            if let Some(dir) = mark.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(mark, b"");
+        }
         Err(e) => log::warn!("cannot switch accessibility on: {e}"),
     }
+}
+
+/// Switch accessibility off again if this program switched it on and no
+/// other server is running (a server's last act). `program` is this
+/// program's file name, to recognise other servers by.
+pub fn put_back(program: &str) {
+    if !MAY_SWITCH_ON.load(Ordering::Relaxed) || !switched_mark().exists() {
+        return;
+    }
+    if other_servers(program) {
+        return;
+    }
+    let _ = std::fs::remove_file(switched_mark());
+    let Ok(session) = session() else {
+        return;
+    };
+    if status(&session) == Some(true) {
+        match set_enabled(&session, false) {
+            Ok(()) => log::warn!("switched accessibility off again, as it was"),
+            Err(e) => log::warn!("cannot switch accessibility off again: {e}"),
+        }
+    }
+}
+
+/// The program's commands (as the command line names them).
+const COMMANDS: &[&str] = &[
+    "serve", "apps", "state", "call", "tools", "config", "doctor", "update", "install", "shortcut",
+    "settings", "overlay", "hub", "help",
+];
+
+/// Whether another process of this program (other than `doctor`, `help`
+/// and the like, which don't use accessibility for long) is running.
+fn other_servers(program: &str) -> bool {
+    let me = std::process::id();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    dir.flatten().any(|e| {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            return false;
+        };
+        if pid == me {
+            return false;
+        }
+        let Ok(cmd) = std::fs::read(e.path().join("cmdline")) else {
+            return false;
+        };
+        let mut args = cmd.split(|b| *b == 0).filter(|a| !a.is_empty());
+        let Some(exe) = args.next() else {
+            return false;
+        };
+        let exe = String::from_utf8_lossy(exe);
+        let named = std::path::Path::new(exe.as_ref())
+            .file_name()
+            .is_some_and(|n| n == program);
+        // Its command is the first argument that names one (an option's
+        // value may come first); none means `serve`.
+        let command = args
+            .map(String::from_utf8_lossy)
+            .find(|a| COMMANDS.contains(&a.as_ref()))
+            .map(|a| a.into_owned());
+        named
+            && matches!(
+                command.as_deref(),
+                None | Some("serve" | "apps" | "state" | "call")
+            )
+    })
 }
 
 impl AtspiConnection {
@@ -474,6 +603,7 @@ impl AtspiConnection {
             lost: AtomicBool::new(false),
             lasting: Default::default(),
             unique_paths: Default::default(),
+            died: Default::default(),
         })
     }
 
@@ -508,6 +638,12 @@ impl AtspiConnection {
         e
     }
 
+    /// The apps (bus names) that quit while answering a call since this
+    /// was last asked.
+    pub fn take_died(&self) -> Vec<String> {
+        std::mem::take(&mut *self.died.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
     pub fn root(&self) -> ObjRef {
         ObjRef {
             bus: "org.a11y.atspi.Registry".into(),
@@ -527,7 +663,17 @@ impl AtspiConnection {
             .inner()
             .call_method(Some(r.bus.as_str()), &path, Some(iface), method, body)
             .await
-            .map_err(|e| self.note(CallError::new(&format!("{iface}.{method}"), &e)))?;
+            .map_err(|e| {
+                // Only a question (Get…) counts: an action may well quit
+                // the app ("Quit", "Close").
+                if method.starts_with("Get") && Fail::died(&e) {
+                    let mut died = self.died.lock().unwrap_or_else(|p| p.into_inner());
+                    if !died.contains(&r.bus) {
+                        died.push(r.bus.clone());
+                    }
+                }
+                self.note(CallError::new(&format!("{iface}.{method}"), &e))
+            })?;
         reply.body().deserialize().map_err(CallError::other)
     }
 
@@ -775,10 +921,27 @@ struct Pending {
 }
 
 impl AtspiConnection {
-    /// Fetch one element's properties, role, state, interfaces, extents and
-    /// actions, all six queries in flight at once; with the error when it
-    /// answered none of the basic ones.
+    /// Fetch one element's properties, role, state and interfaces, then
+    /// (knowing which interfaces it has) its extents and actions; with the
+    /// error when it answered none of the basic queries.
     async fn fetch_props(&self, r: &ObjRef) -> (NodeData, Option<CallError>) {
+        let (mut nd, err) = self.fetch_basic(r).await;
+        let (extents, actions, timed_out) = self.fetch_extra(r, &nd).await;
+        nd.extents = extents;
+        nd.actions = actions;
+        nd.timed_out |= timed_out;
+        (nd, err)
+    }
+
+    /// One element's name, description, child count, role, state and
+    /// interfaces, all in flight at once; with the error when it answered
+    /// none of the basic ones (name, role, state).
+    ///
+    /// Each property is asked for on its own (`Properties.Get`), never all
+    /// at once: Qt up to 6.9 reads a second argument from every
+    /// `Properties` call, and `GetAll` has one, so the app (KWin, Plasma,
+    /// every Qt program) crashes on it.
+    async fn fetch_basic(&self, r: &ObjRef) -> (NodeData, Option<CallError>) {
         let unique = self.paths_unique(&r.bus).await;
         let known = unique
             .then(|| {
@@ -807,25 +970,13 @@ impl AtspiConnection {
                 }
             }
         };
-        let acts = async {
-            // No Action interface: no actions to ask for.
-            if known.as_ref().is_some_and(|k| {
-                !k.interfaces
-                    .iter()
-                    .any(|i| i == ACTION_IFACE || i == "Action")
-            }) {
-                return Ok(Vec::new());
-            }
-            self.acall::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &())
-                .await
-        };
-        let (props, role, state, ifaces, ext, acts) = futures_util::join!(
-            self.acall::<_, HashMap<String, OwnedValue>>(r, PROPS_IFACE, "GetAll", &(A11Y_IFACE,)),
+        let (name, description, count, role, state, ifaces) = futures_util::join!(
+            self.aprop(r, A11Y_IFACE, "Name"),
+            self.aprop(r, A11Y_IFACE, "Description"),
+            self.aprop(r, A11Y_IFACE, "ChildCount"),
             role,
             self.acall::<_, Vec<u32>>(r, A11Y_IFACE, "GetState", &()),
             ifaces,
-            self.acall::<_, (i32, i32, i32, i32)>(r, COMPONENT_IFACE, "GetExtents", &(0u32,)),
-            acts,
         );
         if unique
             && known.is_none()
@@ -843,19 +994,18 @@ impl AtspiConnection {
                 },
             );
         }
-        let fails: Vec<Fail> = [
-            props.as_ref().err(),
+        let timed_out = [
+            name.as_ref().err(),
+            description.as_ref().err(),
+            count.as_ref().err(),
             role.as_ref().err(),
             state.as_ref().err(),
             ifaces.as_ref().err(),
-            ext.as_ref().err(),
-            acts.as_ref().err(),
         ]
         .into_iter()
         .flatten()
-        .map(|e| e.fail)
-        .collect();
-        let err = match (&props, &role, &state) {
+        .any(|e| e.fail == Fail::Timeout);
+        let err = match (&name, &role, &state) {
             (Err(a), Err(b), Err(c)) => {
                 let worst = Fail::worst(&[a.fail, b.fail, c.fail]);
                 Some(
@@ -868,39 +1018,75 @@ impl AtspiConnection {
             }
             _ => None,
         };
-        let mut acc = Accessible::default();
-        let mut counted = false;
-        if let Ok(props) = props {
-            acc.name = props.get("Name").and_then(owned_string).unwrap_or_default();
-            acc.description = props
-                .get("Description")
+        let count = count.ok().and_then(|v| i32::try_from(v).ok());
+        let acc = Accessible {
+            name: name
+                .ok()
+                .as_ref()
                 .and_then(owned_string)
-                .unwrap_or_default();
-            let count = props
-                .get("ChildCount")
-                .and_then(|v| i32::try_from(v.clone()).ok());
-            counted = count.is_some();
-            acc.child_count = count.unwrap_or(0);
-        }
-        acc.role_name = role.unwrap_or_default();
-        if let Ok(v) = state {
-            acc.states = States::from_pair(&v);
-        }
-        acc.interfaces = ifaces.unwrap_or_default();
+                .unwrap_or_default(),
+            description: description
+                .ok()
+                .as_ref()
+                .and_then(owned_string)
+                .unwrap_or_default(),
+            role_name: role.unwrap_or_default(),
+            child_count: count.unwrap_or(0),
+            states: state.map(|v| States::from_pair(&v)).unwrap_or_default(),
+            interfaces: ifaces.unwrap_or_default(),
+        };
         let nd = NodeData {
             acc,
-            extents: ext.ok(),
-            actions: acts
-                .map(|a| a.into_iter().map(|(n, d, _)| action_name(n, d)).collect())
-                .unwrap_or_default(),
-            text: None,
-            label: None,
-            children: Vec::new(),
             fail: err.as_ref().map(|e| e.fail),
-            timed_out: fails.contains(&Fail::Timeout),
-            counted,
+            timed_out,
+            counted: count.is_some(),
+            ..Default::default()
         };
         (nd, err)
+    }
+
+    /// An element's extents and actions, asked for only when it says it has
+    /// the interface (Component, Action): an app is never asked for what it
+    /// hasn't got (GTK complains about an app's own element; another
+    /// toolkit might do worse). Whether either timed out.
+    async fn fetch_extra(
+        &self,
+        r: &ObjRef,
+        nd: &NodeData,
+    ) -> (Option<(i32, i32, i32, i32)>, Vec<String>, bool) {
+        if nd.fail.is_some() {
+            return (None, Vec::new(), false);
+        }
+        let ext = async {
+            if !nd.acc.has_iface("Component") {
+                return Ok(None);
+            }
+            self.acall::<_, (i32, i32, i32, i32)>(r, COMPONENT_IFACE, "GetExtents", &(0u32,))
+                .await
+                .map(Some)
+        };
+        let acts = async {
+            if !nd.acc.has_iface("Action") {
+                return Ok(Vec::new());
+            }
+            self.acall::<_, Vec<(String, String, String)>>(r, ACTION_IFACE, "GetActions", &())
+                .await
+        };
+        let (ext, acts) = futures_util::join!(ext, acts);
+        let timed_out = [ext.as_ref().err(), acts.as_ref().err()]
+            .into_iter()
+            .flatten()
+            .any(|e| e.fail == Fail::Timeout);
+        let actions = acts
+            .map(|a| a.into_iter().map(|(n, d, _)| action_name(n, d)).collect())
+            .unwrap_or_default();
+        (ext.ok().flatten(), actions, timed_out)
+    }
+
+    /// One property (`Properties.Get`, two arguments as every toolkit
+    /// expects).
+    async fn aprop(&self, r: &ObjRef, iface: &str, name: &str) -> CallResult<OwnedValue> {
+        self.acall(r, PROPS_IFACE, "Get", &(iface, name)).await
     }
 
     /// Whether `bus`'s app never reuses an element's path (asked once per
@@ -1020,8 +1206,14 @@ impl AtspiConnection {
         // Each element's children and text are asked for as soon as its
         // own properties are in, not after the whole batch's.
         futures_util::future::join_all(refs.iter().map(|(r, kids)| async move {
-            let (mut nd, _) = self.fetch_props(r).await;
-            let (children, text, label, timed_out) = self.fetch_rest(r, &nd, *kids, text_end).await;
+            let (mut nd, _) = self.fetch_basic(r).await;
+            let ((extents, actions, t0), (children, text, label, timed_out)) = futures_util::join!(
+                self.fetch_extra(r, &nd),
+                self.fetch_rest(r, &nd, *kids, text_end)
+            );
+            nd.extents = extents;
+            nd.actions = actions;
+            nd.timed_out |= t0;
             nd.children = children;
             nd.text = text;
             nd.label = label;

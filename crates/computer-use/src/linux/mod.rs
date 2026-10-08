@@ -13,6 +13,8 @@ mod clipboard;
 mod notify;
 pub(crate) mod wayland;
 mod wm;
+
+pub use atspi::{may_switch_on as may_switch_accessibility_on, put_back as put_accessibility_back};
 pub(crate) mod x11;
 
 use std::collections::HashMap;
@@ -62,6 +64,15 @@ pub struct LinuxBackend {
     app_refs: HashMap<u32, ObjRef>,
     /// pid → app name, from the last listing (for messages).
     app_names: HashMap<u32, String>,
+    /// Bus name → program name, from the last listing: who an app that
+    /// quit was.
+    programs: HashMap<String, String>,
+    /// Programs that quit while answering a call, perhaps because of it
+    /// (a toolkit's accessibility bug): left alone until then, so that a
+    /// call that crashes an app is never made to it again and again (as
+    /// each restarted copy shows up). Their windows are still listed, for
+    /// screenshots and the mouse and keyboard.
+    left_alone: HashMap<String, Instant>,
     /// handle → (owning pid, element). Cleared per app on each snapshot so it
     /// never grows beyond the elements of the latest views.
     handles: HashMap<ElementHandle, (u32, ObjRef)>,
@@ -132,6 +143,8 @@ impl LinuxBackend {
             natural_mouse: true,
             app_refs: HashMap::new(),
             app_names: HashMap::new(),
+            programs: HashMap::new(),
+            left_alone: HashMap::new(),
             handles: HashMap::new(),
             window_handles: HashMap::new(),
             next_handle: 1,
@@ -374,17 +387,43 @@ impl LinuxBackend {
 
     /// Application accessibles and their pids, looked up concurrently.
     fn refresh_apps(&mut self) -> Result<Vec<(ObjRef, u32)>> {
+        let now = Instant::now();
+        for bus in self.bus()?.take_died() {
+            if let Some(program) = self.programs.get(&bus) {
+                log::warn!(
+                    "{program} quit while answering an accessibility call; it is left alone for {} min",
+                    LEFT_ALONE.as_secs() / 60
+                );
+                self.left_alone.insert(program.clone(), now + LEFT_ALONE);
+            }
+        }
+        self.left_alone.retain(|_, until| *until > now);
         let a11y = self.bus()?;
         let root = a11y.root();
         let children = a11y.children(&root)?;
         let pids = a11y.pids_of(&children);
         self.app_refs.clear();
+        self.programs.clear();
         let mut apps = Vec::new();
         for (child, pid) in children.into_iter().zip(pids) {
-            if let Some(pid) = pid {
-                self.app_refs.insert(pid, child.clone());
-                apps.push((child, pid));
+            // The desktop's own processes are never asked anything (their
+            // pid comes from the bus daemon, not from them), nor a program
+            // that lately quit while answering.
+            let Some(pid) = pid.filter(|p| !session_process(*p)) else {
+                continue;
+            };
+            let program = program_name(pid);
+            if program
+                .as_ref()
+                .is_some_and(|p| self.left_alone.contains_key(p))
+            {
+                continue;
             }
+            if let Some(p) = program {
+                self.programs.insert(child.bus.clone(), p);
+            }
+            self.app_refs.insert(pid, child.clone());
+            apps.push((child, pid));
         }
         // Apps that quit take their handles with them.
         let live = &self.app_refs;
@@ -850,7 +889,7 @@ impl Backend for LinuxBackend {
         };
         let me = std::process::id();
         for (pid, class, title) in owners {
-            if pid == me || pid == 0 || out.iter().any(|a| a.pid == pid) {
+            if pid == me || pid == 0 || out.iter().any(|a| a.pid == pid) || session_process(pid) {
                 continue;
             }
             let (exe, comm) = proc_info(pid);
@@ -1814,7 +1853,7 @@ fn a11y_status(no_bus: Option<&str>, enabled: Option<bool>) -> PermissionStatus 
         ),
         (None, Some(false)) => (
             false,
-            "connected, but accessibility is switched off for the session (org.a11y.Status IsEnabled = false) and couldn't be switched on: Qt, Firefox and Chromium apps won't show their elements".into(),
+            "connected, but accessibility is switched off for the session (org.a11y.Status IsEnabled = false): a server switches it on while it runs (and off again when the last one ends); while it is off, Qt, Firefox and Chromium apps don't show their elements".into(),
         ),
         (None, Some(true)) => (true, "connected; accessibility is on".into()),
         (None, None) => (true, "connected".into()),
@@ -1880,6 +1919,91 @@ fn proc_info(pid: u32) -> (Option<String>, Option<String>) {
     (exe, comm)
 }
 
+/// The desktop's own processes, by the start of their program's name: the
+/// compositor, the shell, the session manager and the daemons a session
+/// can't lose. The agent never works in them, and nothing is asked of
+/// them: when the compositor dies every window goes with it, and a crashed
+/// shell restarted too often is given up on (a black desktop).
+const SESSION_PROCESSES: &[&str] = &[
+    "kwin_",
+    "plasmashell",
+    "ksmserver",
+    "kded",
+    "kglobalaccel",
+    "kactivitymanage",
+    "kwalletd",
+    "kaccess",
+    "org_kde_powerde",
+    "polkit-kde-auth",
+    "xdg-desktop-por",
+    "gnome-shell",
+    "gnome-session",
+    "mutter",
+    "gsd-",
+    "Xwayland",
+    "Xorg",
+    "at-spi",
+];
+
+/// Whether the name of a program (as `/proc/<pid>/exe` or, cut to 15
+/// characters, `/proc/<pid>/comm` gives it) is one of the session's own.
+fn session_program(name: &str) -> bool {
+    SESSION_PROCESSES.iter().any(|p| name.starts_with(p))
+}
+
+/// Whether `pid` is one of the session's own processes.
+fn session_process(pid: u32) -> bool {
+    let (exe, comm) = proc_info(pid);
+    exe.as_deref()
+        .and_then(file_name)
+        .iter()
+        .chain(comm.iter())
+        .any(|n| session_program(n))
+}
+
+/// How long a program that quit while answering is left alone.
+const LEFT_ALONE: Duration = Duration::from_secs(10 * 60);
+
+/// The name of `pid`'s program and what it runs (`python3 app.py` is
+/// `python3 app.py`, not every Python program): who a restarted copy is.
+fn program_name(pid: u32) -> Option<String> {
+    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let mut args = cmd
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(String::from_utf8_lossy);
+    let exe = file_name(&args.next()?)?;
+    // An interpreter's program is its first argument that isn't an option.
+    let script = is_interpreter(&exe)
+        .then(|| args.find(|a| !a.starts_with('-')))
+        .flatten();
+    Some(match script {
+        Some(s) => format!("{exe} {}", file_name(&s).unwrap_or_else(|| s.into_owned())),
+        None => exe,
+    })
+}
+
+/// Whether a program runs scripts (`python3.12`, `perl5.36`, `bash`), not
+/// one that merely starts like one (`shotwell`).
+fn is_interpreter(exe: &str) -> bool {
+    [
+        "python", "perl", "ruby", "node", "java", "gjs", "sh", "bash",
+    ]
+    .iter()
+    .any(|i| {
+        exe.strip_prefix(i)
+            .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    })
+}
+
+/// The last part of a path, without the " (deleted)" of a replaced program.
+fn file_name(path: &str) -> Option<String> {
+    std::path::Path::new(path.trim_end_matches(" (deleted)"))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+}
+
 /// Whether the desktop session is Wayland: XTest input and X11 captures then
 /// only reach apps running under XWayland, not native Wayland apps.
 fn wayland_session() -> bool {
@@ -1889,6 +2013,53 @@ fn wayland_session() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_desktops_own_processes_are_known_by_name() {
+        for name in [
+            "kwin_wayland",
+            "kwin_x11",
+            "kwin_wayland_wr",
+            "plasmashell",
+            "kded6",
+            "xdg-desktop-portal-kde",
+            "xdg-desktop-por",
+            "polkit-kde-authentication-agent-1",
+            "gnome-shell",
+            "Xwayland",
+        ] {
+            assert!(session_program(name), "{name}");
+        }
+        for name in [
+            "dolphin",
+            "kate",
+            "konsole",
+            "firefox",
+            "python3.12",
+            "gedit",
+        ] {
+            assert!(!session_program(name), "{name}");
+        }
+        assert!(!session_process(std::process::id()));
+    }
+
+    #[test]
+    fn interpreters_are_told_from_programs_that_start_like_one() {
+        for exe in [
+            "python3",
+            "python3.12",
+            "perl",
+            "perl5.36",
+            "bash",
+            "sh",
+            "node",
+        ] {
+            assert!(is_interpreter(exe), "{exe}");
+        }
+        for exe in ["shotwell", "shutter", "javaws", "nodejs-app", "gedit"] {
+            assert!(!is_interpreter(exe), "{exe}");
+        }
+    }
 
     #[test]
     fn find_nth_occurrence() {

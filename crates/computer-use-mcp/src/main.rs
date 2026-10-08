@@ -394,6 +394,18 @@ fn run() -> Result<()> {
         });
     }
 
+    // The commands that work like a server may switch the desktop's
+    // accessibility on, and the last of them to end switches it off again;
+    // `doctor` only reports.
+    let _accessibility = matches!(
+        command,
+        Command::Serve | Command::Apps | Command::State { .. } | Command::Call { .. }
+    )
+    .then(|| {
+        computer_use::may_switch_accessibility_on();
+        PutAccessibilityBack
+    });
+
     match command {
         Command::Serve => serve(&cli.common, store, problem),
         Command::Update {
@@ -839,6 +851,20 @@ fn with_overlay(engine: Engine<Box<dyn Backend>>) -> Engine<Box<dyn Backend>> {
             log::warn!("no overlay or stop key: cannot find this program ({e})");
             engine
         }
+    }
+}
+
+/// Switches the desktop's accessibility off again on the way out, if this
+/// program switched it on and no other server is left.
+struct PutAccessibilityBack;
+
+impl Drop for PutAccessibilityBack {
+    fn drop(&mut self) {
+        let program = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "computer-use-mcp".into());
+        computer_use::put_accessibility_back(&program);
     }
 }
 

@@ -15,11 +15,16 @@ no_register=0
 uninstall=0
 scope=user
 name=computer-use
+# Newer Claude Code keeps "computer-use" for itself ("this name is
+# reserved"): then the program goes in under this name, as the panel's
+# Connect page does.
+alt_name=zero-use-computer
+name_given=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --scope) scope="${2:?--scope needs local|project|user}"; shift 2 ;;
-    --name) name="${2:?--name needs a value}"; shift 2 ;;
+    --name) name="${2:?--name needs a value}"; name_given=1; shift 2 ;;
     --no-register) no_register=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -31,10 +36,16 @@ done
 # project one.
 if [ "$uninstall" = 1 ]; then
   command -v claude >/dev/null || { echo "claude (Claude Code) is not on PATH" >&2; exit 1; }
-  if claude mcp remove "$name" --scope "$scope"; then
-    echo "Removed '$name' ($scope scope)."
-    exit 0
-  fi
+  names=("$name")
+  [ "$name_given" = 1 ] || names+=("$alt_name")
+  removed=0
+  for n in "${names[@]}"; do
+    if claude mcp remove "$n" --scope "$scope" >/dev/null 2>&1; then
+      echo "Removed '$n' ($scope scope)."
+      removed=1
+    fi
+  done
+  [ "$removed" = 1 ] && exit 0
   echo "Nothing removed: '$name' wasn't found in the $scope scope (see claude mcp list)." >&2
   exit 1
 fi
@@ -75,7 +86,20 @@ if [ -n "$cfg" ]; then
 fi
 
 claude mcp remove "$name" --scope "$scope" >/dev/null 2>&1 || true
-claude mcp add --scope "$scope" "$name" -- "$bin" "${args[@]}"
+status=0
+added="$(claude mcp add --scope "$scope" "$name" -- "$bin" "${args[@]}" 2>&1)" || status=$?
+if [ "$status" != 0 ] && [ "$name_given" = 0 ] && printf '%s' "$added" | grep -qi reserved; then
+  echo "Claude Code keeps the name '$name' for itself: adding the program as '$alt_name'."
+  name="$alt_name"
+  claude mcp remove "$name" --scope "$scope" >/dev/null 2>&1 || true
+  status=0
+  added="$(claude mcp add --scope "$scope" "$name" -- "$bin" "${args[@]}" 2>&1)" || status=$?
+fi
+[ -n "$added" ] && printf '%s\n' "$added"
+if [ "$status" != 0 ]; then
+  echo "could not add '$name' to Claude Code (see above)" >&2
+  exit "$status"
+fi
 echo
 echo "Added '$name' ($scope scope). Check with:  claude mcp list"
 case "$(uname -s)" in
