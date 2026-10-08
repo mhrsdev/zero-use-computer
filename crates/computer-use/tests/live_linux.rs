@@ -25,14 +25,24 @@ fn engine() -> Engine<LinuxBackend> {
     Engine::new(backend, ConfigStore::in_memory(cfg))
 }
 
-/// Find our GTK fixture's app id by scanning windows for the "CU Test" title.
+/// Find our GTK fixture's app id by scanning windows for the "CU Test" title,
+/// once its window is drawn: AT-SPI lists a window before the X server has
+/// anything of it to capture, and on a slow machine the first look came
+/// before that.
 fn wait_for_app(e: &mut Engine<LinuxBackend>) -> String {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(apps) = e.backend_mut().list_apps() {
             for app in apps {
-                if let Ok(windows) = e.backend_mut().list_windows(&app)
-                    && windows.iter().any(|w| w.title.contains("CU Test"))
+                let Ok(windows) = e.backend_mut().list_windows(&app) else {
+                    continue;
+                };
+                let Some(window) = windows.iter().find(|w| w.title.contains("CU Test")) else {
+                    continue;
+                };
+                if e.backend_mut()
+                    .capture(&app, window)
+                    .is_ok_and(|cap| !computer_use::imaging::uniform(&cap))
                 {
                     return app.id;
                 }
@@ -40,7 +50,7 @@ fn wait_for_app(e: &mut Engine<LinuxBackend>) -> String {
         }
         assert!(
             Instant::now() < deadline,
-            "GTK fixture never appeared over AT-SPI"
+            "GTK fixture never appeared (drawn) over AT-SPI"
         );
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -88,7 +98,7 @@ fn atspi_tree_actions_and_screenshot() {
             },
         ))
         .unwrap();
-    assert!(out.image.is_some(), "expected a screenshot");
+    assert!(out.image.is_some(), "expected a screenshot:\n{}", out.text);
     let img = out.image.unwrap();
     assert!(img.width > 100 && img.height > 50, "screenshot too small");
     let tree = out.text;
