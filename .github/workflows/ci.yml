@@ -40,6 +40,13 @@ jobs:
       # Examples' own tests don't run with the workspace's (an example is
       # built, not tested, by default): the bench's scenario checks.
       - run: cargo test -p computer-use --example agent_bench
+      # plugin/ (what the Claude directory installs) must match skills/ and
+      # the version: run scripts/claude-code/sync-plugin.sh after changing them.
+      - name: plugin/ is up to date
+        run: |
+          bash scripts/claude-code/sync-plugin.sh
+          git add -N plugin
+          git diff --exit-code -- plugin
 
   msrv:
     name: MSRV (Rust 1.88)

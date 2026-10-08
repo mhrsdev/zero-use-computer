@@ -1,6 +1,7 @@
 Cargo.lock -diff
 # Embedded in the server and shipped in the plugin: the same bytes on every OS.
 skills/** text eol=lf
+plugin/** text eol=lf
 docs/** text eol=lf
 # Pictures are bytes, whatever folder they are in.
 *.png binary

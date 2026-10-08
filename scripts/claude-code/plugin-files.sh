@@ -10,6 +10,9 @@
 #   installed the plugin has no binary (some hosts refuse executables in plugin
 #             archives); it runs the one install.cmd / install.sh copied to
 #             ~/.computer-use/bin
+#   path      no binary either; it runs `computer-use-mcp` from PATH, which
+#             install.cmd / install.sh put there (one folder for every OS:
+#             the plugin/ folder the Claude directory lists)
 set -euo pipefail
 dir="${1:?folder}"; exe="${2:?binary file name}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -36,6 +39,7 @@ case "$mode" in
       *.exe) command="\${USERPROFILE}/.computer-use/bin/$exe" ;;
       *) command="\${HOME}/.computer-use/bin/$exe" ;;
     esac ;;
+  path) command="${exe%.exe}" ;;
   *) echo "unknown mode: $mode" >&2; exit 2 ;;
 esac
 cat > "$dir/.mcp.json" <<JSON

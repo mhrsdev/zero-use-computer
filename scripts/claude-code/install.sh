@@ -64,6 +64,15 @@ tmp_bin="$bin.new.$$"
 cp -f "$source_bin" "$tmp_bin" && chmod +x "$tmp_bin" && mv -f "$tmp_bin" "$bin" \
   || { rm -f "$tmp_bin"; echo "could not install $bin" >&2; exit 1; }
 echo "Installed: $bin"
+# The plugin from the Claude directory runs `computer-use-mcp` from PATH.
+link_dir="$HOME/.local/bin"
+if mkdir -p "$link_dir" && ln -sf "$bin" "$link_dir/computer-use-mcp"; then
+  echo "Linked: $link_dir/computer-use-mcp"
+  case ":$PATH:" in
+    *":$link_dir:"*) ;;
+    *) echo "Note: $link_dir is not on PATH; add it (for the plugin from the Claude directory), then restart Claude Code." ;;
+  esac
+fi
 if [ -n "${COMPUTER_USE_HOME:-}" ] && [ "$bin_dir" != "$HOME/.computer-use/bin" ]; then
   echo "Note: COMPUTER_USE_HOME is set, so the program is in $bin_dir; the plugin zip looks in ~/.computer-use/bin, so register it with this script instead (without --no-register)."
 fi
