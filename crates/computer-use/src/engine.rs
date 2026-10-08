@@ -432,6 +432,11 @@ pub struct Engine<B: Backend> {
     hub_home: Option<std::path::PathBuf>,
     /// Windows put in this agent's part of the screen, and the part.
     arranged: HashMap<u64, crate::types::Rect>,
+    /// What each window this agent works with needs of the screen (its
+    /// size before the hub moved it, or where the agent put it).
+    needs: HashMap<u64, crate::overlay::hub::Need>,
+    /// The window and need the hub was last told.
+    need_told: Option<(u64, crate::overlay::hub::Need)>,
     /// The app the other agents were told this one works with.
     doing: Option<String>,
     /// How many agents the model was last told share the desktop.
@@ -584,6 +589,8 @@ impl<B: Backend> Engine<B> {
             hub_since: None,
             hub_home: None,
             arranged: HashMap::new(),
+            needs: HashMap::new(),
+            need_told: None,
             doing: None,
             agents_told: 0,
             sent: Vec::new(),

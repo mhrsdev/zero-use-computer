@@ -50,6 +50,15 @@ const MAX_HIDE: Duration = Duration::from_secs(3);
 /// For this long after the stop key lets everyone continue, an agent that
 /// says it is stopped said so before it heard: it doesn't stop them again.
 const CONTINUE_ECHO: Duration = Duration::from_secs(1);
+/// An agent that hasn't made a call for this long gives its part of the
+/// screen to the others (until its next call), unless the agents say
+/// otherwise (`hub.release_after_secs`).
+const RELEASE_AFTER: Duration = Duration::from_secs(120);
+/// The least part of the screen an agent is given, unless it asks for less.
+const MIN_SHARE: f64 = 0.15;
+/// A new layout that moves no edge by more than this part of the screen
+/// is not given (windows don't move for nothing).
+const SETTLE: f64 = 0.04;
 /// Longest message passed on (characters).
 pub const MAX_MESSAGE: usize = 1000;
 /// Messages one agent may send a minute.
@@ -74,6 +83,9 @@ pub struct JoinOptions {
     pub want: Option<u32>,
     /// The screen's work area, for sharing it out.
     pub screen: Option<Rect>,
+    /// How long an agent may go without a call and keep its part of the
+    /// screen (seconds; 0: the hub's default).
+    pub release_secs: u64,
 }
 
 /// Connect to the hub, starting it if none answers, and join it: the
@@ -123,6 +135,7 @@ fn handshake(
         want: opts.want,
         screen: opts.screen.map(|r| [r.x, r.y, r.width, r.height]),
         proto: HUB_PROTO,
+        release_secs: opts.release_secs,
     };
     let mut w = stream.try_clone()?;
     writeln!(w, "{}", serde_json::to_string(&hello)?)?;
@@ -201,8 +214,26 @@ struct Agent {
     client: String,
     app: String,
     want: AreaWant,
+    /// What its window needs.
+    need: Option<Need>,
+    /// In a call now.
+    busy: bool,
+    /// When it last did anything (None: not yet: a server that was only
+    /// started has no part of the screen).
+    active_at: Option<Instant>,
     /// Messages sent in the last minute.
     sent: VecDeque<Instant>,
+}
+
+/// What an agent's window needs (see [`Cmd::Need`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Need {
+    /// Where the window is, or where the agent put it.
+    pub rect: Option<Rect>,
+    /// The smallest it goes (width, height).
+    pub min: Option<(f64, f64)>,
+    /// The agent put it there itself: kept where it is when it can be.
+    pub chosen: bool,
 }
 
 /// Who has the keyboard and mouse, and who waits for them.
@@ -220,6 +251,14 @@ pub struct HubState {
     agents: BTreeMap<u32, Agent>,
     screen: Option<Rect>,
     turns: Turns,
+    /// How long an agent may go without a call and keep its part (None:
+    /// [`RELEASE_AFTER`]).
+    release_after: Option<Duration>,
+    /// The parts last given, kept while a new layout would barely differ.
+    given: BTreeMap<u32, (Option<Rect>, bool)>,
+    /// An agent asked for a part or put its window somewhere itself: the
+    /// next layout is given however little it differs.
+    exact: bool,
 }
 
 /// A turn given: to this agent, for its request `id`.
@@ -343,7 +382,58 @@ impl HubState {
     pub fn want(&mut self, agent: u32, want: AreaWant) {
         if let Some(a) = self.agents.get_mut(&agent) {
             a.want = want;
+            self.exact = true;
         }
+    }
+
+    /// What the agent's window needs; true when it changed.
+    pub fn need(&mut self, agent: u32, need: Need) -> bool {
+        match self.agents.get_mut(&agent) {
+            Some(a) if a.need != Some(need) => {
+                a.need = Some(need);
+                self.exact |= need.chosen;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// How long an agent may go without a call and keep its part.
+    pub fn set_release_after(&mut self, d: Duration) {
+        if !d.is_zero() {
+            self.release_after = Some(d);
+        }
+    }
+
+    /// The agent did something (`busy`: a call began, `Some(false)`: one
+    /// ended); true when that gives it a part of the screen again.
+    pub fn active(&mut self, agent: u32, busy: Option<bool>, now: Instant) -> bool {
+        let was = self.is_active(agent, now);
+        if let Some(a) = self.agents.get_mut(&agent) {
+            a.active_at = Some(now);
+            if let Some(b) = busy {
+                a.busy = b;
+            }
+        }
+        !was && self.is_active(agent, now)
+    }
+
+    /// Whether the agent works now: in a call, or one ended lately.
+    pub fn is_active(&self, agent: u32, now: Instant) -> bool {
+        let release = self.release_after.unwrap_or(RELEASE_AFTER);
+        self.agents.get(&agent).is_some_and(|a| {
+            a.busy
+                || a.active_at
+                    .is_some_and(|t| now.saturating_duration_since(t) < release)
+        })
+    }
+
+    /// The agents that work now.
+    pub fn working(&self, now: Instant) -> Vec<u32> {
+        self.ids()
+            .into_iter()
+            .filter(|id| self.is_active(*id, now))
+            .collect()
     }
 
     /// Note who the agent works for and on; true when it changed.
@@ -389,76 +479,287 @@ impl HubState {
             .unwrap_or_default()
     }
 
-    /// Every agent, with its part of the screen.
+    /// Every agent, with its part of the screen (as last given).
     pub fn peers(&self) -> Vec<Peer> {
-        let areas = self.layout();
+        let now = Instant::now();
         self.agents
             .iter()
             .map(|(n, a)| Peer {
                 agent: *n,
                 client: a.client.clone(),
                 app: a.app.clone(),
-                area: areas
+                area: self
+                    .given
                     .get(n)
                     .and_then(|(r, _)| *r)
                     .map(|r| [r.x, r.y, r.width, r.height]),
+                idle: !self.is_active(*n, now),
             })
             .collect()
     }
 
     /// Each agent's part of the screen (None: all of it) and whether it is
-    /// what it asked for. What was asked for is given when it all fits
-    /// (and leaves those that asked for nothing an eighth of the screen
-    /// each, at least); otherwise the hub shares the screen out evenly.
-    pub fn layout(&self) -> BTreeMap<u32, (Option<Rect>, bool)> {
+    /// what it asked for, kept as given when a new one would barely differ
+    /// (see [`HubState::layout_at`]).
+    pub fn layout(&mut self) -> BTreeMap<u32, (Option<Rect>, bool)> {
+        self.layout_now(Instant::now())
+    }
+
+    pub fn layout_now(&mut self, now: Instant) -> BTreeMap<u32, (Option<Rect>, bool)> {
+        let fresh = self.layout_at(now);
+        let screen = self.screen.unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        let close = |a: Option<Rect>, b: Option<Rect>| match (a, b) {
+            (Some(a), Some(b)) => {
+                let (dx, dy) = (screen.width * SETTLE, screen.height * SETTLE);
+                (a.x - b.x).abs() <= dx
+                    && (a.y - b.y).abs() <= dy
+                    && (a.x + a.width - b.x - b.width).abs() <= dx
+                    && (a.y + a.height - b.y - b.height).abs() <= dy
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        let same_agents = fresh.keys().eq(self.given.keys());
+        let barely = same_agents
+            && fresh.iter().all(|(id, (r, granted))| {
+                self.given
+                    .get(id)
+                    .is_some_and(|(g, was)| close(*r, *g) && granted == was)
+            });
+        if !barely || std::mem::take(&mut self.exact) {
+            self.given = fresh;
+        }
+        self.given.clone()
+    }
+
+    /// Each agent's part of the screen as it would be shared out now:
+    ///
+    /// * Only the agents at work have one (those that made a call lately);
+    ///   one alone at work has all of it.
+    /// * Each is given what it asked for (`agents` area), or what its
+    ///   window needs (its size, or the place the agent put it in), or an
+    ///   even share of what is left. Too much asked for in all: everyone
+    ///   gets less, in proportion, but never less than its window's
+    ///   smallest size or [`MIN_SHARE`].
+    /// * The parts go in the order the windows are in on the screen (so
+    ///   windows move as little as they can), a window the agent put at
+    ///   an edge staying at that edge; each part is cut off the longer side
+    ///   of what is left (a half and two quarters: a column and two
+    ///   rows), or a grid when the parts are even.
+    pub fn layout_at(&self, now: Instant) -> BTreeMap<u32, (Option<Rect>, bool)> {
         let ids = self.ids();
+        let working = self.working(now);
         let mut out = BTreeMap::new();
-        if ids.len() <= 1 {
-            for id in ids {
+        // Those not at work: no part (all of the screen, as for one alone).
+        for id in ids.iter().filter(|id| !working.contains(id)) {
+            out.insert(*id, (None, true));
+        }
+        if working.len() <= 1 {
+            for id in working {
                 let asked = self.agents[&id].want;
                 out.insert(id, (None, matches!(asked, AreaWant::Auto | AreaWant::Full)));
             }
             return out;
         }
         let Some(screen) = self.screen else {
-            for id in ids {
+            for id in working {
                 out.insert(id, (None, false));
             }
             return out;
         };
-        let wants: Vec<Option<f64>> = ids
+        let demands: Vec<Demand> = working
             .iter()
-            .map(|id| self.agents[id].want.fraction())
+            .enumerate()
+            .map(|(rank, id)| {
+                let given = self.given.get(id).and_then(|(r, _)| *r);
+                Demand::of(*id, &self.agents[id], screen, given, rank, working.len())
+            })
             .collect();
-        let asked: f64 = wants.iter().flatten().sum();
-        let free = wants.iter().filter(|w| w.is_none()).count();
-        let any = free < wants.len();
-        let fits = any
-            && asked <= 1.0 + 1e-9
-            && (free == 0 || (1.0 - asked) / free as f64 >= 0.125 - 1e-9);
-        if !fits {
-            for (id, r) in ids.iter().zip(grid(screen, ids.len())) {
-                let granted = self.agents[id].want == AreaWant::Auto;
-                out.insert(*id, (Some(r), granted));
-            }
-            return out;
-        }
-        let shares: Vec<f64> = wants
-            .iter()
-            .map(|w| w.unwrap_or((1.0 - asked) / free.max(1) as f64))
-            .collect();
-        let equal = shares.iter().all(|s| (s - shares[0]).abs() < 1e-9)
-            && (shares[0] * shares.len() as f64 - 1.0).abs() < 1e-9;
-        let rects = if equal {
-            grid(screen, ids.len())
-        } else {
-            slices(screen, &shares)
-        };
-        for (id, r) in ids.iter().zip(rects) {
-            out.insert(*id, (Some(r), true));
+        for (id, rect, granted) in share_out(screen, &demands) {
+            out.insert(id, (Some(rect), granted));
         }
         out
     }
+}
+
+/// What one agent at work wants of the screen, for [`share_out`].
+#[derive(Debug, Clone, PartialEq)]
+struct Demand {
+    id: u32,
+    /// The part it asked for, or that its window was put in by the agent.
+    exact: Option<f64>,
+    /// The part its window needs (None: whatever is left).
+    weight: Option<f64>,
+    /// The least part it can do with.
+    min: f64,
+    /// Where it goes in the order (its window's middle, across the screen).
+    pos: f64,
+}
+
+impl Demand {
+    /// `given`: its part as last given (it keeps its place in the order
+    /// until the agent puts its window elsewhere itself).
+    fn of(id: u32, a: &Agent, screen: Rect, given: Option<Rect>, rank: usize, n: usize) -> Self {
+        let whole = (screen.width * screen.height).max(1.0);
+        let part =
+            |w: f64, h: f64| ((w.min(screen.width) * h.min(screen.height)) / whole).clamp(0.0, 1.0);
+        let need = a.need.unwrap_or_default();
+        let wide = screen.width >= screen.height;
+        let (start, along) = if wide {
+            (screen.x, screen.width)
+        } else {
+            (screen.y, screen.height)
+        };
+        let middle = |r: Rect| {
+            if wide {
+                r.x + r.width / 2.0 - start
+            } else {
+                r.y + r.height / 2.0 - start
+            }
+        };
+        // Its place in the order: where the agent put its window (at an
+        // edge: first or last), else where its part was, else where its
+        // window is, else its number's.
+        let chosen_at = need.chosen.then_some(need.rect).flatten().map(|r| {
+            let (lo, hi) = if wide {
+                (r.x - start, r.x + r.width - start)
+            } else {
+                (r.y - start, r.y + r.height - start)
+            };
+            if lo <= along * 0.02 && hi < along * 0.98 {
+                f64::MIN
+            } else if hi >= along * 0.98 && lo > along * 0.02 {
+                f64::MAX
+            } else {
+                middle(r)
+            }
+        });
+        let pos = chosen_at
+            .or(given.map(middle))
+            .or(need.rect.map(middle))
+            .unwrap_or((rank as f64 + 0.5) / n as f64 * along);
+        let asked = a.want.fraction();
+        let chosen = need
+            .chosen
+            .then_some(need.rect)
+            .flatten()
+            .map(|r| part(r.width, r.height));
+        let exact = asked.or(chosen).map(|f| f.clamp(0.05, 1.0));
+        let weight = need.rect.map(|r| part(r.width, r.height).max(MIN_SHARE));
+        let min = need
+            .min
+            .map(|(w, h)| part(w, h))
+            .unwrap_or(0.0)
+            .max(exact.map_or(MIN_SHARE, |e| e.min(MIN_SHARE)));
+        Self {
+            id,
+            exact,
+            weight,
+            min,
+            pos,
+        }
+    }
+}
+
+/// The screen shared out by [`HubState::layout_at`]'s rules: each agent's
+/// part and whether it is what it asked for.
+fn share_out(screen: Rect, demands: &[Demand]) -> Vec<(u32, Rect, bool)> {
+    let shares = shares(demands);
+    let mut order: Vec<usize> = (0..demands.len()).collect();
+    order.sort_by(|a, b| {
+        demands[*a]
+            .pos
+            .total_cmp(&demands[*b].pos)
+            .then(demands[*a].id.cmp(&demands[*b].id))
+    });
+    let ordered: Vec<f64> = order.iter().map(|i| shares[*i]).collect();
+    let even = ordered.iter().all(|s| (s - ordered[0]).abs() < 1e-6);
+    let rects = if even && demands.len() >= 4 {
+        grid(screen, demands.len())
+    } else {
+        slices(screen, &ordered)
+    };
+    order
+        .iter()
+        .zip(rects)
+        .map(|(i, r)| {
+            let d = &demands[*i];
+            let granted = d.exact.is_none_or(|e| (shares[*i] - e).abs() <= 0.02);
+            (d.id, r, granted)
+        })
+        .collect()
+}
+
+/// Each demand's share of the screen (adding up to one).
+fn shares(demands: &[Demand]) -> Vec<f64> {
+    let n = demands.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let exact: f64 = demands.iter().filter_map(|d| d.exact).sum();
+    let rest: Vec<usize> = (0..n).filter(|i| demands[*i].exact.is_none()).collect();
+    let mut out = vec![0.0; n];
+    if exact <= 1.0 + 1e-9 && (!rest.is_empty() || (exact - 1.0).abs() < 1e-9) {
+        for (i, d) in demands.iter().enumerate() {
+            if let Some(e) = d.exact {
+                out[i] = e;
+            }
+        }
+        // What is left goes to the others by what their windows need; one
+        // whose window is unknown counts as the others' average.
+        let known: Vec<f64> = rest.iter().filter_map(|i| demands[*i].weight).collect();
+        let usual = if known.is_empty() {
+            1.0
+        } else {
+            known.iter().sum::<f64>() / known.len() as f64
+        };
+        let weights: Vec<f64> = rest
+            .iter()
+            .map(|i| demands[*i].weight.unwrap_or(usual))
+            .collect();
+        let total: f64 = weights.iter().sum::<f64>().max(1e-9);
+        let left = (1.0 - exact).max(0.0);
+        for (i, w) in rest.iter().zip(weights) {
+            out[*i] = left * w / total;
+        }
+    } else {
+        // More asked for than there is: everyone in proportion.
+        let weights: Vec<f64> = demands
+            .iter()
+            .map(|d| d.exact.or(d.weight).unwrap_or(1.0 / n as f64))
+            .collect();
+        let total: f64 = weights.iter().sum::<f64>().max(1e-9);
+        for (i, w) in weights.iter().enumerate() {
+            out[i] = w / total;
+        }
+    }
+    // Nobody below its least (all of them scaled down if they can't all
+    // be had): those that have more give, in proportion.
+    let least: f64 = demands.iter().map(|d| d.min).sum();
+    let mins: Vec<f64> = demands
+        .iter()
+        .map(|d| if least > 1.0 { d.min / least } else { d.min })
+        .collect();
+    for _ in 0..n {
+        let short: f64 = (0..n).map(|i| (mins[i] - out[i]).max(0.0)).sum();
+        if short <= 1e-9 {
+            break;
+        }
+        let spare: f64 = (0..n).map(|i| (out[i] - mins[i]).max(0.0)).sum();
+        if spare <= 1e-9 {
+            break;
+        }
+        let take = (short / spare).min(1.0);
+        for i in 0..n {
+            if out[i] < mins[i] {
+                out[i] = mins[i];
+            } else {
+                out[i] -= (out[i] - mins[i]) * take;
+            }
+        }
+    }
+    let total: f64 = out.iter().sum::<f64>().max(1e-9);
+    out.iter().map(|v| v / total).collect()
 }
 
 /// `n` equal parts of `area`: side by side up to three, then rows of a grid.
@@ -855,6 +1156,9 @@ struct Hub {
     empty_since: Option<Instant>,
     /// Someone has joined since the hub started.
     joined: bool,
+    /// The agents at work when last looked (a change shares the screen
+    /// out again).
+    working: Vec<u32>,
 }
 
 impl Hub {
@@ -903,6 +1207,7 @@ impl Hub {
             started: Instant::now(),
             empty_since: None,
             joined: false,
+            working: Vec::new(),
         }
     }
 
@@ -963,6 +1268,12 @@ impl Hub {
                 }
             }
             let now = Instant::now();
+            // An agent that went quiet gives its part to the others.
+            let working = self.state.working(now);
+            if working != self.working {
+                self.working = working;
+                self.agents_changed();
+            }
             if let Some((lost, next)) = self.state.expire(now) {
                 self.reply(lost, &Reply::Revoked);
                 if let Some((agent, id)) = next {
@@ -993,6 +1304,7 @@ impl Hub {
                     client,
                     want,
                     screen,
+                    release_secs,
                     ..
                 } = hello
                 else {
@@ -1001,6 +1313,8 @@ impl Hub {
                 if let Some(s) = screen {
                     self.state.set_screen(Rect::new(s[0], s[1], s[2], s[3]));
                 }
+                self.state
+                    .set_release_after(Duration::from_secs(release_secs.min(24 * 3600)));
                 let agent = self.state.join(want, &client);
                 self.joined = true;
                 self.conns.insert(conn, agent);
@@ -1063,6 +1377,27 @@ impl Hub {
 
     fn command(&mut self, agent: u32, cmd: Cmd) {
         let now = Instant::now();
+        // What an agent at work does: it keeps (or gets back) its part.
+        let busy = match &cmd {
+            Cmd::Begin => Some(Some(true)),
+            Cmd::End { .. } => Some(Some(false)),
+            Cmd::Lock { .. }
+            | Cmd::Hold
+            | Cmd::Pointer { .. }
+            | Cmd::Keys { .. }
+            | Cmd::Typed { .. }
+            | Cmd::Scroll { .. }
+            | Cmd::Target { .. }
+            | Cmd::Doing { .. }
+            | Cmd::Area { .. }
+            | Cmd::Need { .. } => Some(None),
+            _ => None,
+        };
+        if let Some(busy) = busy
+            && self.state.active(agent, busy, now)
+        {
+            self.areas_changed();
+        }
         match cmd {
             Cmd::Hello { .. } | Cmd::Quit => {}
             Cmd::Client { name } => {
@@ -1083,6 +1418,26 @@ impl Hub {
             Cmd::Area { want } => {
                 self.state.want(agent, want);
                 self.areas_changed();
+                // Answered even when nothing changed, so it isn't waited on.
+                if let Some(area) = self.told.get(&agent).copied() {
+                    self.reply(
+                        agent,
+                        &Reply::Region {
+                            rect: area.0.map(|r| [r.x, r.y, r.width, r.height]),
+                            granted: area.1,
+                        },
+                    );
+                }
+            }
+            Cmd::Need { rect, min, chosen } => {
+                let need = Need {
+                    rect: rect.map(|r| Rect::new(r[0], r[1], r[2], r[3])),
+                    min: min.map(|m| (m[0], m[1])),
+                    chosen,
+                };
+                if self.state.need(agent, need) {
+                    self.areas_changed();
+                }
                 // Answered even when nothing changed, so it isn't waited on.
                 if let Some(area) = self.told.get(&agent).copied() {
                     self.reply(
@@ -1378,43 +1733,272 @@ mod tests {
         assert_eq!(s.join(Some(1), "x"), 5);
     }
 
+    /// `n` agents, all at work.
+    fn working(n: usize) -> (HubState, Instant) {
+        let mut s = state(n);
+        let now = Instant::now();
+        for id in s.ids() {
+            s.active(id, Some(true), now);
+        }
+        (s, now)
+    }
+
+    /// A window of `w`×`h` at `x`.
+    fn need(x: f64, w: f64, h: f64) -> Need {
+        Need {
+            rect: Some(Rect::new(x, 0.0, w, h)),
+            ..Need::default()
+        }
+    }
+
     #[test]
     fn the_screen_is_shared_evenly() {
-        let one = state(1).layout();
-        assert_eq!(one[&1], (None, true));
-        let two = state(2).layout();
+        let (mut one, _) = working(1);
+        assert_eq!(one.layout()[&1], (None, true));
+        let (mut two, _) = working(2);
+        let two = two.layout();
         assert_eq!(two[&1].0, Some(Rect::new(0.0, 0.0, 960.0, 1080.0)));
         assert_eq!(two[&2].0, Some(Rect::new(960.0, 0.0, 960.0, 1080.0)));
-        let three = state(3).layout();
-        assert_eq!(three[&3].0, Some(Rect::new(1280.0, 0.0, 640.0, 1080.0)));
-        let four = state(4).layout();
+        let (mut three, _) = working(3);
+        assert_eq!(
+            three.layout()[&3].0,
+            Some(Rect::new(1280.0, 0.0, 640.0, 1080.0))
+        );
+        let (mut four, _) = working(4);
+        let four = four.layout();
         assert_eq!(four[&1].0, Some(Rect::new(0.0, 0.0, 960.0, 540.0)));
         assert_eq!(four[&4].0, Some(Rect::new(960.0, 540.0, 960.0, 540.0)));
         assert!(four.values().all(|(_, granted)| *granted));
     }
 
     #[test]
-    fn a_part_asked_for_is_given_when_it_fits() {
+    fn only_agents_at_work_have_a_part() {
+        // Three servers started (three chats open), one at work: it has
+        // all of the screen (the others: none, until they make a call).
         let mut s = state(3);
+        let now = Instant::now();
+        assert!(s.active(3, Some(true), now));
+        let l = s.layout_now(now);
+        assert!(l.values().all(|(r, _)| r.is_none()), "{l:?}");
+        assert_eq!(s.working(now), vec![3]);
+        // A second one at work: a half each; the third still none.
+        assert!(s.active(1, Some(true), now));
+        let l = s.layout_now(now);
+        assert_eq!(l[&1].0, Some(Rect::new(0.0, 0.0, 960.0, 1080.0)));
+        assert_eq!(l[&3].0, Some(Rect::new(960.0, 0.0, 960.0, 1080.0)));
+        assert_eq!(l[&2].0, None);
+        assert!(s.peers().iter().any(|p| p.agent == 2 && p.idle));
+        // One in a call keeps its part however long it takes…
+        let later = now + RELEASE_AFTER * 2;
+        assert_eq!(s.working(later), vec![1, 3]);
+        // …and one that ended its call and went quiet gives it up.
+        s.active(1, Some(false), now);
+        assert_eq!(s.working(later), vec![3]);
+        assert!(s.layout_now(later).values().all(|(r, _)| r.is_none()));
+        // Its next call gives it a part again.
+        assert!(s.active(1, Some(true), later));
+        assert_eq!(s.working(later), vec![1, 3]);
+        // The agents may keep their parts for longer, or shorter.
+        s.set_release_after(Duration::from_secs(600));
+        s.active(1, Some(false), later);
+        assert_eq!(s.working(later + RELEASE_AFTER * 2), vec![1, 3]);
+    }
+
+    #[test]
+    fn each_agent_gets_what_its_window_needs() {
+        // A full-size window beside two small ones: a half and two quarters.
+        let (mut s, now) = working(3);
+        s.need(1, need(0.0, 1600.0, 1000.0));
+        s.need(2, need(1000.0, 800.0, 1000.0));
+        s.need(3, need(1100.0, 800.0, 1000.0));
+        let l = s.layout_now(now);
+        assert_eq!(l[&1].0, Some(Rect::new(0.0, 0.0, 960.0, 1080.0)));
+        assert_eq!(l[&2].0, Some(Rect::new(960.0, 0.0, 960.0, 540.0)));
+        assert_eq!(l[&3].0, Some(Rect::new(960.0, 540.0, 960.0, 540.0)));
+
+        // 35% and 65%: just that.
+        let (mut s, now) = working(2);
+        s.need(1, need(0.0, 672.0, 1080.0));
+        s.need(2, need(672.0, 1248.0, 1080.0));
+        let l = s.layout_now(now);
+        assert_eq!(l[&1].0, Some(Rect::new(0.0, 0.0, 672.0, 1080.0)));
+        assert_eq!(l[&2].0, Some(Rect::new(672.0, 0.0, 1248.0, 1080.0)));
+
+        // One window too small to matter still gets a usable part.
+        let (mut s, now) = working(2);
+        s.need(1, need(0.0, 1920.0, 1080.0));
+        s.need(2, need(1600.0, 200.0, 150.0));
+        let l = s.layout_now(now);
+        assert_eq!(l[&2].0.unwrap().width, 1920.0 * MIN_SHARE);
+    }
+
+    #[test]
+    fn a_window_the_agent_placed_stays_where_it_put_it() {
+        // Agent 3 tiled its window to the right half; 1 and 2 share the left.
+        let (mut s, now) = working(3);
+        s.need(
+            3,
+            Need {
+                rect: Some(Rect::new(960.0, 0.0, 960.0, 1080.0)),
+                chosen: true,
+                ..Need::default()
+            },
+        );
+        let l = s.layout_now(now);
+        assert_eq!(l[&3], (Some(Rect::new(960.0, 0.0, 960.0, 1080.0)), true));
+        let left: f64 = [1, 2].iter().map(|a| l[a].0.unwrap().width).sum();
+        assert_eq!(left, 960.0);
+        assert!(l[&1].0.unwrap().x < l[&2].0.unwrap().x);
+
+        // Put on the left instead: it goes first, whatever its number.
+        s.need(
+            3,
+            Need {
+                rect: Some(Rect::new(0.0, 0.0, 960.0, 1080.0)),
+                chosen: true,
+                ..Need::default()
+            },
+        );
+        let l = s.layout_now(now);
+        assert_eq!(l[&3].0, Some(Rect::new(0.0, 0.0, 960.0, 1080.0)));
+    }
+
+    #[test]
+    fn parts_follow_where_the_windows_are() {
+        // Agent 1's window is on the right, 2's on the left: they keep
+        // their sides (windows move as little as they can).
+        let (mut s, now) = working(2);
+        s.need(
+            1,
+            Need {
+                rect: Some(Rect::new(1100.0, 100.0, 700.0, 800.0)),
+                ..Need::default()
+            },
+        );
+        s.need(
+            2,
+            Need {
+                rect: Some(Rect::new(50.0, 100.0, 700.0, 800.0)),
+                ..Need::default()
+            },
+        );
+        let l = s.layout_now(now);
+        assert!(l[&2].0.unwrap().x < l[&1].0.unwrap().x, "{l:?}");
+    }
+
+    #[test]
+    fn a_window_keeps_its_least_size() {
+        let (mut s, now) = working(3);
+        s.need(
+            1,
+            Need {
+                rect: Some(Rect::new(0.0, 0.0, 400.0, 1080.0)),
+                min: Some((900.0, 1080.0)),
+                chosen: false,
+            },
+        );
+        let l = s.layout_now(now);
+        assert!(l[&1].0.unwrap().width >= 899.0, "{l:?}");
+    }
+
+    #[test]
+    fn small_changes_move_no_window() {
+        let (mut s, now) = working(2);
+        s.need(1, need(0.0, 960.0, 1080.0));
+        s.need(2, need(960.0, 960.0, 1080.0));
+        let first = s.layout_now(now);
+        // A few pixels more needed: the parts stay as they were.
+        s.need(1, need(0.0, 1000.0, 1080.0));
+        assert_eq!(s.layout_now(now), first);
+        // Put there by the agent itself: given exactly, however close.
+        s.need(
+            1,
+            Need {
+                rect: Some(Rect::new(0.0, 0.0, 1000.0, 1080.0)),
+                chosen: true,
+                ..Need::default()
+            },
+        );
+        assert_eq!(
+            s.layout_now(now)[&1].0,
+            Some(Rect::new(0.0, 0.0, 1000.0, 1080.0))
+        );
+        // A real change: new parts, and each keeps its side.
+        s.need(1, need(0.0, 1500.0, 1080.0));
+        let l = s.layout_now(now);
+        assert_ne!(l, first);
+        assert!(l[&1].0.unwrap().x < l[&2].0.unwrap().x);
+    }
+
+    #[test]
+    fn a_part_asked_for_is_given_when_it_fits() {
+        let (mut s, now) = working(3);
         s.want(1, AreaWant::Half);
-        let l = s.layout();
+        let l = s.layout_now(now);
         assert_eq!(l[&1], (Some(Rect::new(0.0, 0.0, 960.0, 1080.0)), true));
         // The others share the other half: a quarter each, one above the other.
         assert_eq!(l[&2].0, Some(Rect::new(960.0, 0.0, 960.0, 540.0)));
         assert_eq!(l[&3].0, Some(Rect::new(960.0, 540.0, 960.0, 540.0)));
 
-        // Two halves and a quarter don't fit: shared evenly, and those that
-        // asked are told they didn't get it.
+        // 35%, by name.
+        s.want(1, AreaWant::Percent(35));
+        let l = s.layout_now(now);
+        assert_eq!(l[&1], (Some(Rect::new(0.0, 0.0, 672.0, 1080.0)), true));
+
+        // Two halves and a quarter don't fit: each gets less, in proportion,
+        // and those that asked are told they didn't get it.
+        s.want(1, AreaWant::Half);
         s.want(2, AreaWant::Half);
         s.want(3, AreaWant::Quarter);
-        let l = s.layout();
-        assert_eq!(l[&1], (Some(Rect::new(0.0, 0.0, 640.0, 1080.0)), false));
+        let l = s.layout_now(now);
+        assert_eq!(l[&1], (Some(Rect::new(0.0, 0.0, 768.0, 1080.0)), false));
         assert!(!l[&3].1);
 
         // The whole screen with others there: not given.
-        let mut s = state(2);
+        let (mut s, now) = working(2);
         s.want(2, AreaWant::Full);
-        assert!(!s.layout()[&2].1);
+        assert!(!s.layout_now(now)[&2].1);
+    }
+
+    #[test]
+    fn shares_add_up_and_respect_the_least() {
+        let d = |exact: Option<f64>, weight: Option<f64>, min: f64| Demand {
+            id: 0,
+            exact,
+            weight,
+            min,
+            pos: 0.0,
+        };
+        for demands in [
+            vec![d(None, None, 0.15); 5],
+            vec![
+                d(Some(0.9), None, 0.15),
+                d(None, None, 0.15),
+                d(None, None, 0.15),
+            ],
+            vec![d(Some(1.0), None, 0.15), d(Some(1.0), None, 0.15)],
+            vec![d(None, Some(1.0), 0.6), d(None, Some(1.0), 0.6)],
+            vec![d(None, Some(0.2), 0.15), d(Some(0.05), None, 0.05)],
+        ] {
+            let s = shares(&demands);
+            assert!((s.iter().sum::<f64>() - 1.0).abs() < 1e-9, "{s:?}");
+            let least: f64 = demands.iter().map(|d| d.min).sum::<f64>().max(1.0);
+            for (v, dm) in s.iter().zip(&demands) {
+                assert!(*v >= dm.min / least - 1e-9, "{s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn parts_asked_for_by_name_or_share() {
+        assert_eq!("auto".parse::<AreaWant>(), Ok(AreaWant::Auto));
+        assert_eq!("half".parse::<AreaWant>(), Ok(AreaWant::Half));
+        assert_eq!("35%".parse::<AreaWant>(), Ok(AreaWant::Percent(35)));
+        assert_eq!("65".parse::<AreaWant>(), Ok(AreaWant::Percent(65)));
+        assert_eq!("0.4".parse::<AreaWant>(), Ok(AreaWant::Percent(40)));
+        assert!("2%".parse::<AreaWant>().is_err());
+        assert!("lots".parse::<AreaWant>().is_err());
+        assert_eq!(AreaWant::Percent(35).fraction(), Some(0.35));
     }
 
     #[test]
@@ -1531,6 +2115,7 @@ mod tests {
                 want: None,
                 screen: None,
                 proto: HUB_PROTO,
+                release_secs: 0,
             },
             out: tx,
         });
@@ -1558,6 +2143,7 @@ mod tests {
                 want: None,
                 screen: None,
                 proto: HUB_PROTO,
+                release_secs: 0,
             },
             out: tx,
         });
@@ -1824,6 +2410,7 @@ mod tests {
             client: client.into(),
             want: None,
             screen: Some(screen()),
+            release_secs: 0,
         };
         // No hub to start: it runs.
         let launcher = Launcher::helper("/nonexistent/computer-use-mcp");
@@ -1857,6 +2444,13 @@ mod tests {
             l1.peers().len() == 2 && l2.peers().len() == 2
         });
         assert_eq!(l1.peers()[1].client, "codex");
+        // Only started, neither has a part of the screen: both idle.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(l2.region().0, None);
+        assert!(l2.peers().iter().all(|p| p.idle));
+        // At work: a half each.
+        one.send(&Cmd::Begin);
+        two.send(&Cmd::Begin);
         until("areas", || l2.region().0.is_some());
         assert_eq!(
             l2.region(),
@@ -1925,6 +2519,7 @@ mod tests {
                             client: format!("worker-{i}"),
                             want: None,
                             screen: Some(screen()),
+                            release_secs: 0,
                         };
                         let mut o = super::super::Overlay::join_hub(
                             &Launcher::helper("/nonexistent/computer-use-mcp"),
@@ -1969,6 +2564,7 @@ mod tests {
             client: "x".into(),
             want: None,
             screen: None,
+            release_secs: 0,
         };
         let stream = TcpStream::connect(("127.0.0.1", h.port)).unwrap();
         let e = handshake(stream, &opts).unwrap_err();

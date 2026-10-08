@@ -6,9 +6,12 @@ hub, so each agent has:
 
 - **A number**: the first to start is 1, then 2, 3… in turn. Its cursor
   carries the number (alone, it says "Zero").
-- **A part of the screen**: halves for two, thirds for three, a 2×2 grid
-  for four. The window you work with is moved into your part when you
-  first look at it.
+- **A part of the screen, by what your window needs**, among the agents at
+  work (one that made no call for two minutes has none until its next
+  call). A big window beside two small ones: a half and two quarters. The
+  window you work with is moved into your part when you first look at it.
+  If you move, resize, tile or maximize it yourself (`window`), that is
+  taken as what you want: it stays there and the others share the rest.
 - **Turns at the keyboard and mouse**: an action waits until no other
   agent is typing or clicking. Reading (`get_app_state`, `find_element`,
   screenshots) never waits.
@@ -23,9 +26,10 @@ keyboard; `agents` lists them)."
 Found with `find_tools(category="agents")`, run with `use_tool`.
 
 - `action: "list"`: each agent's number, client, app and part.
-- `action: "area", want: "half"` (or `full`, `third`, `quarter`, `auto`):
-  ask for a part. Given when it fits beside the others; otherwise the hub
-  shares the screen out evenly and says your part wasn't given.
+- `action: "area", want: "half"` (or `full`, `third`, `quarter`, a share
+  such as `"35%"`, or `auto`: by what your window needs): ask for a part.
+  Given when it fits beside the others; otherwise everyone gets less, in
+  proportion, and you are told your part wasn't given.
 - `action: "send", text, to: 2` (no `to`: everyone): a short message.
   Only when the user turned messages on (the settings page, Ctrl+Alt+J);
   otherwise it is refused, and that's the user's choice.

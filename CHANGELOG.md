@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-A fix for every Linux version so far: one call could take a KDE session
-down.
+A fix for every Linux version so far (one call could take a KDE session
+down), and a hub that shares the screen out by what each agent at work
+needs.
 
 - **Qt apps crashed when the server read them, KWin and Plasma too.** The
   server asked each app for all of an element's properties at once
@@ -27,6 +28,21 @@ down.
   whether it is on. A server switches it on when it is off (Qt, Firefox and
   Chromium show nothing without it) and the last server to end switches it
   off again.
+- **The hub shares the screen out by need, among the agents at work.**
+  Every server took a part of the screen as soon as it started, so other
+  chats that never used the computer split it with the one at work (one
+  agent working in a third of the screen, its glow around that third), and
+  the parts were even or a fixed half, third or quarter. Now only agents at
+  work have a part (one that makes no call for `hub.release_after_secs`,
+  120, gives it up until its next call); each gets what its window needs
+  (a full-size window and two small ones: a half and two quarters; 35% and
+  65% windows: just that); a window the agent moved, resized, tiled or
+  maximized itself stays where it put it while the others share the rest;
+  a window that won't shrink keeps its least size; `agents` area takes a
+  share such as `35%`. The parts follow where the windows are, a change of
+  under 4% of the screen moves nothing, and a window moves only when its
+  agent looks next. `agents` list marks the idle ones. (The hub protocol is
+  version 2: a server of this version and a hub of an older one don't mix.)
 - **`install.sh` and `install.cmd` add the program as `zero-use-computer`
   when Claude Code keeps the name `computer-use` for itself** ("this name
   is reserved"), as the panel's Connect page already did, and say if adding

@@ -5040,17 +5040,23 @@ fn two_agents_share_the_desktop() {
     until("both told", || {
         la.peers().len() == 2 && lb.peers().len() == 2
     });
-    until("areas", || la.region().0.is_some());
+    // Only started, neither has a part of the screen.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!((la.region().0, lb.region().0), (None, None));
+    // b at work alone: still all of it.
+    b.call_tool("list_apps", serde_json::json!({}));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(lb.region().0, None);
 
-    // The first result says so, once.
+    // a at work too: halves. Its first result says who is there, once.
     let out = a.call_tool("list_apps", serde_json::json!({}));
     assert!(
-        out.text.contains(
-            "Agents on this desktop: 2 (you: 1, screen part x 0–640 y 0–760; turns at the keyboard"
-        ),
+        out.text.contains("Agents on this desktop: 2 (you: 1"),
         "{}",
         out.text
     );
+    until("areas", || la.region().0.is_some());
+    assert_eq!(la.region().0, Some(Rect::new(0.0, 0.0, 640.0, 760.0)));
     let out = a.call_tool("list_apps", serde_json::json!({}));
     assert!(!out.text.contains("Agents on this desktop"), "{}", out.text);
 
@@ -5132,6 +5138,45 @@ fn two_agents_share_the_desktop() {
         "{}",
         out.text
     );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// An agent that puts its window somewhere itself (here: the right half)
+/// keeps it there: the hub gives it that part and the others the rest, and
+/// its next look doesn't move the window back.
+#[test]
+fn a_window_the_agent_placed_keeps_its_place() {
+    let (port, home) = test_hub("placed");
+    let mut a = hub_engine(port, &home, false);
+    let mut b = hub_engine(port, &home, false);
+    let (la, lb) = (a.hub_link().unwrap(), b.hub_link().unwrap());
+    until("both told", || {
+        la.peers().len() == 2 && lb.peers().len() == 2
+    });
+    b.call_tool("list_apps", serde_json::json!({}));
+    a.call_tool("get_app_state", serde_json::json!({"app": "TextEdit"}));
+    until("areas", || la.region().0.is_some());
+    let out = a.call_tool(
+        "window",
+        serde_json::json!({"app": "TextEdit", "action": "tile_right"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    until("a has the right half", || {
+        la.region().0 == Some(Rect::new(640.0, 0.0, 640.0, 760.0))
+    });
+    until("b has the left half", || {
+        lb.region().0 == Some(Rect::new(0.0, 0.0, 640.0, 760.0))
+    });
+    let moves = |e: &Engine<MockBackend>| {
+        e.backend()
+            .window_ops
+            .iter()
+            .filter(|(_, op)| matches!(op, WindowOp::SetBounds(_)))
+            .count()
+    };
+    let before = moves(&a);
+    a.call_tool("get_app_state", serde_json::json!({"app": "TextEdit"}));
+    assert_eq!(moves(&a), before, "{:?}", a.backend().window_ops);
     let _ = std::fs::remove_dir_all(home);
 }
 

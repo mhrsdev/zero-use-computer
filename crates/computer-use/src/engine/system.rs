@@ -182,6 +182,17 @@ impl<B: Backend> Engine<B> {
             .list_windows(&app, true)
             .ok()
             .and_then(|ws| ws.into_iter().find(|w| w.id == window.id));
+        // Where the agent put it is what it wants of the screen.
+        if matches!(
+            op,
+            WindowOp::SetBounds(_)
+                | WindowOp::Maximize
+                | WindowOp::Restore
+                | WindowOp::Fullscreen(_)
+        ) && let Some(w) = &now
+        {
+            self.placed(w);
+        }
         let mut msg = format!("{what} \"{}\" of {}.", window.title, app.name);
         match now {
             Some(w) => msg.push_str(&format!(" Now: {}.", describe_window(&w))),

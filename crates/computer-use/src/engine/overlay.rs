@@ -81,6 +81,7 @@ impl<B: Backend> Engine<B> {
                     client: self.client.clone(),
                     want: self.hub_agent,
                     screen,
+                    release_secs: hub.release_after_secs,
                 };
                 match Overlay::join_hub(
                     &launcher,

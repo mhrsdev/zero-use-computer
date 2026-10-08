@@ -162,6 +162,10 @@ pub enum Cmd {
         screen: Option<[f64; 4]>,
         #[serde(default)]
         proto: u32,
+        /// How long an agent may go without a call before its part of the
+        /// screen goes to the others (seconds; 0: the hub's own default).
+        #[serde(default)]
+        release_secs: u64,
     },
     /// The MCP client this engine serves ("claude-code", "codex"…).
     Client {
@@ -174,6 +178,17 @@ pub enum Cmd {
     /// The part of the screen this agent would like.
     Area {
         want: AreaWant,
+    },
+    /// What this agent's window needs: where it is (or where the agent put
+    /// it, `chosen`), and the smallest it goes. The hub shares the screen
+    /// out by what each agent needs.
+    Need {
+        #[serde(default)]
+        rect: Option<[f64; 4]>,
+        #[serde(default)]
+        min: Option<[f64; 2]>,
+        #[serde(default)]
+        chosen: bool,
     },
     /// Ask for the keyboard and mouse (answered with [`Reply::Granted`]).
     Lock {
@@ -199,17 +214,19 @@ pub enum Cmd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AreaWant {
-    /// Whatever the hub shares out.
+    /// What its window needs (the hub shares the screen out by need).
     #[default]
     Auto,
     Full,
     Half,
     Third,
     Quarter,
+    /// This many percent of the screen (5 to 100).
+    Percent(u8),
 }
 
 impl AreaWant {
-    /// The share of the screen asked for (None: whatever is left).
+    /// The share of the screen asked for (None: by what it needs).
     pub fn fraction(self) -> Option<f64> {
         match self {
             AreaWant::Auto => None,
@@ -217,6 +234,7 @@ impl AreaWant {
             AreaWant::Half => Some(0.5),
             AreaWant::Third => Some(1.0 / 3.0),
             AreaWant::Quarter => Some(0.25),
+            AreaWant::Percent(p) => Some(f64::from(p.clamp(5, 100)) / 100.0),
         }
     }
 }
@@ -224,14 +242,28 @@ impl AreaWant {
 impl std::str::FromStr for AreaWant {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "auto" | "" => Ok(Self::Auto),
-            "full" | "whole" | "all" => Ok(Self::Full),
-            "half" => Ok(Self::Half),
-            "third" => Ok(Self::Third),
-            "quarter" => Ok(Self::Quarter),
-            other => Err(format!(
-                "unknown area `{other}` (full, half, third, quarter, auto)"
+        let s = s.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "auto" | "" => return Ok(Self::Auto),
+            "full" | "whole" | "all" => return Ok(Self::Full),
+            "half" => return Ok(Self::Half),
+            "third" => return Ok(Self::Third),
+            "quarter" => return Ok(Self::Quarter),
+            _ => {}
+        }
+        // "35%", "35", or "0.35".
+        let percent = match s.strip_suffix('%') {
+            Some(n) => n.trim().parse::<f64>().ok(),
+            None => s
+                .parse::<f64>()
+                .ok()
+                .map(|v| if v <= 1.0 { v * 100.0 } else { v }),
+        };
+        match percent {
+            Some(p) if (5.0..=100.0).contains(&p) => Ok(Self::Percent(p.round() as u8)),
+            Some(_) => Err(format!("area `{s}`: a share of the screen is 5% to 100%")),
+            None => Err(format!(
+                "unknown area `{s}` (auto, full, half, third, quarter, or a share such as 35%)"
             )),
         }
     }
@@ -249,6 +281,10 @@ pub struct Peer {
     /// Its part of the screen.
     #[serde(default)]
     pub area: Option<[f64; 4]>,
+    /// It hasn't made a call for a while: it has no part of the screen
+    /// until it does.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// A message from another agent.
@@ -262,7 +298,7 @@ pub struct Message {
 
 /// The hub protocol's version: a member and a hub that differ don't mix
 /// (the member draws its own overlay instead).
-pub const HUB_PROTO: u32 = 1;
+pub const HUB_PROTO: u32 = 2;
 
 /// Helper → engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

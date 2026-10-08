@@ -5,6 +5,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::overlay::hub::Need;
 use crate::overlay::{AreaWant, Cmd as HubCmd, HubLink};
 
 /// Longest wait the `agents` tool's `wait` allows.
@@ -95,12 +96,17 @@ impl<B: Backend> Engine<B> {
     /// this agent works with in its part of the screen: once for each
     /// window and part, and only if it isn't there already.
     pub(super) fn arrange(&mut self, app: &AppInfo, mut window: WindowInfo) -> WindowInfo {
-        if !self.store.config.hub.arrange || self.others() == 0 || window.minimized {
+        if window.minimized {
             return window;
         }
         let Some(link) = self.hub_link() else {
             return window;
         };
+        // What this window needs: what the hub shares the screen out by.
+        self.tell_need(&window);
+        if !self.store.config.hub.arrange || self.others() == 0 {
+            return window;
+        }
         let (Some(area), _) = link.region() else {
             return window;
         };
@@ -145,10 +151,78 @@ impl<B: Backend> Engine<B> {
                 {
                     window = w;
                 }
+                // It kept a size bigger than its part: that is the least it
+                // goes, and the hub is told.
+                if let Some(b) = window.bounds {
+                    const SLACK: f64 = 8.0;
+                    if b.width > area.width + SLACK || b.height > area.height + SLACK {
+                        let need = self.needs.entry(window.id).or_default();
+                        need.min = Some((b.width, b.height));
+                        self.tell_need(&window);
+                    }
+                }
             }
             Err(e) => log::info!("{} not moved into this agent's part: {e}", app.name),
         }
         window
+    }
+
+    /// Tell the hub what `window` needs of the screen, when that changed (a
+    /// new window, or the agent moved it): its size when this agent first
+    /// saw it (not the size the hub gave it), or the place the agent put it
+    /// in. Waits a moment for the hub's answer, so the window is put in its
+    /// part once, not twice.
+    pub(super) fn tell_need(&mut self, window: &WindowInfo) {
+        let Some(link) = self.hub_link() else {
+            return;
+        };
+        if self.needs.len() > 256 {
+            self.needs.clear();
+        }
+        let need = *self.needs.entry(window.id).or_insert_with(|| Need {
+            rect: window.bounds,
+            ..Need::default()
+        });
+        if need.rect.is_none() || self.need_told == Some((window.id, need)) {
+            return;
+        }
+        self.need_told = Some((window.id, need));
+        let before = link.regions_told();
+        if let Some(o) = self.overlay.as_ref() {
+            o.send(&HubCmd::Need {
+                rect: need.rect.map(|r| [r.x, r.y, r.width, r.height]),
+                min: need.min.map(|(w, h)| [w, h]),
+                chosen: need.chosen,
+            });
+        }
+        if self.others() > 0 {
+            let deadline = (self.clock)() + Duration::from_millis(500);
+            while link.regions_told() == before && (self.clock)() < deadline {
+                (self.sleep)(Duration::from_millis(10));
+            }
+        }
+    }
+
+    /// The agent put `window` somewhere itself (`window` move, resize,
+    /// tile, maximize): that is what it wants, and the hub keeps it there
+    /// when it can, sharing the rest out to the others. The window isn't
+    /// moved back into the part it had.
+    pub(super) fn placed(&mut self, window: &WindowInfo) {
+        let Some(rect) = window.bounds else {
+            return;
+        };
+        if self.hub_link().is_none() {
+            return;
+        }
+        let need = self.needs.entry(window.id).or_default();
+        need.rect = Some(rect);
+        need.chosen = true;
+        self.tell_need(window);
+        if let Some(link) = self.hub_link()
+            && let (Some(area), _) = link.region()
+        {
+            self.arranged.insert(window.id, area);
+        }
     }
 
     /// Tell the other agents which app this one works with.
@@ -226,7 +300,9 @@ impl<B: Backend> Engine<B> {
                     if !p.app.is_empty() {
                         out.push_str(&format!(" · in {}", p.app));
                     }
-                    if let Some(a) = p.area {
+                    if p.idle && p.agent != me {
+                        out.push_str(" · idle (no part of the screen until its next call)");
+                    } else if let Some(a) = p.area {
                         out.push_str(&format!(
                             " · {}",
                             show_area(Rect::new(a[0], a[1], a[2], a[3]))

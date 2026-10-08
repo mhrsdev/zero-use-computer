@@ -34,6 +34,7 @@ fn main() {
             client: if i % 2 == 0 { "claude-code" } else { "codex" }.into(),
             want: None,
             screen: Some(screen),
+            release_secs: 0,
         };
         let o = Overlay::join_hub(
             &launcher,
@@ -45,6 +46,8 @@ fn main() {
         )
         .expect("join the hub");
         println!("joined as agent {}", o.hub().unwrap().agent());
+        // At work: only agents at work have a part of the screen.
+        o.send(&Cmd::Begin);
         agents.push(o);
     }
     std::thread::sleep(Duration::from_millis(500));

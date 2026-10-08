@@ -374,12 +374,15 @@ structured_output = false
 # Several agents on one desktop (a client's subagents, Claude Code and
 # Codex side by side): every server joins one hub that draws a cursor for
 # each (numbered once there are two), has one stop key for all, shares the
-# screen out and gives the keyboard and mouse to one at a time.
+# screen out and gives the keyboard and mouse to one at a time. The screen
+# goes to the agents at work, each by what its window needs (or the part it
+# asked for, or the place it put its window in).
 enabled = true
 port = 47381                # this computer only, with a token only you can read
 arrange = true              # move each agent's window into its part of the screen
 chat = false                # let the agents send each other short messages
 turn_wait_secs = 60         # longest wait for the keyboard and mouse
+release_after_secs = 120    # no call for this long: its part goes to the others
 
 [panel]
 # The settings panel: a page served on this computer only, opened by the

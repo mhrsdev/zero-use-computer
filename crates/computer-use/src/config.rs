@@ -32,6 +32,10 @@ pub struct HubConfig {
     pub chat: bool,
     /// Longest wait for a turn at the keyboard and mouse, in seconds.
     pub turn_wait_secs: u64,
+    /// An agent that makes no call for this many seconds gives its part of
+    /// the screen to the others until its next call (a server that was
+    /// only started has none).
+    pub release_after_secs: u64,
 }
 
 impl Default for HubConfig {
@@ -42,6 +46,7 @@ impl Default for HubConfig {
             arrange: true,
             chat: false,
             turn_wait_secs: 60,
+            release_after_secs: 120,
         }
     }
 }
@@ -1307,6 +1312,12 @@ impl Config {
             return Err(format!(
                 "hub.turn_wait_secs must be between 1 and 600 (got {})",
                 self.hub.turn_wait_secs
+            ));
+        }
+        if !(15..=3600).contains(&self.hub.release_after_secs) {
+            return Err(format!(
+                "hub.release_after_secs must be between 15 and 3600 (got {})",
+                self.hub.release_after_secs
             ));
         }
         if !(0.5..=2.0).contains(&self.mouse_speed) {

@@ -307,6 +307,7 @@ pub const ENTRIES: &[Entry] = &[
     e("hub.arrange", AGENTS, "With two agents or more, move each agent's window into its part of the screen."),
     e("hub.chat", AGENTS, "Let the agents send each other short messages."),
     e("hub.turn_wait_secs", AGENTS, "The longest an agent waits for its turn at the keyboard and mouse.").range(1.0, 600.0, 1.0, "s"),
+    e("hub.release_after_secs", AGENTS, "An agent that makes no call for this long gives its part of the screen to the others until its next call; a server that was only started has none.").range(15.0, 3600.0, 5.0, "s"),
     // Notifications
     e("notifications.enabled", NOTIFICATIONS, "Let the agent read desktop notifications. They carry other apps' messages and codes."),
     e("notifications.apps", NOTIFICATIONS, "Only notifications from these apps. Empty: any app."),

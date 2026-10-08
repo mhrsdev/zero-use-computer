@@ -718,6 +718,7 @@ impl Machine {
             | Cmd::Client { .. }
             | Cmd::Doing { .. }
             | Cmd::Area { .. }
+            | Cmd::Need { .. }
             | Cmd::Lock { .. }
             | Cmd::Unlock { .. }
             | Cmd::Hold

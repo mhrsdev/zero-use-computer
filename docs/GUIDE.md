@@ -534,12 +534,23 @@ whichever client started it:
   client's name or its tag (`{ codex = "metal", "claude-code" = "jelly" }`).
 - **One stop key** stops them all. (Before v3.9 a second server couldn't
   even register it: the system gives a key to one program.)
-- **The screen shared out:** halves for two, thirds for three, a 2×2 grid
-  for four. An agent may ask for a full, half, third or quarter screen
-  (`agents` area): given when it fits beside the others, otherwise the
-  screen is shared evenly and it is told so. With `hub.arrange`, the
-  window an agent works with is moved into its part when it first looks
-  at it.
+- **The screen shared out by need**, among the agents at work only: one
+  that has made no call for `hub.release_after_secs` (120) gives its part
+  to the others until its next call, and a server that was only started
+  (another chat that never used the computer) has none. Each agent gets
+  what its window needs: its size when the agent first looked at it, so a
+  full-size window and two small ones become a half and two quarters, and
+  two windows of 35% and 65% of the screen get just that. A window the
+  agent moved, resized, tiled or maximized itself is kept where it put it
+  when it can, and the others share the rest. A window that won't shrink
+  below a size keeps at least that. An agent may also ask for a part
+  (`agents` area: full, half, third, quarter, or a share such as `35%`):
+  given when it fits, otherwise everyone gets less in proportion and it
+  is told so. No part goes below 15% unless asked for. The parts follow
+  the order the windows are in on the screen, a change that moves no edge
+  by more than 4% of the screen is left alone, and a window is only moved
+  (with `hub.arrange`) when its agent next looks at it, never in the
+  middle of another's action. The glow and the label show the part.
 - **Turns at the keyboard and mouse.** An action waits until no other
   agent is typing or clicking (at most `hub.turn_wait_secs`); a turn kept
   over 30 s ends by itself. Looking (trees, screenshots, `find_element`)
