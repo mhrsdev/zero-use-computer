@@ -9,3 +9,5 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 rm -rf "$root/plugin/.claude-plugin" "$root/plugin/.mcp.json" "$root/plugin/skills"
 bash "$root/scripts/claude-code/plugin-files.sh" "$root/plugin" computer-use-mcp "" path
+# The directory's listing icon (the orbit pointer, as on the settings panel).
+cp "$root/scripts/claude-code/plugin-icon.png" "$root/plugin/.claude-plugin/icon.png"
