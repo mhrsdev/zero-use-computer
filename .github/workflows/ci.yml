@@ -267,6 +267,9 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           name: computer-use-mcp ${{ inputs.tag || github.ref_name }}
+          # A tag with a label (v5.0.0-preview) is a pre-release: never
+          # "Latest", so neither the download link nor the updater offer it.
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           generate_release_notes: true
           body_path: release-notes.md
           files: |
