@@ -1,6 +1,6 @@
-# Control panel: specification (planned as v4.8, released as v5.0)
+# Control panel: specification (planned as v4.8, now the v5.0 preview)
 
-Status: built and released as v5.0.0 (see the changelog), with a desktop
+Status: built, and out as v5.0.0-preview (see the changelog), with a desktop
 shortcut that opens the panel added. Where it differs from the plan
 below:
 

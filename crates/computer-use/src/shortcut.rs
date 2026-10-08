@@ -292,7 +292,7 @@ fn mac_plist() -> String {
 </dict>
 </plist>
 "#,
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION").split('-').next().unwrap_or("0")
     )
 }
 

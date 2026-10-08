@@ -39,7 +39,7 @@ pub fn status(cfg: &Config, dir: &Path) -> Value {
     let wanted = pending.as_ref().is_none_or(|p| update::allowed(p, u));
     json!({
         "ok": true,
-        "current": update::Version::current().to_string(),
+        "current": env!("CARGO_PKG_VERSION"),
         "enabled": u.enabled,
         "install": format!("{:?}", u.install).to_lowercase(),
         "when": update::when(u.install),

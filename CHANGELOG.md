@@ -1,11 +1,13 @@
 # Changelog
 
-## v5.0.0
+## v5.0.0-preview
 
-The settings panel, and everything it needed: what was planned as v4.8,
-released as v5.0 ([plan](docs/PANEL-SPEC.md),
+A preview of v5.0: the settings panel, and everything it needed (what was
+planned as v4.8). A preview build takes the finished v5.0.0 release when it
+comes out; it isn't offered to anyone by the updater itself
+([plan](docs/PANEL-SPEC.md),
 [guide](docs/GUIDE.md#settings-panel),
-[all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.1...v5.0.0)).
+[all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.1...v5.0.0-preview)).
 
 - **One panel for every setting** (`computer-use-mcp settings`,
   Ctrl+Alt+J, or `decide setup="open"`): 187 settings in 22 groups, each with

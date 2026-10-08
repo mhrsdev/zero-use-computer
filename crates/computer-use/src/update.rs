@@ -58,10 +58,31 @@ impl Version {
         Some(Version(major, minor, patch))
     }
 
-    /// This program's version.
+    /// This program's version, its numbers only: a preview build
+    /// ("5.0.0-preview") is 5.0.0, and [`current_is_preview`] says so.
     pub fn current() -> Version {
-        Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version(0, 0, 0))
+        Version::of_program(env!("CARGO_PKG_VERSION")).unwrap_or(Version(0, 0, 0))
     }
+
+    /// A version as a program states it, a preview's label left off
+    /// ("5.0.0-preview" is 5.0.0). Release tags are read with [`Version::parse`],
+    /// which takes numbers only.
+    pub fn of_program(s: &str) -> Option<Version> {
+        Version::parse(s.trim().split(['-', '+']).next().unwrap_or_default())
+    }
+}
+
+/// Whether this program is a preview build (its version has a label, such
+/// as 5.0.0-preview).
+pub fn current_is_preview() -> bool {
+    env!("CARGO_PKG_VERSION").contains(['-', '+'])
+}
+
+/// Whether a release of version `v` is newer than `current`. When `current`
+/// is this program and it is a preview, the release of the same numbers is
+/// the finished one, and newer.
+pub fn is_newer(v: Version, current: Version) -> bool {
+    v > current || (v == current && current == Version::current() && current_is_preview())
 }
 
 impl std::fmt::Display for Version {
@@ -292,7 +313,7 @@ pub fn choose(
         .collect();
     found.sort_by_key(|b| std::cmp::Reverse(b.0));
     for (v, j) in found {
-        if v <= current {
+        if !is_newer(v, current) {
             break;
         }
         if Some(v) == skip {
@@ -352,7 +373,7 @@ pub fn release_from_with(
             "the latest release's tag \"{tag}\" isn't a version"
         )));
     };
-    if version <= current {
+    if !is_newer(version, current) {
         return Ok(None);
     }
     let Some(a) = json["assets"]
@@ -504,7 +525,7 @@ fn write_pending(dir: &Path, p: &Pending) -> Result<()> {
 pub fn pending(dir: &Path) -> Option<Pending> {
     let file = dir.join("pending.json");
     let p: Pending = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
-    let newer = Version::parse(&p.version).is_some_and(|v| v > Version::current());
+    let newer = Version::parse(&p.version).is_some_and(|v| is_newer(v, Version::current()));
     if !newer {
         let _ = std::fs::remove_dir_all(&p.dir);
         let _ = std::fs::remove_file(&file);
@@ -564,7 +585,8 @@ pub fn due(p: &Pending, install: UpdateInstall) -> bool {
 pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
     // Already there (put in place by another server, or twice from the
     // panel): nothing to replace, and the copy kept to go back to stays.
-    if version_of(exe).map(|v| v.to_string()).as_deref() == Some(p.version.as_str()) {
+    // (as it says it: a 5.0.0-preview is not the 5.0.0 release)
+    if said_version(exe).as_deref() == Some(p.version.as_str()) {
         discard(dir);
         return Ok(());
     }
@@ -581,10 +603,16 @@ pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The version the program at `path` says it is.
-pub(crate) fn version_of(path: &Path) -> Option<Version> {
+/// The version the program at `path` says it is, as it says it
+/// ("5.0.0-preview").
+pub(crate) fn said_version(path: &Path) -> Option<String> {
     let said = run_version(path).ok()?;
-    Version::parse(said.split_whitespace().last().unwrap_or_default())
+    said.split_whitespace().last().map(str::to_string)
+}
+
+/// The version the program at `path` says it is, its numbers.
+pub(crate) fn version_of(path: &Path) -> Option<Version> {
+    Version::of_program(&said_version(path)?)
 }
 
 /// Whether the waiting update may still go in under these settings: the
@@ -817,7 +845,7 @@ pub fn release_notes(dir: &Path) -> Option<ReleaseNotes> {
     let n: ReleaseNotes =
         serde_json::from_slice(&std::fs::read(dir.join("release-notes.json")).ok()?).ok()?;
     Version::parse(&n.version)
-        .is_some_and(|v| v > Version::current())
+        .is_some_and(|v| is_newer(v, Version::current()))
         .then_some(n)
 }
 
@@ -932,7 +960,7 @@ pub fn previous(dir: &Path) -> Option<Previous> {
     let p: Previous =
         serde_json::from_slice(&std::fs::read(previous_dir(dir).join("previous.json")).ok()?)
             .ok()?;
-    Version::parse(&p.version)?;
+    Version::of_program(&p.version)?;
     previous_dir(dir).join(BIN_NAME).is_file().then_some(p)
 }
 
@@ -945,7 +973,7 @@ fn keep_previous(exe: &Path, dir: &Path) {
         std::fs::copy(exe, keep.join(BIN_NAME))?;
         // The program on disk, which may be newer than the one running.
         let p = Previous {
-            version: version_of(exe).unwrap_or_else(Version::current).to_string(),
+            version: said_version(exe).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             saved: now_secs(),
         };
         std::fs::write(
@@ -970,8 +998,9 @@ pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
         .ok_or_else(|| Error::Platform("there is no earlier version kept to go back to".into()))?;
     let bin = previous_dir(dir).join(BIN_NAME);
     let said = run_version(&bin)?;
-    let want = Version::parse(&prev.version);
-    if want.is_none() || Version::parse(said.split_whitespace().last().unwrap_or_default()) != want
+    let want = Version::of_program(&prev.version);
+    if want.is_none()
+        || Version::of_program(said.split_whitespace().last().unwrap_or_default()) != want
     {
         return Err(Error::Platform(format!(
             "the kept program says it is \"{said}\", not {}: not put back",
@@ -982,7 +1011,7 @@ pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
     // than the one running (an update went in since it started).
     let from = run_version(exe)
         .ok()
-        .and_then(|said| Version::parse(said.split_whitespace().last().unwrap_or_default()))
+        .and_then(|said| Version::of_program(said.split_whitespace().last().unwrap_or_default()))
         .unwrap_or_else(Version::current);
     replace_program(&bin, exe)?;
     discard(dir);
@@ -1183,7 +1212,27 @@ mod tests {
         assert!(Version::parse("v3.10.0").unwrap() > Version::parse("v3.9.12").unwrap());
         assert_eq!(Version::parse("v3.9.8-beta"), None);
         assert_eq!(Version::parse("1.2.3.4"), None);
-        assert_eq!(Version::current().to_string(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            Version::current().to_string(),
+            env!("CARGO_PKG_VERSION").split('-').next().unwrap()
+        );
+        // A program's own version may carry a label; a tag may not.
+        assert_eq!(Version::of_program("5.0.0-preview"), Some(Version(5, 0, 0)));
+        assert_eq!(Version::of_program("5.0.0+build.3"), Some(Version(5, 0, 0)));
+        assert_eq!(Version::parse("v5.0.0-preview"), None);
+    }
+
+    #[test]
+    fn a_preview_takes_the_finished_release_of_its_numbers() {
+        let cur = Version::current();
+        assert!(is_newer(Version(cur.0, cur.1, cur.2 + 1), cur));
+        assert!(!is_newer(Version(0, 0, 1), cur));
+        // The same numbers: newer only for a preview build.
+        assert_eq!(is_newer(cur, cur), current_is_preview());
+        // Another "current" (a test's own) never gets that.
+        assert!(!is_newer(Version(1, 2, 3), Version(1, 2, 3)));
+        // And never the version 0.0.0 that an unreadable version once was.
+        assert_ne!(cur, Version(0, 0, 0));
     }
 
     #[test]

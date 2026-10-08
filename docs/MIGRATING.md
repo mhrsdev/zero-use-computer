@@ -1,4 +1,7 @@
-# Upgrading to v5.0.0
+# Upgrading to v5.0.0-preview
+
+A preview of v5.0. When the finished v5.0.0 comes out, a preview build
+takes it like any update.
 
 Nothing you have to change. What is different:
 
