@@ -66,12 +66,6 @@ try {
   Write-Host 'The server was running: the new version is used from its next start.'
 }
 Write-Host "Installed: $exe"
-# The plugin from the Claude directory runs `computer-use-mcp` from PATH.
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not (($userPath -split ';') -contains $binDir)) {
-  [Environment]::SetEnvironmentVariable('Path', ((@($userPath, $binDir) | Where-Object { $_ }) -join ';'), 'User')
-  Write-Host "Added $binDir to your PATH (restart Claude Code to pick it up)."
-}
 if ($env:COMPUTER_USE_HOME -and ($binDir -ne (Join-Path (Join-Path $env:USERPROFILE '.computer-use') 'bin'))) {
   Write-Host "Note: COMPUTER_USE_HOME is set, so the program is in $binDir; the plugin zip looks in %USERPROFILE%\.computer-use\bin, so register it with this script instead (without -NoRegister)."
 }

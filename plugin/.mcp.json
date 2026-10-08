@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "computer-use": {
-      "command": "computer-use-mcp",
-      "args": ["serve", "--instructions", "short"]
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/launcher/main.cjs", "serve", "--instructions", "short"]
     }
   }
 }

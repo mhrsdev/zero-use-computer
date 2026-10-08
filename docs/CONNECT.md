@@ -78,6 +78,12 @@ Check it with `claude mcp list`, then `/mcp` inside a session. The zip is
 also a Claude plugin: `claude --plugin-dir <folder>`, or upload it where an
 app offers *Upload local plugin*.
 
+The repository's [`plugin/`](../plugin) folder is the same plugin without the
+program in it: its launcher (Node.js 18 or newer) installs the program from
+the GitHub release on first use, checked against the release's SHA-256, and
+runs it ([how](../plugin/README.md)). It is the folder the Claude directory
+installs, and works from a clone too: `claude --plugin-dir plugin`.
+
 ### Claude Desktop
 
 Edit `claude_desktop_config.json`

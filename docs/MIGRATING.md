@@ -1,3 +1,10 @@
+# Upgrading to v5.0.2
+
+From v5.0.1: nothing to change; the program is the same. New is the
+repository's `plugin/` folder (the plugin the Claude directory lists),
+whose launcher installs the program by itself ([how](../plugin/README.md)).
+A program installed with `install.sh` / `install.cmd` is the one it runs.
+
 # Upgrading to v5.0.1
 
 v5.0, as tried out in the two previews below. From v4.0.1 everything in

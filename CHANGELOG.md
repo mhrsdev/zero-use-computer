@@ -1,5 +1,31 @@
 # Changelog
 
+## v5.0.2
+
+The plugin installs the program itself: the repository's `plugin/` folder,
+the one the Claude directory lists, starts a small launcher that downloads
+the right build on first use, checks it, and runs it. The program is the
+same as v5.0.1's
+([all commits](https://github.com/mhrsdev/zero-use-computer/compare/v5.0.1...v5.0.2)).
+
+- **`plugin/`: the plugin from the repository.** The manifest, the MCP
+  entry, the skills and `launcher/` (Node.js 18 or newer, no
+  dependencies). The launcher runs the program in `~/.computer-use/bin`
+  (the folder `install.sh` / `install.cmd` and the updater use) when it is
+  the plugin's version or newer. When it is missing, it downloads
+  `computer-use-mcp-<system>.zip` of the plugin's release (or the latest,
+  if that one is not out yet), checks it against the release's SHA-256,
+  runs the program once and only then moves it into place; a download cut
+  off goes on where it stopped, two chats starting at once install once,
+  an `http(s)://` proxy in `HTTPS_PROXY` is used. Meanwhile a stand-in
+  answers the client with one tool, `setup_status`, and hands over to the
+  program when it is ready (the client is told its tools changed). An
+  older program runs at once and the plugin's version is installed for the
+  next start. `COMPUTER_USE_MCP_BIN` runs another program instead.
+- **Each release zip has its SHA-256 beside it** (`<zip>.sha256`), so the
+  launcher needs no call to GitHub's API (60 an hour from one address).
+- The repository no longer carries the launch films (`promo/`).
+
 ## v5.0.1
 
 v5.0: the settings panel, and a hub that shares the screen out by what

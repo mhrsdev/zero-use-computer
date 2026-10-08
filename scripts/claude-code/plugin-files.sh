@@ -10,8 +10,8 @@
 #   installed the plugin has no binary (some hosts refuse executables in plugin
 #             archives); it runs the one install.cmd / install.sh copied to
 #             ~/.computer-use/bin
-#   path      no binary either; it runs `computer-use-mcp` from PATH, which
-#             install.cmd / install.sh put there (one folder for every OS:
+#   launcher  no binary either; Node runs launcher/main.cjs, which installs
+#             the program from the GitHub release (one folder for every OS:
 #             the plugin/ folder the Claude directory lists)
 set -euo pipefail
 dir="${1:?folder}"; exe="${2:?binary file name}"
@@ -33,21 +33,27 @@ cat > "$dir/.claude-plugin/plugin.json" <<JSON
 }
 JSON
 case "$mode" in
+  launcher) ;;
   bundled) command="\${CLAUDE_PLUGIN_ROOT}/$exe" ;;
   installed)
     case "$exe" in
       *.exe) command="\${USERPROFILE}/.computer-use/bin/$exe" ;;
       *) command="\${HOME}/.computer-use/bin/$exe" ;;
     esac ;;
-  path) command="${exe%.exe}" ;;
   *) echo "unknown mode: $mode" >&2; exit 2 ;;
 esac
+if [ "$mode" = launcher ]; then
+  command=node
+  args='"${CLAUDE_PLUGIN_ROOT}/launcher/main.cjs", "serve", "--instructions", "short"'
+else
+  args='"serve", "--instructions", "short"'
+fi
 cat > "$dir/.mcp.json" <<JSON
 {
   "mcpServers": {
     "computer-use": {
       "command": "$command",
-      "args": ["serve", "--instructions", "short"]
+      "args": [$args]
     }
   }
 }

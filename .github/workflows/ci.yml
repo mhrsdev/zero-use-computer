@@ -47,6 +47,8 @@ jobs:
           bash scripts/claude-code/sync-plugin.sh
           git add -N plugin
           git diff --exit-code -- plugin
+      - name: Plugin launcher tests
+        run: node --test scripts/claude-code/launcher-test/launcher.test.cjs
 
   msrv:
     name: MSRV (Rust 1.88)
@@ -83,6 +85,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --target ${{ matrix.target }}
       - run: cargo test --workspace --target ${{ matrix.target }}
+      - name: Plugin launcher tests
+        run: node --test scripts/claude-code/launcher-test/launcher.test.cjs
 
   live-linux:
     name: Live GTK and Qt test (Xvfb + AT-SPI)
@@ -232,6 +236,14 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-mcp-${{ matrix.name }}.zip .; else zip -r ../computer-use-mcp-${{ matrix.name }}.zip .; fi
           cd ../plugin-only
           if [ "${{ runner.os }}" = "Windows" ]; then 7z a ../computer-use-plugin-${{ matrix.name }}.zip .; else zip -r ../computer-use-plugin-${{ matrix.name }}.zip .; fi
+          cd ..
+          # Each zip's SHA-256 beside it: the plugin's launcher checks the zip
+          # against it before installing (no GitHub API call needed).
+          for z in computer-use-mcp-${{ matrix.name }}.zip computer-use-plugin-${{ matrix.name }}.zip; do
+            if command -v sha256sum >/dev/null; then sum=$(sha256sum "$z"); else sum=$(shasum -a 256 "$z"); fi
+            printf '%s  %s\n' "${sum%% *}" "$z" > "$z.sha256"
+            cat "$z.sha256"
+          done
       - name: Release notes
         if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         shell: bash
@@ -286,4 +298,6 @@ jobs:
           body_path: release-notes.md
           files: |
             computer-use-mcp-${{ matrix.name }}.zip
+            computer-use-mcp-${{ matrix.name }}.zip.sha256
             computer-use-plugin-${{ matrix.name }}.zip
+            computer-use-plugin-${{ matrix.name }}.zip.sha256

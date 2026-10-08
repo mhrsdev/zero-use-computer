@@ -5,7 +5,7 @@ screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
 [Download](https://github.com/mhrsdev/zero-use-computer/releases/latest)
-(v5.0.1: the settings panel, the screen shared by need, a KDE crash fixed: [what is new](CHANGELOG.md))
+(v5.0.2: the plugin installs the program itself; v5.0: the settings panel: [what is new](CHANGELOG.md))
 (from v4.0 it keeps itself up to date: [Updates](docs/GUIDE.md#updates))
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)
@@ -192,6 +192,11 @@ benchmark can stand behind.
    [`examples/`](examples) and [docs/CONNECT.md](docs/CONNECT.md).
 3. Give the agent the [skills](skills/) (the zip is also a Claude plugin
    that brings them).
+
+Or, in Claude Code, the plugin alone: [`plugin/`](plugin) installs the
+program by itself on first use (it needs Node.js 18 or newer):
+`claude --plugin-dir plugin` from a clone.
+
 
 `computer-use-mcp doctor` checks permissions and the stop key. On macOS,
 allow Accessibility and Screen Recording for the app that starts the
