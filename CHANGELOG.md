@@ -1,5 +1,117 @@
 # Changelog
 
+## v5.0.1
+
+v5.0: the settings panel, and a hub that shares the screen out by what
+each agent at work needs; with a fix for every Linux version so far (one
+call could take a KDE session down). What was tried out as v5.0.0-preview
+and v5.0.1-preview; a preview build takes this release
+([plan](docs/PANEL-SPEC.md),
+[guide](docs/GUIDE.md#settings-panel),
+[upgrading](docs/MIGRATING.md),
+[all commits](https://github.com/mhrsdev/zero-use-computer/compare/v4.0.1...v5.0.1)).
+
+### Fixes and the hub
+
+- **Qt apps crashed when the server read them, KWin and Plasma too.** The
+  server asked each app for all of an element's properties at once
+  (`Properties.GetAll`). Qt's accessibility bridge, up to Qt 6.9, reads a
+  second argument from every such call, and that one has only one: the app
+  crashes. KWin is a Qt program, so one `list_apps` (or `doctor`, which
+  `install.sh` runs) closed every window, and a restarted KWin was crashed
+  again by the next look. Each property is now asked for on its own, as Qt
+  expects, and an element is asked for its extents and actions only when it
+  says it has them (GTK printed warnings for the others). A new live test
+  in CI reads, clicks and types in a real Qt app; the old code fails it.
+- **The desktop's own processes are never asked anything:** the compositor
+  (KWin, GNOME Shell, Xwayland), Plasma, the session manager, portals,
+  kded, KWallet, the polkit agent. Their pid comes from the bus, not from
+  them, and they aren't listed as apps.
+- **An app that quits while answering is left alone for 10 minutes** (by
+  its program, so a restarted copy is too): a call that crashes an app is
+  never made to it again and again. Its windows are still listed, for
+  screenshots and the mouse and keyboard.
+- **`doctor` no longer switches the desktop's accessibility on**; it says
+  whether it is on. A server switches it on when it is off (Qt, Firefox and
+  Chromium show nothing without it) and the last server to end switches it
+  off again.
+- **The hub shares the screen out by need, among the agents at work.**
+  Every server took a part of the screen as soon as it started, so other
+  chats that never used the computer split it with the one at work (one
+  agent working in a third of the screen, its glow around that third), and
+  the parts were even or a fixed half, third or quarter. Now only agents at
+  work have a part (one that makes no call for `hub.release_after_secs`,
+  120, gives it up until its next call); each gets what its window needs
+  (a full-size window and two small ones: a half and two quarters; 35% and
+  65% windows: just that); a window the agent moved, resized, tiled or
+  maximized itself stays where it put it while the others share the rest;
+  a window that won't shrink keeps its least size; `agents` area takes a
+  share such as `35%`. The parts follow where the windows are, a change of
+  under 4% of the screen moves nothing, and a window moves only when its
+  agent looks next. `agents` list marks the idle ones. (The hub protocol is
+  version 2: a server of this version and a hub of an older one don't mix.)
+- **`install.sh` and `install.cmd` add the program as `zero-use-computer`
+  when Claude Code keeps the name `computer-use` for itself** ("this name
+  is reserved"), as the panel's Connect page already did, and say if adding
+  it failed. `--uninstall` removes either name.
+
+If a KDE session crashed: log out and back in (or restart), then update. To
+switch accessibility off again: `busctl --user set-property org.a11y.Bus
+/org/a11y/bus org.a11y.Status IsEnabled b false` and, on GNOME-based
+desktops, `gsettings set org.gnome.desktop.interface toolkit-accessibility
+false`.
+
+### The settings panel
+
+- **One panel for every setting** (`computer-use-mcp settings`,
+  Ctrl+Alt+J, or `decide setup="open"`): 187 settings in 22 groups, each with
+  its help, its default and a reset, search, "changed from default", light,
+  dark and automatic themes in Material Design 3 style with an accent colour.
+  A test fails when a setting has no entry in the panel. Its address is the
+  same every time (`panel.port`, a token in a file only you can read); it
+  listens only while it is open. It sends its schema once and only the
+  values that differ from the defaults after that (45 KB a request to 0.2 KB).
+- **The agent never uses it.** A window whose title says "Zero panel
+  [private]" is refused by every tool. Settings that limit the agent or the
+  updates ask you to confirm, in the page and in the server; secrets are
+  written but never sent back.
+- **Previews:** how the pointer glides (from the program's own path maker),
+  how the overlay's border, label and colours fit, what a picture costs in
+  tokens.
+- **Profiles** (Low tokens, Balanced, Best quality, Showcase, and your own),
+  the **tool list** with what each tool costs, the **apps report**, the
+  **audit log**, the **settings file as text** (checked as a whole, secrets
+  covered) and **import and export** as TOML.
+- **Update controls:** look every 5 minutes or more (`check_every_mins`) or
+  never, stable or pre-release channel, pin a version, skip a version. A look
+  asks GitHub only "has it changed?" (the tag is kept once a look is over);
+  GitHub's "slow down" is waited out for an hour. The program an update
+  replaces is kept, and **Go back** / `update --rollback` puts it in place.
+  The panel shows when it last looked, what waits and its notes.
+- **One button to add it to the agents you use:** the Connect page and
+  `computer-use-mcp install` for Claude Code, Claude Desktop, Codex, Cursor
+  and VS Code. Only its own entry is written, the rest of each file stays in
+  its own order with its comments, a `.bak` copy is kept, a file with
+  mistakes is left alone, and the program is kept at
+  `~/.computer-use/bin` so it stays where the agents look. Newer Claude Code
+  keeps the name `computer-use`; the program is then added as
+  `zero-use-computer`.
+- **A shortcut that opens the panel:** on the desktop and with the system's
+  apps (a `.desktop` file on Linux, a small app on a Mac, a `.lnk` on
+  Windows), made, made again or taken away from the panel's Desktop shortcut
+  page or with `computer-use-mcp shortcut`. It starts
+  `computer-use-mcp settings`, which serves the panel on its own port and
+  opens it in the browser, or shows the one already open. Only shortcuts the
+  program made are ever removed. `settings` now serves the panel even when no
+  browser can be opened, and prints its address.
+- **A guide inside the panel:** nine short pages.
+- **More to turn:** the pointer's `trail`, `lean_strength` and `breathe`
+  (and how strong each is), and the real mouse's `mouse_speed`,
+  `mouse_overshoot` and `mouse_jitter`. The real mouse travels only the last
+  stretch of a reach, so `mouse_overshoot` (0 by default, as before) decides
+  how often a long reach comes in a touch past its target.
+- A reset leaves no empty section in the settings file.
+
 ## v5.0.1-preview
 
 A fix for every Linux version so far (one call could take a KDE session

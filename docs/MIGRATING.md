@@ -1,6 +1,12 @@
-# Upgrading to v5.0.1-preview
+# Upgrading to v5.0.1
 
-From v5.0.0-preview: nothing to change. What is different:
+v5.0, as tried out in the two previews below. From v4.0.1 everything in
+both sections applies; from a preview, what comes after it. A preview
+build takes this release like any update. Nothing you have to change.
+
+## From v5.0.0-preview (as in v5.0.1-preview)
+
+What is different:
 
 - **Linux: Qt apps, KWin and Plasma are read safely**, and the desktop's
   own processes are never asked anything. `doctor` no longer switches the
@@ -17,7 +23,7 @@ From v5.0.0-preview: nothing to change. What is different:
 - **`install.sh` / `install.cmd`** add the program as `zero-use-computer`
   when Claude Code keeps `computer-use` for itself.
 
-# Upgrading to v5.0.0-preview
+## From v4.0.1 (as in v5.0.0-preview)
 
 A preview of v5.0. When the finished v5.0.0 comes out, a preview build
 takes it like any update.
