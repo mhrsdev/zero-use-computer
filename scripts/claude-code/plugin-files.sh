@@ -20,16 +20,33 @@ version="${3:-$(grep -m1 '^version' "$root/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/
 mode="${4:-bundled}"
 
 mkdir -p "$dir/.claude-plugin" "$dir/skills"
+# The release zips keep the name they always had; the directory's plugin
+# (launcher mode) goes by the project's name, which no other plugin or
+# Claude's own computer use has, and links the pages the directory shows.
+repo_url=https://github.com/mhrsdev/zero-use-computer
+if [ "$mode" = launcher ]; then
+  name=zero-use-computer
+  server=zero-use-computer
+  links=",
+  \"documentationUrl\": \"$repo_url/blob/main/plugin/README.md\",
+  \"supportUrl\": \"$repo_url/issues\",
+  \"privacyPolicyUrl\": \"$repo_url/blob/main/PRIVACY.md\",
+  \"termsOfServiceUrl\": \"$repo_url/blob/main/LICENSE\""
+else
+  name=computer-use
+  server=computer-use
+  links=""
+fi
 cat > "$dir/.claude-plugin/plugin.json" <<JSON
 {
-  "name": "computer-use",
+  "name": "$name",
   "version": "$version",
   "description": "Control desktop apps (Windows, macOS, Linux) through their accessibility tree plus screenshots: an MCP server with an on-screen indicator, an emergency stop key, and skills for using it and for staying safe.",
   "author": { "name": "mhrsdev" },
-  "homepage": "https://github.com/mhrsdev/zero-use-computer",
-  "repository": "https://github.com/mhrsdev/zero-use-computer",
+  "homepage": "$repo_url",
+  "repository": "$repo_url",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "computer-use", "desktop", "accessibility", "automation"]
+  "keywords": ["mcp", "computer-use", "desktop", "accessibility", "automation"]$links
 }
 JSON
 case "$mode" in
@@ -51,7 +68,7 @@ fi
 cat > "$dir/.mcp.json" <<JSON
 {
   "mcpServers": {
-    "computer-use": {
+    "$server": {
       "command": "$command",
       "args": [$args]
     }

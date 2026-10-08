@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "computer-use": {
+    "zero-use-computer": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/launcher/main.cjs", "serve", "--instructions", "short"]
     }
