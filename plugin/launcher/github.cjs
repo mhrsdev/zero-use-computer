@@ -18,8 +18,8 @@ const REPO = 'mhrsdev/zero-use-computer';
  * github.com and its API, or (for the launcher's tests only) a server on
  * this computer named by ZERO_LAUNCHER_GITHUB, which serves both.
  */
-function bases(env = process.env) {
-  const override = env.ZERO_LAUNCHER_GITHUB;
+function bases() {
+  const override = process.env.ZERO_LAUNCHER_GITHUB;
   if (override) {
     const u = new URL(override);
     if (!isLocal(u.hostname)) throw new Error('ZERO_LAUNCHER_GITHUB may only name a server on this computer');

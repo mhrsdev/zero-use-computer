@@ -46,9 +46,8 @@ function target(platform = process.platform, arch = process.arch, rosetta = unde
 }
 
 /** $COMPUTER_USE_HOME as the program reads it, else ~/.computer-use. */
-function homeDir(env = process.env, userHome = os.homedir()) {
+function homeDir(value = process.env.COMPUTER_USE_HOME, userHome = os.homedir()) {
   const user = userHome || os.tmpdir();
-  const value = env.COMPUTER_USE_HOME;
   if (!value) return path.join(user, '.computer-use');
   let p = value;
   if (p === '~') p = user;
@@ -56,12 +55,12 @@ function homeDir(env = process.env, userHome = os.homedir()) {
   return path.isAbsolute(p) ? p : path.join(user, p);
 }
 
-function binDir(env) {
-  return path.join(homeDir(env), 'bin');
+function binDir() {
+  return path.join(homeDir(), 'bin');
 }
 
-function binPath(env) {
-  return path.join(binDir(env), BIN_NAME);
+function binPath() {
+  return path.join(binDir(), BIN_NAME);
 }
 
 module.exports = { IS_WINDOWS, BIN_NAME, target, homeDir, binDir, binPath };

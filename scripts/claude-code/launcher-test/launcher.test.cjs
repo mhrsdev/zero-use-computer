@@ -361,17 +361,16 @@ test('each system gets its build, and the others a reason', () => {
 
 test('the program folder is read as the program reads it', () => {
   const user = path.resolve('/home/u');
-  assert.equal(homeDir({}, user), path.join(user, '.computer-use'));
-  assert.equal(homeDir({ COMPUTER_USE_HOME: '' }, user), path.join(user, '.computer-use'));
-  assert.equal(homeDir({ COMPUTER_USE_HOME: '~/cu' }, user), path.join(user, 'cu'));
-  assert.equal(homeDir({ COMPUTER_USE_HOME: 'rel' }, user), path.join(user, 'rel'));
-  assert.equal(homeDir({ COMPUTER_USE_HOME: path.resolve('/opt/cu') }, user), path.resolve('/opt/cu'));
+  assert.equal(homeDir(undefined, user), path.join(user, '.computer-use'));
+  assert.equal(homeDir('', user), path.join(user, '.computer-use'));
+  assert.equal(homeDir('~/cu', user), path.join(user, 'cu'));
+  assert.equal(homeDir('rel', user), path.join(user, 'rel'));
+  assert.equal(homeDir(path.resolve('/opt/cu'), user), path.resolve('/opt/cu'));
 });
 
-test('proxies: from the environment, NO_PROXY honoured, only http(s) ones', () => {
-  const env = { HTTPS_PROXY: 'http://user:p%40ss@proxy.local:8080', NO_PROXY: 'example.com, .internal' };
+test('proxies: from their settings, NO_PROXY honoured, only http(s) ones without a password', () => {
+  const env = { HTTPS_PROXY: 'http://proxy.local:8080', NO_PROXY: 'example.com, .internal' };
   assert.equal(proxyFor('https://github.com/x', env).host, 'proxy.local:8080');
-  assert.equal(proxyFor('https://github.com/x', env).password, 'p%40ss');
   assert.equal(proxyFor('https://api.example.com/x', env), null);
   assert.equal(proxyFor('https://a.internal/x', env), null);
   assert.equal(proxyFor('http://127.0.0.1:8/x', env), null);
@@ -379,6 +378,11 @@ test('proxies: from the environment, NO_PROXY honoured, only http(s) ones', () =
   assert.equal(proxyFor('https://github.com/x', { https_proxy: 'proxy.local:3128' }).host, 'proxy.local:3128');
   assert.equal(proxyFor('https://github.com/x', { ...env, NO_PROXY: '*' }), null);
   assert.throws(() => proxyFor('https://github.com/x', { ALL_PROXY: 'socks5://p:1080' }), /not supported/);
+  // The launcher reads no credential: a proxy that wants one is refused, by name.
+  assert.throws(
+    () => proxyFor('https://github.com/x', { HTTPS_PROXY: 'http://user:secret@proxy.local:8080' }),
+    (e) => /user name and password/.test(e.message) && !e.message.includes('secret'),
+  );
 });
 
 test('MCP lines are split however the bytes arrive', () => {

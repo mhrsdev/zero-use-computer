@@ -21,7 +21,7 @@
 // Settings (environment):
 //   COMPUTER_USE_MCP_BIN   run this program instead; nothing is installed
 //   COMPUTER_USE_HOME      the program's folder (default ~/.computer-use)
-//   HTTPS_PROXY, NO_PROXY  a proxy for GitHub (http:// or https://)
+//   HTTPS_PROXY, NO_PROXY  a proxy for GitHub (http:// or https://, no password)
 //
 // `node main.cjs --install` installs (or updates) the program and exits.
 
@@ -89,7 +89,6 @@ function startInstaller(wanted) {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-    env: process.env,
   });
   child.unref();
   return new Promise((resolve) => {

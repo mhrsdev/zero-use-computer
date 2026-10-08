@@ -27,7 +27,8 @@ which:
    stand-in answers Claude and offers one tool, `setup_status`; the desktop
    tools replace it as soon as the program is ready.
 
-Nothing else is downloaded or run. The launcher is plain Node.js (18 or
+Nothing else is downloaded or run, and of the environment only the variables
+below are read, each by name. The launcher is plain Node.js (18 or
 newer) with no dependencies; its tests are in
 `scripts/claude-code/launcher-test/`.
 
@@ -35,7 +36,7 @@ newer) with no dependencies; its tests are in
 |---|---|
 | `COMPUTER_USE_MCP_BIN` | run this program instead; nothing is installed |
 | `COMPUTER_USE_HOME` | the program's folder (default `~/.computer-use`) |
-| `HTTPS_PROXY`, `NO_PROXY` | an `http://` or `https://` proxy for GitHub |
+| `HTTPS_PROXY`, `NO_PROXY` | an `http://` or `https://` proxy for GitHub (one without a password: the launcher reads no credential) |
 
 To install or update the program without Claude:
 `node launcher/main.cjs --install`. Its log is `~/.computer-use/launcher.log`.

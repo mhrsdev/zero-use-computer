@@ -1,7 +1,7 @@
 'use strict';
 // HTTPS with nothing but Node's own modules: redirects, timeouts, retries,
 // resumed downloads, and the proxy in HTTPS_PROXY / ALL_PROXY (an http://
-// proxy, tunnelled with CONNECT; NO_PROXY is honoured). Certificates are
+// proxy without a password, tunnelled with CONNECT; NO_PROXY is honoured). Certificates are
 // checked as Node always does (NODE_EXTRA_CA_CERTS adds a company's CA).
 // Plain http:// is refused, except to this computer (the tests' server).
 
@@ -25,15 +25,31 @@ function isLocal(host) {
   return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
 }
 
-function envValue(env, name) {
-  return env[name.toLowerCase()] || env[name.toUpperCase()] || '';
+/**
+ * The proxy settings, each read by name (and nothing else of the
+ * environment): HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY, either case.
+ */
+function proxySettings() {
+  return {
+    https_proxy: process.env.https_proxy || process.env.HTTPS_PROXY || '',
+    http_proxy: process.env.http_proxy || process.env.HTTP_PROXY || '',
+    all_proxy: process.env.all_proxy || process.env.ALL_PROXY || '',
+    no_proxy: process.env.no_proxy || process.env.NO_PROXY || '',
+  };
 }
 
-/** The proxy to reach `url` through, as a URL, or null. */
-function proxyFor(url, env = process.env) {
+function setting(settings, name) {
+  return settings[name] || settings[name.toUpperCase()] || '';
+}
+
+/**
+ * The proxy to reach `url` through, as a URL, or null. A proxy that wants a
+ * user name and password is not used: the launcher reads no credential.
+ */
+function proxyFor(url, settings = proxySettings()) {
   const u = new URL(url);
   if (isLocal(u.hostname)) return null;
-  const noProxy = envValue(env, 'no_proxy');
+  const noProxy = setting(settings, 'no_proxy');
   if (noProxy) {
     const host = u.hostname.toLowerCase();
     for (let entry of noProxy.split(/[,\s]+/)) {
@@ -46,8 +62,8 @@ function proxyFor(url, env = process.env) {
   }
   const raw =
     u.protocol === 'https:'
-      ? envValue(env, 'https_proxy') || envValue(env, 'all_proxy')
-      : envValue(env, 'http_proxy') || envValue(env, 'all_proxy');
+      ? setting(settings, 'https_proxy') || setting(settings, 'all_proxy')
+      : setting(settings, 'http_proxy') || setting(settings, 'all_proxy');
   if (!raw) return null;
   let proxy;
   try {
@@ -61,6 +77,12 @@ function proxyFor(url, env = process.env) {
         'install the program by hand instead (see the plugin README)',
     );
   }
+  if (proxy.username || proxy.password) {
+    throw new Error(
+      `the proxy ${proxy.host} asks for a user name and password, which the launcher does not send; ` +
+        'install the program by hand instead (see the plugin README)',
+    );
+  }
   return proxy;
 }
 
@@ -68,10 +90,6 @@ function proxyFor(url, env = process.env) {
 function tunnel(proxy, host, port) {
   return new Promise((resolve, reject) => {
     const headers = { Host: `${host}:${port}`, 'User-Agent': USER_AGENT };
-    if (proxy.username) {
-      const cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
-      headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(cred).toString('base64');
-    }
     const lib = proxy.protocol === 'https:' ? https : http;
     const req = lib.request({
       host: proxy.hostname,
