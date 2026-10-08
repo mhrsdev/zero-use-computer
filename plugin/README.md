@@ -32,6 +32,20 @@ claude.ai. [Privacy](https://github.com/mhrsdev/zero-use-computer/blob/main/PRIV
 · [Guide](https://github.com/mhrsdev/zero-use-computer/blob/main/docs/GUIDE.md)
 · [Source](https://github.com/mhrsdev/zero-use-computer) (Apache-2.0).
 
+## Data sent off your computer
+
+What the program reads on screen goes to Claude, through the client you run
+it in. Besides that, it sends data to only these, and nothing about you or
+your screen to GitHub:
+
+| Where | What | When |
+|---|---|---|
+| `github.com` (this repository's releases) | a download request | the launcher's first run, and when the plugin is newer than the program |
+| `api.github.com` | "is there a newer release?", with the program's version | every 12 hours or so; off with `[update] enabled = false` |
+| a decision model you choose (TypeSafe, OpenAI, Groq, or any OpenAI-compatible API) | the small questions it hands over: element names, text from the screen | only if you set `[decision] provider`; off by default |
+
+No analytics or telemetry. More in [PRIVACY.md](https://github.com/mhrsdev/zero-use-computer/blob/main/PRIVACY.md).
+
 This folder holds the plugin: the MCP server's entry, its launcher, and the
 skills (the agent guide, its safety rules and the design guide). It is the
 folder the Claude directory installs (Plugin path: `plugin`).
