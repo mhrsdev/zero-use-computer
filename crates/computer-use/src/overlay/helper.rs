@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use tiny_skia::{Color, Pixmap};
 
+use super::controls::{Action, Controls, Row, Texts};
 use super::draw;
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
@@ -23,18 +24,43 @@ pub enum Part {
     Bottom,
     Left,
     Label,
+    /// The buttons beside the label (`show_buttons`): the only parts the
+    /// pointer can use, with the list and the tag below.
+    Stop,
+    Gear,
     Cursor,
     /// What a pointer draws across the screen (a drag's line).
     Fx,
+    /// The stop button's list of agents (one for the whole overlay).
+    Menu,
+    /// What a button under the pointer does ("Settings").
+    Tip,
 }
 
 impl Part {
-    pub const ALL: [Part; 7] = [
+    pub const ALL: [Part; 11] = [
         Part::Top,
         Part::Right,
         Part::Bottom,
         Part::Left,
         Part::Label,
+        Part::Stop,
+        Part::Gear,
+        Part::Cursor,
+        Part::Fx,
+        Part::Menu,
+        Part::Tip,
+    ];
+
+    /// The parts each agent has (the list and its tag are the overlay's).
+    pub const AGENT: [Part; 9] = [
+        Part::Top,
+        Part::Right,
+        Part::Bottom,
+        Part::Left,
+        Part::Label,
+        Part::Stop,
+        Part::Gear,
         Part::Cursor,
         Part::Fx,
     ];
@@ -87,10 +113,25 @@ impl Hotkey {
 }
 
 /// Something that happened on the surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfaceEvent {
     /// The user pressed one of the global keys.
     Hotkey(Hotkey),
+    /// The pointer on (or off) a layer that takes it ([`Surface::set_live`]).
+    Pointer(Pointer),
+}
+
+/// The pointer on the overlay's buttons, in screen units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pointer {
+    /// Over one of them at (x, y).
+    Move(f64, f64),
+    /// Off them.
+    Leave,
+    /// The (left) button went down at (x, y)…
+    Press(f64, f64),
+    /// …and up.
+    Release(f64, f64),
 }
 
 /// A platform's way of putting images on screen: always on top,
@@ -139,7 +180,19 @@ pub trait Surface {
     fn set_hotkey(&mut self, _which: Hotkey, _combo: Option<crate::keys::KeyCombo>) -> bool {
         false
     }
-    /// Handle native events; returns global key presses.
+    /// Whether a layer can take the pointer ([`Surface::set_live`]): the
+    /// label's buttons are only drawn where they can.
+    fn pointer_input(&self) -> bool {
+        false
+    }
+    /// Let the pointer use `layer` (`live`): its clicks, its moves over
+    /// it, never the keyboard focus. Every layer passes the pointer through
+    /// by default, and does again when no longer live. Asked once the layer
+    /// is shown; it stays so when the layer's window is made anew. Done
+    /// once this returns (an engine about to click waits for it).
+    fn set_live(&mut self, _layer: Layer, _live: bool) {}
+    /// Handle native events; returns global key presses and the pointer on
+    /// live layers.
     fn pump(&mut self) -> Vec<SurfaceEvent>;
     fn close(&mut self);
 }
@@ -719,6 +772,7 @@ impl Machine {
             | Cmd::Doing { .. }
             | Cmd::Area { .. }
             | Cmd::Need { .. }
+            | Cmd::Mouse { .. }
             | Cmd::Lock { .. }
             | Cmd::Unlock { .. }
             | Cmd::Hold
@@ -960,6 +1014,23 @@ impl Machine {
         mix(self.color_from, self.color_to, self.color_ramp.value(now))
     }
 
+    /// The state colour as shown now (the stop button's list gives it).
+    pub fn color_now(&self, now: Instant) -> Color {
+        self.shown_color(now)
+    }
+
+    /// What the agent does, in a word (the stop button's list).
+    pub fn doing(&self) -> &'static str {
+        match self.phase {
+            Phase::Off | Phase::Done => "done",
+            Phase::Thinking => "thinking",
+            Phase::Working => "working",
+            Phase::Error => "error",
+            Phase::Paused => "paused",
+            Phase::Stopped => "stopped",
+        }
+    }
+
     fn color(&self) -> Color {
         let c = &self.colors;
         match self.phase {
@@ -1013,6 +1084,7 @@ impl Machine {
             opacity: self.fade.value(now).clamp(0.0, 1.0),
             border: self.cfg.show_border.then_some((self.target, color)),
             label: self.cfg.show_label.then(|| (self.label_text(), color)),
+            buttons: self.cfg.show_label && self.cfg.show_buttons,
             cursor: if self.cfg.show_cursor {
                 self.cursor_pos(now).map(|p| CursorLook {
                     pos: p,
@@ -1071,6 +1143,8 @@ pub struct Scene {
     /// Target rect (None = screen) and colour.
     pub border: Option<(Option<Rect>, Color)>,
     pub label: Option<(String, Color)>,
+    /// The stop and settings buttons beside the label.
+    pub buttons: bool,
     pub cursor: Option<CursorLook>,
     pub drag: Option<DragLook>,
 }
@@ -1100,6 +1174,9 @@ type CursorKey = (
 /// What a drag's line was drawn with: its ends, opacity, look, colour and
 /// scale (per cent).
 type DragKey = (Vec<(i64, i64)>, u8, draw::CursorStyle, [u8; 4], u32);
+/// What the label's buttons were drawn with: colour, opacity, scale (per
+/// cent), size (px), how each shows, and where they are (stop, settings).
+type ButtonsKey = ([u8; 4], u8, u32, u32, [draw::Press; 2], [(i64, i64); 2]);
 
 /// Turns scenes into surface calls, redrawing only what changed.
 #[derive(Default)]
@@ -1122,6 +1199,16 @@ pub struct Painter {
     /// The agent's part of the screen: its glow and label stay in it
     /// (None: the main screen).
     area: Option<Rect>,
+    /// The label's buttons as drawn, where they are (screen units: stop,
+    /// settings), and whether they take the pointer now.
+    buttons: Option<ButtonsKey>,
+    button_at: Option<[Rect; 2]>,
+    live: bool,
+    /// How the owner wants them: how each shows (the pointer over or
+    /// pressing it), and whether they may take the pointer (not while the
+    /// engine moves the real mouse).
+    button_look: [draw::Press; 2],
+    allow: bool,
 }
 
 /// Scale an image's (premultiplied) pixels by `a`.
@@ -1179,7 +1266,8 @@ impl Painter {
 
     /// Hide everything this painter shows (its agent left).
     pub fn clear(&mut self, s: &mut dyn Surface) {
-        for p in Part::ALL {
+        self.set_buttons([draw::Press::Rest; 2], false, s);
+        for p in Part::AGENT {
             s.hide(self.layer(p));
         }
         self.border = None;
@@ -1187,6 +1275,28 @@ impl Painter {
         self.cursor_img = None;
         self.cursor_pos = None;
         self.drag = None;
+        self.buttons = None;
+        self.button_at = None;
+    }
+
+    /// How the label's buttons show (`look`: stop, settings), and whether
+    /// they may take the pointer: when not, they let it through from now
+    /// on, not from the next paint (the engine is about to click).
+    pub fn set_buttons(&mut self, look: [draw::Press; 2], allow: bool, s: &mut dyn Surface) {
+        self.button_look = look;
+        self.allow = allow;
+        if self.live && !allow {
+            for p in [Part::Stop, Part::Gear] {
+                s.set_live(self.layer(p), false);
+            }
+            self.live = false;
+        }
+    }
+
+    /// Where the label's buttons are (screen units: stop, settings), while
+    /// they are shown.
+    pub fn buttons(&self) -> Option<[Rect; 2]> {
+        self.button_at
     }
 
     pub fn paint(
@@ -1355,9 +1465,15 @@ impl Painter {
                 }
                 let (lw, lh) = self.label_size;
                 let (cx, top, inside) = place;
-                let x = (cx - lw / 2.0)
-                    .min(screen.x + screen.width - lw)
-                    .max(screen.x);
+                // With its buttons, a round one as tall as the label on
+                // each side, the whole row is centred and kept on screen.
+                let with_buttons = scene.buttons && s.pointer_input();
+                let gap = f64::from(5.0 * label_scale / ppu);
+                let side = if with_buttons { lh + gap } else { 0.0 };
+                let x = (cx - lw / 2.0 - side)
+                    .min(screen.x + screen.width - lw - 2.0 * side)
+                    .max(screen.x)
+                    + side;
                 let above = top - lh - 4.0;
                 // An agent's label stays in its part of the screen.
                 let fits = above >= screen.y && (self.area.is_none() || above >= main.y);
@@ -1372,11 +1488,26 @@ impl Painter {
                     }
                 }
                 self.label = Some((key.0, key.1, key.2, pos.0, pos.1, sk));
+                if with_buttons {
+                    // Stop where the label starts (its dot's side: the
+                    // right for right-to-left text), settings at its end.
+                    let (start, end) = (x - gap - lh, x + lw + gap);
+                    let (stop_x, gear_x) = if super::text::is_rtl(text) {
+                        (end, start)
+                    } else {
+                        (start, end)
+                    };
+                    let look = (*color, alpha, label_scale, lh * f64::from(ppu));
+                    self.paint_buttons(look, [(stop_x, y), (gear_x, y)], lh, s);
+                } else {
+                    self.hide_buttons(s);
+                }
             }
             _ => {
                 if self.label.take().is_some() {
                     s.hide(self.layer(Part::Label));
                 }
+                self.hide_buttons(s);
             }
         }
 
@@ -1473,6 +1604,67 @@ impl Painter {
         }
     }
 
+    /// The label's buttons, `size` screen units across, at `at` (stop,
+    /// settings), in the label's colour, opacity, scale and size (px).
+    fn paint_buttons(
+        &mut self,
+        (color, alpha, scale, px): (Color, f32, f32, f64),
+        at: [(f64, f64); 2],
+        size: f64,
+        s: &mut dyn Surface,
+    ) {
+        let pos = at.map(|(x, y)| (x.round() as i64, y.round() as i64));
+        let key = (
+            color_key(color),
+            (alpha * 48.0) as u8,
+            (scale * 100.0).round() as u32,
+            px.round() as u32,
+            self.button_look,
+            pos,
+        );
+        let parts = [
+            (Part::Stop, draw::Button::Stop),
+            (Part::Gear, draw::Button::Settings),
+        ];
+        match &self.buttons {
+            Some(k) if (k.0, k.1, k.2, k.3, k.4) == (key.0, key.1, key.2, key.3, key.4) => {
+                if k.5 != key.5 {
+                    for ((part, _), (x, y)) in parts.iter().zip(at) {
+                        s.move_to(self.layer(*part), x, y);
+                    }
+                }
+            }
+            _ => {
+                for (i, ((part, which), (x, y))) in parts.iter().zip(at).enumerate() {
+                    let look = self.button_look[i];
+                    let img = draw::button(*which, px as f32, scale, color, look);
+                    s.show(self.layer(*part), &faded(img, alpha), x, y);
+                }
+            }
+        }
+        self.buttons = Some(key);
+        self.button_at = Some(at.map(|(x, y)| Rect::new(x, y, size, size)));
+        if self.live != self.allow {
+            for (part, _) in parts {
+                s.set_live(self.layer(part), self.allow);
+            }
+            self.live = self.allow;
+        }
+    }
+
+    fn hide_buttons(&mut self, s: &mut dyn Surface) {
+        if self.buttons.take().is_some() {
+            for p in [Part::Stop, Part::Gear] {
+                if self.live {
+                    s.set_live(self.layer(p), false);
+                }
+                s.hide(self.layer(p));
+            }
+            self.live = false;
+        }
+        self.button_at = None;
+    }
+
     /// Draw everything again on the next paint (e.g. after new settings).
     /// What is on screen stays until then rather than being hidden first:
     /// hiding and showing again in one go can flicker, and replays a
@@ -1485,6 +1677,10 @@ impl Painter {
         }
         if self.label.is_some() {
             self.label = Some((String::new(), [0; 4], 0, i64::MIN, i64::MIN, 0));
+        }
+        if self.buttons.is_some() {
+            let nowhere = [(i64::MIN, i64::MIN); 2];
+            self.buttons = Some(([0; 4], 0, 0, 0, [draw::Press::Rest; 2], nowhere));
         }
         if self.cursor_img.is_some() {
             self.cursor_img = Some((
@@ -1646,6 +1842,10 @@ pub fn run(args: &[String]) -> i32 {
     let mut font_path = String::new();
     let mut painter = Painter::default();
     let mut hidden = false;
+    // The label's buttons, and whether the engine moves the real mouse
+    // (they let its input through meanwhile).
+    let mut controls = Controls::default();
+    let mut mouse = false;
     // The keys as registered, and whether the system took them.
     let mut stop_key: Option<(String, bool)> = None;
     let mut settings_now: Option<(String, bool)> = None;
@@ -1660,7 +1860,7 @@ pub fn run(args: &[String]) -> i32 {
 
     loop {
         let now = Instant::now();
-        let wait = if machine.animating(now) {
+        let wait = if machine.animating(now) || controls.busy() {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -1710,7 +1910,22 @@ pub fn run(args: &[String]) -> i32 {
                     }
                     hidden = false;
                 }
+                // The engine moves the real mouse: the buttons let it
+                // through from now on (said once they do), and take clicks
+                // again when it is done (or its call ended).
+                Cmd::Mouse { on, id } => {
+                    mouse = on;
+                    controls.block(on, Some(surface.as_mut()));
+                    painter.set_buttons(controls.look(0), !on, surface.as_mut());
+                    if let Some(id) = id {
+                        reply(&Reply::Mouse { id });
+                    }
+                }
                 mut other => {
+                    if matches!(other, Cmd::End { .. }) && mouse {
+                        mouse = false;
+                        controls.block(false, Some(surface.as_mut()));
+                    }
                     if let Cmd::Config {
                         config,
                         hotkey,
@@ -1776,6 +1991,29 @@ pub fn run(args: &[String]) -> i32 {
                         reply(&Reply::Stop { on });
                     }
                 }
+                SurfaceEvent::Pointer(p) => {
+                    let buttons: Vec<_> = painter.buttons().map(|b| (0, b)).into_iter().collect();
+                    let Some(action) = controls.pointer(p, &buttons, Instant::now()) else {
+                        continue;
+                    };
+                    if quitting.is_some() {
+                        continue;
+                    }
+                    // One agent: the stop key's stop (a click never lets
+                    // it go on, the list's row does), or the settings key's.
+                    let on = match action {
+                        Action::Settings => {
+                            reply(&Reply::Settings);
+                            continue;
+                        }
+                        Action::StopAll | Action::Stop(_) => true,
+                        Action::ContinueAll | Action::Continue(_) => false,
+                    };
+                    if on != machine.stopped() {
+                        machine.apply(Cmd::Stopped { on }, Instant::now());
+                        reply(&Reply::Stop { on });
+                    }
+                }
             }
         }
         if let Some(pid) = parent
@@ -1791,7 +2029,37 @@ pub fn run(args: &[String]) -> i32 {
         let now = Instant::now();
         machine.tick(now);
         let scene = machine.scene(now);
+        painter.set_buttons(controls.look(0), !mouse, surface.as_mut());
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
+        let cfg = machine.config();
+        let buttons: Vec<_> = painter.buttons().map(|b| (0, b)).into_iter().collect();
+        let rows = [Row {
+            agent: Some(0),
+            look: draw::MenuRow {
+                title: match cfg.cursor_tag.trim() {
+                    "" => "Zero".into(),
+                    tag => tag.to_string(),
+                },
+                detail: machine.doing().into(),
+                color: machine.color_now(now),
+                stopped: machine.stopped(),
+            },
+        }];
+        let keys = (stop_key.as_ref(), settings_now.as_ref());
+        let texts = Texts::new(
+            keys.0.map_or("", |k| k.0.as_str()),
+            keys.1.map_or("", |k| k.0.as_str()),
+            false,
+        );
+        controls.paint(
+            &buttons,
+            &rows,
+            &texts,
+            cfg.scale,
+            &fonts,
+            surface.as_mut(),
+            now,
+        );
         // Said once the frame with the cursor there is painted.
         if let Some(id) = machine.arrived(now) {
             reply(&Reply::Arrived { id });
@@ -2478,6 +2746,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         calls: Vec<String>,
+        /// Its layers can take the pointer (the label's buttons show).
+        pointing: bool,
     }
 
     impl Surface for Fake {
@@ -2507,10 +2777,148 @@ mod tests {
             self.calls.push(format!("hide {layer:?}"));
         }
         fn set_hidden(&mut self, _: bool) {}
+        fn pointer_input(&self) -> bool {
+            self.pointing
+        }
+        fn set_live(&mut self, layer: Layer, live: bool) {
+            self.calls.push(format!("live {layer:?} {live}"));
+        }
         fn pump(&mut self) -> Vec<SurfaceEvent> {
             Vec::new()
         }
         fn close(&mut self) {}
+    }
+
+    /// Where a layer was last shown: x, y, width, height.
+    fn shown(calls: &[String], part: &str) -> Option<(f64, f64, f64, f64)> {
+        let c = calls
+            .iter()
+            .rev()
+            .find(|c| c.starts_with(&format!("show {part} ")))?;
+        let (size, at) = c.rsplit_once(" @")?;
+        let (w, h) = size.rsplit_once(' ')?.1.split_once('x')?;
+        let (x, y) = at.split_once(',')?;
+        Some((
+            x.parse().ok()?,
+            y.parse().ok()?,
+            w.parse().ok()?,
+            h.parse().ok()?,
+        ))
+    }
+
+    #[test]
+    fn the_labels_buttons_sit_beside_it_and_only_they_take_the_pointer() {
+        let t0 = Instant::now();
+        let fonts = Fonts::default();
+        let working = |cfg: OverlayConfig| {
+            let mut m = Machine::new(cfg, t0);
+            m.apply(Cmd::Begin, t0);
+            m
+        };
+        let m = working(cfg());
+        // A display that can't take the pointer, or the buttons switched
+        // off: the label where it always was, and nothing takes the pointer.
+        let mut plain = Fake::default();
+        Painter::default().paint(&m.scene(t0), m.config(), &fonts, &mut plain);
+        let label = shown(&plain.calls, "Label").unwrap();
+        let off = working(OverlayConfig {
+            show_buttons: false,
+            ..cfg()
+        });
+        let mut s = Fake {
+            pointing: true,
+            ..Fake::default()
+        };
+        Painter::default().paint(&off.scene(t0), off.config(), &fonts, &mut s);
+        for calls in [&plain.calls, &s.calls] {
+            assert_eq!(shown(calls, "Label"), Some(label));
+            assert!(
+                !calls
+                    .iter()
+                    .any(|c| c.contains("Stop") || c.contains("Gear") || c.starts_with("live")),
+                "{calls:?}"
+            );
+        }
+
+        // With them: a round button as tall as the label on each side,
+        // stop where it starts, the row centred; only the buttons take
+        // the pointer.
+        let mut s = Fake {
+            pointing: true,
+            ..Fake::default()
+        };
+        let mut p = Painter::default();
+        p.set_buttons([draw::Press::Rest; 2], true, &mut s);
+        p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
+        let l = shown(&s.calls, "Label").unwrap();
+        let [stop, gear] = p.buttons().unwrap();
+        assert_eq!((stop.width, stop.height), (l.3, l.3));
+        assert!(stop.width >= 24.0);
+        assert_eq!(stop.y, l.1);
+        assert!(
+            stop.x + stop.width < l.0 && gear.x > l.0 + l.2,
+            "{stop:?} {gear:?} {l:?}"
+        );
+        let middle = (stop.x + gear.x + gear.width) / 2.0;
+        assert!((middle - (label.0 + label.2 / 2.0)).abs() <= 1.0);
+        assert_eq!(
+            shown(&s.calls, "Stop").map(|b| (b.0, b.1)),
+            Some((stop.x, stop.y))
+        );
+        for want in ["live Stop true", "live Gear true"] {
+            assert!(s.calls.contains(&want.to_string()), "{:?}", s.calls);
+        }
+        assert!(!s.calls.iter().any(|c| c.starts_with("live Label")));
+
+        // The engine is about to click: they let it through at once.
+        let n = s.calls.len();
+        p.set_buttons([draw::Press::Rest; 2], false, &mut s);
+        assert_eq!(s.calls[n..], ["live Stop false", "live Gear false"]);
+        // Under the pointer again: lit, and taking it.
+        let n = s.calls.len();
+        p.set_buttons([draw::Press::Hover, draw::Press::Rest], true, &mut s);
+        p.paint(&m.scene(t0), m.config(), &fonts, &mut s);
+        let again = &s.calls[n..];
+        assert!(
+            again.iter().any(|c| c.starts_with("show Stop")),
+            "{again:?}"
+        );
+        assert!(again.contains(&"live Stop true".to_string()));
+        // The label goes: they go too, letting the pointer through.
+        let n = s.calls.len();
+        let mut gone = m.scene(t0);
+        gone.label = None;
+        p.paint(&gone, m.config(), &fonts, &mut s);
+        let after = &s.calls[n..];
+        for want in ["live Stop false", "hide Stop", "hide Gear"] {
+            assert!(after.contains(&want.to_string()), "{after:?}");
+        }
+        assert!(p.buttons().is_none());
+    }
+
+    #[test]
+    fn the_buttons_mirror_for_right_to_left_labels() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(
+            OverlayConfig {
+                label_working: "זירו משתמש במחשב".into(),
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        let mut s = Fake {
+            pointing: true,
+            ..Fake::default()
+        };
+        let mut p = Painter::default();
+        p.paint(&m.scene(t0), m.config(), &Fonts::default(), &mut s);
+        let l = shown(&s.calls, "Label").unwrap();
+        let [stop, gear] = p.buttons().unwrap();
+        assert!(
+            stop.x > l.0 + l.2 && gear.x + gear.width < l.0,
+            "{stop:?} {gear:?} {l:?}"
+        );
     }
 
     #[test]

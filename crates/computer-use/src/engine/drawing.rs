@@ -275,7 +275,7 @@ impl<B: Backend> Engine<B> {
                 plan.points()
             )));
         }
-        let target = self.input_target(&app)?;
+        let target = self.mouse_target(&app)?;
         // Paced to `speed`, and stoppable between any two moves: the stop
         // key ends the drawing (the backend lets go of the button).
         let (stop, cancel) = (self.stop.clone(), self.cancel.clone());

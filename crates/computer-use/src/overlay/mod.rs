@@ -15,6 +15,7 @@
 //!   (excluded from capture on Windows and macOS, hidden for the moment of
 //!   capture on X11).
 
+pub mod controls;
 pub mod draw;
 pub mod helper;
 pub mod hub;
@@ -139,6 +140,15 @@ pub enum Cmd {
     /// An explicit status from the host agent.
     Status {
         state: Status,
+    },
+    /// The engine moves and clicks the real mouse from now (on) until it
+    /// says it is done (off): the overlay's buttons let that input through
+    /// meanwhile, and take no click. With an `id`, answered with
+    /// [`Reply::Mouse`] once they do.
+    Mouse {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
     },
     /// Hide everything for a screenshot; answered with [`Reply::Hidden`].
     Hide {
@@ -333,6 +343,11 @@ pub enum Reply {
     Arrived {
         id: u64,
     },
+    /// The overlay's buttons let the engine's mouse through now
+    /// ([`Cmd::Mouse`] `id`).
+    Mouse {
+        id: u64,
+    },
     // -- from the hub only --
     /// Joined: this agent's number.
     Welcome {
@@ -422,6 +437,11 @@ pub struct Overlay {
     /// is first asked.
     arrivals: Option<bool>,
     next_id: u64,
+    /// The engine said it moves the real mouse ([`Cmd::Mouse`]), and how
+    /// many times in a row the helper didn't answer that (one from before
+    /// the buttons never does: after a few, it isn't waited for).
+    mouse: bool,
+    mouse_unanswered: u8,
     /// What the hub said, when this overlay is the hub's.
     hub: Option<Arc<HubLink>>,
 }
@@ -657,7 +677,7 @@ impl Overlay {
                         Reply::Stop { on } => {
                             flag.store(on, Ordering::SeqCst);
                             if on {
-                                log::warn!("stopped by the user (stop key)");
+                                log::warn!("stopped by the user (stop key or stop button)");
                             } else {
                                 log::info!("the user let the agent continue");
                             }
@@ -721,6 +741,8 @@ impl Overlay {
             excluded: false,
             arrivals: None,
             next_id: 0,
+            mouse: false,
+            mouse_unanswered: 0,
             hub,
         };
         o.configure(config, keys);
@@ -846,6 +868,40 @@ impl Overlay {
             .is_some();
         self.arrivals = Some(arrived);
         arrived
+    }
+
+    /// The engine is about to move and click the real mouse (`on`), or is
+    /// done with it. The overlay's buttons then let its input through to
+    /// the app below, and never take it for the user's: before the first
+    /// move this waits (briefly) until the helper says they do.
+    pub fn mouse(&mut self, on: bool) {
+        if on == self.mouse || !self.alive() {
+            return;
+        }
+        self.mouse = on;
+        if !on {
+            self.send(&Cmd::Mouse { on, id: None });
+            return;
+        }
+        self.drain();
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&Cmd::Mouse { on, id: Some(id) });
+        // A helper (or hub) from before the buttons never answers.
+        if self.mouse_unanswered >= 3 {
+            return;
+        }
+        let answered = self
+            .wait_for(
+                Duration::from_millis(300),
+                |r| matches!(r, Reply::Mouse { id: i } if *i == id),
+            )
+            .is_some();
+        self.mouse_unanswered = if answered {
+            0
+        } else {
+            self.mouse_unanswered + 1
+        };
     }
 
     /// What the hub said, when this overlay is the hub's.
@@ -1142,6 +1198,14 @@ mod tests {
                 text: "héllo".into(),
             },
             Cmd::Scroll { dx: 0, dy: -3 },
+            Cmd::Mouse {
+                on: true,
+                id: Some(4),
+            },
+            Cmd::Mouse {
+                on: false,
+                id: None,
+            },
             Cmd::Config {
                 config: Box::default(),
                 hotkey: "ctrl+alt+escape".into(),

@@ -311,6 +311,15 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// The engine is about to move and click the real mouse (`on`), or is
+    /// done with it: the overlay's buttons let that input through to the
+    /// app below meanwhile, so they never take it for the user's.
+    pub(super) fn overlay_mouse(&mut self, on: bool) {
+        if let Some(o) = self.overlay.as_mut() {
+            o.mouse(on);
+        }
+    }
+
     /// Start the agent cursor gliding to a point without waiting: it moves
     /// along with an action under way (a drag).
     pub(super) fn overlay_glide(&mut self, p: Point) {

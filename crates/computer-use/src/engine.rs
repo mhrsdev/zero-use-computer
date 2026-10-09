@@ -1261,6 +1261,14 @@ impl<B: Backend> Engine<B> {
         Ok(self.target_of(app))
     }
 
+    /// [`Engine::input_target`] for the real mouse: the overlay's buttons
+    /// let the engine's moves and clicks through to the app from now until
+    /// the action ends, and never take them for the user's.
+    fn mouse_target(&mut self, app: &AppInfo) -> Result<InputTarget> {
+        self.overlay_mouse(true);
+        self.input_target(app)
+    }
+
     fn bring_to_front(&mut self, app: &AppInfo) -> Result<()> {
         let front = |e: &mut Self| -> Result<Option<AppInfo>> {
             Ok(e.find_apps()?.into_iter().find(|a| a.frontmost))
@@ -1617,6 +1625,7 @@ impl<B: Backend> Engine<B> {
         if mutating {
             self.last_input = Some((self.clock)());
             self.end_turn(true);
+            self.overlay_mouse(false);
         }
         let out = out?;
         if let Some(query) = pixels_of_app

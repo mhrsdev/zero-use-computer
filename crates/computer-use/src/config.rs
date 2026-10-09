@@ -528,6 +528,10 @@ pub struct OverlayConfig {
     pub show_border: bool,
     pub show_cursor: bool,
     pub show_label: bool,
+    /// Two buttons beside the label: stop (all agents, or one picked from
+    /// the list it shows under the pointer) and settings (opens the panel).
+    /// Everything else stays click-through.
+    pub show_buttons: bool,
     /// A ripple where the agent clicks.
     pub click_effect: bool,
     /// Where the border glows: around the whole `screen` or the `window`
@@ -620,6 +624,7 @@ impl Default for OverlayConfig {
             show_border: true,
             show_cursor: true,
             show_label: true,
+            show_buttons: true,
             click_effect: true,
             border_target: BorderTarget::Screen,
             border_width: 3,

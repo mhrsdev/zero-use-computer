@@ -205,6 +205,7 @@ enabled = true
 show_border = true
 show_cursor = true
 show_label = true
+show_buttons = true          # stop and settings buttons beside the label (the rest stays click-through)
 click_effect = true          # a ripple where the agent clicks
 border_target = "screen"     # glow around the whole "screen" or the "window" worked on
 border_width = 3             # bright core line

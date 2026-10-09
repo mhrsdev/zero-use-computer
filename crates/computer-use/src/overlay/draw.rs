@@ -788,18 +788,7 @@ pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap
     let w = (pad + dot + gap + t.width + pad).ceil();
     let mut pm = canvas(w, h);
 
-    let dark_accent = luminance(accent) < 0.15;
-    let (bg, fg) = if dark_accent {
-        (
-            Color::from_rgba8(248, 248, 250, 240),
-            Color::from_rgba8(10, 10, 12, 255),
-        )
-    } else {
-        (
-            Color::from_rgba8(22, 22, 28, 232),
-            Color::from_rgba8(255, 255, 255, 255),
-        )
-    };
+    let (bg, fg) = pill_colors(accent);
     let r = h / 2.0;
     let id = Transform::identity();
     if let Some(body) = rounded_rect(
@@ -831,6 +820,289 @@ pub fn label(fonts: &Fonts, text_str: &str, scale: f32, accent: Color) -> Pixmap
             None,
         );
     }
+    pm
+}
+
+/// The label's background and text colours for a state colour: a dark
+/// pill, or a light one for a dark state colour, so it stands out.
+fn pill_colors(accent: Color) -> (Color, Color) {
+    if luminance(accent) < 0.15 {
+        (
+            Color::from_rgba8(248, 248, 250, 240),
+            Color::from_rgba8(10, 10, 12, 255),
+        )
+    } else {
+        (
+            Color::from_rgba8(22, 22, 28, 232),
+            Color::from_rgba8(255, 255, 255, 255),
+        )
+    }
+}
+
+/// Mix `a` toward `b` by `t` (0–1).
+fn blend(a: Color, b: Color, t: f32) -> Color {
+    let m = |x: f32, y: f32| x + (y - x) * t;
+    Color::from_rgba(
+        m(a.red(), b.red()),
+        m(a.green(), b.green()),
+        m(a.blue(), b.blue()),
+        m(a.alpha(), b.alpha()),
+    )
+    .unwrap_or(b)
+}
+
+/// One of the two buttons beside the label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Button {
+    /// Stops every agent; under the pointer, it lists them to stop one.
+    Stop,
+    /// Opens the settings panel.
+    Settings,
+}
+
+/// How a button (or a row of the stop button's list) shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Press {
+    #[default]
+    Rest,
+    /// The pointer is over it.
+    Hover,
+    /// Pressed, not let go yet.
+    Down,
+}
+
+/// A rounded square: the stop sign.
+fn stop_sign(cx: f32, cy: f32, side: f32) -> Option<tiny_skia::Path> {
+    rounded_rect(cx - side / 2.0, cy - side / 2.0, side, side, side * 0.2)
+}
+
+/// A triangle pointing right: carry on.
+fn play_sign(cx: f32, cy: f32, side: f32) -> Option<tiny_skia::Path> {
+    let mut pb = PathBuilder::new();
+    let (h, w) = (side, side * 0.9);
+    pb.move_to(cx - w * 0.4, cy - h / 2.0);
+    pb.line_to(cx + w * 0.6, cy);
+    pb.line_to(cx - w * 0.4, cy + h / 2.0);
+    pb.close();
+    pb.finish()
+}
+
+/// A gear of radius `r`: eight teeth around a hole (fill it even-odd).
+fn gear(cx: f32, cy: f32, r: f32) -> Option<tiny_skia::Path> {
+    const TEETH: usize = 8;
+    let step = std::f32::consts::TAU / TEETH as f32;
+    let (outer, root) = (r, r * 0.72);
+    let mut pb = PathBuilder::new();
+    for k in 0..TEETH {
+        let a = k as f32 * step - std::f32::consts::FRAC_PI_2;
+        // Each tooth narrower at its tip than at its root.
+        for (i, (rad, off)) in [(root, -0.31), (outer, -0.17), (outer, 0.17), (root, 0.31)]
+            .into_iter()
+            .enumerate()
+        {
+            let t = a + off * step;
+            let (x, y) = (cx + rad * t.cos(), cy + rad * t.sin());
+            if k == 0 && i == 0 {
+                pb.move_to(x, y);
+            } else {
+                pb.line_to(x, y);
+            }
+        }
+    }
+    pb.close();
+    pb.push_circle(cx, cy, r * 0.34);
+    pb.finish()
+}
+
+/// A round button `size` px across, in the label's colours: a stop sign or
+/// a gear, lit up under the pointer. The whole square takes the pointer,
+/// not only the circle (where a platform hit-tests by opacity, its corners
+/// are as good as invisible, never quite transparent).
+pub fn button(which: Button, size: f32, scale: f32, accent: Color, press: Press) -> Pixmap {
+    let d = size.max(1.0).ceil();
+    let mut pm = canvas(d, d);
+    pm.fill(Color::from_rgba8(0, 0, 0, 1));
+    let (bg, fg) = pill_colors(accent);
+    let id = Transform::identity();
+    let c = d / 2.0;
+    let fill = match press {
+        Press::Rest => bg,
+        Press::Hover => blend(bg, accent, 0.35),
+        Press::Down => blend(bg, accent, 0.6),
+    };
+    if let Some(p) = PathBuilder::from_circle(c, c, c - 0.75 * scale) {
+        pm.fill_path(&p, &paint(fill), FillRule::Winding, id, None);
+        let ring = if press == Press::Rest { 1.5 } else { 2.0 };
+        pm.stroke_path(&p, &paint(accent), &stroke(ring * scale), id, None);
+    }
+    let icon = match which {
+        Button::Stop => stop_sign(c, c, d * 0.32),
+        Button::Settings => gear(c, c, d * 0.29),
+    };
+    if let Some(p) = icon {
+        pm.fill_path(&p, &paint(fg), FillRule::EvenOdd, id, None);
+    }
+    pm
+}
+
+/// A row of the stop button's list: an agent (or all of them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuRow {
+    /// "2 · codex", or "All agents".
+    pub title: String,
+    /// Said after it, dimmer: the app it works with, or what it does.
+    pub detail: String,
+    /// Its state colour, for the dot.
+    pub color: Color,
+    /// Stopped: the row lets it continue (else it stops it).
+    pub stopped: bool,
+}
+
+/// `text` laid out at `px`, cut short with "…" to fit `max` px.
+fn fitted(fonts: &Fonts, text: &str, px: f32, max: f32) -> text::TextPath {
+    let t = text::layout(fonts, text, px);
+    if t.width <= max || text.is_empty() {
+        return t;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let s: String = chars[..mid].iter().collect::<String>() + "…";
+        if text::layout(fonts, &s, px).width <= max {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let s: String = chars[..lo]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+        + "…";
+    text::layout(fonts, &s, px)
+}
+
+/// The list the stop button shows under the pointer: a `header` line
+/// (what the button itself does), then `rows`, each stopping (or letting
+/// continue) one agent, the one under the pointer lit (`hover`). The
+/// image, and each row's box in it (x, y, width, height px): rows are at
+/// least 24 px tall at scale 1.
+pub fn menu(
+    fonts: &Fonts,
+    header: &str,
+    rows: &[MenuRow],
+    scale: f32,
+    hover: Option<(usize, Press)>,
+) -> (Pixmap, Vec<[f32; 4]>) {
+    let s = scale;
+    let pad = 6.0 * s;
+    let row_h = 30.0 * s;
+    let (title_px, small_px) = (13.0 * s, 11.5 * s);
+    let (min_w, max_w) = (190.0 * s, 440.0 * s);
+    // Inside a row: the dot, the text, and the stop (or go on) sign.
+    let (dot_x, text_x, sign_w) = (12.0 * s, 24.0 * s, 34.0 * s);
+    let room = max_w - 2.0 * pad - text_x - sign_w;
+    let head = (!header.is_empty()).then(|| fitted(fonts, header, small_px, max_w - 4.0 * pad));
+    let laid: Vec<(text::TextPath, Option<text::TextPath>)> = rows
+        .iter()
+        .map(|r| {
+            let title = fitted(fonts, &r.title, title_px, room);
+            let left = room - title.width - 8.0 * s;
+            let detail = (!r.detail.is_empty() && left > 30.0 * s)
+                .then(|| fitted(fonts, &r.detail, small_px, left));
+            (title, detail)
+        })
+        .collect();
+    let widest = laid
+        .iter()
+        .map(|(t, d)| t.width + d.as_ref().map_or(0.0, |d| 8.0 * s + d.width))
+        .fold(0.0f32, f32::max);
+    let mut w = (2.0 * pad + text_x + widest + sign_w).max(min_w);
+    if let Some(h) = &head {
+        w = w.max(h.width + 4.0 * pad);
+    }
+    let w = w.min(max_w).ceil();
+    let head_h = head.as_ref().map_or(0.0, |h| h.height + 9.0 * s);
+    let h = (pad + head_h + row_h * rows.len() as f32 + pad).ceil();
+    let mut pm = canvas(w, h);
+    let id = Transform::identity();
+    let white = |a: u8| Color::from_rgba8(255, 255, 255, a);
+    if let Some(body) = rounded_rect(0.75 * s, 0.75 * s, w - 1.5 * s, h - 1.5 * s, 9.0 * s) {
+        let bg = Color::from_rgba8(24, 24, 30, 242);
+        pm.fill_path(&body, &paint(bg), FillRule::Winding, id, None);
+        pm.stroke_path(&body, &paint(white(46)), &stroke(1.0 * s), id, None);
+    }
+    let mut y = pad;
+    if let Some(t) = &head {
+        ink_text(&mut pm, t, (2.0 * pad, y + 3.0 * s), white(165));
+        y += head_h;
+        if let Some(line) = SkRect::from_xywh(pad, y - 3.0 * s, w - 2.0 * pad, 1.0 * s.max(1.0)) {
+            pm.fill_rect(line, &paint(white(30)), id, None);
+        }
+    }
+    let mut boxes = Vec::with_capacity(rows.len());
+    for (i, (row, (title, detail))) in rows.iter().zip(&laid).enumerate() {
+        let r = [pad, y, w - 2.0 * pad, row_h];
+        let press = hover.filter(|(h, _)| *h == i).map(|(_, p)| p);
+        if let Some(p) = press
+            && let Some(lit) = rounded_rect(r[0], r[1], r[2], r[3], 6.0 * s)
+        {
+            let a = if p == Press::Down { 52 } else { 30 };
+            pm.fill_path(&lit, &paint(white(a)), FillRule::Winding, id, None);
+        }
+        let cy = y + row_h / 2.0;
+        if let Some(dot) = PathBuilder::from_circle(pad + dot_x, cy, 4.0 * s) {
+            pm.fill_path(&dot, &paint(row.color), FillRule::Winding, id, None);
+        }
+        let tx = pad + text_x;
+        ink_text(&mut pm, title, (tx, cy - title.height / 2.0), white(255));
+        if let Some(d) = detail {
+            let dx = tx + title.width + 8.0 * s;
+            ink_text(&mut pm, d, (dx, cy - d.height / 2.0), white(150));
+        }
+        // What a click does: stop (red when lit), or go on (green).
+        let sx = w - pad - sign_w / 2.0;
+        let (lit, sign) = if row.stopped {
+            (
+                Color::from_rgba8(46, 160, 67, 255),
+                play_sign(sx, cy, 8.5 * s),
+            )
+        } else {
+            (
+                Color::from_rgba8(229, 57, 53, 255),
+                stop_sign(sx, cy, 8.0 * s),
+            )
+        };
+        if let Some(c) = PathBuilder::from_circle(sx, cy, 10.0 * s) {
+            let fill = if press.is_some() { lit } else { white(28) };
+            pm.fill_path(&c, &paint(fill), FillRule::Winding, id, None);
+        }
+        if let Some(p) = sign {
+            pm.fill_path(&p, &paint(white(235)), FillRule::Winding, id, None);
+        }
+        boxes.push(r);
+        y += row_h;
+    }
+    (pm, boxes)
+}
+
+/// A small dark tag with `text`: what a button does.
+pub fn tip(fonts: &Fonts, text_str: &str, scale: f32) -> Pixmap {
+    let t = text::layout(fonts, text_str, 11.5 * scale);
+    let pad = 8.0 * scale;
+    let h = (t.height + 8.0 * scale).ceil();
+    let w = (t.width + 2.0 * pad).ceil();
+    let mut pm = canvas(w, h);
+    if let Some(body) = rounded_rect(0.5 * scale, 0.5 * scale, w - scale, h - scale, 6.0 * scale) {
+        let id = Transform::identity();
+        let bg = Color::from_rgba8(24, 24, 30, 235);
+        pm.fill_path(&body, &paint(bg), FillRule::Winding, id, None);
+        let edge = Color::from_rgba8(255, 255, 255, 46);
+        pm.stroke_path(&body, &paint(edge), &stroke(1.0 * scale), id, None);
+    }
+    ink_text(&mut pm, &t, (pad, (h - t.height) / 2.0), Color::WHITE);
     pm
 }
 

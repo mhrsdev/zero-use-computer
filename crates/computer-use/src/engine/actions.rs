@@ -67,7 +67,7 @@ impl<B: Backend> Engine<B> {
                             && let Some(p) = point
                         {
                             // Nothing happened: click it with the mouse.
-                            let target = self.input_target(&app)?;
+                            let target = self.mouse_target(&app)?;
                             self.backend.click(&target, p, MouseButton::Left, 1)?;
                             self.settle_on(&app);
                             let mut msg = format!(
@@ -104,7 +104,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app)?;
+        let target = self.mouse_target(&app)?;
         self.backend.click(&target, point, args.button, count)?;
         self.settle_on(&app);
         let verb = match (args.button, count) {
@@ -283,7 +283,7 @@ impl<B: Backend> Engine<B> {
                 if self.store.config.verify.retry
                     && let Some(p) = point
                 {
-                    let target = self.input_target(&app)?;
+                    let target = self.mouse_target(&app)?;
                     self.backend
                         .scroll_wheel(&target, p, ux * lines, uy * lines)?;
                     self.settle_on(&app);
@@ -303,7 +303,7 @@ impl<B: Backend> Engine<B> {
             Some(p) => p,
             None => self.anchor_point(&app, &anchor)?,
         };
-        let target = self.input_target(&app)?;
+        let target = self.mouse_target(&app)?;
         self.backend
             .scroll_wheel(&target, point, ux * lines, uy * lines)?;
         self.settle_on(&app);
@@ -350,7 +350,7 @@ impl<B: Backend> Engine<B> {
         self.overlay_point(p0, true);
         self.overlay_glide(p1);
         self.overlay_dragging();
-        let target = self.input_target(&app)?;
+        let target = self.mouse_target(&app)?;
         self.backend.drag(&target, p0, p1)?;
         self.settle_on(&app);
         let mut msg = format!(
@@ -377,7 +377,7 @@ impl<B: Backend> Engine<B> {
         }
         let anchor = self.anchor(app, None, x, y, "the pointer position")?;
         let at = self.anchor_point(app, &anchor)?;
-        let target = self.input_target(app)?;
+        let target = self.mouse_target(app)?;
         self.overlay_point(at, false);
         let back = self.backend.move_pointer(&target, at)?;
         // Let the app see where the pointer is before the keys arrive.
@@ -545,7 +545,7 @@ impl<B: Backend> Engine<B> {
             && (ocr || self.store.config.verify.retry && node.states.editable)
             && let Some(p) = node.bounds.filter(|b| !b.is_empty()).map(|b| b.center())
         {
-            let target = self.input_target(app)?;
+            let target = self.mouse_target(app)?;
             self.backend.click(&target, p, MouseButton::Left, 1)?;
         }
         Ok(())
