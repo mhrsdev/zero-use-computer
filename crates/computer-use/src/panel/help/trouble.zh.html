@@ -1,17 +1,17 @@
-<h3>Start with doctor</h3>
-<p><code>computer-use-mcp doctor</code> says what is missing. It checks the accessibility bus, the permissions, the stop key and this panel's key, and lists the apps whose tree said least.</p>
-<h3>By system</h3>
+<h3>先运行 doctor</h3>
+<p><code>computer-use-mcp doctor</code> 会告诉你缺少什么。它会检查无障碍总线、权限、停止键和此面板的快捷键，并列出无障碍树信息最少的应用。</p>
+<h3>按系统</h3>
 <ul>
-<li><b>macOS.</b> Give Accessibility and Screen Recording to the app that <em>starts</em> the server (Terminal, Claude Desktop, Codex, your editor), then start that app again. The stop key is <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd>, not Cmd+Option+Esc, which is Force Quit.</li>
-<li><b>Windows.</b> Nothing to grant. An app running as administrator can't be controlled from a normal process.</li>
-<li><b>Linux.</b> An X11 or XWayland session with the AT-SPI accessibility bus; native Wayland works on Hyprland, sway and other wlroots compositors. Without the bus the server still starts, but there is no tree.</li>
+<li><b>macOS。</b>为<em>启动</em>服务器的应用（终端、Claude Desktop、Codex、你的编辑器）授予“辅助功能”和“屏幕录制”权限，然后重新启动该应用。停止键是 <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd>，而不是 Cmd+Option+Esc，后者是“强制退出”。</li>
+<li><b>Windows。</b>无需授权。以管理员身份运行的应用无法被普通进程控制。</li>
+<li><b>Linux。</b>需要带有 AT-SPI 无障碍总线的 X11 或 XWayland 会话；原生 Wayland 可在 Hyprland、sway 及其他 wlroots 合成器上使用。没有总线时服务器仍能启动，但没有无障碍树。</li>
 </ul>
-<h3>Common things</h3>
+<h3>常见问题</h3>
 <ul>
-<li><b>A key does nothing.</b> Another program may hold it. <a href="#your-control">Your control</a> lets you pick another; <code>doctor</code> says which was refused.</li>
-<li><b>The panel opens on another port.</b> Something else uses <code>panel.port</code>. Any free port is used instead, and <code>computer-use-mcp settings</code> prints the address.</li>
-<li><b>Claude Code says the name is reserved.</b> Newer versions keep <code>computer-use</code> for themselves. Connect adds the program as <code>zero-use-computer</code> instead.</li>
-<li><b>The agent can't read an app.</b> See <a href="#apps-report">Apps report</a>: an app with a high share of looks with little in the tree needs pictures. Try the Best quality profile for it, or <code>ocr.mode = always</code>.</li>
-<li><b>Updates never arrive.</b> They need <code>curl</code>. <a href="#updates">Updates</a> shows when it last looked and what it said; <b>Check now</b> asks again and shows the error.</li>
-<li><b>A change I made was undone.</b> The settings file is the truth. If it has a mistake, the program serves the defaults and says why in its log; <a href="#settings-file">Settings file</a> checks it as you type.</li>
+<li><b>某个快捷键没有反应。</b>可能被其他程序占用。可在<a href="#your-control">由你掌控</a>中另选一个；<code>doctor</code> 会告诉你哪个被拒绝了。</li>
+<li><b>面板在另一个端口打开。</b>有其他程序占用了 <code>panel.port</code>。此时会改用任一空闲端口，<code>computer-use-mcp settings</code> 会输出地址。</li>
+<li><b>Claude Code 提示名称已被保留。</b>较新的版本将 <code>computer-use</code> 留给自己使用。“连接”会改用 <code>zero-use-computer</code> 这个名称添加本程序。</li>
+<li><b>智能体读不懂某个应用。</b>请看<a href="#apps-report">应用报告</a>：如果某个应用的查看中“树中信息少”占比很高，它就需要图片。可为它试用“最佳质量”配置方案，或设置 <code>ocr.mode = always</code>。</li>
+<li><b>始终收不到更新。</b>更新需要 <code>curl</code>。<a href="#updates">更新</a>页面会显示上次检查的时间和结果；<b>立即检查</b>会重新检查并显示错误。</li>
+<li><b>我做的更改被撤销了。</b>以设置文件为准。如果文件有错误，程序会使用默认值，并在日志中说明原因；<a href="#settings-file">设置文件</a>会在你输入时进行检查。</li>
 </ul>

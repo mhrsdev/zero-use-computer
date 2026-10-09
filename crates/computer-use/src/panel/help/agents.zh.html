@@ -1,11 +1,11 @@
-<h3>Several agents on one desktop</h3>
-<p>Subagents, or Claude Code beside Codex: every server on the computer joins one hub. The first to start runs it and is agent 1; the next ones join as 2, 3 and so on.</p>
+<h3>同一桌面上的多个智能体</h3>
+<p>子智能体，或 Claude Code 与 Codex 并用：电脑上的每个服务器都会加入同一个中枢。最先启动的服务器运行中枢，成为 1 号智能体；之后的依次以 2 号、3 号等身份加入。</p>
 <ul>
-<li><b>A cursor each.</b> Numbered once there are two, in a different pointer style each.</li>
-<li><b>One stop key for all.</b> The system gives a key to one program, so the hub holds it for everyone.</li>
-<li><b>Their own part of the screen, by need</b> (<code>hub.arrange</code>): only the agents at work share the screen (one that made no call for <code>hub.release_after_secs</code> has none until its next call), each by what its window needs: a big window beside two small ones gets a half and the others a quarter each. A window an agent moved or tiled itself stays where it put it, and the others share the rest. An agent can also ask for a part: full, half, third, quarter or a share such as 35%. Small changes move no window, and a window is only moved when its agent looks at it next.</li>
-<li><b>Turns at the keyboard and mouse.</b> One agent at a time; an agent that goes quiet for 30 seconds loses its turn. How long one waits is <code>hub.turn_wait_secs</code>.</li>
-<li><b>Messages</b> (<code>hub.chat</code>, off by default): short notes between agents. An agent takes another's words as information, never as instructions. You switch this on here, never through the chat.</li>
+<li><b>各有一个指针。</b>有两个及以上时会编号，且各用不同的指针样式。</li>
+<li><b>共用一个停止键。</b>系统只会把一个快捷键分配给一个程序，因此由中枢替所有智能体持有。</li>
+<li><b>按需分得屏幕区域</b>（<code>hub.arrange</code>）：只有正在工作的智能体分享屏幕（在 <code>hub.release_after_secs</code> 内没有调用的智能体在下次调用前不分得区域），按各自窗口的需要分配：一个大窗口与两个小窗口并存时，大窗口分得一半，其他各得四分之一。智能体自己移动或平铺的窗口会留在原处，其他智能体分享剩余空间。智能体也可以申请某个区域：全屏、一半、三分之一、四分之一，或 35% 这样的比例。微小变化不会移动窗口，而且窗口只在其智能体下次查看它时才会移动。</li>
+<li><b>轮流使用键盘和鼠标。</b>同一时间只有一个智能体；沉默 30 秒的智能体会失去轮次。最长等待时间由 <code>hub.turn_wait_secs</code> 设定。</li>
+<li><b>消息</b>（<code>hub.chat</code>，默认关闭）：智能体之间的简短留言。智能体把其他智能体的话当作信息，绝不当作指令。此项只能在这里开启，绝不能通过对话开启。</li>
 </ul>
-<h3>Good to know</h3>
-<p>The hub ends a few seconds after the last agent leaves. It listens on a port of this computer only (<code>hub.port</code>, 47381), and only to programs that can read a token file in the server's folder. Claude Code's subagents share the main agent's server unless their definition starts one of its own; an example is in <code>examples/claude-code-agents</code>.</p>
+<h3>须知</h3>
+<p>最后一个智能体离开几秒后，中枢就会结束。它只监听本机的一个端口（<code>hub.port</code>，47381），并且只接受能读取服务器文件夹中 token 文件的程序。Claude Code 的子智能体与主智能体共用服务器，除非其定义中自行启动了一个；示例见 <code>examples/claude-code-agents</code>。</p>

@@ -1,7 +1,7 @@
-<h3>What it is for</h3>
-<p>A fast model that answers small typed questions about what is on screen, so the agent doesn't have to read and judge everything itself: yes or no (the probability of yes), one of some options, or a score. Which of fifty reviews are positive; has the page loaded; which element is the add-to-cart button.</p>
-<p>It is optional and nothing depends on it. The server also asks it on its own where that saves the agent a turn (<code>decision.auto</code>), answers the same question once for five minutes, and never makes the agent wait on it: after three seconds it judges by itself.</p>
-<h3>Setting it up</h3>
-<p>On <a href="#decision-model">Decision model</a>, choose Jev (TypeSafe's System One, or a server that speaks its API) or any OpenAI-compatible chat model (OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio). A small, fast model works best. Paste the key and press Save; Test asks it one easy question. The key is saved in the settings file, readable by you only, and is never shown here again, only its last four characters.</p>
-<h3>What is sent</h3>
-<p>Only what is being judged: text the agent passes, or a window's elements as text. Private fields are masked first, as for the main model. A key typed here never goes through the chat. You can also keep the key in an environment variable and name it in <code>decision.api_key_env</code>.</p>
+<h3>Зачем она нужна</h3>
+<p>Быстрая модель, которая отвечает на небольшие типизированные вопросы о том, что на экране, чтобы агенту не приходилось всё читать и оценивать самому: да или нет (вероятность «да»), один из нескольких вариантов или оценка. Какие из пятидесяти отзывов положительные; загрузилась ли страница; какой элемент — кнопка «В корзину».</p>
+<p>Она необязательна, и от неё ничего не зависит. Сервер также сам спрашивает её там, где это экономит агенту ход (<code>decision.auto</code>), отвечает на один и тот же вопрос один раз на пять минут и никогда не заставляет агента её ждать: через три секунды тот решает сам.</p>
+<h3>Настройка</h3>
+<p>На странице <a href="#decision-model">Модель решений</a> выберите Jev (System One от TypeSafe или сервер с тем же API) или любую чат-модель, совместимую с OpenAI (OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio). Лучше всего подходит небольшая быстрая модель. Вставьте ключ и нажмите «Сохранить»; «Проверить» задаёт ей один простой вопрос. Ключ сохраняется в файле настроек, доступном для чтения только вам, и здесь больше никогда не показывается — только его последние четыре символа.</p>
+<h3>Что отправляется</h3>
+<p>Только то, что оценивается: текст, который передаёт агент, или элементы окна в виде текста. Приватные поля сначала маскируются, как и для основной модели. Ключ, введённый здесь, никогда не проходит через чат. Ключ также можно хранить в переменной окружения и указать её имя в <code>decision.api_key_env</code>.</p>

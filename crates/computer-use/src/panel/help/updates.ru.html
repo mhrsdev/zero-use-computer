@@ -1,15 +1,15 @@
-<h3>How an update happens</h3>
+<h3>Как происходит обновление</h3>
 <ol>
-<li>A few minutes after a server starts (<code>update.check_after_mins</code>), and then every <code>check_every_mins</code> (or <code>check_every_hours</code>), it asks GitHub for the latest release of the repository. Every server on the computer shares one clock, so two of them never ask twice.</li>
-<li>A newer release is downloaded and checked against the SHA-256 GitHub gives for the file. A release with no checksum is not taken. The downloaded program is run once with <code>--version</code> to see it is the version it says.</li>
-<li>It waits. It is put in place only when a server <em>starts</em>, never while an agent may be working: after the computer restarts (<code>restart</code>, the default), at the next start (<code>start</code>), or only when you run <code>computer-use-mcp update --install</code> (<code>manual</code>).</li>
+<li>Через несколько минут после запуска сервера (<code>update.check_after_mins</code>), а затем каждые <code>check_every_mins</code> (или <code>check_every_hours</code>) программа запрашивает у GitHub последний релиз репозитория. Все серверы на компьютере пользуются одними часами, поэтому два сервера никогда не спрашивают дважды.</li>
+<li>Более новый релиз скачивается и сверяется с SHA-256, который GitHub указывает для файла. Релиз без контрольной суммы не берётся. Скачанная программа один раз запускается с <code>--version</code>, чтобы убедиться, что это заявленная версия.</li>
+<li>Обновление ждёт. Оно устанавливается только при <em>запуске</em> сервера, никогда — пока агент может работать: после перезагрузки компьютера (<code>restart</code>, по умолчанию), при следующем запуске (<code>start</code>) или только когда вы выполните <code>computer-use-mcp update --install</code> (<code>manual</code>).</li>
 </ol>
-<h3>Choosing how it goes</h3>
+<h3>Как настроить</h3>
 <ul>
-<li><b>Never:</b> switch it off on the <a href="#updates">Updates</a> page. Nothing is looked for or downloaded.</li>
-<li><b>Often:</b> every 5 minutes is the shortest. GitHub allows 60 anonymous requests an hour for each address, and a look that finds nothing new costs nearly nothing, because only "has it changed?" is asked. If GitHub says to slow down, the program waits an hour.</li>
-<li><b>Stay put:</b> pin a version to take only that one; skip a version to never take it.</li>
-<li><b>Pre-releases:</b> the prerelease channel also takes releases GitHub marks as pre-releases.</li>
+<li><b>Никогда:</b> выключите обновления на странице <a href="#updates">Обновления</a>. Ничего не проверяется и не скачивается.</li>
+<li><b>Часто:</b> самый короткий интервал — 5 минут. GitHub разрешает 60 анонимных запросов в час с каждого адреса, а проверка, не нашедшая ничего нового, почти ничего не стоит, потому что спрашивается только «изменилось ли?». Если GitHub просит притормозить, программа ждёт час.</li>
+<li><b>Оставаться на месте:</b> закрепите версию, чтобы брать только её; пропустите версию, чтобы никогда её не брать.</li>
+<li><b>Пре-релизы:</b> канал prerelease берёт также релизы, которые GitHub помечает как пре-релизы.</li>
 </ul>
-<h3>Going back</h3>
-<p>When an update goes in, the program it replaces is kept (one only). <b>Go back</b> puts it in place again, and sets <code>update.skip_version</code> to the one you left so it isn't downloaded again. From a terminal: <code>computer-use-mcp update --rollback</code>. Clients already running keep the old program until they start again.</p>
+<h3>Откат</h3>
+<p>Когда устанавливается обновление, заменяемая программа сохраняется (только одна). <b>Откат</b> возвращает её на место и записывает в <code>update.skip_version</code> версию, с которой вы ушли, чтобы она не скачалась снова. Из терминала: <code>computer-use-mcp update --rollback</code>. Уже запущенные клиенты пользуются старой программой, пока не перезапустятся.</p>

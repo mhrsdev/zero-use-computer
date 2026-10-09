@@ -1,15 +1,15 @@
-<h3>How an update happens</h3>
+<h3>更新如何进行</h3>
 <ol>
-<li>A few minutes after a server starts (<code>update.check_after_mins</code>), and then every <code>check_every_mins</code> (or <code>check_every_hours</code>), it asks GitHub for the latest release of the repository. Every server on the computer shares one clock, so two of them never ask twice.</li>
-<li>A newer release is downloaded and checked against the SHA-256 GitHub gives for the file. A release with no checksum is not taken. The downloaded program is run once with <code>--version</code> to see it is the version it says.</li>
-<li>It waits. It is put in place only when a server <em>starts</em>, never while an agent may be working: after the computer restarts (<code>restart</code>, the default), at the next start (<code>start</code>), or only when you run <code>computer-use-mcp update --install</code> (<code>manual</code>).</li>
+<li>服务器启动几分钟后（<code>update.check_after_mins</code>），此后每隔 <code>check_every_mins</code>（或 <code>check_every_hours</code>），它会向 GitHub 查询仓库的最新版本。电脑上的所有服务器共用一个计时，因此不会重复查询。</li>
+<li>较新的版本会被下载，并与 GitHub 为该文件提供的 SHA-256 进行校验。没有校验和的版本不会被接受。下载的程序会用 <code>--version</code> 运行一次，确认版本与声称的一致。</li>
+<li>然后等待。它只在服务器<em>启动</em>时安装，绝不会在智能体可能正在工作时安装：电脑重启后（<code>restart</code>，默认）、下次启动时（<code>start</code>），或仅在你运行 <code>computer-use-mcp update --install</code> 时（<code>manual</code>）。</li>
 </ol>
-<h3>Choosing how it goes</h3>
+<h3>选择更新方式</h3>
 <ul>
-<li><b>Never:</b> switch it off on the <a href="#updates">Updates</a> page. Nothing is looked for or downloaded.</li>
-<li><b>Often:</b> every 5 minutes is the shortest. GitHub allows 60 anonymous requests an hour for each address, and a look that finds nothing new costs nearly nothing, because only "has it changed?" is asked. If GitHub says to slow down, the program waits an hour.</li>
-<li><b>Stay put:</b> pin a version to take only that one; skip a version to never take it.</li>
-<li><b>Pre-releases:</b> the prerelease channel also takes releases GitHub marks as pre-releases.</li>
+<li><b>从不：</b>在<a href="#updates">更新</a>页面将其关闭。不检查也不下载任何内容。</li>
+<li><b>频繁：</b>最短每 5 分钟一次。GitHub 允许每个地址每小时 60 次匿名请求，而没有发现新版本的检查几乎没有开销，因为只询问“是否有变化？”。如果 GitHub 要求放慢，程序会等待一小时。</li>
+<li><b>保持不动：</b>固定某个版本，就只接受该版本；跳过某个版本，就永不安装它。</li>
+<li><b>预发布版：</b>prerelease 通道也接受 GitHub 标记为预发布的版本。</li>
 </ul>
-<h3>Going back</h3>
-<p>When an update goes in, the program it replaces is kept (one only). <b>Go back</b> puts it in place again, and sets <code>update.skip_version</code> to the one you left so it isn't downloaded again. From a terminal: <code>computer-use-mcp update --rollback</code>. Clients already running keep the old program until they start again.</p>
+<h3>回退</h3>
+<p>安装更新时，被替换的程序会保留下来（只保留一个）。<b>回退</b>会把它重新装回，并将 <code>update.skip_version</code> 设为你刚离开的版本，以免再次下载。在终端中：<code>computer-use-mcp update --rollback</code>。已在运行的客户端会继续使用旧程序，直到重新启动。</p>

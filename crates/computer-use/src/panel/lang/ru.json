@@ -1,1 +1,1236 @@
-{}
+{
+ "ui": {
+  ", before the tool manager hides most of them until the model asks (tools.manager is dispatch)": ", если не считать менеджера инструментов, который скрывает большинство из них, пока модель их не запросит (tools.manager — dispatch)",
+  ", not yet": ", проверок ещё не было",
+  "({d}% against the default)": "({d}% к значению по умолчанию)",
+  "(no notes)": "(примечаний нет)",
+  "(not made yet: the first change makes it)": "(ещё не создан: его создаст первое изменение)",
+  "{key}: must be a list": "{key}: должно быть списком",
+  "{key}: must be a number": "{key}: должно быть числом",
+  "{key}: must be a whole number, not negative": "{key}: должно быть целым неотрицательным числом",
+  "{key}: must be between {min} and {max}": "{key}: должно быть от {min} до {max}",
+  "{key}: must be on or off": "{key}: должно быть включено или выключено",
+  "{key}: must be one line of text": "{key}: должно быть одной строкой текста",
+  "{key}: must be one of {choices}": "{key}: должно быть одним из: {choices}",
+  "{key}: must be text": "{key}: должно быть текстом",
+  "{n} already the same": "уже совпадают: {n}",
+  "{n} ask to confirm": "требуют подтверждения: {n}",
+  "{n} changed": "изменено: {n}",
+  "{n} this version can't take": "не поддерживаются: {n}",
+  "{n} to change": "к изменению: {n}",
+  "{name} applied.": "Профиль «{name}» применён.",
+  "{name} picker": "{name}: выбор цвета",
+  "{name} slider": "{name}: ползунок",
+  "{px} px → about {tokens} tokens": "{px} px → около {tokens} токенов",
+  "{v} is back.": "Версия {v} возвращена.",
+  "{v} is downloaded and checked.": "Версия {v} скачана и проверена.",
+  "{v} is in place.": "Версия {v} установлена.",
+  "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "версия {v} больше не подходит под настройки (пропущена, закреплена другая версия или это пре-релиз на стабильном канале), поэтому она забыта",
+  "{v} is the latest under these settings.": "{v} — новейшая версия при этих настройках.",
+  "{v} will not be taken again.": "Версия {v} больше не будет установлена.",
+  "{x} ago": "{x} назад",
+  "{x} allowed by the settings.": "Настройки разрешают {x}.",
+  "{x} in it": "в профиле {x}",
+  "{x} match “{query}”.": "Найдено по запросу «{query}»: {x}.",
+  "{x} would change": "Изменится {x}",
+  "`{key}` is changed on its own page": "`{key}` меняется на отдельной странице",
+  "`{key}` is not a setting": "`{key}` — не настройка",
+  "1 hour": "1 час",
+  "10 min": "10 мин",
+  "12 hours": "12 часов",
+  "30 min": "30 мин",
+  "5 min": "5 мин",
+  "a change has no key": "у изменения нет ключа",
+  "a change needs a value": "для изменения нужно значение",
+  "A different one each session, and for each agent at once": "Новый в каждом сеансе и свой у каждого из одновременно работающих агентов",
+  "A fast model that answers small questions about what is on screen.": "Быстрая модель, которая отвечает на небольшие вопросы о том, что на экране.",
+  "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "Быстрая модель, которой агент задаёт вопросы «да или нет», вопросы с выбором и вопросы на оценку о том, что на экране, чтобы меньше читать и быстрее решать. Ваш ключ хранится на этом компьютере и никогда не проходит через чат.",
+  "A hub is running on port {port}.": "Хаб работает на порту {port}.",
+  "A line for each call: the tool, the app and how it ended. Never the arguments, the tree or a picture.": "По строке на каждый вызов: инструмент, приложение и чем всё закончилось. Никогда — аргументы, дерево или изображение.",
+  "a list holds text": "список может содержать только текст",
+  "A picture counts as width × height ÷ 750 tokens, here for a 16:9 screen; text counts as four characters a token. An estimate: your model counts its own way, and the prompt cache makes repeats cheaper.": "Изображение стоит ширина × высота ÷ 750 токенов (здесь — для экрана 16:9); текст — четыре символа на токен. Это оценка: ваша модель считает по-своему, а кэш промптов удешевляет повторы.",
+  "A profile only sets the settings it names and puts back the defaults of the ones another profile sets. It never touches protected settings or secrets.": "Профиль задаёт только перечисленные в нём настройки и возвращает значения по умолчанию тем, которые задаёт другой профиль. Защищённые настройки и секреты он никогда не трогает.",
+  "A random one each session, and a different one for each agent at once.": "Случайный в каждом сеансе и свой у каждого из одновременно работающих агентов.",
+  "A record of every call, without the data.": "Запись каждого вызова, без данных.",
+  "a restart": "перезагрузки",
+  "a saved secret is replaced, not reset, here": "сохранённый секрет здесь можно заменить, но не сбросить",
+  "A whole screen": "Весь экран",
+  "Accessibility tree": "Дерево доступности",
+  "Add": "Добавить",
+  "Add and press Enter": "Введите и нажмите Enter",
+  "Add to {name}": "Добавить в {name}",
+  "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak.": "Добавьте Zero в своих агентов одной кнопкой. Записывается только запись Zero; остальные настройки каждого агента остаются как были, а копия файла сохраняется рядом с расширением .bak.",
+  "Added": "Добавлен",
+  "Added, other program": "Добавлен, другая программа",
+  "Address (base URL)": "Адрес (base URL)",
+  "advanced": "дополнительно",
+  "After adding:": "После добавления:",
+  "After the import": "После импорта",
+  "Already applied": "Уже применён",
+  "Also put back the settings from before that update (the ones you have now are kept beside the file)": "Также вернуть настройки, которые были до того обновления (текущие сохраняются рядом с файлом)",
+  "Always {style}.": "Всегда {style}.",
+  "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open).": "Значок, который открывает эту панель без горячей клавиши и терминала. Он запускает программу с командой settings: она поднимает панель на собственном порту и открывает её в браузере (или показывает уже открытую).",
+  "An overview": "Обзорное",
+  "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count).": "Обновление скачивается и сверяется с SHA-256 от GitHub, а устанавливается только при запуске сервера — никогда, пока агент может работать. Проверять можно хоть каждые несколько минут (GitHub разрешает 60 анонимных запросов в час, а ответ «без изменений» не считается).",
+  "Another file of that name": "Другой файл с таким именем",
+  "Another set": "Другой набор",
+  "API key": "Ключ API",
+  "App": "Приложение",
+  "applies after a restart": "применяется после перезапуска",
+  "Apply": "Применить",
+  "Apps report": "Отчёт по приложениям",
+  "Apps with a high share in the third column are the ones the tree serves badly: they get text read off the screen and more pictures. Kept in {file}.": "Приложения с большой долей в третьем столбце плохо описываются деревом: для них текст считывается с экрана и отправляется больше изображений. Хранится в {file}.",
+  "Asked us to slow down; looking again in about {x}.": "Попросил проверять реже; следующая проверка примерно через {x}.",
+  "Asking the model…": "Спрашиваем модель…",
+  "asks to confirm": "требует подтверждения",
+  "At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.": "Не больше {px} px по длинной стороне (около {tokens} токенов за весь экран 16:9), прикрепление: {attach}.",
+  "Audit log": "Журнал аудита",
+  "Auto": "Авто",
+  "Back to the default": "Вернуть по умолчанию",
+  "Back to the default.": "Возвращено значение по умолчанию.",
+  "Balanced": "Сбалансированный",
+  "Best quality": "Лучшее качество",
+  "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "Крупные изображения, окна целиком, более длинные деревья без сокращения. Больше всего токенов; для трудночитаемых приложений.",
+  "Can go back to": "Откат возможен на",
+  "Can't change safely": "Нельзя изменить безопасно",
+  "can't make the profiles folder": "не удаётся создать папку профилей",
+  "can't take it": "недопустимо",
+  "Cancel": "Отмена",
+  "cells": "ячеек",
+  "Change": "Изменить",
+  "Change protected settings?": "Изменить защищённые настройки?",
+  "changed": "изменено",
+  "Changed from default": "Изменённые",
+  "characters": "символов",
+  "Check": "Проверить",
+  "Check now": "Проверить сейчас",
+  "Checking actions": "Проверка действий",
+  "choose a kind of model": "выберите тип модели",
+  "Choose a kind of model first.": "Сначала выберите тип модели.",
+  "Choose a pointer": "Выберите указатель",
+  "choose an agent": "выберите агента",
+  "Comes with the program": "Встроенные",
+  "Connect an agent": "Подключить агента",
+  "Copied.": "Скопировано.",
+  "Copy": "Копировать",
+  "couldn't keep the settings you have now, so nothing was changed": "не удалось сохранить текущие настройки, поэтому ничего не изменено",
+  "Couldn't read the settings.": "Не удалось прочитать настройки.",
+  "Daily": "24 часа",
+  "Dark": "Тёмная",
+  "Decision model": "Модель решений",
+  "default:": "по умолчанию:",
+  "Delete": "Удалить",
+  "Delete the profile “{name}”?": "Удалить профиль «{name}»?",
+  "Desktop shortcut": "Ярлык на рабочем столе",
+  "Done": "Закрыть",
+  "Download": "Скачать",
+  "Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots.": "Нарисовано по вашим настройкам, чтобы показать, как они сочетаются. Настоящий оверлей пропускает клики насквозь и не попадает на снимки экрана агента.",
+  "e.g. gpt-4.1-nano, llama-3.1-8b-instant": "например, gpt-4.1-nano, llama-3.1-8b-instant",
+  "each field must be one line": "каждое поле должно быть одной строкой",
+  "Each press makes new ones: no two hands are the same.": "Каждое нажатие даёт новые: двух одинаковых рук не бывает.",
+  "elements": "элементов",
+  "Emergency stop": "Аварийная остановка",
+  "empty": "пусто",
+  "Error": "Ошибка",
+  "Every {x}": "Раз в {x}",
+  "Export": "Экспорт",
+  "File:": "Файл:",
+  "Files and the command line": "Файлы и командная строка",
+  "Fix it in a text editor: {path}": "Исправьте его в текстовом редакторе: {path}",
+  "for example ctrl+alt+escape": "например, ctrl+alt+escape",
+  "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "Для записи демо: указатель и рамка крупнее, перемещения дольше, нажатые клавиши и текст видны, а итоговое состояние держится на экране чуть дольше.",
+  "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "В терминале то же самое делает `computer-use-mcp install` (все найденные здесь агенты), `--client NAME` — для одного, `--list` — посмотреть, `--remove` — удалить.",
+  "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "В терминале: computer-use-mcp shortcut (рабочий стол), --menu, --both, --remove, --list. Удаляются только ярлыки, созданные этой программой.",
+  "General": "Общие",
+  "Getting started": "Начало работы",
+  "GitHub": "GitHub",
+  "give the profile a name": "дайте профилю имя",
+  "Go back": "Откат",
+  "Go back to {v}": "Откат на {v}",
+  "Go back to version {v}?": "Откатиться на версию {v}?",
+  "Guide": "Руководство",
+  "Home": "Главная",
+  "hours": "часов",
+  "How much of the app's tree the model reads, and how it is shortened.": "Какую часть дерева приложения читает модель и как дерево сокращается.",
+  "How often it looks": "Как часто проверять",
+  "How often it looks for a new release": "Как часто проверять наличие нового релиза",
+  "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.": "Как собственный указатель агента выглядит и движется по экрану. Ваша настоящая мышь не затрагивается.",
+  "How the pointer glides": "Как скользит указатель",
+  "How the program keeps itself up to date. Changes ask you to confirm.": "Как программа поддерживает себя в актуальном состоянии. Изменения требуют подтверждения.",
+  "How the real mouse goes": "Как движется настоящая мышь",
+  "How the real mouse moves when an action has to use it.": "Как движется настоящая мышь, когда действию без неё не обойтись.",
+  "If the agent spends too much, try the Low tokens profile. If it can't read an app, try Best quality. To record a demo, Showcase makes the pointer and border bigger.": "Если агент тратит слишком много, попробуйте профиль «Мало токенов». Если он не может прочитать приложение — «Лучшее качество». Для записи демо «Демонстрация» делает указатель и рамку крупнее.",
+  "Import": "Импорт",
+  "Import {x}": "Импорт: {x}",
+  "Import and export": "Импорт и экспорт",
+  "Import the {n} it can take": "Импортировать подходящие ({n})",
+  "Imported {x}; left out {n} this version can't take.": "Импортировано: {x}; пропущено {n} — эта версия их не поддерживает.",
+  "Imported {x}.": "Импортировано: {x}.",
+  "It goes in {when}.": "Установка произойдёт {when}.",
+  "It is changed on its own page, not by an import": "Меняется на отдельной странице, а не импортом",
+  "It looks every {x}.": "Проверка раз в {x}.",
+  "It starts {program} settings, which opens the panel in your browser.": "Он запускает {program} settings, и панель открывается в браузере.",
+  "It will not look for updates.": "Обновления проверяться не будут.",
+  "items": "пунктов",
+  "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
+  "just now": "только что",
+  "KB": "KB",
+  "Keep": "Сохранить",
+  "Keep the current settings as a profile": "Сохранить текущие настройки как профиль",
+  "Kept {x}.": "Сохранено: {x}.",
+  "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "Сохранено: {x}. Пропущено {n}, которых не может быть в профиле (секреты, защищённые настройки, порты).",
+  "Language": "Язык",
+  "last {when}": "последняя проверка {when}",
+  "Leave empty for {url}.": "Оставьте пустым, чтобы использовать {url}.",
+  "Left out": "Пропущено",
+  "levels": "уровней",
+  "Light": "Светлая",
+  "lines": "строк",
+  "Little in the tree": "Мало в дереве",
+  "Logging, the instructions sent to clients and the optional HTTP transport.": "Журналирование, инструкции для клиентов и необязательный транспорт HTTP.",
+  "Looking": "Проверка",
+  "Looking…": "Проверяем…",
+  "Looks": "Просмотры",
+  "Low tokens": "Мало токенов",
+  "Made {path}.": "Создано: {path}.",
+  "Made by version {v}; this is version {w}.": "Сделано версией {v}; это версия {w}.",
+  "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.": "Создана для решений: отвечает гораздо быстрее секунды и с вероятностями. А также любой сервер с тем же API.",
+  "Make": "Создать",
+  "Make again": "Создать заново",
+  "make it again to start": "создайте заново, чтобы он запускал",
+  "min": "мин",
+  "minutes": "минут",
+  "Model": "Модель",
+  "Model and API key": "Модель и ключ API",
+  "ms": "ms",
+  "must be a list": "должно быть списком",
+  "must be a number": "должно быть числом",
+  "must be a whole number, not negative": "должно быть целым неотрицательным числом",
+  "must be between {min} and {max}": "должно быть от {min} до {max}",
+  "must be on or off": "должно быть включено или выключено",
+  "must be one line of text": "должно быть одной строкой текста",
+  "must be one of {choices}": "должно быть одним из: {choices}",
+  "must be text": "должно быть текстом",
+  "Name, for example Work laptop": "Название, например «Рабочий ноутбук»",
+  "never": "никогда",
+  "Never": "Никогда",
+  "Never {v}.": "Только не {v}.",
+  "next in about {x}": "следующая примерно через {x}",
+  "no import has been made yet, so there is nothing to go back to": "импорта ещё не было, поэтому возвращаться не к чему",
+  "No key for this panel": "Нет клавиши для этой панели",
+  "No log yet: turn it on above.": "Журнала пока нет: включите его выше.",
+  "no update is waiting": "ожидающих обновлений нет",
+  "none": "нет",
+  "None set up.": "Ничего не настроено.",
+  "None yet. Change some settings, then keep them here under a name.": "Пока нет. Измените какие-нибудь настройки и сохраните их здесь под своим именем.",
+  "None: this server keeps its settings in memory.": "Нет: этот сервер хранит настройки в памяти.",
+  "not a setting: {keys}": "это не настройки: {keys}",
+  "Not added": "Не добавлен",
+  "Not found here": "Не найден",
+  "not in this version": "нет в этой версии",
+  "Not needed for a server on this computer.": "Не нужен для сервера на этом компьютере.",
+  "Not reset.": "Не сброшено.",
+  "Not saved.": "Не сохранено.",
+  "Not set": "Не задан",
+  "Not there": "Отсутствует",
+  "Nothing counted yet. Each time the agent looks at an app, the program notes how much its accessibility tree told it and whether it had to use pixels; the apps that needed pixels most show here. It is kept in {file} (screenshot.record_apps).": "Пока ничего не подсчитано. Каждый раз, когда агент смотрит на приложение, программа отмечает, сколько сообщило его дерево доступности и пришлось ли обращаться к пикселям; здесь показаны приложения, которым пиксели были нужнее всего. Данные хранятся в {file} (screenshot.record_apps).",
+  "Nothing differs from the defaults yet.": "Пока ничто не отличается от значений по умолчанию.",
+  "nothing differs from the defaults, so there is nothing to keep": "ничто не отличается от значений по умолчанию, поэтому сохранять нечего",
+  "Nothing in this group differs from its default.": "В этой группе всё по умолчанию.",
+  "Nothing kept yet.": "Пока ничего не сохранено.",
+  "Nothing matches.": "Ничего не найдено.",
+  "Nothing to show.": "Нечего показать.",
+  "Nothing would change.": "Ничего не изменится.",
+  "Nothing written yet.": "Пока ничего не записано.",
+  "Nothing.": "Ничего.",
+  "notifications": "уведомлений",
+  "Notifications": "Уведомления",
+  "Now": "Сейчас",
+  "of {kb} KB": "(файл {kb} KB)",
+  "of {n}": "из {n}",
+  "off": "выкл.",
+  "Off: the agent works from the tree alone.": "Выключено: агент работает только по дереву.",
+  "Off.": "Выключено.",
+  "Off. It never updates by itself.": "Выключено. Программа никогда не обновляется сама.",
+  "Off. Nothing is looked for or downloaded.": "Выключено. Ничего не проверяется и не скачивается.",
+  "on": "вкл.",
+  "On, last looked {when}.": "Включено, последняя проверка {when}.",
+  "On; it has not looked yet.": "Включено; проверок ещё не было.",
+  "On; no hub is running right now.": "Включено; хаб сейчас не запущен.",
+  "On.": "Включено.",
+  "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "В tools.enabled перечислены только некоторые инструменты ({n}), поэтому остальные скрыты, как бы ни стояли переключатели.",
+  "OpenAI-compatible chat model": "Чат-модель, совместимая с OpenAI",
+  "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.": "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… Лучше всего подходит небольшая быстрая модель.",
+  "Overlay": "Оверлей",
+  "Overview": "Обзор",
+  "panel": "панель",
+  "Panel": "Панель",
+  "Paste settings as TOML (what Export makes). You see each one as it is now and as it would be before anything is changed; protected ones ask first, and settings this version doesn't have are shown and left out. The settings you have now are kept, so you can go back.": "Вставьте настройки в формате TOML (как их выдаёт экспорт). Прежде чем что-либо изменится, вы увидите каждую — какая она сейчас и какой станет; защищённые требуют подтверждения, а настройки, которых нет в этой версии, показываются и пропускаются. Текущие настройки сохраняются, так что можно вернуться.",
+  "Path style": "Стиль траектории",
+  "Paused": "Пауза",
+  "Pauses and waits around actions.": "Паузы и ожидания вокруг действий.",
+  "Pictures": "Изображения",
+  "Pictures sent": "Изображения",
+  "Platform": "Платформа",
+  "Pointer": "Указатель",
+  "Pointer style": "Стиль указателя",
+  "Pointers and the mouse": "Указатели и мышь",
+  "points at": "указывает на",
+  "port": "порт",
+  "Press Ctrl+C on the text below.": "Нажмите Ctrl+C на тексте ниже.",
+  "Press Ctrl+C to copy.": "Нажмите Ctrl+C, чтобы скопировать.",
+  "Preview": "Предпросмотр",
+  "Privacy": "Конфиденциальность",
+  "Profile name": "Имя профиля",
+  "Profiles": "Профили",
+  "Program": "Программа",
+  "Put a shortcut to this panel at {path}?": "Создать ярлык этой панели в {path}?",
+  "Put it in place now": "Установить сейчас",
+  "Put the settings back as they were before the last import?": "Вернуть настройки к состоянию до последнего импорта?",
+  "Put version {v} in place of this program now?": "Заменить эту программу версией {v} сейчас?",
+  "px": "px",
+  "Read from the environment variable {name}.": "Берётся из переменной окружения {name}.",
+  "Reading desktop notifications.": "Чтение уведомлений рабочего стола.",
+  "Reading text off the screen for apps whose tree says little.": "Чтение текста с экрана для приложений, чьё дерево сообщает мало.",
+  "Real mouse": "Настоящая мышь",
+  "Refresh": "Обновить",
+  "reload the page: it didn't say which version of the file it showed": "перезагрузите страницу: она не сообщила, какую версию файла показывала",
+  "Remembering screens the model has already seen.": "Запоминание экранов, которые модель уже видела.",
+  "Remove": "Удалить",
+  "Remove {item}": "Удалить {item}",
+  "Remove the decision model and its key?": "Удалить модель решений и её ключ?",
+  "Removed {path}.": "Удалено: {path}.",
+  "Removed.": "Удалено.",
+  "Replace": "Заменить",
+  "Reset": "Сбросить",
+  "Revert": "Вернуть",
+  "Right now": "Текущее состояние",
+  "s": "с",
+  "same": "без изменений",
+  "Save": "Сохранить",
+  "Saved {hint}. Type to replace.": "Сохранён: {hint}. Введите новый, чтобы заменить.",
+  "Saved to {path}.": "Сохранено в {path}.",
+  "Saved: {hint}. Leave empty to keep it.": "Сохранён: {hint}. Оставьте пустым, чтобы не менять.",
+  "Saved. Running servers use it now.": "Сохранено. Запущенные серверы уже используют это.",
+  "Saving…": "Сохранение…",
+  "say create or remove": "укажите create или remove",
+  "say desktop or menu": "укажите desktop или menu",
+  "say install or remove": "укажите install или remove",
+  "say which settings to change": "укажите, какие настройки изменить",
+  "say which settings to reset": "укажите, какие настройки сбросить",
+  "Screen memory": "Память экранов",
+  "screens": "экранов",
+  "Screenshots": "Снимки экрана",
+  "Scripts": "Скрипты",
+  "Search all settings": "Поиск по всем настройкам",
+  "Search results": "Результаты поиска",
+  "seconds": "секунд",
+  "Server": "Сервер",
+  "Setting": "Настройка",
+  "Settings": "Настройки",
+  "Settings changed": "Изменено настроек",
+  "Settings file": "Файл настроек",
+  "Settings file:": "Файл настроек:",
+  "Settings for one operating system.": "Настройки для отдельной операционной системы.",
+  "Settings groups": "Группы настроек",
+  "Settings to import": "Настройки для импорта",
+  "Several agents": "Несколько агентов",
+  "Show advanced": "Показать дополнительные",
+  "Showcase": "Демонстрация",
+  "Small programs the agent writes and the server runs.": "Небольшие программы, которые пишет агент, а выполняет сервер.",
+  "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "Изображения меньше, деревья короче. Полный снимок экрана стоит примерно на треть меньше; очень мелкий текст может читаться хуже.",
+  "spaces": "пробелов",
+  "Spending fewer tokens": "Как тратить меньше токенов",
+  "Start your MCP client again to use it.": "Перезапустите клиент MCP, чтобы начать её использовать.",
+  "starts": "запускает",
+  "State": "Состояние",
+  "Status and controls": "Состояние и управление",
+  "Staying in control": "Контроль остаётся за вами",
+  "Staying on {v}.": "Закреплена версия {v}.",
+  "Stopped": "Остановлен",
+  "Subagents, or Claude Code beside Codex, on one desktop.": "Субагенты или Claude Code рядом с Codex на одном рабочем столе.",
+  "Switches that apply to the whole program.": "Переключатели для всей программы.",
+  "Take the panel's shortcut away from {path}?": "Убрать ярлык панели из {path}?",
+  "Test": "Проверить",
+  "Text on screen (OCR)": "Текст на экране (OCR)",
+  "Text read off screen": "Текст с экрана",
+  "that is not a setting": "это не настройка",
+  "that is not one of your profiles": "это не ваш профиль",
+  "that is too long to be a list of settings": "это слишком длинно для списка настроек",
+  "that name belongs to a profile that comes with the program": "это имя занято встроенным профилем",
+  "that name can't be kept": "такое имя использовать нельзя",
+  "That page isn't here.": "Такой страницы нет.",
+  "The {n} this version can't take are left out; the rest go in.": "Неподдерживаемые этой версией ({n}) будут пропущены, остальные — импортированы.",
+  "the address must start with https:// (or http:// for a server on this computer)": "адрес должен начинаться с https:// (или http:// для сервера на этом компьютере)",
+  "The agent can use it now.": "Агент уже может этим пользоваться.",
+  "The agent has no decision model now.": "Теперь у агента нет модели решений.",
+  "The border, label and colours shown while the agent works.": "Рамка, надпись и цвета, которые видны, пока агент работает.",
+  "the computer to restart": "перезагрузки компьютера",
+  "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "Пунктир — это прыжок: настоящая мышь сразу переносится на 70–140 px от цели, проходит только этот последний отрезок, а затем возвращается туда, где вы её оставили. Указатель в оверлее скользит весь путь.",
+  "The decision model": "Модель решений",
+  "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "Аварийная остановка и пауза, пока вы пользуетесь компьютером. Изменения требуют подтверждения.",
+  "The file as saved has a mistake in it; mend it here.": "В сохранённом файле ошибка; исправьте её здесь.",
+  "The file is empty.": "Файл пуст.",
+  "the file is too long to be a settings file": "файл слишком длинный для файла настроек",
+  "The last {n} lines": "Последние строки: {n}",
+  "The newest stable release.": "Новейший стабильный релиз.",
+  "The newest, pre-releases included.": "Новейший, включая пре-релизы.",
+  "the next start": "следующего запуска",
+  "the next time the server starts": "при следующем запуске сервера",
+  "The ones you had are kept in {path}.": "Прежние сохранены в {path}.",
+  "The ones you have now are kept, so this can be undone too.": "Текущие сохраняются, так что и это можно отменить.",
+  "The plain arrow": "Обычная стрелка",
+  "The plain arrow.": "Обычная стрелка.",
+  "The program's own defaults for every setting the other profiles touch.": "Собственные значения программы по умолчанию для всех настроек, которые меняют другие профили.",
+  "The server didn't answer: {error}": "Сервер не ответил: {error}",
+  "The settings as they were before the last import are kept ({when}).": "Настройки до последнего импорта сохранены ({when}).",
+  "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file.": "Файл настроек как текст, вместе с комментариями. Секреты скрыты; оставьте их как есть, чтобы сохранить. Перед записью файл проверяется целиком, так что опечатка не может его сломать.",
+  "the settings file changed since it was shown here (another tab, a command, a profile): press Revert to see it as it is now, then make your change again": "файл настроек изменился с тех пор, как был показан здесь (другая вкладка, команда, профиль): нажмите «Вернуть», чтобы увидеть его текущую версию, и внесите изменение заново",
+  "The settings file has a mistake in it and may hold a secret, so it isn't shown here.": "В файле настроек ошибка, а в нём может быть секрет, поэтому здесь он не показан.",
+  "The settings from before the import are back.": "Настройки, которые были до импорта, возвращены.",
+  "The settings from before the update are back.": "Настройки, которые были до обновления, возвращены.",
+  "The settings that differ from the defaults. No secrets: {x} left out.": "Настройки, отличающиеся от значений по умолчанию. Секреты не включаются: пропущено {x}.",
+  "The settings that differ from the defaults. No secrets: none were set.": "Настройки, отличающиеся от значений по умолчанию. Секреты не включаются: ни один не задан.",
+  "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "Вместе с ней вернутся настройки, которые были до того обновления; текущие сохраняются рядом с файлом.",
+  "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "Список инструментов отправляется с каждым запросом, поэтому включённые инструменты стоят около {tokens} токенов каждый раз{manager}. Стоимость считается по текущим описаниям ({descriptions}), из расчёта четыре символа на токен.",
+  "The version you have now is not taken again unless you clear update.skip_version.": "Текущая версия не будет установлена снова, пока вы не очистите update.skip_version.",
+  "Theme": "Тема",
+  "There": "Есть",
+  "there are no settings in it": "в нём нет настроек",
+  "there is no earlier version kept to go back to": "нет сохранённой предыдущей версии для отката",
+  "there is no release of this program for this system": "для этой системы нет релиза программы",
+  "there is no such profile": "такого профиля нет",
+  "There was none.": "Ничего не было.",
+  "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:": "Эти настройки ограничивают, что агент может делать или видеть, или то, как обновляется программа. Убедитесь, что действительно хотите их изменить:",
+  "these settings need the user's confirmation first": "эти настройки сначала требуют подтверждения пользователя",
+  "Thinking": "Думает",
+  "this needs the user's confirmation first": "это сначала требует подтверждения пользователя",
+  "This page.": "Эта страница.",
+  "This panel:": "Эта панель:",
+  "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "Эта программа запущена из {from} — места, которое очищается или перемещается. Копия хранится в {to}, и именно её получают агенты.",
+  "this server keeps its settings in memory": "этот сервер хранит настройки в памяти",
+  "This server keeps its settings in memory, so nothing can be saved here.": "Этот сервер хранит настройки в памяти, поэтому здесь ничего нельзя сохранить.",
+  "this server keeps its settings in memory, so there is no file": "этот сервер хранит настройки в памяти, поэтому файла нет",
+  "this server keeps its settings in memory, so they can't be saved here": "этот сервер хранит настройки в памяти, поэтому их нельзя здесь сохранить",
+  "This system has no such place.": "В этой системе нет такого места.",
+  "This version": "Эта версия",
+  "This version ({v}) has no such setting": "В этой версии ({v}) нет такой настройки",
+  "This version ({v}) has no such setting: the export is from {w}, a newer one": "В этой версии ({v}) нет такой настройки: экспорт сделан более новой версией {w}",
+  "Three sample paths of the {style} style": "Три примера траекторий в стиле {style}",
+  "Timing": "Тайминги",
+  "tokens": "токенов",
+  "Tool list": "Список инструментов",
+  "Tools": "Инструменты",
+  "Tools and tokens": "Инструменты и токены",
+  "under 2 minutes": "пару минут",
+  "Undo the last import": "Отменить последний импорт",
+  "Updates": "Обновления",
+  "Valid. {x} would change, {n} of them protected.": "Ошибок нет. Изменится {x}, из них защищённых: {n}.",
+  "Valid. {x} would change.": "Ошибок нет. Изменится {x}.",
+  "Valid. Nothing would change.": "Ошибок нет. Ничего не изменится.",
+  "Verifying that an action did what it should.": "Проверка того, что действие сработало как надо.",
+  "Version": "Версия",
+  "Version {v} (kept when the last update went in), with the settings you had then.": "Версия {v} (сохранена при последнем обновлении) вместе с тогдашними настройками.",
+  "Version {v} (kept when the last update went in).": "Версия {v} (сохранена при последнем обновлении).",
+  "Version {v} is downloaded and waits for {when}.": "Версия {v} скачана и ждёт {when}.",
+  "Version {v}, but the settings no longer take it (skipped, pinned or a pre-release): it will not go in.": "Версия {v}, но настройки её больше не допускают (пропущена, закреплена другая или это пре-релиз): она не будет установлена.",
+  "Version {v}, downloaded {when}. It goes in {install}.": "Версия {v}, скачана {when}. Установка произойдёт {install}.",
+  "Waiting": "Ожидает",
+  "What {v} says about itself": "Что версия {v} сообщает о себе",
+  "What a picture costs": "Сколько стоит изображение",
+  "What is masked before anything reaches the model. Changes ask you to confirm.": "Что маскируется, прежде чем что-либо попадёт к модели. Изменения требуют подтверждения.",
+  "What would be written for {name}": "Что будет записано для {name}",
+  "When pictures are sent to the model, and how big. The biggest lever on image tokens.": "Когда изображения отправляются модели и какого они размера. Главный рычаг расхода токенов на изображения.",
+  "When something is wrong": "Если что-то не так",
+  "when the server starts after the computer restarts": "при запуске сервера после перезагрузки компьютера",
+  "Where to start": "С чего начать",
+  "Which": "Какая версия",
+  "Which tools the model sees. The tool list is sent with every request.": "Какие инструменты видит модель. Список инструментов отправляется с каждым запросом.",
+  "with `computer-use-mcp update --install`": "командой `computer-use-mcp update --install`",
+  "Working": "Работает",
+  "Write the audit log": "Вести журнал аудита",
+  "You can close this tab.": "Эту вкладку можно закрыть.",
+  "you to run `computer-use-mcp update --install`": "запуска `computer-use-mcp update --install`",
+  "Your control": "Ваш контроль",
+  "Your MCP clients use it the next time they start.": "Клиенты MCP начнут использовать это при следующем запуске.",
+  "Your own: a snapshot of settings you changed.": "Ваш собственный: снимок изменённых вами настроек.",
+  "Your settings": "Ваши настройки",
+  "Yours": "Ваши"
+ },
+ "plural": {
+  "setting": {
+   "one": "настройка",
+   "few": "настройки",
+   "many": "настроек",
+   "other": "настройки"
+  },
+  "tool": {
+   "one": "инструмент",
+   "few": "инструмента",
+   "many": "инструментов",
+   "other": "инструмента"
+  },
+  "secret": {
+   "one": "секрет",
+   "few": "секрета",
+   "many": "секретов",
+   "other": "секрета"
+  },
+  "minute": {
+   "one": "минуту",
+   "few": "минуты",
+   "many": "минут",
+   "other": "минуты"
+  },
+  "hour": {
+   "one": "час",
+   "few": "часа",
+   "many": "часов",
+   "other": "часа"
+  },
+  "day": {
+   "one": "день",
+   "few": "дня",
+   "many": "дней",
+   "other": "дня"
+  }
+ },
+ "settings": {
+  "clipboard": [
+   "Буфер обмена",
+   "Разрешить агенту читать и записывать буфер обмена (инструменты get_clipboard и set_clipboard)."
+  ],
+  "text_only": [
+   "Только текст",
+   "Никогда не прикреплять снимки экрана. Наименьший расход токенов, но агент не видит изображений."
+  ],
+  "follow_new_windows": [
+   "Следовать за новыми окнами",
+   "Когда действие открывает диалог или меню, переключаться на него для отчёта об изменениях и следующего просмотра."
+  ],
+  "hot_reload": [
+   "Горячая перезагрузка",
+   "Применять изменения файла настроек к запущенным серверам без перезапуска."
+  ],
+  "launch_timeout_secs": [
+   "Тайм-аут запуска, с",
+   "Сколько launch_app ждёт, пока новое приложение покажет окно."
+  ],
+  "natural_mouse": [
+   "Естественная мышь",
+   "Двигать настоящую мышь как рука: по кривой, с разгоном и торможением, с лёгкой дрожью. Выключено: мышь перескакивает."
+  ],
+  "mouse_path": [
+   "Траектория мыши",
+   "Как движется настоящая мышь. Mixed выбирает случайный стиль для каждого движения. Перетаскивание всегда идёт по прямой."
+  ],
+  "mouse_speed": [
+   "Скорость мыши",
+   "Как быстро движется настоящая мышь — во сколько раз быстрее руки. 2 — вдвое быстрее; некоторые приложения не успевают заметить очень быстрый указатель."
+  ],
+  "mouse_overshoot": [
+   "Перелёт мыши",
+   "Как часто длинное движение (больше 250 px) чуть проскакивает цель и возвращается, в процентах от движений. 0 — никогда. Так перелетает только стиль hand."
+  ],
+  "mouse_jitter": [
+   "Дрожание мыши",
+   "Насколько дрожит траектория относительно руки. 0 — чистая кривая."
+  ],
+  "restore_pointer": [
+   "Возвращать указатель",
+   "Возвращать указатель мыши на место после того, как агент щёлкнул, прокрутил или перетащил, чтобы он никогда не отнимал у вас мышь."
+  ],
+  "overlay.cursor_style": [
+   "Стиль указателя",
+   "Указатель агента. Random даёт каждому сеансу свой и разный каждому из одновременно работающих агентов."
+  ],
+  "overlay.cursor_color": [
+   "Цвет указателя",
+   "Цвет обычной стрелки и основы кольца указателя."
+  ],
+  "overlay.cursor_tag": [
+   "Метка указателя",
+   "Имя рядом с указателем. Пусто: без имени."
+  ],
+  "overlay.cursor_motion": [
+   "Движение указателя",
+   "Указатель наклоняется при движении, оставляет след, дышит и показывает перетаскивания и прокрутку."
+  ],
+  "overlay.trail": [
+   "След",
+   "След, который указатель оставляет при движении, из собственного материала (искры, крупинки, иней, хромовые капли). Нужно движение указателя."
+  ],
+  "overlay.trail_strength": [
+   "Сила следа",
+   "Длина следа. 100 — как задумано; 0 — без следа."
+  ],
+  "overlay.lean_strength": [
+   "Сила наклона",
+   "Насколько указатель наклоняется в движении. 0 — остаётся прямым."
+  ],
+  "overlay.breathe": [
+   "Дыхание",
+   "Указатель дышит, пока ждёт: желе набухает, бумага покачивается. Нужно движение указателя."
+  ],
+  "overlay.breathe_strength": [
+   "Сила дыхания",
+   "Насколько глубоко он дышит."
+  ],
+  "overlay.cursor_path": [
+   "Траектория указателя",
+   "Как указатель скользит к месту действия."
+  ],
+  "overlay.show_keys": [
+   "Показывать клавиши",
+   "Показывать нажатые клавиши в виде клавиш-колпачков у указателя, а набираемый текст — бегущей строкой рядом."
+  ],
+  "overlay.click_effect": [
+   "Эффект щелчка",
+   "Круги в месте щелчка агента."
+  ],
+  "overlay.show_cursor": [
+   "Показывать указатель",
+   "Рисовать собственный указатель агента. Настоящая мышь для этого не двигается."
+  ],
+  "overlay.move_ms": [
+   "Перемещение, ms",
+   "Сколько длится скольжение указателя. Действие ждёт, пока он доберётся."
+  ],
+  "overlay.scale": [
+   "Масштаб",
+   "Множитель размера всего, что рисует оверлей. 0 — по масштабу экрана."
+  ],
+  "overlay.enabled": [
+   "Включено",
+   "Показывать индикатор на экране, пока агент работает. Он пропускает клики насквозь и не попадает на снимки экрана агента."
+  ],
+  "overlay.show_border": [
+   "Показывать рамку",
+   "Светящаяся рамка вокруг экрана или окна, с которым работает агент."
+  ],
+  "overlay.show_label": [
+   "Показывать надпись",
+   "Надпись с состоянием."
+  ],
+  "overlay.border_target": [
+   "Область рамки",
+   "Обводит ли рамка весь экран или только окно, с которым идёт работа."
+  ],
+  "overlay.border_width": [
+   "Толщина рамки",
+   "Яркая центральная линия рамки."
+  ],
+  "overlay.glow_size": [
+   "Размер свечения",
+   "Насколько далеко растекается свечение. 0 — простая линия."
+  ],
+  "overlay.label_working": [
+   "Надпись: работает",
+   "Надпись, пока агент действует на компьютере."
+  ],
+  "overlay.label_thinking": [
+   "Надпись: думает",
+   "Надпись, пока модель думает."
+  ],
+  "overlay.label_error": [
+   "Надпись: ошибка",
+   "Надпись после ошибки."
+  ],
+  "overlay.label_done": [
+   "Надпись: готово",
+   "Надпись, когда работа закончена."
+  ],
+  "overlay.label_paused": [
+   "Надпись: пауза",
+   "Надпись, пока программа ждёт, когда вы перестанете пользоваться мышью и клавиатурой."
+  ],
+  "overlay.label_stopped": [
+   "Надпись: остановлен",
+   "Надпись после аварийной остановки. {hotkey} заменяется клавишей остановки."
+  ],
+  "overlay.color_thinking": [
+   "Цвет: думает",
+   "Цвет, пока модель думает."
+  ],
+  "overlay.color_working": [
+   "Цвет: работает",
+   "Цвет, пока агент действует."
+  ],
+  "overlay.color_error": [
+   "Цвет: ошибка",
+   "Цвет после ошибки."
+  ],
+  "overlay.color_done": [
+   "Цвет: готово",
+   "Цвет, когда работа закончена."
+  ],
+  "overlay.color_paused": [
+   "Цвет: пауза",
+   "Цвет во время паузы ради вас."
+  ],
+  "overlay.color_stopped": [
+   "Цвет: остановлен",
+   "Цвет после аварийной остановки."
+  ],
+  "overlay.done_after_ms": [
+   "Готово через, ms",
+   "Если новых действий нет столько времени, работа считается законченной."
+  ],
+  "overlay.done_linger_ms": [
+   "Показ «готово», ms",
+   "Сколько «готово» держится на экране, прежде чем всё исчезнет."
+  ],
+  "overlay.error_hold_ms": [
+   "Показ ошибки, ms",
+   "Сколько держится ошибка."
+  ],
+  "overlay.fade_in_ms": [
+   "Появление, ms",
+   "Плавно появляться за это время."
+  ],
+  "overlay.fade_out_ms": [
+   "Исчезновение, ms",
+   "Плавно исчезать за это время."
+  ],
+  "overlay.transition_ms": [
+   "Переход, ms",
+   "Плавно менять цвет одного состояния на цвет следующего за это время."
+  ],
+  "overlay.capture_hide_ms": [
+   "Скрытие для снимка, ms",
+   "Только X11: пауза после скрытия оверлея перед снимком экрана."
+  ],
+  "overlay.font": [
+   "Шрифт",
+   "Файл шрифта для надписи. Пусто: системный шрифт."
+  ],
+  "overlay.command": [
+   "Команда",
+   "Вспомогательная программа оверлея — для программ, которые встраивают библиотеку."
+  ],
+  "screenshot.enabled": [
+   "Включено",
+   "Разрешить снимки экрана вообще."
+  ],
+  "screenshot.attach": [
+   "Прикрепление",
+   "Когда просмотр включает изображение: auto (первый взгляд, крупное изменение или скудное дерево), always (больше всего токенов) или never."
+  ],
+  "screenshot.auto_sparse_threshold": [
+   "Порог скудного дерева (auto)",
+   "В режиме auto прикреплять изображение, если в дереве меньше интерактивных элементов, чем здесь."
+  ],
+  "screenshot.max_dimension": [
+   "Максимальный размер",
+   "Длинная сторона изображения. Главная настройка токенов на изображения: 1024 стоит примерно на 35% меньше, чем 1280."
+  ],
+  "screenshot.overview_max_dimension": [
+   "Максимальный размер обзора",
+   "Меньший размер для изображений окон, чьё дерево уже описывает содержимое. 0 — всегда размер выше."
+  ],
+  "screenshot.format": [
+   "Формат",
+   "Формат изображения."
+  ],
+  "screenshot.jpeg_quality": [
+   "Качество JPEG",
+   "Качество JPEG."
+  ],
+  "screenshot.png_compression": [
+   "Сжатие PNG",
+   "Сжатие PNG. Меняет только размер файла."
+  ],
+  "screenshot.resize_filter": [
+   "Фильтр уменьшения",
+   "Как уменьшается изображение."
+  ],
+  "screenshot.scope": [
+   "Охват",
+   "Последующие изображения экрана, который модель уже видела: только изменившаяся часть (auto) или всё окно (full)."
+  ],
+  "screenshot.region_max_ratio": [
+   "Максимальная доля области",
+   "Изменение больше этой доли окна отправляет окно целиком."
+  ],
+  "screenshot.region_padding": [
+   "Отступ области",
+   "Поле вокруг изменившейся части."
+  ],
+  "screenshot.region_min_size": [
+   "Минимальный размер области",
+   "Изменившаяся часть не меньше этого размера с каждой стороны — для контекста."
+  ],
+  "screenshot.adaptive": [
+   "Адаптивно",
+   "Не прикреплять изображения к хорошо описанным окнам, если модель уже несколько раз смотрела на них, не используя пиксели."
+  ],
+  "screenshot.smart": [
+   "Умно",
+   "Не прикреплять изображение, если изменилось только то, о чём уже сообщает дерево."
+  ],
+  "screenshot.record_apps": [
+   "Учёт приложений",
+   "Считать, как часто каждому приложению были нужны пиксели (это показывает команда doctor)."
+  ],
+  "screenshot.locate_picture": [
+   "Изображение для locate",
+   "Locate отправляет окно с пронумерованными найденными местами."
+  ],
+  "screenshot.icon_sprite": [
+   "Полоска значков",
+   "Экспериментально: когда изображение не прикреплено — маленькая полоска пронумерованных кнопок без названий."
+  ],
+  "tree.max_nodes": [
+   "Максимум узлов",
+   "Сколько элементов показывается за один просмотр."
+  ],
+  "tree.max_walk": [
+   "Максимум обхода",
+   "Сколько элементов читается из приложения до отсечения."
+  ],
+  "tree.max_depth": [
+   "Максимальная глубина",
+   "Насколько глубоко уходит дерево."
+  ],
+  "tree.max_text_len": [
+   "Максимальная длина текста",
+   "Сколько символов текста или значения показывается для элемента."
+  ],
+  "tree.indent": [
+   "Отступ",
+   "Пробелов на уровень дерева."
+  ],
+  "tree.show_actions": [
+   "Показывать действия",
+   "Показывать действия, которые предлагает каждый элемент."
+  ],
+  "tree.show_states": [
+   "Показывать состояния",
+   "Показывать состояния, такие как focused, disabled и checked."
+  ],
+  "tree.diff": [
+   "Разница",
+   "Последующие просмотры возвращают только изменения."
+  ],
+  "tree.diff_full_ratio": [
+   "Порог полного дерева",
+   "Показывать всё дерево, если изменилось больше этой доли."
+  ],
+  "tree.report_changes": [
+   "Отчёт об изменениях",
+   "Добавлять к результату действия состояние после него."
+  ],
+  "tree.report_changes_max_lines": [
+   "Максимум строк в отчёте",
+   "Не больше стольких строк изменений в отчёте."
+  ],
+  "tree.report": [
+   "Отчёт",
+   "Что содержит отчёт: full (каждое изменение), relevant (вокруг того, с чем было действие) или brief (количества)."
+  ],
+  "tree.max_tokens": [
+   "Максимум токенов",
+   "Бюджет токенов одного дерева. Более крупные деревья сокращаются. 0 — без ограничения."
+  ],
+  "tree.summarize": [
+   "Сокращение",
+   "Как сокращается дерево сверх бюджета: normal (свернуть, затем обрезать), light (только свернуть списки) или off."
+  ],
+  "tree.fold_keep": [
+   "Оставлять при сворачивании",
+   "Сколько пунктов остаётся в начале свёрнутого списка (и 2 в конце)."
+  ],
+  "tree.brief_repeats": [
+   "Краткие повторы",
+   "Объяснять пометки полностью один раз, потом кратко."
+  ],
+  "tree.compact": [
+   "Компактно",
+   "Говорить всё по одному разу без потерь: похожие соседние элементы — записями, индексы — диапазонами и так далее."
+  ],
+  "tree.quiet_volatile": [
+   "Приглушать изменчивое",
+   "То, что меняется само по себе (часы, индикаторы загрузки), после нескольких отчётов сводится в одну строку."
+  ],
+  "tools.disabled": [
+   "Отключённые",
+   "Инструменты, которые модель никогда не видит, например drag или batch."
+  ],
+  "tools.enabled": [
+   "Включённые",
+   "Если не пусто, предлагаются только эти инструменты."
+  ],
+  "tools.descriptions": [
+   "Описания",
+   "Длина описаний инструментов. Lean тратит меньше всего токенов."
+  ],
+  "tools.manager": [
+   "Менеджер",
+   "Какие инструменты модель видит сначала. Dispatch: базовые инструменты плюс find_tools, остальные по запросу, и список не меняется."
+  ],
+  "tools.preset": [
+   "Набор",
+   "Full: все инструменты, которые разрешают другие настройки. Small: фиксированный небольшой набор для небольших моделей."
+  ],
+  "tools.default_app": [
+   "Приложение по умолчанию",
+   "Вызов без приложения действует на приложение последнего вызова, где оно было указано."
+  ],
+  "tools.launch_look": [
+   "Просмотр при запуске",
+   "launch_app отвечает первым состоянием приложения."
+  ],
+  "tools.design_steps": [
+   "Шаги дизайна",
+   "Когда design перечисляет шаги, чтобы нарисовать дизайн."
+  ],
+  "timing.settle_ms": [
+   "Успокоение, ms",
+   "Пауза после каждого действия перед следующим просмотром."
+  ],
+  "timing.settle": [
+   "Успокоение",
+   "Adaptive ждёт, пока экран перестанет меняться; fixed просто делает паузу."
+  ],
+  "timing.settle_max_ms": [
+   "Максимум успокоения, ms",
+   "Самое долгое адаптивное ожидание."
+  ],
+  "timing.settle_poll_ms": [
+   "Опрос при успокоении, ms",
+   "Как часто проверяется экран во время ожидания."
+  ],
+  "timing.key_delay_ms": [
+   "Задержка клавиш, ms",
+   "Пауза между клавишами в последовательности."
+  ],
+  "timing.app_cache_ms": [
+   "Кэш приложений, ms",
+   "Сколько повторно использовать список запущенных приложений."
+  ],
+  "timing.wait_timeout_ms": [
+   "Тайм-аут ожидания, ms",
+   "Тайм-аут wait_for по умолчанию."
+  ],
+  "timing.wait_poll_ms": [
+   "Опрос при ожидании, ms",
+   "Интервал опроса wait_for по умолчанию."
+  ],
+  "timing.expect_wait_ms": [
+   "Ожидание expect, ms",
+   "Сколько действие с expect ждёт появления результата."
+  ],
+  "timing.adaptive_grace": [
+   "Адаптивная выдержка",
+   "Говорить «ничего не изменилось» через 200 ms вместо 500 для приложений, которые показывают изменения сразу."
+  ],
+  "cache.enabled": [
+   "Включено",
+   "Запоминать экраны, которые видела модель: при возврате к экрану отправляется только разница."
+  ],
+  "cache.max_screens": [
+   "Максимум экранов",
+   "Сколько экранов запоминается, по всем приложениям вместе."
+  ],
+  "cache.max_memory_kb": [
+   "Максимум памяти, KB",
+   "Сколько памяти могут занимать запомненные экраны."
+  ],
+  "cache.match_threshold": [
+   "Порог совпадения",
+   "Доля общих элементов, при которой экран считается тем же."
+  ],
+  "cache.dedupe_screenshots": [
+   "Без повторных снимков",
+   "Никогда не отправлять дважды неизменившееся изображение экрана."
+  ],
+  "cache.pixel_grid": [
+   "Пиксельная сетка",
+   "Ячеек по длинной стороне для отпечатка изображения."
+  ],
+  "cache.pixel_tolerance": [
+   "Допуск пикселей",
+   "Сдвиг яркости на ячейку, который ещё считается отсутствием изменений."
+  ],
+  "cache.snapshot_ttl_ms": [
+   "Срок жизни снимка, ms",
+   "Повторно использовать настолько свежее чтение, если с тех пор ничего не выполнялось. 0 — выключено."
+  ],
+  "cache.rebase_after_tokens": [
+   "Полная отправка после токенов",
+   "После стольких токенов результатов снова отправлять дерево целиком и с изображением. 0 — никогда."
+  ],
+  "ocr.mode": [
+   "Режим",
+   "Читать текст с экрана для приложений, чьё дерево сообщает мало: auto (только скудные деревья), always или off."
+  ],
+  "ocr.engine": [
+   "Движок",
+   "Чем читать: встроенными средствами системы или Tesseract."
+  ],
+  "ocr.sparse_threshold": [
+   "Порог скудного дерева",
+   "В режиме auto читать, если в дереве меньше интерактивных элементов, чем здесь."
+  ],
+  "ocr.languages": [
+   "Языки",
+   "Языки для распознавания, например en или de. Пусто: ваши собственные языки."
+  ],
+  "ocr.min_confidence": [
+   "Минимальная уверенность",
+   "Пропускать строки, распознанные с меньшей уверенностью."
+  ],
+  "ocr.max_lines": [
+   "Максимум строк",
+   "Не больше стольких строк."
+  ],
+  "ocr.tesseract_path": [
+   "Путь к Tesseract",
+   "Программа Tesseract."
+  ],
+  "ocr.blind_regions": [
+   "Слепые области",
+   "Также читать области, о которых дерево ничего не говорит (холст, изображение), в окнах, где много других элементов."
+  ],
+  "decision.auto": [
+   "Авто",
+   "Сервер сам спрашивает модель там, где это экономит агенту ход."
+  ],
+  "decision.auto_timeout_ms": [
+   "Тайм-аут авто, ms",
+   "Самое долгое ожидание ответа на такие вопросы."
+  ],
+  "decision.timeout_ms": [
+   "Тайм-аут, ms",
+   "Самое долгое ожидание одного ответа."
+  ],
+  "decision.max_state_chars": [
+   "Максимум символов состояния",
+   "У более длинного состояния сохраняются начало и конец."
+  ],
+  "decision.parallel": [
+   "Параллельно",
+   "Сколько запросов одновременно при оценке нескольких пунктов."
+  ],
+  "decision.cache_seconds": [
+   "Кэш, с",
+   "Один и тот же вопрос об одном и том же состоянии получает ответ один раз на это время."
+  ],
+  "privacy.redact_passwords": [
+   "Скрывать пароли",
+   "Маскировать поля паролей в тексте и закрашивать их на изображениях."
+  ],
+  "privacy.redact_card_numbers": [
+   "Скрывать номера карт",
+   "Маскировать номера карт (остаются только последние 4 цифры)."
+  ],
+  "privacy.redact_labels": [
+   "Скрывать по подписям",
+   "Поля, чья подпись содержит одно из этих слов, тоже маскируются."
+  ],
+  "privacy.style": [
+   "Стиль",
+   "Как скрываются приватные области на изображениях."
+  ],
+  "control.stop_hotkey": [
+   "Клавиша остановки",
+   "Аварийная остановка: сразу останавливает агента из любого приложения. Пусто: без клавиши остановки."
+  ],
+  "control.pause_on_user_input": [
+   "Пауза при вашем вводе",
+   "Ждать, пока вы пользуетесь мышью или клавиатурой. Читается только время простоя системы, а не то, что вы печатаете."
+  ],
+  "control.resume_after_idle_ms": [
+   "Продолжение после простоя, ms",
+   "Сколько вы должны бездействовать, прежде чем агент продолжит."
+  ],
+  "control.max_pause_secs": [
+   "Максимальная пауза, с",
+   "По истечении этого времени действие завершается ошибкой, и агенту сообщается причина."
+  ],
+  "control.settings_hotkey": [
+   "Клавиша настроек",
+   "Открывает эту панель из любого приложения. Пусто: без клавиши."
+  ],
+  "hub.enabled": [
+   "Включено",
+   "Несколько агентов на одном рабочем столе делят один хаб: у каждого свой указатель, одна клавиша остановки, экран поделён, клавиатура и мышь — по очереди."
+  ],
+  "hub.port": [
+   "Порт",
+   "Порт хаба на этом компьютере."
+  ],
+  "hub.arrange": [
+   "Расстановка",
+   "Если агентов два или больше, перемещать окно каждого агента в его часть экрана."
+  ],
+  "hub.chat": [
+   "Чат",
+   "Разрешить агентам отправлять друг другу короткие сообщения."
+  ],
+  "hub.turn_wait_secs": [
+   "Ожидание очереди, с",
+   "Самое долгое ожидание агентом своей очереди к клавиатуре и мыши."
+  ],
+  "hub.release_after_secs": [
+   "Освобождение через, с",
+   "Агент, который столько времени не делает вызовов, отдаёт свою часть экрана другим до следующего вызова; у только что запущенного сервера её нет."
+  ],
+  "notifications.enabled": [
+   "Включено",
+   "Разрешить агенту читать уведомления рабочего стола. В них бывают сообщения и коды из других приложений."
+  ],
+  "notifications.apps": [
+   "Приложения",
+   "Только уведомления от этих приложений. Пусто: от любых."
+  ],
+  "notifications.mask_codes": [
+   "Маскировать коды",
+   "Маскировать одноразовые коды и коды подтверждения."
+  ],
+  "notifications.keep": [
+   "Хранить",
+   "Сколько уведомлений хранится (Linux)."
+  ],
+  "script.saved_as_tools": [
+   "Скрипты как инструменты",
+   "Каждый сохранённый скрипт становится и отдельным инструментом."
+  ],
+  "script.files": [
+   "Файлы",
+   "Какие файлы могут использовать скрипты: none, workspace (только файлы папки скриптов), read (чтение любого файла) или all."
+  ],
+  "script.web": [
+   "Сеть",
+   "Разрешить скриптам запросы и загрузки по http(s)."
+  ],
+  "script.max_seconds": [
+   "Максимум секунд",
+   "Самое долгое выполнение одного скрипта, включая вызовы инструментов."
+  ],
+  "script.dir": [
+   "Папка",
+   "Где хранятся сохранённые скрипты. Пусто: папка по умолчанию."
+  ],
+  "verify.enabled": [
+   "Включено",
+   "Проверять результат каждого действия и сообщать агенту, если оно не сработало."
+  ],
+  "verify.retry": [
+   "Повтор",
+   "Явно неудавшееся действие пробуется ещё раз другим способом."
+  ],
+  "verify.retry_on_no_change": [
+   "Повтор без изменений",
+   "Также повторять нажатия, после которых ничего видимо не изменилось. Выключено: некоторые действия (оплата, отправка) проявляются с задержкой, и их нельзя повторять."
+  ],
+  "audit.enabled": [
+   "Включено",
+   "Записывать в файл журнала строку метаданных на каждый вызов."
+  ],
+  "audit.path": [
+   "Путь",
+   "Файл журнала. Пусто: audit.log в папке сервера."
+  ],
+  "server.log": [
+   "Журнал",
+   "Насколько подробно сервер ведёт журнал."
+  ],
+  "server.instructions": [
+   "Инструкции",
+   "Инструкции, отправляемые при подключении клиента: full, short (для клиентов, загружающих навыки) или off."
+  ],
+  "server.result_meta": [
+   "Метаданные результатов",
+   "Для хостов, которые урезают контекст: результаты сообщают, какие более ранние результаты они повторяют."
+  ],
+  "server.structured_output": [
+   "Структурированный вывод",
+   "Также возвращать некоторые результаты в виде данных — для клиентов, которые это используют."
+  ],
+  "server.http_addr": [
+   "Адрес HTTP",
+   "Обслуживать MCP по HTTP на этом адресе, например 127.0.0.1:8787. Пусто: только stdio."
+  ],
+  "server.http_token": [
+   "Токен HTTP",
+   "Токен bearer, который должны отправлять клиенты HTTP."
+  ],
+  "update.enabled": [
+   "Включено",
+   "Проверять наличие обновлений и скачивать их. Выключено: программа никогда не обновляется сама."
+  ],
+  "update.check_after_mins": [
+   "Первая проверка через, мин",
+   "Сколько минут после запуска сервера до первой проверки."
+  ],
+  "update.check_every_hours": [
+   "Проверять каждые, ч",
+   "Часы между проверками, пока сервер работает. Используется, когда минуты ниже равны 0."
+  ],
+  "update.check_every_mins": [
+   "Проверять каждые, мин",
+   "Минуты между проверками — для интервала короче часа. Не меньше 5. 0 — использовать часы."
+  ],
+  "update.channel": [
+   "Канал",
+   "Stable берёт только полноценные релизы. Prerelease берёт также релизы, которые GitHub помечает как пре-релизы (их теги — просто номера, например v4.9.0)."
+  ],
+  "update.pin": [
+   "Закрепить",
+   "Версия, на которой оставаться, например 5.0.2: берётся только этот релиз и ничего новее. Пусто: новейшая."
+  ],
+  "update.skip_version": [
+   "Пропустить версию",
+   "Версия, которую никогда не брать, например та, что здесь работала плохо."
+  ],
+  "update.install": [
+   "Установка",
+   "Когда устанавливается скачанное обновление: restart (после перезагрузки компьютера), start (при следующем запуске сервера) или manual (вручную)."
+  ],
+  "update.repo": [
+   "Репозиторий",
+   "Репозиторий GitHub, из которого берутся релизы (владелец/имя)."
+  ],
+  "linux.batch_size": [
+   "Размер пакета",
+   "Для скольких элементов запросы AT-SPI выполняются одновременно."
+  ],
+  "linux.text_max_chars": [
+   "Максимум символов текста",
+   "Самый длинный текст, читаемый из текстового элемента."
+  ],
+  "macos.batch_attributes": [
+   "Атрибуты пакетом",
+   "Читать все атрибуты элемента одним вызовом."
+  ],
+  "macos.messaging_timeout_secs": [
+   "Тайм-аут сообщений, с",
+   "Тайм-аут вызова специальных возможностей."
+  ],
+  "windows.use_cache_request": [
+   "Кэширующий запрос",
+   "Получать дерево всего окна одним вызовом UIA."
+  ],
+  "panel.theme": [
+   "Тема",
+   "Светлая, тёмная или как на компьютере."
+  ],
+  "panel.accent": [
+   "Акцентный цвет",
+   "Цвет, из которого строится палитра панели."
+  ],
+  "panel.language": [
+   "Язык",
+   "Язык этой страницы: как в браузере, английский, персидский (справа налево), китайский или русский."
+  ],
+  "panel.port": [
+   "Порт",
+   "Порт, который панель слушает, пока открыта. Если он занят, используется свободный."
+  ],
+  "panel.idle_minutes": [
+   "Простой, мин",
+   "Панель закрывается после стольких минут без запросов."
+  ]
+ }
+}

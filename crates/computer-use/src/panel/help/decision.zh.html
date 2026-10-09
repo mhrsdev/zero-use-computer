@@ -1,7 +1,7 @@
-<h3>What it is for</h3>
-<p>A fast model that answers small typed questions about what is on screen, so the agent doesn't have to read and judge everything itself: yes or no (the probability of yes), one of some options, or a score. Which of fifty reviews are positive; has the page loaded; which element is the add-to-cart button.</p>
-<p>It is optional and nothing depends on it. The server also asks it on its own where that saves the agent a turn (<code>decision.auto</code>), answers the same question once for five minutes, and never makes the agent wait on it: after three seconds it judges by itself.</p>
-<h3>Setting it up</h3>
-<p>On <a href="#decision-model">Decision model</a>, choose Jev (TypeSafe's System One, or a server that speaks its API) or any OpenAI-compatible chat model (OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio). A small, fast model works best. Paste the key and press Save; Test asks it one easy question. The key is saved in the settings file, readable by you only, and is never shown here again, only its last four characters.</p>
-<h3>What is sent</h3>
-<p>Only what is being judged: text the agent passes, or a window's elements as text. Private fields are masked first, as for the main model. A key typed here never goes through the chat. You can also keep the key in an environment variable and name it in <code>decision.api_key_env</code>.</p>
+<h3>它的用途</h3>
+<p>一个快速模型，回答关于屏幕内容的、有固定类型的小问题，这样智能体就不必自己阅读和判断所有内容：是或否（给出“是”的概率）、从若干选项中选一个，或打分。比如五十条评论中哪些是正面的；页面是否已加载；哪个元素是“加入购物车”按钮。</p>
+<p>它是可选的，没有任何功能依赖它。在能为智能体省去一轮交互的地方，服务器也会自行询问它（<code>decision.auto</code>）；同一个问题五分钟内只回答一次；而且绝不会让智能体等它：三秒后智能体就自行判断。</p>
+<h3>设置方法</h3>
+<p>在<a href="#decision-model">决策模型</a>页面，选择 Jev（TypeSafe 的 System One，或支持其 API 的服务器），或任何 OpenAI 兼容的聊天模型（OpenAI、Groq、Cerebras、OpenRouter、Ollama、LM Studio）。小而快的模型效果最好。粘贴密钥并按“保存”；“测试”会问它一个简单问题。密钥保存在设置文件中，只有你能读取，此后不会再在这里完整显示，只显示最后四个字符。</p>
+<h3>会发送什么</h3>
+<p>只发送需要判断的内容：智能体传入的文本，或以文本形式表示的窗口元素。与主模型一样，隐私字段会先被遮盖。在这里输入的密钥绝不会经过对话。也可以把密钥放在环境变量中，并在 <code>decision.api_key_env</code> 中填写该变量名。</p>

@@ -1,18 +1,18 @@
-<h3>What costs tokens</h3>
-<p>Three things, in about this order for a typical task:</p>
+<h3>哪些内容消耗 token</h3>
+<p>对一般任务而言，大致按以下顺序有三项：</p>
 <ul>
-<li><b>Pictures.</b> A picture counts as width × height ÷ 750 tokens. A whole 16:9 screen at 1280 px is about 1,230.</li>
-<li><b>The tool list,</b> sent with every request. The set the model starts with costs about 2,200 tokens with the lean descriptions; the tool manager keeps the rest out until the model asks for them.</li>
-<li><b>Trees,</b> the text of what is on screen. A busy window can run to thousands of tokens; later looks send only what changed.</li>
+<li><b>图片。</b>一张图片按 宽 × 高 ÷ 750 个 token 计算。1280 px 的 16:9 整屏约为 1,230 个。</li>
+<li><b>工具列表，</b>随每次请求发送。使用 lean 描述时，模型初始可见的工具集约占 2,200 个 token；工具管理器会把其余工具挡在外面，直到模型请求。</li>
+<li><b>树，</b>即屏幕内容的文本。繁杂的窗口可能有数千个 token；之后的查看只发送变化的部分。</li>
 </ul>
-<h3>What to turn</h3>
+<h3>可以调整什么</h3>
 <ul>
-<li><b>Picture size</b> (<code>screenshot.max_dimension</code>): the biggest lever. 1024 instead of 1280 is about a third fewer image tokens, and the text in the picture gets smaller.</li>
-<li><b>When pictures come</b> (<code>screenshot.attach</code>): auto sends one for the first look at a window, a big change or a sparse tree. Always is the most expensive; never leaves the agent to the tree.</li>
-<li><b>Smart and adaptive pictures:</b> leave a picture out when the tree already says what changed, or when the agent has looked at an app a few times without ever using pixels there. Both are on.</li>
-<li><b>Tree size</b> (<code>tree.max_nodes</code>, <code>tree.max_tokens</code>): bigger trees are folded, then cut. Folded parts stay findable.</li>
-<li><b>Tools:</b> <a href="#tool-list">Tool list</a> shows what each costs. With the tool manager on <code>dispatch</code> the model starts with the base tools and finds the rest by name.</li>
-<li><b>Fewer round trips:</b> the agent's <code>batch</code> tool runs several known steps in one call.</li>
+<li><b>图片尺寸</b>（<code>screenshot.max_dimension</code>）：影响最大的设置。用 1024 代替 1280，图片 token 约少三分之一，图中的文字也会变小。</li>
+<li><b>何时发送图片</b>（<code>screenshot.attach</code>）：auto 在首次查看窗口、发生较大变化或树信息稀少时发送一张。always 最贵；never 让智能体只依靠树。</li>
+<li><b>智能与自适应图片：</b>当树已经说明了变化的内容，或者智能体已多次查看某个应用却从未用到像素时，就不附加图片。两者默认开启。</li>
+<li><b>树的大小</b>（<code>tree.max_nodes</code>、<code>tree.max_tokens</code>）：更大的树会先折叠，再截断。折叠的部分仍然可以查找。</li>
+<li><b>工具：</b><a href="#tool-list">工具列表</a>显示了每个工具的开销。工具管理器设为 <code>dispatch</code> 时，模型从基础工具开始，其余工具按名称查找。</li>
+<li><b>减少往返：</b>智能体的 <code>batch</code> 工具可在一次调用中执行多个已知步骤。</li>
 </ul>
-<h3>The quick way</h3>
-<p>The <a href="#profiles">Low tokens</a> profile sets the picture and tree limits for you; Balanced puts them back. The measured figures (and how they were measured) are in the benchmark section of the README. They are estimates without a prompt cache, so read them as a comparison between settings, not as a bill: your model counts its own way and the cache makes repeats cheaper.</p>
+<h3>快捷方法</h3>
+<p><a href="#profiles">低 token</a> 配置方案会替你设置图片和树的限制；“均衡”会把它们恢复原样。实测数据（及测量方法）见 README 的基准测试部分。这些数据是在没有提示缓存的情况下估算的，因此应视为不同设置之间的对比，而不是账单：模型有自己的计数方式，缓存也会让重复内容更便宜。</p>

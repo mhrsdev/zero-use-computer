@@ -1,13 +1,13 @@
-<h3>What keeps you in charge</h3>
+<h3>如何确保由你掌控</h3>
 <ul>
-<li><b>The stop key.</b> One press stops every agent; every tool call is refused until you press it again. It works from any app. Change it under <a href="#your-control">Your control</a>.</li>
-<li><b>It waits for you.</b> Before each action it waits while you are using the mouse or keyboard, and goes on after 1.5 seconds of quiet. Only the system's idle time is read, never what you type or where you click. After two minutes it gives up and tells the agent why.</li>
-<li><b>The indicator.</b> While the agent works there is a border, a label and its pointer on the screen. They are click-through and left out of its screenshots.</li>
-<li><b>Private data is masked</b> before anything reaches the model: password fields, card numbers (only the last four digits stay) and fields labelled with words like <i>cvv</i> or <i>verification code</i>. Pictures have those areas blacked out. See <a href="#privacy">Privacy</a>.</li>
-<li><b>Keystrokes go to the app they are meant for,</b> and typed values are never written to the audit log.</li>
-<li><b>The audit log</b> (off by default) is one line a call: the tool, the app and how it ended. <a href="#audit-log">Audit log</a> shows it.</li>
+<li><b>停止键。</b>按一下即可停止所有智能体；在你再次按下之前，所有工具调用都会被拒绝。它在任何应用中都有效。可在<a href="#your-control">由你掌控</a>中更改。</li>
+<li><b>它会等你。</b>每个动作之前，只要你在使用鼠标或键盘，它就会等待，静止 1.5 秒后再继续。只读取系统的空闲时间，绝不读取你输入的内容或点击的位置。两分钟后它会放弃，并告诉智能体原因。</li>
+<li><b>指示标记。</b>智能体工作时，屏幕上会显示边框、标签和它的指针。这些都可点击穿透，且不会出现在它的截图中。</li>
+<li><b>隐私数据会被遮盖，</b>然后才会发送给模型：密码字段、银行卡号（只保留最后四位），以及标签含有 <i>cvv</i> 或<i>验证码</i>等词语的字段。图片中的这些区域会被涂黑。详见<a href="#privacy">隐私</a>。</li>
+<li><b>按键只发送到目标应用，</b>输入的值绝不会写入审计日志。</li>
+<li><b>审计日志</b>（默认关闭）每次调用一行：工具、应用及结果。可在<a href="#audit-log">审计日志</a>中查看。</li>
 </ul>
-<h3>What it does not do</h3>
-<p>This program does not decide which apps the agent may use. That is the job of the security skill the agent loads (<code>skills/computer-use-security</code>), so a client that doesn't load it has no such rule. Hiding a tool from the list, or telling the agent not to use something, is not a lock.</p>
-<h3>Protected settings</h3>
-<p>Settings that limit what the agent can do or see, or how the program updates, ask you to confirm each change, and the server asks too, so a page script can't skip it. This panel's own window is refused by every tool, so the agent can't use it to change its own limits.</p>
+<h3>它不做什么</h3>
+<p>本程序不决定智能体可以使用哪些应用。这是智能体加载的安全技能（<code>skills/computer-use-security</code>）的职责，因此不加载该技能的客户端就没有这条规则。从列表中隐藏某个工具，或告诉智能体不要使用某样东西，都不等于上锁。</p>
+<h3>受保护的设置</h3>
+<p>凡是会限制智能体能做什么、能看到什么，或影响程序如何更新的设置，每次更改都需确认，服务器也会再次确认，因此页面脚本无法绕过。所有工具都会拒绝操作此面板的窗口，因此智能体无法借此更改自身的限制。</p>
