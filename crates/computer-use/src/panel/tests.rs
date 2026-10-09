@@ -1052,6 +1052,7 @@ fn an_export_says_which_version_made_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
 #[test]
 fn going_back_a_version_brings_back_the_settings_it_ran_with() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1176,6 +1177,7 @@ fn going_back_a_version_brings_back_the_settings_it_ran_with() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
 fn waiting_again(dir: &Path) -> PathBuf {
     let d = dir.join("updates").join("v99.0.0");
     std::fs::create_dir_all(&d).unwrap();
