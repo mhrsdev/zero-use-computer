@@ -1,18 +1,18 @@
-<h3>What costs tokens</h3>
-<p>Three things, in about this order for a typical task:</p>
+<h3>چه چیزی توکن مصرف می‌کند</h3>
+<p>سه چیز، در یک کار معمولی تقریباً به همین ترتیب:</p>
 <ul>
-<li><b>Pictures.</b> A picture counts as width × height ÷ 750 tokens. A whole 16:9 screen at 1280 px is about 1,230.</li>
-<li><b>The tool list,</b> sent with every request. The set the model starts with costs about 2,200 tokens with the lean descriptions; the tool manager keeps the rest out until the model asks for them.</li>
-<li><b>Trees,</b> the text of what is on screen. A busy window can run to thousands of tokens; later looks send only what changed.</li>
+<li><b>تصویرها.</b> هر تصویر به اندازه‌ی عرض × ارتفاع ÷ 750 توکن حساب می‌شود. یک صفحه‌ی کامل 16:9 در 1280 px حدود 1,230 توکن است.</li>
+<li><b>فهرست ابزارها،</b> که با هر درخواست فرستاده می‌شود. مجموعه‌ای که مدل با آن شروع می‌کند با توضیحات کوتاه (lean) حدود 2,200 توکن هزینه دارد؛ مدیر ابزار بقیه را تا وقتی مدل درخواستشان نکند بیرون نگه می‌دارد.</li>
+<li><b>درخت‌ها،</b> یعنی متن آنچه روی صفحه است. یک پنجره‌ی شلوغ ممکن است به هزاران توکن برسد؛ نگاه‌های بعدی فقط تغییرها را می‌فرستند.</li>
 </ul>
-<h3>What to turn</h3>
+<h3>چه چیزی را تغییر دهید</h3>
 <ul>
-<li><b>Picture size</b> (<code>screenshot.max_dimension</code>): the biggest lever. 1024 instead of 1280 is about a third fewer image tokens, and the text in the picture gets smaller.</li>
-<li><b>When pictures come</b> (<code>screenshot.attach</code>): auto sends one for the first look at a window, a big change or a sparse tree. Always is the most expensive; never leaves the agent to the tree.</li>
-<li><b>Smart and adaptive pictures:</b> leave a picture out when the tree already says what changed, or when the agent has looked at an app a few times without ever using pixels there. Both are on.</li>
-<li><b>Tree size</b> (<code>tree.max_nodes</code>, <code>tree.max_tokens</code>): bigger trees are folded, then cut. Folded parts stay findable.</li>
-<li><b>Tools:</b> <a href="#tool-list">Tool list</a> shows what each costs. With the tool manager on <code>dispatch</code> the model starts with the base tools and finds the rest by name.</li>
-<li><b>Fewer round trips:</b> the agent's <code>batch</code> tool runs several known steps in one call.</li>
+<li><b>اندازه‌ی تصویر</b> (<code>screenshot.max_dimension</code>): مؤثرترین اهرم. 1024 به جای 1280 حدود یک‌سوم توکن تصویر کمتر مصرف می‌کند و متن درون تصویر ریزتر می‌شود.</li>
+<li><b>زمان فرستادن تصویر</b> (<code>screenshot.attach</code>): auto برای نخستین نگاه به یک پنجره، یک تغییر بزرگ یا یک درخت کم‌عنصر تصویر می‌فرستد. always گران‌ترین است؛ never ایجنت را فقط به درخت می‌سپارد.</li>
+<li><b>تصویرهای هوشمند و تطبیقی:</b> وقتی درخت تغییر را از قبل گفته، یا وقتی ایجنت چند بار به برنامه‌ای نگاه کرده و هرگز از پیکسل‌های آن استفاده نکرده، تصویر فرستاده نمی‌شود. هر دو روشن‌اند.</li>
+<li><b>اندازه‌ی درخت</b> (<code>tree.max_nodes</code>، <code>tree.max_tokens</code>): درخت‌های بزرگ‌تر اول تا می‌شوند، سپس بریده می‌شوند. بخش‌های تاشده همچنان قابل یافتن‌اند.</li>
+<li><b>ابزارها:</b> <a href="#tool-list">فهرست ابزارها</a> هزینه‌ی هر کدام را نشان می‌دهد. وقتی مدیر ابزار روی <code>dispatch</code> باشد، مدل با ابزارهای پایه شروع می‌کند و بقیه را با نامشان پیدا می‌کند.</li>
+<li><b>رفت‌وبرگشت کمتر:</b> ابزار <code>batch</code> ایجنت چند گام مشخص را در یک فراخوانی اجرا می‌کند.</li>
 </ul>
-<h3>The quick way</h3>
-<p>The <a href="#profiles">Low tokens</a> profile sets the picture and tree limits for you; Balanced puts them back. The measured figures (and how they were measured) are in the benchmark section of the README. They are estimates without a prompt cache, so read them as a comparison between settings, not as a bill: your model counts its own way and the cache makes repeats cheaper.</p>
+<h3>راه سریع</h3>
+<p>پروفایل <a href="#profiles">توکن کم</a> محدودیت‌های تصویر و درخت را برایتان تنظیم می‌کند؛ «متعادل» آن‌ها را برمی‌گرداند. ارقام اندازه‌گیری‌شده (و روش اندازه‌گیری‌شان) در بخش benchmark فایل README آمده است. این ارقام تخمین‌هایی بدون کش پرامپت‌اند، پس آن‌ها را مقایسه‌ای میان تنظیم‌ها بخوانید، نه صورت‌حساب: مدل شما به روش خودش می‌شمارد و کش تکرارها را ارزان‌تر می‌کند.</p>

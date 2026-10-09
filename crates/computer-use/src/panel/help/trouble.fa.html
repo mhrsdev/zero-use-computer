@@ -1,17 +1,17 @@
-<h3>Start with doctor</h3>
-<p><code>computer-use-mcp doctor</code> says what is missing. It checks the accessibility bus, the permissions, the stop key and this panel's key, and lists the apps whose tree said least.</p>
-<h3>By system</h3>
+<h3>با doctor شروع کنید</h3>
+<p><code>computer-use-mcp doctor</code> می‌گوید چه چیزی کم است. گذرگاه دسترسی‌پذیری، دسترسی‌ها، کلید توقف و کلید این پنل را بررسی می‌کند و برنامه‌هایی را که درختشان کمترین اطلاعات را داده فهرست می‌کند.</p>
+<h3>بر اساس سیستم</h3>
 <ul>
-<li><b>macOS.</b> Give Accessibility and Screen Recording to the app that <em>starts</em> the server (Terminal, Claude Desktop, Codex, your editor), then start that app again. The stop key is <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd>, not Cmd+Option+Esc, which is Force Quit.</li>
-<li><b>Windows.</b> Nothing to grant. An app running as administrator can't be controlled from a normal process.</li>
-<li><b>Linux.</b> An X11 or XWayland session with the AT-SPI accessibility bus; native Wayland works on Hyprland, sway and other wlroots compositors. Without the bus the server still starts, but there is no tree.</li>
+<li><b>macOS.</b> دسترسی Accessibility و Screen Recording را به برنامه‌ای بدهید که سرور را <em>اجرا</em> می‌کند (Terminal، Claude Desktop، Codex، ویرایشگرتان)، سپس آن برنامه را دوباره باز کنید. کلید توقف <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd> است، نه Cmd+Option+Esc که Force Quit است.</li>
+<li><b>Windows.</b> نیازی به دادن دسترسی نیست. برنامه‌ای که با دسترسی administrator اجرا می‌شود از یک فرایند عادی قابل کنترل نیست.</li>
+<li><b>Linux.</b> یک نشست X11 یا XWayland با گذرگاه دسترسی‌پذیری AT-SPI؛ Wayland بومی روی Hyprland، sway و دیگر کامپوزیتورهای wlroots کار می‌کند. بدون این گذرگاه سرور باز هم اجرا می‌شود، اما درختی در کار نیست.</li>
 </ul>
-<h3>Common things</h3>
+<h3>مشکلات رایج</h3>
 <ul>
-<li><b>A key does nothing.</b> Another program may hold it. <a href="#your-control">Your control</a> lets you pick another; <code>doctor</code> says which was refused.</li>
-<li><b>The panel opens on another port.</b> Something else uses <code>panel.port</code>. Any free port is used instead, and <code>computer-use-mcp settings</code> prints the address.</li>
-<li><b>Claude Code says the name is reserved.</b> Newer versions keep <code>computer-use</code> for themselves. Connect adds the program as <code>zero-use-computer</code> instead.</li>
-<li><b>The agent can't read an app.</b> See <a href="#apps-report">Apps report</a>: an app with a high share of looks with little in the tree needs pictures. Try the Best quality profile for it, or <code>ocr.mode = always</code>.</li>
-<li><b>Updates never arrive.</b> They need <code>curl</code>. <a href="#updates">Updates</a> shows when it last looked and what it said; <b>Check now</b> asks again and shows the error.</li>
-<li><b>A change I made was undone.</b> The settings file is the truth. If it has a mistake, the program serves the defaults and says why in its log; <a href="#settings-file">Settings file</a> checks it as you type.</li>
+<li><b>یک کلید کاری نمی‌کند.</b> ممکن است برنامه‌ی دیگری آن را گرفته باشد. در <a href="#your-control">کنترل شما</a> می‌توانید کلید دیگری انتخاب کنید؛ <code>doctor</code> می‌گوید کدام رد شده است.</li>
+<li><b>پنل روی پورت دیگری باز می‌شود.</b> چیز دیگری از <code>panel.port</code> استفاده می‌کند. به جای آن هر پورت آزادی استفاده می‌شود، و <code>computer-use-mcp settings</code> نشانی را چاپ می‌کند.</li>
+<li><b>Claude Code می‌گوید این نام رزرو شده است.</b> نسخه‌های تازه‌تر <code>computer-use</code> را برای خودشان نگه می‌دارند. «اتصال» به جای آن برنامه را با نام <code>zero-use-computer</code> اضافه می‌کند.</li>
+<li><b>ایجنت نمی‌تواند برنامه‌ای را بخواند.</b> <a href="#apps-report">گزارش برنامه‌ها</a> را ببینید: برنامه‌ای که سهم بالایی از نگاه‌هایش با درخت کم‌محتوا همراه است به تصویر نیاز دارد. پروفایل «بهترین کیفیت» را برایش امتحان کنید، یا <code>ocr.mode = always</code>.</li>
+<li><b>به‌روزرسانی‌ها هرگز نمی‌رسند.</b> به <code>curl</code> نیاز دارند. <a href="#updates">به‌روزرسانی‌ها</a> نشان می‌دهد آخرین بار کی بررسی شده و چه پاسخی آمده؛ <b>بررسی اکنون</b> دوباره می‌پرسد و خطا را نشان می‌دهد.</li>
+<li><b>تغییری که دادم برگشت خورد.</b> مرجع، فایل تنظیمات است. اگر اشکالی داشته باشد، برنامه پیش‌فرض‌ها را به کار می‌برد و دلیلش را در لاگ خود می‌نویسد؛ <a href="#settings-file">فایل تنظیمات</a> هنگام تایپ آن را بررسی می‌کند.</li>
 </ul>

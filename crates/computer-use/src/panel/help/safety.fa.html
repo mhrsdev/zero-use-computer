@@ -1,13 +1,13 @@
-<h3>What keeps you in charge</h3>
+<h3>چه چیزی کنترل را در دست شما نگه می‌دارد</h3>
 <ul>
-<li><b>The stop key.</b> One press stops every agent; every tool call is refused until you press it again. It works from any app. Change it under <a href="#your-control">Your control</a>.</li>
-<li><b>It waits for you.</b> Before each action it waits while you are using the mouse or keyboard, and goes on after 1.5 seconds of quiet. Only the system's idle time is read, never what you type or where you click. After two minutes it gives up and tells the agent why.</li>
-<li><b>The indicator.</b> While the agent works there is a border, a label and its pointer on the screen. They are click-through and left out of its screenshots.</li>
-<li><b>Private data is masked</b> before anything reaches the model: password fields, card numbers (only the last four digits stay) and fields labelled with words like <i>cvv</i> or <i>verification code</i>. Pictures have those areas blacked out. See <a href="#privacy">Privacy</a>.</li>
-<li><b>Keystrokes go to the app they are meant for,</b> and typed values are never written to the audit log.</li>
-<li><b>The audit log</b> (off by default) is one line a call: the tool, the app and how it ended. <a href="#audit-log">Audit log</a> shows it.</li>
+<li><b>کلید توقف.</b> یک بار زدن همه‌ی ایجنت‌ها را متوقف می‌کند؛ تا دوباره آن را نزنید، همه‌ی فراخوانی‌های ابزار رد می‌شوند. در هر برنامه‌ای کار می‌کند. آن را در <a href="#your-control">کنترل شما</a> تغییر دهید.</li>
+<li><b>منتظر شما می‌ماند.</b> پیش از هر کنش، تا وقتی از ماوس یا صفحه‌کلید استفاده می‌کنید صبر می‌کند و پس از 1.5 ثانیه سکوت ادامه می‌دهد. فقط زمان بی‌کاری سیستم خوانده می‌شود، هرگز آنچه تایپ می‌کنید یا جایی که کلیک می‌کنید. پس از دو دقیقه منصرف می‌شود و دلیلش را به ایجنت می‌گوید.</li>
+<li><b>نشانه‌ی روی صفحه.</b> تا وقتی ایجنت کار می‌کند، یک حاشیه، یک برچسب و نشانگرش روی صفحه است. این‌ها کلیک را از خود عبور می‌دهند و در اسکرین‌شات‌های ایجنت نمی‌آیند.</li>
+<li><b>داده‌های خصوصی پوشانده می‌شوند</b>، پیش از آنکه چیزی به مدل برسد: فیلدهای گذرواژه، شماره‌های کارت (فقط چهار رقم آخر می‌ماند) و فیلدهایی که برچسبشان واژه‌هایی مانند <i>cvv</i> یا <i>verification code</i> دارد. این ناحیه‌ها در تصویرها سیاه می‌شوند. <a href="#privacy">حریم خصوصی</a> را ببینید.</li>
+<li><b>ضربه‌های کلید به همان برنامه‌ای می‌روند که برایش در نظر گرفته شده‌اند،</b> و مقادیر تایپ‌شده هرگز در گزارش ممیزی نوشته نمی‌شوند.</li>
+<li><b>گزارش ممیزی</b> (به‌طور پیش‌فرض خاموش) برای هر فراخوانی یک خط است: ابزار، برنامه و نتیجه‌ی آن. <a href="#audit-log">گزارش ممیزی</a> آن را نشان می‌دهد.</li>
 </ul>
-<h3>What it does not do</h3>
-<p>This program does not decide which apps the agent may use. That is the job of the security skill the agent loads (<code>skills/computer-use-security</code>), so a client that doesn't load it has no such rule. Hiding a tool from the list, or telling the agent not to use something, is not a lock.</p>
-<h3>Protected settings</h3>
-<p>Settings that limit what the agent can do or see, or how the program updates, ask you to confirm each change, and the server asks too, so a page script can't skip it. This panel's own window is refused by every tool, so the agent can't use it to change its own limits.</p>
+<h3>چه کاری نمی‌کند</h3>
+<p>این برنامه تعیین نمی‌کند ایجنت از کدام برنامه‌ها می‌تواند استفاده کند. این کار مهارت امنیتی‌ای است که ایجنت بارگذاری می‌کند (<code>skills/computer-use-security</code>)، پس کلاینتی که آن را بارگذاری نکند چنین قاعده‌ای ندارد. پنهان کردن یک ابزار از فهرست، یا گفتن به ایجنت که از چیزی استفاده نکند، قفل به حساب نمی‌آید.</p>
+<h3>تنظیم‌های محافظت‌شده</h3>
+<p>تنظیم‌هایی که کارهای ایجنت یا آنچه می‌بیند، یا نحوه‌ی به‌روزرسانی برنامه را محدود می‌کنند، برای هر تغییر نیاز به تأیید شما دارند، و سرور هم تأیید می‌خواهد، پس اسکریپت یک صفحه نمی‌تواند از آن بگذرد. همه‌ی ابزارها پنجره‌ی خود این پنل را رد می‌کنند، پس ایجنت نمی‌تواند با آن محدودیت‌های خودش را تغییر دهد.</p>

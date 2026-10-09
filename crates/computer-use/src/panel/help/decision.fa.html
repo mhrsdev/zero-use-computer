@@ -1,7 +1,7 @@
-<h3>What it is for</h3>
-<p>A fast model that answers small typed questions about what is on screen, so the agent doesn't have to read and judge everything itself: yes or no (the probability of yes), one of some options, or a score. Which of fifty reviews are positive; has the page loaded; which element is the add-to-cart button.</p>
-<p>It is optional and nothing depends on it. The server also asks it on its own where that saves the agent a turn (<code>decision.auto</code>), answers the same question once for five minutes, and never makes the agent wait on it: after three seconds it judges by itself.</p>
-<h3>Setting it up</h3>
-<p>On <a href="#decision-model">Decision model</a>, choose Jev (TypeSafe's System One, or a server that speaks its API) or any OpenAI-compatible chat model (OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio). A small, fast model works best. Paste the key and press Save; Test asks it one easy question. The key is saved in the settings file, readable by you only, and is never shown here again, only its last four characters.</p>
-<h3>What is sent</h3>
-<p>Only what is being judged: text the agent passes, or a window's elements as text. Private fields are masked first, as for the main model. A key typed here never goes through the chat. You can also keep the key in an environment variable and name it in <code>decision.api_key_env</code>.</p>
+<h3>به چه کاری می‌آید</h3>
+<p>مدلی سریع که به پرسش‌های کوچک و قالب‌دار درباره‌ی آنچه روی صفحه است پاسخ می‌دهد تا ایجنت مجبور نباشد همه‌چیز را خودش بخواند و داوری کند: بله یا خیر (احتمال بله)، یکی از چند گزینه، یا یک امتیاز. کدام‌یک از پنجاه نقد مثبت است؛ آیا صفحه بارگذاری شده؛ کدام عنصر دکمه‌ی افزودن به سبد است.</p>
+<p>اختیاری است و هیچ چیز به آن وابسته نیست. سرور هر جا که با این کار یک نوبت ایجنت صرفه‌جویی شود خودش هم از آن می‌پرسد (<code>decision.auto</code>)، به یک پرسش تا پنج دقیقه فقط یک بار پاسخ می‌دهد، و هرگز ایجنت را منتظر آن نگه نمی‌دارد: پس از سه ثانیه خودش داوری می‌کند.</p>
+<h3>راه‌اندازی</h3>
+<p>در <a href="#decision-model">مدل تصمیم‌گیری</a>، Jev (System One از TypeSafe، یا سروری که API آن را پشتیبانی کند) یا هر مدل گفتگوی سازگار با OpenAI (OpenAI، Groq، Cerebras، OpenRouter، Ollama، LM Studio) را انتخاب کنید. یک مدل کوچک و سریع بهترین نتیجه را می‌دهد. کلید را جای‌گذاری کنید و «ذخیره» را بزنید؛ «آزمایش» یک پرسش ساده از آن می‌پرسد. کلید در فایل تنظیمات ذخیره می‌شود که فقط شما می‌توانید بخوانید، و دیگر هرگز اینجا نشان داده نمی‌شود، جز چهار نویسه‌ی آخرش.</p>
+<h3>چه چیزی فرستاده می‌شود</h3>
+<p>فقط آنچه داوری می‌شود: متنی که ایجنت می‌فرستد، یا عنصرهای یک پنجره به صورت متن. فیلدهای خصوصی، مانند مدل اصلی، پیش از آن پوشانده می‌شوند. کلیدی که اینجا وارد می‌کنید هرگز از گفتگو عبور نمی‌کند. می‌توانید کلید را در یک متغیر محیطی هم نگه دارید و نام آن را در <code>decision.api_key_env</code> بنویسید.</p>

@@ -1,15 +1,15 @@
-<h3>How an update happens</h3>
+<h3>به‌روزرسانی چگونه انجام می‌شود</h3>
 <ol>
-<li>A few minutes after a server starts (<code>update.check_after_mins</code>), and then every <code>check_every_mins</code> (or <code>check_every_hours</code>), it asks GitHub for the latest release of the repository. Every server on the computer shares one clock, so two of them never ask twice.</li>
-<li>A newer release is downloaded and checked against the SHA-256 GitHub gives for the file. A release with no checksum is not taken. The downloaded program is run once with <code>--version</code> to see it is the version it says.</li>
-<li>It waits. It is put in place only when a server <em>starts</em>, never while an agent may be working: after the computer restarts (<code>restart</code>, the default), at the next start (<code>start</code>), or only when you run <code>computer-use-mcp update --install</code> (<code>manual</code>).</li>
+<li>چند دقیقه پس از راه‌اندازی یک سرور (<code>update.check_after_mins</code>)، و سپس هر <code>check_every_mins</code> (یا <code>check_every_hours</code>)، تازه‌ترین انتشار مخزن را از GitHub می‌پرسد. همه‌ی سرورهای روی رایانه یک ساعت مشترک دارند، پس دو سرور هرگز دو بار نمی‌پرسند.</li>
+<li>انتشار تازه‌تر دانلود و با SHA-256 که GitHub برای فایل اعلام می‌کند بررسی می‌شود. انتشاری که checksum ندارد پذیرفته نمی‌شود. برنامه‌ی دانلودشده یک بار با <code>--version</code> اجرا می‌شود تا معلوم شود همان نسخه‌ای است که ادعا می‌کند.</li>
+<li>منتظر می‌ماند. فقط وقتی یک سرور <em>راه‌اندازی</em> می‌شود نصب می‌شود، هرگز وقتی ممکن است ایجنتی در حال کار باشد: پس از راه‌اندازی دوباره‌ی رایانه (<code>restart</code>، پیش‌فرض)، در راه‌اندازی بعدی (<code>start</code>)، یا فقط وقتی خودتان <code>computer-use-mcp update --install</code> را اجرا کنید (<code>manual</code>).</li>
 </ol>
-<h3>Choosing how it goes</h3>
+<h3>انتخاب شیوه‌ی کار</h3>
 <ul>
-<li><b>Never:</b> switch it off on the <a href="#updates">Updates</a> page. Nothing is looked for or downloaded.</li>
-<li><b>Often:</b> every 5 minutes is the shortest. GitHub allows 60 anonymous requests an hour for each address, and a look that finds nothing new costs nearly nothing, because only "has it changed?" is asked. If GitHub says to slow down, the program waits an hour.</li>
-<li><b>Stay put:</b> pin a version to take only that one; skip a version to never take it.</li>
-<li><b>Pre-releases:</b> the prerelease channel also takes releases GitHub marks as pre-releases.</li>
+<li><b>هرگز:</b> آن را در صفحه‌ی <a href="#updates">به‌روزرسانی‌ها</a> خاموش کنید. هیچ چیز جستجو یا دانلود نمی‌شود.</li>
+<li><b>اغلب:</b> کوتاه‌ترین بازه هر 5 دقیقه است. GitHub برای هر نشانی ساعتی 60 درخواست ناشناس را می‌پذیرد، و بررسی‌ای که چیز تازه‌ای پیدا نکند تقریباً هزینه‌ای ندارد، چون فقط پرسیده می‌شود «آیا تغییر کرده؟». اگر GitHub بگوید آهسته‌تر، برنامه یک ساعت صبر می‌کند.</li>
+<li><b>ماندن روی یک نسخه:</b> نسخه‌ای را ثابت کنید تا فقط همان گرفته شود؛ نسخه‌ای را رد کنید تا هرگز گرفته نشود.</li>
+<li><b>پیش‌انتشارها:</b> کانال prerelease انتشارهایی را هم که GitHub پیش‌انتشار علامت زده می‌گیرد.</li>
 </ul>
-<h3>Going back</h3>
-<p>When an update goes in, the program it replaces is kept (one only). <b>Go back</b> puts it in place again, and sets <code>update.skip_version</code> to the one you left so it isn't downloaded again. From a terminal: <code>computer-use-mcp update --rollback</code>. Clients already running keep the old program until they start again.</p>
+<h3>بازگشت به نسخه‌ی قبل</h3>
+<p>وقتی به‌روزرسانی نصب می‌شود، برنامه‌ای که جایگزین شده نگه داشته می‌شود (فقط یکی). <b>بازگشت</b> آن را دوباره سر جایش می‌گذارد و <code>update.skip_version</code> را روی نسخه‌ای که از آن برگشتید تنظیم می‌کند تا دوباره دانلود نشود. در ترمینال: <code>computer-use-mcp update --rollback</code>. کلاینت‌هایی که از قبل در حال اجرا هستند تا راه‌اندازی دوباره همان برنامه‌ی قدیمی را نگه می‌دارند.</p>

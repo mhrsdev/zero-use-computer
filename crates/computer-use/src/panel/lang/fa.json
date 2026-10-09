@@ -1,1 +1,1224 @@
-{}
+{
+ "ui": {
+  ", before the tool manager hides most of them until the model asks (tools.manager is dispatch)": "، پیش از آنکه مدیر ابزار بیشتر آن‌ها را تا درخواست مدل پنهان کند (tools.manager روی dispatch است)",
+  ", not yet": "، هنوز بررسی نکرده",
+  "({d}% against the default)": "({d}% نسبت به پیش‌فرض)",
+  "(no notes)": "(بدون یادداشت)",
+  "(not made yet: the first change makes it)": "(هنوز ساخته نشده: نخستین تغییر آن را می‌سازد)",
+  "{key}: must be a list": "{key}: باید فهرست باشد",
+  "{key}: must be a number": "{key}: باید عدد باشد",
+  "{key}: must be a whole number, not negative": "{key}: باید عدد صحیح و نامنفی باشد",
+  "{key}: must be between {min} and {max}": "{key}: باید بین {min} و {max} باشد",
+  "{key}: must be on or off": "{key}: باید روشن یا خاموش باشد",
+  "{key}: must be one line of text": "{key}: باید یک خط متن باشد",
+  "{key}: must be one of {choices}": "{key}: باید یکی از {choices} باشد",
+  "{key}: must be text": "{key}: باید متن باشد",
+  "{n} already the same": "{n} از قبل یکسان",
+  "{n} ask to confirm": "{n} نیاز به تأیید",
+  "{n} changed": "{n} تغییر کرده",
+  "{n} this version can't take": "{n} مورد که این نسخه نمی‌پذیرد",
+  "{n} to change": "{n} برای تغییر",
+  "{name} applied.": "{name} اعمال شد.",
+  "{name} picker": "انتخابگر {name}",
+  "{name} slider": "اسلایدر {name}",
+  "{px} px → about {tokens} tokens": "{px} px ← حدود {tokens} توکن",
+  "{v} is back.": "نسخه‌ی {v} بازگردانده شد.",
+  "{v} is downloaded and checked.": "نسخه‌ی {v} دانلود و بررسی شد.",
+  "{v} is in place.": "نسخه‌ی {v} نصب شد.",
+  "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "تنظیمات دیگر نسخه‌ی {v} را نمی‌خواهند (رد شده، نسخه‌ی دیگری ثابت شده، یا پیش‌انتشاری در کانال پایدار است)، پس کنار گذاشته شد",
+  "{v} is the latest under these settings.": "با این تنظیمات، {v} تازه‌ترین نسخه است.",
+  "{v} will not be taken again.": "نسخه‌ی {v} دیگر دریافت نمی‌شود.",
+  "{x} ago": "{x} پیش",
+  "{x} allowed by the settings.": "{x} با تنظیمات مجاز است.",
+  "{x} in it": "شامل {x}",
+  "{x} match “{query}”.": "{x} با «{query}» مطابقت دارد.",
+  "{x} would change": "{x} تغییر می‌کند",
+  "`{key}` is changed on its own page": "تغییر `{key}` در صفحه‌ی خودش انجام می‌شود",
+  "`{key}` is not a setting": "تنظیمی به نام `{key}` وجود ندارد",
+  "1 hour": "1 ساعت",
+  "10 min": "10 دقیقه",
+  "12 hours": "12 ساعت",
+  "30 min": "30 دقیقه",
+  "5 min": "5 دقیقه",
+  "a change has no key": "یکی از تغییرها کلید ندارد",
+  "a change needs a value": "هر تغییر به یک مقدار نیاز دارد",
+  "A different one each session, and for each agent at once": "در هر نشست یکی متفاوت، و برای ایجنت‌های هم‌زمان هر کدام یکی جدا",
+  "A fast model that answers small questions about what is on screen.": "مدلی سریع که به پرسش‌های کوچک درباره‌ی آنچه روی صفحه است پاسخ می‌دهد.",
+  "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "مدلی سریع که ایجنت پرسش‌های بله/خیر، چندگزینه‌ای و امتیازی درباره‌ی آنچه روی صفحه است را از آن می‌پرسد تا کمتر بخواند و زودتر تصمیم بگیرد. کلید شما روی همین رایانه ذخیره می‌شود و هرگز از گفتگو عبور نمی‌کند.",
+  "A hub is running on port {port}.": "یک هاب روی پورت {port} در حال اجراست.",
+  "A line for each call: the tool, the app and how it ended. Never the arguments, the tree or a picture.": "برای هر فراخوانی یک خط: ابزار، برنامه و نتیجه‌ی آن. آرگومان‌ها، درخت یا تصویر هرگز ثبت نمی‌شوند.",
+  "a list holds text": "فهرست باید از متن تشکیل شود",
+  "A picture counts as width × height ÷ 750 tokens, here for a 16:9 screen; text counts as four characters a token. An estimate: your model counts its own way, and the prompt cache makes repeats cheaper.": "هر تصویر به اندازه‌ی عرض × ارتفاع ÷ 750 توکن حساب می‌شود، اینجا برای صفحه‌ای 16:9؛ متن هر چهار نویسه یک توکن حساب می‌شود. این یک تخمین است: مدل شما به روش خودش می‌شمارد و کش پرامپت تکرارها را ارزان‌تر می‌کند.",
+  "A profile only sets the settings it names and puts back the defaults of the ones another profile sets. It never touches protected settings or secrets.": "هر پروفایل فقط تنظیم‌هایی را که نام می‌برد تغییر می‌دهد و تنظیم‌هایی را که پروفایل دیگری تغییر داده به پیش‌فرض برمی‌گرداند. هرگز به تنظیم‌های محافظت‌شده یا اطلاعات محرمانه دست نمی‌زند.",
+  "A random one each session, and a different one for each agent at once.": "در هر نشست یکی تصادفی، و برای ایجنت‌های هم‌زمان هر کدام یکی متفاوت.",
+  "A record of every call, without the data.": "سابقه‌ای از همه‌ی فراخوانی‌ها، بدون داده‌ها.",
+  "a restart": "راه‌اندازی دوباره",
+  "a saved secret is replaced, not reset, here": "اینجا مقدار محرمانه‌ی ذخیره‌شده جایگزین می‌شود، نه بازنشانی",
+  "A whole screen": "یک صفحه‌ی کامل",
+  "Accessibility tree": "درخت دسترسی‌پذیری",
+  "Add": "افزودن",
+  "Add and press Enter": "بنویسید و Enter را بزنید",
+  "Add to {name}": "افزودن به {name}",
+  "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak.": "با یک دکمه Zero را به ایجنت‌هایی که استفاده می‌کنید اضافه کنید. فقط ورودی خودش نوشته می‌شود؛ بقیه‌ی تنظیمات هر ایجنت دست‌نخورده می‌ماند و یک نسخه از فایل با پسوند .bak کنارش نگه داشته می‌شود.",
+  "Added": "اضافه شده",
+  "Added, other program": "اضافه شده، برنامه‌ای دیگر",
+  "Address (base URL)": "نشانی (base URL)",
+  "advanced": "پیشرفته",
+  "After adding:": "پس از افزودن:",
+  "After the import": "پس از درون‌ریزی",
+  "Already applied": "از قبل اعمال شده",
+  "Also put back the settings from before that update (the ones you have now are kept beside the file)": "تنظیمات پیش از آن به‌روزرسانی هم برگردانده شود (تنظیمات کنونی کنار فایل نگه داشته می‌شوند)",
+  "Always {style}.": "همیشه {style}.",
+  "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open).": "آیکونی که این پنل را باز می‌کند تا به کلید میان‌بر یا ترمینال نیازی نباشد. برنامه را با settings اجرا می‌کند که پنل را روی پورت خودش ارائه می‌دهد و در مرورگر شما باز می‌کند (یا پنلِ از قبل باز را نشان می‌دهد).",
+  "An overview": "یک نمای کلی",
+  "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count).": "هر به‌روزرسانی دانلود و با SHA-256 اعلام‌شده در GitHub بررسی می‌شود و فقط هنگام راه‌اندازی یک سرور نصب می‌شود، هرگز وقتی ممکن است ایجنتی در حال کار باشد. بررسی هر چند دقیقه یک بار مجاز است (GitHub ساعتی 60 درخواست ناشناس را می‌پذیرد و پاسخِ بدون تغییر حساب نمی‌شود).",
+  "Another file of that name": "فایل دیگری با همین نام",
+  "Another set": "نمونه‌های دیگر",
+  "API key": "کلید API",
+  "App": "برنامه",
+  "applies after a restart": "پس از راه‌اندازی دوباره اعمال می‌شود",
+  "Apply": "اعمال",
+  "Apps report": "گزارش برنامه‌ها",
+  "Apps with a high share in the third column are the ones the tree serves badly: they get text read off the screen and more pictures. Kept in {file}.": "برنامه‌هایی که در ستون سوم سهم بالایی دارند همان‌هایی هستند که درخت برایشان خوب کار نمی‌کند: برایشان متن از روی صفحه خوانده می‌شود و تصویرهای بیشتری فرستاده می‌شود. در {file} نگه داشته می‌شود.",
+  "Asked us to slow down; looking again in about {x}.": "خواسته که آهسته‌تر درخواست بدهیم؛ حدود {x} دیگر دوباره بررسی می‌شود.",
+  "Asking the model…": "در حال پرسیدن از مدل…",
+  "asks to confirm": "نیاز به تأیید",
+  "At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.": "حداکثر {px} px در ضلع بلندتر (حدود {tokens} توکن برای یک صفحه‌ی کامل 16:9)، پیوست: {attach}.",
+  "Audit log": "گزارش ممیزی",
+  "Auto": "خودکار",
+  "Back to the default": "بازگشت به پیش‌فرض",
+  "Back to the default.": "به پیش‌فرض برگشت.",
+  "Balanced": "متعادل",
+  "Best quality": "بهترین کیفیت",
+  "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "تصویرهای بزرگ، پنجره‌های کامل، درخت‌های بلندتر و بدون کوتاه‌سازی. بیشترین توکن؛ برای برنامه‌هایی که سخت خوانده می‌شوند.",
+  "Can go back to": "امکان بازگشت به",
+  "Can't change safely": "تغییر امن ممکن نیست",
+  "can't make the profiles folder": "پوشه‌ی پروفایل‌ها ساخته نشد",
+  "can't take it": "پذیرفته نمی‌شود",
+  "Cancel": "انصراف",
+  "cells": "خانه",
+  "Change": "تغییر",
+  "Change protected settings?": "تنظیم‌های محافظت‌شده تغییر کنند؟",
+  "changed": "تغییر کرده",
+  "Changed from default": "تغییر کرده نسبت به پیش‌فرض",
+  "characters": "نویسه",
+  "Check": "بررسی",
+  "Check now": "بررسی اکنون",
+  "Checking actions": "بررسی کنش‌ها",
+  "choose a kind of model": "نوع مدل را انتخاب کنید",
+  "Choose a kind of model first.": "ابتدا نوع مدل را انتخاب کنید.",
+  "Choose a pointer": "انتخاب نشانگر",
+  "choose an agent": "یک ایجنت انتخاب کنید",
+  "Comes with the program": "همراه برنامه",
+  "Connect an agent": "اتصال ایجنت",
+  "Copied.": "کپی شد.",
+  "Copy": "کپی",
+  "couldn't keep the settings you have now, so nothing was changed": "نگه‌داشتن تنظیمات کنونی ممکن نشد، پس چیزی تغییر نکرد",
+  "Couldn't read the settings.": "تنظیمات خوانده نشد.",
+  "Daily": "روزانه",
+  "Dark": "تیره",
+  "Decision model": "مدل تصمیم‌گیری",
+  "default:": "پیش‌فرض:",
+  "Delete": "حذف",
+  "Delete the profile “{name}”?": "پروفایل «{name}» حذف شود؟",
+  "Desktop shortcut": "میان‌بر دسکتاپ",
+  "Done": "پایان",
+  "Download": "دانلود",
+  "Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots.": "بر اساس تنظیمات شما رسم شده تا نشان دهد چطور با هم جور می‌شوند. پوشش روی صفحه‌ی واقعی کلیک را از خود عبور می‌دهد و در اسکرین‌شات‌های ایجنت نمی‌آید.",
+  "e.g. gpt-4.1-nano, llama-3.1-8b-instant": "مثلاً gpt-4.1-nano یا llama-3.1-8b-instant",
+  "each field must be one line": "هر فیلد باید یک خط باشد",
+  "Each press makes new ones: no two hands are the same.": "هر بار زدن، نمونه‌های تازه می‌سازد: هیچ دو دستی یکسان نیست.",
+  "elements": "عنصر",
+  "Emergency stop": "توقف اضطراری",
+  "empty": "خالی",
+  "Error": "خطا",
+  "Every {x}": "هر {x}",
+  "Export": "برون‌بری",
+  "File:": "فایل:",
+  "Files and the command line": "فایل‌ها و خط فرمان",
+  "Fix it in a text editor: {path}": "آن را در یک ویرایشگر متن اصلاح کنید: {path}",
+  "for example ctrl+alt+escape": "مثلاً ctrl+alt+escape",
+  "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "برای ضبط دمو: نشانگر و حاشیه‌ی بزرگ‌تر، حرکت‌های نرم طولانی‌تر، نمایش کلیدها و متن، و ماندن حالت پایان کمی بیشتر روی صفحه.",
+  "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "در ترمینال همین کار با `computer-use-mcp install` (همه‌ی ایجنت‌های یافت‌شده در اینجا) انجام می‌شود؛ `--client NAME` برای یکی، `--list` برای دیدن و `--remove` برای برداشتن.",
+  "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "در ترمینال: computer-use-mcp shortcut (دسکتاپ)، --menu، --both، --remove، --list. فقط میان‌برهایی حذف می‌شوند که خود این برنامه ساخته است.",
+  "General": "عمومی",
+  "Getting started": "شروع کار",
+  "GitHub": "GitHub",
+  "give the profile a name": "برای پروفایل نامی بگذارید",
+  "Go back": "بازگشت",
+  "Go back to {v}": "بازگشت به {v}",
+  "Go back to version {v}?": "بازگشت به نسخه‌ی {v}؟",
+  "Guide": "راهنما",
+  "Home": "خانه",
+  "hours": "ساعت",
+  "How much of the app's tree the model reads, and how it is shortened.": "مدل چه مقدار از درخت برنامه را می‌خواند و درخت چگونه کوتاه می‌شود.",
+  "How often it looks": "هر چند وقت بررسی کند",
+  "How often it looks for a new release": "هر چند وقت یک بار دنبال نسخه‌ی تازه بگردد",
+  "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.": "نشانگر خود ایجنت چه شکلی دارد و چگونه روی صفحه حرکت می‌کند. به ماوس واقعی شما دست زده نمی‌شود.",
+  "How the pointer glides": "نحوه‌ی حرکت نشانگر",
+  "How the program keeps itself up to date. Changes ask you to confirm.": "برنامه چگونه خودش را به‌روز نگه می‌دارد. تغییرها نیاز به تأیید دارند.",
+  "How the real mouse goes": "نحوه‌ی حرکت ماوس واقعی",
+  "How the real mouse moves when an action has to use it.": "ماوس واقعی وقتی کنشی ناچار از آن استفاده می‌کند چگونه حرکت کند.",
+  "If the agent spends too much, try the Low tokens profile. If it can't read an app, try Best quality. To record a demo, Showcase makes the pointer and border bigger.": "اگر ایجنت زیادی خرج می‌کند، پروفایل «توکن کم» را امتحان کنید. اگر برنامه‌ای را نمی‌تواند بخواند، «بهترین کیفیت» را. برای ضبط دمو، «نمایشی» نشانگر و حاشیه را بزرگ‌تر می‌کند.",
+  "Import": "درون‌ریزی",
+  "Import {x}": "درون‌ریزی {x}",
+  "Import and export": "درون‌ریزی و برون‌بری",
+  "Import the {n} it can take": "درون‌ریزی {n} مورد قابل پذیرش",
+  "Imported {x}; left out {n} this version can't take.": "{x} درون‌ریزی شد؛ {n} موردی که این نسخه نمی‌پذیرد کنار گذاشته شد.",
+  "Imported {x}.": "{x} درون‌ریزی شد.",
+  "It goes in {when}.": "{when} نصب می‌شود.",
+  "It is changed on its own page, not by an import": "در صفحه‌ی خودش تغییر می‌کند، نه با درون‌ریزی",
+  "It looks every {x}.": "بازه‌ی بررسی: {x}.",
+  "It starts {program} settings, which opens the panel in your browser.": "با اجرای {program} settings، پنل را در مرورگر شما باز می‌کند.",
+  "It will not look for updates.": "دنبال به‌روزرسانی نمی‌گردد.",
+  "items": "مورد",
+  "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
+  "just now": "همین الان",
+  "KB": "KB",
+  "Keep": "نگه‌داشتن",
+  "Keep the current settings as a profile": "نگه‌داشتن تنظیمات کنونی به‌عنوان پروفایل",
+  "Kept {x}.": "{x} نگه داشته شد.",
+  "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "{x} نگه داشته شد. {n} مورد که پروفایل نمی‌تواند داشته باشد (اطلاعات محرمانه، تنظیم‌های محافظت‌شده، پورت‌ها) کنار گذاشته شد.",
+  "Language": "زبان",
+  "last {when}": "آخرین بار {when}",
+  "Leave empty for {url}.": "برای {url} خالی بگذارید.",
+  "Left out": "کنار گذاشته",
+  "levels": "سطح",
+  "Light": "روشن",
+  "lines": "خط",
+  "Little in the tree": "درخت کم‌محتوا",
+  "Logging, the instructions sent to clients and the optional HTTP transport.": "لاگ‌نویسی، دستورالعمل‌هایی که برای کلاینت‌ها فرستاده می‌شود و انتقال اختیاری HTTP.",
+  "Looking": "بررسی",
+  "Looking…": "در حال بررسی…",
+  "Looks": "دفعات نگاه",
+  "Low tokens": "توکن کم",
+  "Made {path}.": "{path} ساخته شد.",
+  "Made by version {v}; this is version {w}.": "ساخته‌شده با نسخه‌ی {v}؛ این نسخه‌ی {w} است.",
+  "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.": "ساخته‌شده برای تصمیم‌گیری: پاسخ در کمتر از یک ثانیه، همراه با احتمال‌ها. همچنین هر سروری که همین API را پشتیبانی کند.",
+  "Make": "ساختن",
+  "Make again": "ساخت دوباره",
+  "make it again to start": "دوباره بسازید تا این را اجرا کند:",
+  "min": "دقیقه",
+  "minutes": "دقیقه",
+  "Model": "مدل",
+  "Model and API key": "مدل و کلید API",
+  "ms": "ms",
+  "must be a list": "باید فهرست باشد",
+  "must be a number": "باید عدد باشد",
+  "must be a whole number, not negative": "باید عدد صحیح و نامنفی باشد",
+  "must be between {min} and {max}": "باید بین {min} و {max} باشد",
+  "must be on or off": "باید روشن یا خاموش باشد",
+  "must be one line of text": "باید یک خط متن باشد",
+  "must be one of {choices}": "باید یکی از {choices} باشد",
+  "must be text": "باید متن باشد",
+  "Name, for example Work laptop": "نام، مثلاً لپ‌تاپ کاری",
+  "never": "هرگز",
+  "Never": "هرگز",
+  "Never {v}.": "نسخه‌ی {v} هرگز دریافت نمی‌شود.",
+  "next in about {x}": "بعدی حدود {x} دیگر",
+  "no import has been made yet, so there is nothing to go back to": "هنوز درون‌ریزی‌ای انجام نشده، پس چیزی برای بازگشت نیست",
+  "No key for this panel": "کلیدی برای این پنل نیست",
+  "No log yet: turn it on above.": "هنوز گزارشی نیست: آن را در بالا روشن کنید.",
+  "no update is waiting": "هیچ به‌روزرسانی‌ای در انتظار نیست",
+  "none": "هیچ",
+  "None set up.": "هیچ کدام راه‌اندازی نشده.",
+  "None yet. Change some settings, then keep them here under a name.": "هنوز هیچ. چند تنظیم را تغییر دهید، سپس آن‌ها را با یک نام اینجا نگه دارید.",
+  "None: this server keeps its settings in memory.": "هیچ: این سرور تنظیماتش را در حافظه نگه می‌دارد.",
+  "not a setting: {keys}": "تنظیم نیستند: {keys}",
+  "Not added": "اضافه نشده",
+  "Not found here": "اینجا یافت نشد",
+  "not in this version": "در این نسخه نیست",
+  "Not needed for a server on this computer.": "برای سروری روی همین رایانه لازم نیست.",
+  "Not reset.": "بازنشانی نشد.",
+  "Not saved.": "ذخیره نشد.",
+  "Not set": "تنظیم نشده",
+  "Not there": "وجود ندارد",
+  "Nothing counted yet. Each time the agent looks at an app, the program notes how much its accessibility tree told it and whether it had to use pixels; the apps that needed pixels most show here. It is kept in {file} (screenshot.record_apps).": "هنوز چیزی شمرده نشده. هر بار که ایجنت به برنامه‌ای نگاه می‌کند، ثبت می‌شود که درخت دسترسی‌پذیری آن چه اندازه اطلاعات داده و آیا ناچار به استفاده از پیکسل‌ها شده است؛ برنامه‌هایی که بیش از همه به پیکسل نیاز داشتند اینجا نشان داده می‌شوند. در {file} نگه داشته می‌شود (screenshot.record_apps).",
+  "Nothing differs from the defaults yet.": "هنوز هیچ چیز با پیش‌فرض‌ها فرق ندارد.",
+  "nothing differs from the defaults, so there is nothing to keep": "هیچ چیز با پیش‌فرض‌ها فرق ندارد، پس چیزی برای نگه‌داشتن نیست",
+  "Nothing in this group differs from its default.": "هیچ چیز در این گروه با پیش‌فرضش فرق ندارد.",
+  "Nothing kept yet.": "هنوز چیزی نگه داشته نشده.",
+  "Nothing matches.": "موردی یافت نشد.",
+  "Nothing to show.": "چیزی برای نمایش نیست.",
+  "Nothing would change.": "چیزی تغییر نمی‌کند.",
+  "Nothing written yet.": "هنوز چیزی نوشته نشده.",
+  "Nothing.": "هیچ.",
+  "notifications": "اعلان‌ها",
+  "Notifications": "اعلان‌ها",
+  "Now": "اکنون",
+  "of {kb} KB": "از {kb} KB",
+  "of {n}": "از {n}",
+  "off": "خاموش",
+  "Off: the agent works from the tree alone.": "خاموش: ایجنت فقط با درخت کار می‌کند.",
+  "Off.": "خاموش.",
+  "Off. It never updates by itself.": "خاموش. هرگز خودبه‌خود به‌روز نمی‌شود.",
+  "Off. Nothing is looked for or downloaded.": "خاموش. چیزی جستجو یا دانلود نمی‌شود.",
+  "on": "روشن",
+  "On, last looked {when}.": "روشن، آخرین بررسی {when}.",
+  "On; it has not looked yet.": "روشن؛ هنوز بررسی نکرده.",
+  "On; no hub is running right now.": "روشن؛ اکنون هابی در حال اجرا نیست.",
+  "On.": "روشن.",
+  "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "فقط {n} ابزار در tools.enabled فهرست شده‌اند، پس بقیه هر چه کلیدها نشان دهند پنهان می‌مانند.",
+  "OpenAI-compatible chat model": "مدل گفتگوی سازگار با OpenAI",
+  "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.": "OpenAI، Groq، Cerebras، OpenRouter، Ollama، LM Studio… یک مدل کوچک و سریع بهترین نتیجه را می‌دهد.",
+  "Overlay": "پوشش روی صفحه",
+  "Overview": "نمای کلی",
+  "panel": "پنل",
+  "Panel": "پنل",
+  "Paste settings as TOML (what Export makes). You see each one as it is now and as it would be before anything is changed; protected ones ask first, and settings this version doesn't have are shown and left out. The settings you have now are kept, so you can go back.": "تنظیمات را به صورت TOML جای‌گذاری کنید (همان چیزی که برون‌بری می‌سازد). پیش از هر تغییری، هر تنظیم را همان‌طور که اکنون هست و همان‌طور که خواهد شد می‌بینید؛ تنظیم‌های محافظت‌شده اول تأیید می‌خواهند، و تنظیم‌هایی که این نسخه ندارد نشان داده و کنار گذاشته می‌شوند. تنظیمات کنونی نگه داشته می‌شوند تا بتوانید برگردید.",
+  "Path style": "سبک مسیر",
+  "Paused": "مکث",
+  "Pauses and waits around actions.": "مکث‌ها و انتظارهای پیش و پس از کنش‌ها.",
+  "Pictures": "تصویرها",
+  "Pictures sent": "تصویرهای فرستاده‌شده",
+  "Platform": "پلتفرم",
+  "Pointer": "نشانگر",
+  "Pointer style": "سبک نشانگر",
+  "Pointers and the mouse": "نشانگرها و ماوس",
+  "points at": "اشاره به",
+  "port": "پورت",
+  "Press Ctrl+C on the text below.": "روی متن زیر Ctrl+C را بزنید.",
+  "Press Ctrl+C to copy.": "برای کپی Ctrl+C را بزنید.",
+  "Preview": "پیش‌نمایش",
+  "Privacy": "حریم خصوصی",
+  "Profile name": "نام پروفایل",
+  "Profiles": "پروفایل‌ها",
+  "Program": "برنامه",
+  "Put a shortcut to this panel at {path}?": "میان‌بری به این پنل در {path} گذاشته شود؟",
+  "Put it in place now": "نصب اکنون",
+  "Put the settings back as they were before the last import?": "تنظیمات به حالت پیش از آخرین درون‌ریزی برگردد؟",
+  "Put version {v} in place of this program now?": "نسخه‌ی {v} هم‌اکنون جایگزین این برنامه شود؟",
+  "px": "px",
+  "Read from the environment variable {name}.": "از متغیر محیطی {name} خوانده می‌شود.",
+  "Reading desktop notifications.": "خواندن اعلان‌های دسکتاپ.",
+  "Reading text off the screen for apps whose tree says little.": "خواندن متن از روی صفحه برای برنامه‌هایی که درختشان اطلاعات کمی دارد.",
+  "Real mouse": "ماوس واقعی",
+  "Refresh": "تازه‌سازی",
+  "reload the page: it didn't say which version of the file it showed": "صفحه را دوباره بارگذاری کنید: مشخص نکرد کدام نسخه از فایل را نشان داده بود",
+  "Remembering screens the model has already seen.": "به خاطر سپردن صفحه‌هایی که مدل پیش‌تر دیده است.",
+  "Remove": "حذف",
+  "Remove {item}": "حذف {item}",
+  "Remove the decision model and its key?": "مدل تصمیم‌گیری و کلیدش حذف شوند؟",
+  "Removed {path}.": "{path} حذف شد.",
+  "Removed.": "حذف شد.",
+  "Replace": "جایگزینی",
+  "Reset": "بازنشانی",
+  "Revert": "برگرداندن",
+  "Right now": "هم‌اکنون",
+  "s": "ثانیه",
+  "same": "یکسان",
+  "Save": "ذخیره",
+  "Saved {hint}. Type to replace.": "ذخیره‌شده: {hint}. برای جایگزینی تایپ کنید.",
+  "Saved to {path}.": "در {path} ذخیره شد.",
+  "Saved: {hint}. Leave empty to keep it.": "ذخیره‌شده: {hint}. برای نگه‌داشتن، خالی بگذارید.",
+  "Saved. Running servers use it now.": "ذخیره شد. سرورهای در حال اجرا از هم‌اکنون از آن استفاده می‌کنند.",
+  "Saving…": "در حال ذخیره…",
+  "say create or remove": "create یا remove را مشخص کنید",
+  "say desktop or menu": "desktop یا menu را مشخص کنید",
+  "say install or remove": "install یا remove را مشخص کنید",
+  "say which settings to change": "مشخص کنید کدام تنظیم‌ها تغییر کنند",
+  "say which settings to reset": "مشخص کنید کدام تنظیم‌ها بازنشانی شوند",
+  "Screen memory": "حافظه‌ی صفحه",
+  "screens": "صفحه",
+  "Screenshots": "اسکرین‌شات‌ها",
+  "Scripts": "اسکریپت‌ها",
+  "Search all settings": "جستجو در همه‌ی تنظیمات",
+  "Search results": "نتایج جستجو",
+  "seconds": "ثانیه",
+  "Server": "سرور",
+  "Setting": "تنظیم",
+  "Settings": "تنظیمات",
+  "Settings changed": "تنظیم‌های تغییرکرده",
+  "Settings file": "فایل تنظیمات",
+  "Settings file:": "فایل تنظیمات:",
+  "Settings for one operating system.": "تنظیمات مخصوص یک سیستم‌عامل.",
+  "Settings groups": "گروه‌های تنظیمات",
+  "Settings to import": "تنظیمات برای درون‌ریزی",
+  "Several agents": "چند ایجنت",
+  "Show advanced": "نمایش پیشرفته‌ها",
+  "Showcase": "نمایشی",
+  "Small programs the agent writes and the server runs.": "برنامه‌های کوچکی که ایجنت می‌نویسد و سرور اجرا می‌کند.",
+  "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "تصویرهای کوچک‌تر و درخت‌های کوتاه‌تر. یک اسکرین‌شات کامل حدود یک‌سوم ارزان‌تر است؛ خواندن متن خیلی ریز ممکن است سخت‌تر شود.",
+  "spaces": "فاصله",
+  "Spending fewer tokens": "مصرف توکن کمتر",
+  "Start your MCP client again to use it.": "برای استفاده، کلاینت MCP خود را دوباره راه‌اندازی کنید.",
+  "starts": "اجرا می‌کند:",
+  "State": "وضعیت",
+  "Status and controls": "وضعیت و کنترل‌ها",
+  "Staying in control": "کنترل در دست شما",
+  "Staying on {v}.": "روی {v} می‌ماند.",
+  "Stopped": "متوقف",
+  "Subagents, or Claude Code beside Codex, on one desktop.": "زیرایجنت‌ها، یا Claude Code در کنار Codex، روی یک دسکتاپ.",
+  "Switches that apply to the whole program.": "کلیدهایی که روی کل برنامه اثر دارند.",
+  "Take the panel's shortcut away from {path}?": "میان‌بر پنل از {path} برداشته شود؟",
+  "Test": "آزمایش",
+  "Text on screen (OCR)": "متن روی صفحه (OCR)",
+  "Text read off screen": "متن خوانده‌شده از صفحه",
+  "that is not a setting": "این یک تنظیم نیست",
+  "that is not one of your profiles": "این از پروفایل‌های شما نیست",
+  "that is too long to be a list of settings": "برای فهرست تنظیمات بیش از حد طولانی است",
+  "that name belongs to a profile that comes with the program": "این نام متعلق به پروفایلی است که همراه برنامه می‌آید",
+  "that name can't be kept": "با این نام نمی‌توان ذخیره کرد",
+  "That page isn't here.": "این صفحه وجود ندارد.",
+  "The {n} this version can't take are left out; the rest go in.": "{n} موردی که این نسخه نمی‌پذیرد کنار گذاشته می‌شوند؛ بقیه اعمال می‌شوند.",
+  "the address must start with https:// (or http:// for a server on this computer)": "نشانی باید با https:// شروع شود (یا http:// برای سروری روی همین رایانه)",
+  "The agent can use it now.": "ایجنت اکنون می‌تواند از آن استفاده کند.",
+  "The agent has no decision model now.": "ایجنت اکنون مدل تصمیم‌گیری ندارد.",
+  "The border, label and colours shown while the agent works.": "حاشیه، برچسب و رنگ‌هایی که هنگام کار ایجنت نمایش داده می‌شوند.",
+  "the computer to restart": "راه‌اندازی دوباره‌ی رایانه",
+  "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "خط‌چین یک پرش است: ماوس واقعی بی‌درنگ به فاصله‌ی 70 تا 140 px از هدف می‌رود، فقط همان تکه‌ی آخر را می‌پیماید و سپس به جایی که آن را گذاشته بودید برمی‌گردد. نشانگرِ پوشش روی صفحه تمام راه را نرم حرکت می‌کند.",
+  "The decision model": "مدل تصمیم‌گیری",
+  "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "توقف اضطراری و مکث هنگامی که با رایانه کار می‌کنید. تغییرها نیاز به تأیید دارند.",
+  "The file as saved has a mistake in it; mend it here.": "فایل ذخیره‌شده اشکالی دارد؛ اینجا اصلاحش کنید.",
+  "The file is empty.": "فایل خالی است.",
+  "the file is too long to be a settings file": "این فایل برای فایل تنظیمات بیش از حد طولانی است",
+  "The last {n} lines": "{n} خط آخر",
+  "The newest stable release.": "تازه‌ترین نسخه‌ی پایدار.",
+  "The newest, pre-releases included.": "تازه‌ترین نسخه، همراه با پیش‌انتشارها.",
+  "the next start": "راه‌اندازی بعدی",
+  "the next time the server starts": "در راه‌اندازی بعدی سرور",
+  "The ones you had are kept in {path}.": "تنظیمات قبلی شما در {path} نگه داشته شده‌اند.",
+  "The ones you have now are kept, so this can be undone too.": "تنظیمات کنونی نگه داشته می‌شوند، پس این کار هم قابل برگشت است.",
+  "The plain arrow": "پیکان ساده",
+  "The plain arrow.": "پیکان ساده.",
+  "The program's own defaults for every setting the other profiles touch.": "پیش‌فرض‌های خود برنامه برای هر تنظیمی که پروفایل‌های دیگر تغییر می‌دهند.",
+  "The server didn't answer: {error}": "سرور پاسخ نداد: {error}",
+  "The settings as they were before the last import are kept ({when}).": "تنظیمات پیش از آخرین درون‌ریزی نگه داشته شده‌اند ({when}).",
+  "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file.": "فایل تنظیمات به صورت متن، همراه با توضیحات. مقادیر محرمانه پوشانده شده‌اند؛ برای نگه‌داشتنشان دست‌نخورده رهایشان کنید. پیش از نوشتن، کل فایل بررسی می‌شود تا یک غلط تایپی فایل را خراب نکند.",
+  "the settings file changed since it was shown here (another tab, a command, a profile): press Revert to see it as it is now, then make your change again": "فایل تنظیمات پس از نمایش در اینجا تغییر کرده است (برگه‌ای دیگر، یک فرمان، یک پروفایل): «برگرداندن» را بزنید تا وضعیت کنونی‌اش را ببینید، سپس تغییرتان را دوباره انجام دهید",
+  "The settings file has a mistake in it and may hold a secret, so it isn't shown here.": "فایل تنظیمات اشکالی دارد و ممکن است اطلاعات محرمانه داشته باشد، پس اینجا نمایش داده نمی‌شود.",
+  "The settings from before the import are back.": "تنظیمات پیش از درون‌ریزی برگشتند.",
+  "The settings from before the update are back.": "تنظیمات پیش از به‌روزرسانی برگشتند.",
+  "The settings that differ from the defaults. No secrets: {x} left out.": "تنظیم‌هایی که با پیش‌فرض فرق دارند. بدون اطلاعات محرمانه: {x} کنار گذاشته شد.",
+  "The settings that differ from the defaults. No secrets: none were set.": "تنظیم‌هایی که با پیش‌فرض فرق دارند. بدون اطلاعات محرمانه: هیچ‌کدام تنظیم نشده بود.",
+  "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "تنظیمات پیش از آن به‌روزرسانی هم همراهش برمی‌گردند؛ تنظیمات کنونی کنار فایل نگه داشته می‌شوند.",
+  "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "فهرست ابزارها با هر درخواست فرستاده می‌شود، پس ابزارهای روشن هر بار حدود {tokens} توکن هزینه دارند{manager}. هزینه‌ها بر پایه‌ی توضیحات در حال استفاده ({descriptions}) است، هر چهار نویسه یک توکن.",
+  "The version you have now is not taken again unless you clear update.skip_version.": "نسخه‌ی کنونی دوباره دریافت نمی‌شود، مگر آنکه update.skip_version را پاک کنید.",
+  "Theme": "پوسته",
+  "There": "موجود",
+  "there are no settings in it": "هیچ تنظیمی در آن نیست",
+  "there is no earlier version kept to go back to": "نسخه‌ی قبلی‌ای برای بازگشت نگه داشته نشده",
+  "there is no release of this program for this system": "نسخه‌ای از این برنامه برای این سیستم منتشر نشده",
+  "there is no such profile": "چنین پروفایلی وجود ندارد",
+  "There was none.": "وجود نداشت.",
+  "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:": "این تنظیم‌ها کارهایی را که ایجنت می‌تواند انجام دهد یا ببیند، یا نحوه‌ی به‌روزرسانی برنامه را محدود می‌کنند. مطمئن شوید که واقعاً می‌خواهید تغییرشان دهید:",
+  "these settings need the user's confirmation first": "این تنظیم‌ها ابتدا به تأیید کاربر نیاز دارند",
+  "Thinking": "در حال فکر",
+  "this needs the user's confirmation first": "این کار ابتدا به تأیید کاربر نیاز دارد",
+  "This page.": "همین صفحه.",
+  "This panel:": "این پنل:",
+  "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "این برنامه از {from} اجرا می‌شود، جایی که ممکن است پاک یا جابه‌جا شود. یک نسخه در {to} نگه داشته می‌شود و همان به ایجنت‌ها داده می‌شود.",
+  "this server keeps its settings in memory": "این سرور تنظیماتش را در حافظه نگه می‌دارد",
+  "This server keeps its settings in memory, so nothing can be saved here.": "این سرور تنظیماتش را در حافظه نگه می‌دارد، پس اینجا چیزی ذخیره نمی‌شود.",
+  "this server keeps its settings in memory, so there is no file": "این سرور تنظیماتش را در حافظه نگه می‌دارد، پس فایلی وجود ندارد",
+  "this server keeps its settings in memory, so they can't be saved here": "این سرور تنظیماتش را در حافظه نگه می‌دارد، پس اینجا ذخیره نمی‌شوند",
+  "This system has no such place.": "این سیستم چنین جایی ندارد.",
+  "This version": "این نسخه",
+  "This version ({v}) has no such setting": "این نسخه ({v}) چنین تنظیمی ندارد",
+  "This version ({v}) has no such setting: the export is from {w}, a newer one": "این نسخه ({v}) چنین تنظیمی ندارد: برون‌بری از نسخه‌ی تازه‌تر {w} است",
+  "Three sample paths of the {style} style": "سه مسیر نمونه از سبک {style}",
+  "Timing": "زمان‌بندی",
+  "tokens": "توکن",
+  "Tool list": "فهرست ابزارها",
+  "Tools": "ابزارها",
+  "Tools and tokens": "ابزارها و توکن‌ها",
+  "under 2 minutes": "کمتر از 2 دقیقه",
+  "Undo the last import": "لغو آخرین درون‌ریزی",
+  "Updates": "به‌روزرسانی‌ها",
+  "Valid. {x} would change, {n} of them protected.": "معتبر. {x} تغییر می‌کند که {n} مورد از آن‌ها محافظت‌شده است.",
+  "Valid. {x} would change.": "معتبر. {x} تغییر می‌کند.",
+  "Valid. Nothing would change.": "معتبر. چیزی تغییر نمی‌کند.",
+  "Verifying that an action did what it should.": "بررسی اینکه کنش کار درستی انجام داده است.",
+  "Version": "نسخه",
+  "Version {v} (kept when the last update went in), with the settings you had then.": "نسخه‌ی {v} (هنگام نصب آخرین به‌روزرسانی نگه داشته شد)، همراه با تنظیماتی که آن زمان داشتید.",
+  "Version {v} (kept when the last update went in).": "نسخه‌ی {v} (هنگام نصب آخرین به‌روزرسانی نگه داشته شد).",
+  "Version {v} is downloaded and waits for {when}.": "نسخه‌ی {v} دانلود شده و منتظر {when} است.",
+  "Version {v}, but the settings no longer take it (skipped, pinned or a pre-release): it will not go in.": "نسخه‌ی {v}، اما تنظیمات دیگر آن را نمی‌پذیرند (رد شده، نسخه‌ی دیگری ثابت شده یا پیش‌انتشار است): نصب نخواهد شد.",
+  "Version {v}, downloaded {when}. It goes in {install}.": "نسخه‌ی {v}، {when} دانلود شد. {install} نصب می‌شود.",
+  "Waiting": "در انتظار",
+  "What {v} says about itself": "آنچه {v} درباره‌ی خودش می‌گوید",
+  "What a picture costs": "هزینه‌ی یک تصویر",
+  "What is masked before anything reaches the model. Changes ask you to confirm.": "آنچه پیش از رسیدن هر چیزی به مدل پوشانده می‌شود. تغییرها نیاز به تأیید دارند.",
+  "What would be written for {name}": "آنچه برای {name} نوشته می‌شود",
+  "When pictures are sent to the model, and how big. The biggest lever on image tokens.": "تصویرها چه زمانی و با چه اندازه‌ای برای مدل فرستاده می‌شوند. مؤثرترین اهرم بر توکن‌های تصویر.",
+  "When something is wrong": "وقتی مشکلی پیش می‌آید",
+  "when the server starts after the computer restarts": "هنگام راه‌اندازی سرور پس از راه‌اندازی دوباره‌ی رایانه",
+  "Where to start": "از کجا شروع کنیم",
+  "Which": "کدام",
+  "Which tools the model sees. The tool list is sent with every request.": "مدل کدام ابزارها را می‌بیند. فهرست ابزارها با هر درخواست فرستاده می‌شود.",
+  "with `computer-use-mcp update --install`": "با `computer-use-mcp update --install`",
+  "Working": "در حال کار",
+  "Write the audit log": "نوشتن گزارش ممیزی",
+  "You can close this tab.": "می‌توانید این برگه را ببندید.",
+  "you to run `computer-use-mcp update --install`": "اجرای `computer-use-mcp update --install` توسط شما",
+  "Your control": "کنترل شما",
+  "Your MCP clients use it the next time they start.": "کلاینت‌های MCP شما دفعه‌ی بعد که راه‌اندازی شوند از آن استفاده می‌کنند.",
+  "Your own: a snapshot of settings you changed.": "مال خودتان: برداشتی لحظه‌ای از تنظیم‌هایی که تغییر داده‌اید.",
+  "Your settings": "تنظیمات شما",
+  "Yours": "پروفایل‌های شما"
+ },
+ "plural": {
+  "setting": {
+   "one": "تنظیم",
+   "other": "تنظیم"
+  },
+  "tool": {
+   "one": "ابزار",
+   "other": "ابزار"
+  },
+  "secret": {
+   "one": "مورد محرمانه",
+   "other": "مورد محرمانه"
+  },
+  "minute": {
+   "one": "دقیقه",
+   "other": "دقیقه"
+  },
+  "hour": {
+   "one": "ساعت",
+   "other": "ساعت"
+  },
+  "day": {
+   "one": "روز",
+   "other": "روز"
+  }
+ },
+ "settings": {
+  "clipboard": [
+   "کلیپ‌بورد",
+   "ایجنت بتواند کلیپ‌بورد را بخواند و در آن بنویسد (ابزارهای get_clipboard و set_clipboard)."
+  ],
+  "text_only": [
+   "فقط متن",
+   "هرگز و هیچ جا اسکرین‌شات پیوست نشود. کمترین مصرف توکن، اما ایجنت تصویر نمی‌بیند."
+  ],
+  "follow_new_windows": [
+   "دنبال کردن پنجره‌های تازه",
+   "وقتی کنشی پنجره‌ی گفتگو یا منویی باز می‌کند، گزارش تغییر و نگاه بعدی به آن منتقل شود."
+  ],
+  "hot_reload": [
+   "بارگذاری زنده",
+   "تغییرات فایل تنظیمات بدون راه‌اندازی دوباره روی سرورهای در حال اجرا اعمال شود."
+  ],
+  "launch_timeout_secs": [
+   "مهلت اجرا (ثانیه)",
+   "مدت انتظار launch_app برای نمایش پنجره‌ی برنامه‌ی تازه."
+  ],
+  "natural_mouse": [
+   "ماوس طبیعی",
+   "ماوس واقعی مثل دست حرکت کند: روی منحنی، با شتاب گرفتن و آهسته شدن، و لرزشی خفیف. خاموش: می‌پرد."
+  ],
+  "mouse_path": [
+   "مسیر ماوس",
+   "مسیری که ماوس واقعی می‌رود. mixed برای هر حرکت یکی را تصادفی برمی‌گزیند. درگ‌ها همیشه مستقیم انجام می‌شوند."
+  ],
+  "mouse_speed": [
+   "سرعت ماوس",
+   "سرعت حرکت ماوس واقعی، به صورت ضریبی از سرعت دست. 2 یعنی دو برابر سریع‌تر؛ برخی برنامه‌ها نشانگر خیلی سریع را دیر متوجه می‌شوند."
+  ],
+  "mouse_overshoot": [
+   "رد شدن ماوس از هدف",
+   "هر چند وقت یک حرکت بلند (بیش از 250 px) کمی از هدف رد می‌شود و برمی‌گردد، به درصد حرکت‌ها. 0 یعنی هرگز. فقط سبک hand این‌گونه از هدف رد می‌شود."
+  ],
+  "mouse_jitter": [
+   "لرزش ماوس",
+   "میزان لرزش مسیر، به صورت نسبتی از لرزش دست. 0 یعنی منحنی تمیز."
+  ],
+  "restore_pointer": [
+   "بازگرداندن نشانگر",
+   "پس از کلیک، اسکرول یا درگ ایجنت، نشانگر ماوس شما به جای قبلی‌اش برگردد تا ماوستان هرگز از دستتان گرفته نشود."
+  ],
+  "overlay.cursor_style": [
+   "سبک نشانگر",
+   "نشانگر ایجنت. random در هر نشست یکی می‌دهد، و به ایجنت‌های هم‌زمان هر کدام یکی متفاوت."
+  ],
+  "overlay.cursor_color": [
+   "رنگ نشانگر",
+   "رنگ پیکان ساده و پایه‌ی حلقه‌ی نشانگر."
+  ],
+  "overlay.cursor_tag": [
+   "برچسب نشانگر",
+   "نامی که کنار نشانگر می‌آید. خالی: بدون نام."
+  ],
+  "overlay.cursor_motion": [
+   "حرکت نشانگر",
+   "نشانگر هنگام حرکت خم می‌شود، رد به جا می‌گذارد، نفس می‌کشد و درگ‌ها و اسکرول‌ها را نشان می‌دهد."
+  ],
+  "overlay.trail": [
+   "رد",
+   "ردی که نشانگر هنگام حرکت به جا می‌گذارد، از جنس خودش (درخشش، ذره، برفک، قطره‌های کروم). به «حرکت نشانگر» نیاز دارد."
+  ],
+  "overlay.trail_strength": [
+   "شدت رد",
+   "طول رد. 100 همان طرح اصلی است؛ 0 هیچ ردی نمی‌گذارد."
+  ],
+  "overlay.lean_strength": [
+   "شدت خم شدن",
+   "نشانگر در حرکت چقدر خم شود. 0 آن را صاف نگه می‌دارد."
+  ],
+  "overlay.breathe": [
+   "نفس کشیدن",
+   "نشانگر هنگام انتظار نفس می‌کشد: ژله باد می‌کند، کاغذ تاب می‌خورد. به «حرکت نشانگر» نیاز دارد."
+  ],
+  "overlay.breathe_strength": [
+   "شدت نفس کشیدن",
+   "عمق نفس کشیدن."
+  ],
+  "overlay.cursor_path": [
+   "مسیر نشانگر",
+   "نشانگر چگونه تا محل کنش حرکت کند."
+  ],
+  "overlay.show_keys": [
+   "نمایش کلیدها",
+   "کلیدهای فشرده‌شده به شکل کلید کنار نشانگر، و متن تایپ‌شده به صورت روان در کنارش نمایش داده شود."
+  ],
+  "overlay.click_effect": [
+   "جلوه‌ی کلیک",
+   "موجی در جایی که ایجنت کلیک می‌کند."
+  ],
+  "overlay.show_cursor": [
+   "نمایش نشانگر",
+   "نشانگر خود ایجنت رسم شود. ماوس واقعی برای این کار هرگز حرکت داده نمی‌شود."
+  ],
+  "overlay.move_ms": [
+   "زمان حرکت (ms)",
+   "مدت حرکت نرم نشانگر. هر کنش منتظر رسیدن آن می‌ماند."
+  ],
+  "overlay.scale": [
+   "مقیاس",
+   "ضریب اندازه برای همه‌ی چیزهایی که پوشش روی صفحه رسم می‌کند. 0 از مقیاس نمایشگر پیروی می‌کند."
+  ],
+  "overlay.enabled": [
+   "فعال",
+   "نمایش پوشش روی صفحه هنگام کار ایجنت. کلیک را از خود عبور می‌دهد و در اسکرین‌شات‌های ایجنت نمی‌آید."
+  ],
+  "overlay.show_border": [
+   "نمایش حاشیه",
+   "حاشیه‌ای درخشان دور صفحه یا پنجره‌ای که ایجنت روی آن کار می‌کند."
+  ],
+  "overlay.show_label": [
+   "نمایش برچسب",
+   "یک برچسب وضعیت."
+  ],
+  "overlay.border_target": [
+   "محدوده‌ی حاشیه",
+   "حاشیه دور کل صفحه باشد یا فقط دور پنجره‌ی در حال کار."
+  ],
+  "overlay.border_width": [
+   "پهنای حاشیه",
+   "خط روشن مرکزی حاشیه."
+  ],
+  "overlay.glow_size": [
+   "اندازه‌ی درخشش",
+   "تا کجا درخشش محو می‌شود. 0 یعنی خط ساده."
+  ],
+  "overlay.label_working": [
+   "برچسب «در حال کار»",
+   "برچسب هنگامی که ایجنت روی رایانه کار می‌کند."
+  ],
+  "overlay.label_thinking": [
+   "برچسب «در حال فکر»",
+   "برچسب هنگامی که مدل در حال فکر کردن است."
+  ],
+  "overlay.label_error": [
+   "برچسب «خطا»",
+   "برچسب پس از خطا."
+  ],
+  "overlay.label_done": [
+   "برچسب «پایان»",
+   "برچسب وقتی کار تمام شده است."
+  ],
+  "overlay.label_paused": [
+   "برچسب «مکث»",
+   "برچسب هنگامی که منتظر است استفاده‌ی شما از ماوس و صفحه‌کلید تمام شود."
+  ],
+  "overlay.label_stopped": [
+   "برچسب «متوقف»",
+   "برچسب پس از توقف اضطراری. {hotkey} با کلید توقف جایگزین می‌شود."
+  ],
+  "overlay.color_thinking": [
+   "رنگ «در حال فکر»",
+   "رنگ هنگامی که مدل در حال فکر کردن است."
+  ],
+  "overlay.color_working": [
+   "رنگ «در حال کار»",
+   "رنگ هنگامی که ایجنت کار می‌کند."
+  ],
+  "overlay.color_error": [
+   "رنگ «خطا»",
+   "رنگ پس از خطا."
+  ],
+  "overlay.color_done": [
+   "رنگ «پایان»",
+   "رنگ وقتی کار تمام شده است."
+  ],
+  "overlay.color_paused": [
+   "رنگ «مکث»",
+   "رنگ هنگام مکث به خاطر شما."
+  ],
+  "overlay.color_stopped": [
+   "رنگ «متوقف»",
+   "رنگ پس از توقف اضطراری."
+  ],
+  "overlay.done_after_ms": [
+   "پایان پس از (ms)",
+   "اگر این مدت کنش تازه‌ای نباشد، کار تمام‌شده به حساب می‌آید."
+  ],
+  "overlay.done_linger_ms": [
+   "ماندن «پایان» (ms)",
+   "مدتی که «پایان» پیش از ناپدید شدن همه‌چیز می‌ماند."
+  ],
+  "overlay.error_hold_ms": [
+   "ماندن خطا (ms)",
+   "مدت نمایش خطا."
+  ],
+  "overlay.fade_in_ms": [
+   "ظاهر شدن تدریجی (ms)",
+   "در این مدت به تدریج ظاهر شود."
+  ],
+  "overlay.fade_out_ms": [
+   "محو شدن تدریجی (ms)",
+   "در این مدت به تدریج ناپدید شود."
+  ],
+  "overlay.transition_ms": [
+   "زمان گذار (ms)",
+   "رنگ هر وضعیت در این مدت به رنگ وضعیت بعدی تبدیل شود."
+  ],
+  "overlay.capture_hide_ms": [
+   "پنهان شدن پیش از ثبت (ms)",
+   "فقط X11: مکث پس از پنهان کردن پوشش روی صفحه و پیش از اسکرین‌شات."
+  ],
+  "overlay.font": [
+   "قلم",
+   "فایل قلم برای برچسب. خالی: قلم سیستم."
+  ],
+  "overlay.command": [
+   "فرمان",
+   "برنامه‌ی کمکی برای پوشش روی صفحه، برای برنامه‌هایی که این کتابخانه را در خود جای می‌دهند."
+  ],
+  "screenshot.enabled": [
+   "فعال",
+   "اصلاً اجازه‌ی اسکرین‌شات داده شود یا نه."
+  ],
+  "screenshot.attach": [
+   "پیوست",
+   "چه زمانی نگاه شامل تصویر باشد: auto (نمای نخست، تغییر بزرگ یا درخت کم‌عنصر)، always (بیشترین توکن) یا never."
+  ],
+  "screenshot.auto_sparse_threshold": [
+   "آستانه‌ی درخت کم‌عنصر",
+   "در حالت auto، وقتی درخت کمتر از این تعداد عنصر تعاملی دارد، تصویر پیوست شود."
+  ],
+  "screenshot.max_dimension": [
+   "حداکثر ابعاد",
+   "بلندترین ضلع تصویر. این اصلی‌ترین تنظیم توکن تصویر است: 1024 حدود 35% کمتر از 1280 هزینه دارد."
+  ],
+  "screenshot.overview_max_dimension": [
+   "حداکثر ابعاد نمای کلی",
+   "اندازه‌ای کوچک‌تر برای تصویر پنجره‌هایی که درختشان محتوا را از قبل می‌گوید. 0: همیشه اندازه‌ی بالا."
+  ],
+  "screenshot.format": [
+   "قالب",
+   "قالب تصویر."
+  ],
+  "screenshot.jpeg_quality": [
+   "کیفیت JPEG",
+   "کیفیت JPEG."
+  ],
+  "screenshot.png_compression": [
+   "فشرده‌سازی PNG",
+   "فشرده‌سازی PNG. فقط اندازه‌ی فایل را تغییر می‌دهد."
+  ],
+  "screenshot.resize_filter": [
+   "فیلتر تغییر اندازه",
+   "تصویر چگونه کوچک شود."
+  ],
+  "screenshot.scope": [
+   "محدوده",
+   "تصویرهای بعدی از صفحه‌ای که مدل دیده: فقط بخش تغییرکرده (auto) یا کل پنجره (full)."
+  ],
+  "screenshot.region_max_ratio": [
+   "حداکثر نسبت ناحیه",
+   "تغییری بزرگ‌تر از این سهم پنجره، کل پنجره را می‌فرستد."
+  ],
+  "screenshot.region_padding": [
+   "حاشیه‌ی ناحیه",
+   "حاشیه‌ی دور بخش تغییرکرده."
+  ],
+  "screenshot.region_min_size": [
+   "حداقل اندازه‌ی ناحیه",
+   "بخش تغییرکرده برای حفظ زمینه در هر ضلع دست‌کم این اندازه است."
+  ],
+  "screenshot.adaptive": [
+   "تطبیقی",
+   "وقتی مدل چند بار به پنجره‌ای با توصیف خوب نگاه کرده و از پیکسل‌هایش استفاده نکرده، دیگر تصویری از آن فرستاده نشود."
+  ],
+  "screenshot.smart": [
+   "هوشمند",
+   "وقتی همه‌ی تغییرها همان است که درخت گزارش می‌دهد، تصویر فرستاده نشود."
+  ],
+  "screenshot.record_apps": [
+   "ثبت برنامه‌ها",
+   "شمارش اینکه هر برنامه چند بار به پیکسل نیاز داشته است (فرمان doctor آن را نشان می‌دهد)."
+  ],
+  "screenshot.locate_picture": [
+   "تصویر locate",
+   "locate پنجره را همراه با شماره‌گذاری جاهایی که یافته می‌فرستد."
+  ],
+  "screenshot.icon_sprite": [
+   "نوار آیکون‌ها",
+   "آزمایشی: وقتی تصویری پیوست نیست، نوار کوچکی از دکمه‌های بی‌نام، شماره‌گذاری‌شده."
+  ],
+  "tree.max_nodes": [
+   "حداکثر گره‌ها",
+   "تعداد عنصرهایی که در هر نگاه نشان داده می‌شوند."
+  ],
+  "tree.max_walk": [
+   "حداکثر پیمایش",
+   "عنصرهایی که پیش از هرس از برنامه خوانده می‌شوند."
+  ],
+  "tree.max_depth": [
+   "حداکثر عمق",
+   "عمق درخت."
+  ],
+  "tree.max_text_len": [
+   "حداکثر طول متن",
+   "تعداد نویسه‌های متن یا مقدار که برای هر عنصر نشان داده می‌شود."
+  ],
+  "tree.indent": [
+   "تورفتگی",
+   "تعداد فاصله برای هر سطح درخت."
+  ],
+  "tree.show_actions": [
+   "نمایش کنش‌ها",
+   "کنش‌هایی که هر عنصر ارائه می‌دهد نمایش داده شود."
+  ],
+  "tree.show_states": [
+   "نمایش وضعیت‌ها",
+   "وضعیت‌هایی مانند فوکوس‌دار، غیرفعال و علامت‌خورده نمایش داده شود."
+  ],
+  "tree.diff": [
+   "تفاوت",
+   "نگاه‌های بعدی فقط تغییرها را برمی‌گردانند."
+  ],
+  "tree.diff_full_ratio": [
+   "نسبت درخت کامل",
+   "وقتی بیش از این سهم تغییر کرده، کل درخت نشان داده شود."
+  ],
+  "tree.report_changes": [
+   "گزارش تغییرها",
+   "وضعیت پس از کنش به نتیجه‌ی کنش افزوده شود."
+  ],
+  "tree.report_changes_max_lines": [
+   "حداکثر خطوط گزارش تغییر",
+   "حداکثر این تعداد خط تغییر در هر گزارش."
+  ],
+  "tree.report": [
+   "گزارش",
+   "گزارش چه بگوید: full (هر تغییر)، relevant (پیرامون آنچه رویش کنش انجام شد) یا brief (فقط شمارش‌ها)."
+  ],
+  "tree.max_tokens": [
+   "حداکثر توکن",
+   "بودجه‌ی توکن یک درخت. درخت‌های بزرگ‌تر کوتاه می‌شوند. 0: بدون محدودیت."
+  ],
+  "tree.summarize": [
+   "خلاصه‌سازی",
+   "درخت بزرگ‌تر از بودجه چگونه کوتاه شود: normal (تا کردن، سپس بریدن)، light (فقط تا کردن فهرست‌ها) یا off."
+  ],
+  "tree.fold_keep": [
+   "موارد ماندگار در تا کردن",
+   "تعداد مواردی که در ابتدای فهرست تاشده نگه داشته می‌شوند (و 2 مورد در انتها)."
+  ],
+  "tree.brief_repeats": [
+   "تکرار کوتاه",
+   "یادداشت‌ها یک بار کامل توضیح داده شوند، سپس کوتاه."
+  ],
+  "tree.compact": [
+   "فشرده",
+   "هر چیز یک بار گفته شود بی آنکه چیزی از دست برود: هم‌سطح‌های مشابه به صورت رکورد، بازه‌های اندیس و مانند این‌ها."
+  ],
+  "tree.quiet_volatile": [
+   "آرام کردن موارد ناپایدار",
+   "چیزهایی که خودبه‌خود تغییر می‌کنند (ساعت‌ها، چرخنده‌ها) پس از چند گزارش در یک خط خلاصه می‌شوند."
+  ],
+  "tools.disabled": [
+   "غیرفعال",
+   "ابزارهایی که مدل هرگز نمی‌بیند، مثلاً drag یا batch."
+  ],
+  "tools.enabled": [
+   "فعال",
+   "اگر خالی نباشد، فقط همین ابزارها ارائه می‌شوند."
+  ],
+  "tools.descriptions": [
+   "توضیحات",
+   "طول توضیحات ابزارها. lean کمترین توکن را مصرف می‌کند."
+  ],
+  "tools.manager": [
+   "مدیر ابزار",
+   "مدل در آغاز کدام ابزارها را می‌بیند. dispatch: ابزارهای پایه به‌علاوه‌ی find_tools، بقیه در صورت نیاز، و فهرست هرگز تغییر نمی‌کند."
+  ],
+  "tools.preset": [
+   "پیش‌تنظیم",
+   "full: همه‌ی ابزارهایی که تنظیم‌های دیگر اجازه می‌دهند. small: مجموعه‌ای کوچک و ثابت برای مدل‌های کوچک‌تر."
+  ],
+  "tools.default_app": [
+   "برنامه‌ی پیش‌فرض",
+   "فراخوانی بدون برنامه روی برنامه‌ی آخرین فراخوانی‌ای که برنامه‌ای را نام برده بود عمل می‌کند."
+  ],
+  "tools.launch_look": [
+   "نگاه پس از اجرا",
+   "پاسخ launch_app شامل نخستین وضعیت برنامه است."
+  ],
+  "tools.design_steps": [
+   "مراحل طراحی",
+   "زمانی که design مراحل رسم یک طرح را فهرست می‌کند."
+  ],
+  "timing.settle_ms": [
+   "زمان آرام گرفتن (ms)",
+   "مکث پس از هر کنش پیش از نگاه دوباره."
+  ],
+  "timing.settle": [
+   "آرام گرفتن",
+   "adaptive تا ثابت شدن صفحه صبر می‌کند؛ fixed فقط مکث می‌کند."
+  ],
+  "timing.settle_max_ms": [
+   "حداکثر آرام گرفتن (ms)",
+   "بیشترین مدت یک انتظار تطبیقی."
+  ],
+  "timing.settle_poll_ms": [
+   "فاصله‌ی بررسی آرام گرفتن (ms)",
+   "هر چند وقت صفحه هنگام انتظار بررسی شود."
+  ],
+  "timing.key_delay_ms": [
+   "تأخیر کلید (ms)",
+   "مکث بین کلیدها در یک دنباله‌ی کلید."
+  ],
+  "timing.app_cache_ms": [
+   "کش برنامه‌ها (ms)",
+   "فهرست برنامه‌های در حال اجرا تا این مدت دوباره استفاده شود."
+  ],
+  "timing.wait_timeout_ms": [
+   "مهلت انتظار (ms)",
+   "مهلت پیش‌فرض wait_for."
+  ],
+  "timing.wait_poll_ms": [
+   "فاصله‌ی بررسی انتظار (ms)",
+   "فاصله‌ی پیش‌فرض بررسی در wait_for."
+  ],
+  "timing.expect_wait_ms": [
+   "انتظار expect (ms)",
+   "کنشِ دارای expect چه مدت منتظر نمایش نتیجه بماند."
+  ],
+  "timing.adaptive_grace": [
+   "مهلت تطبیقی",
+   "برای برنامه‌هایی که تغییرها را بی‌درنگ نشان می‌دهند، پس از 200 ms به جای 500 اعلام شود «چیزی تغییر نکرد»."
+  ],
+  "cache.enabled": [
+   "فعال",
+   "صفحه‌هایی که مدل دیده به خاطر سپرده شوند: با بازگشت به یکی از آن‌ها فقط تفاوت‌ها فرستاده می‌شود."
+  ],
+  "cache.max_screens": [
+   "حداکثر صفحه‌ها",
+   "تعداد صفحه‌های به خاطر سپرده‌شده، برای همه‌ی برنامه‌ها روی هم."
+  ],
+  "cache.max_memory_kb": [
+   "حداکثر حافظه (KB)",
+   "حافظه‌ای که صفحه‌های به خاطر سپرده‌شده می‌توانند مصرف کنند."
+  ],
+  "cache.match_threshold": [
+   "آستانه‌ی تطابق",
+   "سهمی از عنصرهای مشترک که صفحه را همان صفحه به حساب می‌آورد."
+  ],
+  "cache.dedupe_screenshots": [
+   "حذف اسکرین‌شات تکراری",
+   "تصویر بدون تغییر یک صفحه هرگز دو بار فرستاده نشود."
+  ],
+  "cache.pixel_grid": [
+   "شبکه‌ی پیکسلی",
+   "تعداد خانه‌ها در ضلع بلندتر برای اثرانگشت تصویر."
+  ],
+  "cache.pixel_tolerance": [
+   "رواداری پیکسل",
+   "تغییر روشنایی هر خانه که همچنان بدون تغییر به حساب می‌آید."
+  ],
+  "cache.snapshot_ttl_ms": [
+   "اعتبار snapshot (ms)",
+   "خواندنی به این تازگی، اگر از آن پس چیزی اجرا نشده، دوباره استفاده شود. 0: خاموش."
+  ],
+  "cache.rebase_after_tokens": [
+   "ارسال کامل پس از توکن",
+   "پس از این تعداد توکن نتیجه، درخت دوباره کامل و همراه تصویر فرستاده شود. 0: هرگز."
+  ],
+  "ocr.mode": [
+   "حالت",
+   "خواندن متن از روی صفحه برای برنامه‌هایی که درختشان اطلاعات کمی دارد: auto (فقط درخت‌های کم‌عنصر)، always یا off."
+  ],
+  "ocr.engine": [
+   "موتور",
+   "خواننده: موتور خود سیستم، یا Tesseract."
+  ],
+  "ocr.sparse_threshold": [
+   "آستانه‌ی کم‌عنصری",
+   "در حالت auto، وقتی درخت کمتر از این تعداد عنصر تعاملی دارد خوانده شود."
+  ],
+  "ocr.languages": [
+   "زبان‌ها",
+   "زبان‌هایی که خوانده می‌شوند، مثلاً en یا de. خالی: زبان‌های خود شما."
+  ],
+  "ocr.min_confidence": [
+   "حداقل اطمینان",
+   "خط‌هایی که با اطمینان کمتر از این تشخیص داده شده‌اند کنار گذاشته شوند."
+  ],
+  "ocr.max_lines": [
+   "حداکثر خطوط",
+   "حداکثر این تعداد خط."
+  ],
+  "ocr.tesseract_path": [
+   "مسیر Tesseract",
+   "برنامه‌ی Tesseract."
+  ],
+  "ocr.blind_regions": [
+   "ناحیه‌های کور",
+   "ناحیه‌هایی که درخت درباره‌شان چیزی نمی‌گوید (بوم، تصویر) هم در پنجره‌هایی که عنصرهای دیگر فراوانی دارند خوانده شوند."
+  ],
+  "decision.auto": [
+   "خودکار",
+   "سرور هر جا که با این کار یک نوبت ایجنت صرفه‌جویی شود، خودش از مدل می‌پرسد."
+  ],
+  "decision.auto_timeout_ms": [
+   "مهلت خودکار (ms)",
+   "بیشترین انتظار برای آن پرسش‌ها."
+  ],
+  "decision.timeout_ms": [
+   "مهلت (ms)",
+   "بیشترین انتظار برای یک پاسخ."
+  ],
+  "decision.max_state_chars": [
+   "حداکثر نویسه‌های وضعیت",
+   "از وضعیتِ بلندتر، آغاز و پایانش نگه داشته می‌شود."
+  ],
+  "decision.parallel": [
+   "موازی",
+   "تعداد درخواست‌های هم‌زمان هنگام داوری چند مورد."
+  ],
+  "decision.cache_seconds": [
+   "کش (ثانیه)",
+   "به یک پرسش درباره‌ی یک وضعیت، تا این مدت فقط یک بار پاسخ داده می‌شود."
+  ],
+  "privacy.redact_passwords": [
+   "پوشاندن گذرواژه‌ها",
+   "فیلدهای گذرواژه در متن پوشانده و در تصویرها سیاه شوند."
+  ],
+  "privacy.redact_card_numbers": [
+   "پوشاندن شماره‌ی کارت",
+   "شماره‌های کارت پوشانده شوند (فقط 4 رقم آخر می‌ماند)."
+  ],
+  "privacy.redact_labels": [
+   "پوشاندن بر اساس برچسب",
+   "فیلدهایی که برچسبشان یکی از این‌ها را دارد هم پوشانده می‌شوند."
+  ],
+  "privacy.style": [
+   "سبک",
+   "ناحیه‌های خصوصی در تصویرها چگونه پنهان شوند."
+  ],
+  "control.stop_hotkey": [
+   "کلید توقف",
+   "توقف اضطراری: ایجنت را از هر برنامه‌ای بی‌درنگ متوقف می‌کند. خالی: بدون کلید توقف."
+  ],
+  "control.pause_on_user_input": [
+   "مکث هنگام کار کاربر",
+   "هنگامی که از ماوس یا صفحه‌کلید استفاده می‌کنید صبر کند. فقط زمان بی‌کاری سیستم خوانده می‌شود، هرگز آنچه تایپ می‌کنید."
+  ],
+  "control.resume_after_idle_ms": [
+   "ادامه پس از بی‌کاری (ms)",
+   "چه مدت باید بی‌کار باشید تا ایجنت ادامه دهد."
+  ],
+  "control.max_pause_secs": [
+   "حداکثر مکث (ثانیه)",
+   "پس از این مدت کنش شکست می‌خورد و دلیلش به ایجنت گفته می‌شود."
+  ],
+  "control.settings_hotkey": [
+   "میان‌بر تنظیمات",
+   "این پنل را از هر برنامه‌ای باز می‌کند. خالی: بدون کلید."
+  ],
+  "hub.enabled": [
+   "فعال",
+   "چند ایجنت روی یک دسکتاپ یک هاب مشترک دارند: هر کدام یک نشانگر، یک کلید توقف برای همه، تقسیم صفحه، و نوبت برای صفحه‌کلید و ماوس."
+  ],
+  "hub.port": [
+   "پورت",
+   "پورت هاب روی این رایانه."
+  ],
+  "hub.arrange": [
+   "چیدمان",
+   "با دو ایجنت یا بیشتر، پنجره‌ی هر ایجنت به بخش خودش از صفحه منتقل شود."
+  ],
+  "hub.chat": [
+   "گفتگو",
+   "ایجنت‌ها بتوانند پیام‌های کوتاه برای هم بفرستند."
+  ],
+  "hub.turn_wait_secs": [
+   "انتظار نوبت (ثانیه)",
+   "بیشترین مدتی که یک ایجنت برای نوبتش در صفحه‌کلید و ماوس صبر می‌کند."
+  ],
+  "hub.release_after_secs": [
+   "آزادسازی پس از (ثانیه)",
+   "ایجنتی که این مدت هیچ فراخوانی نکند، بخش خود از صفحه را تا فراخوانی بعدی‌اش به دیگران می‌دهد؛ سروری که فقط راه‌اندازی شده هیچ بخشی ندارد."
+  ],
+  "notifications.enabled": [
+   "فعال",
+   "ایجنت بتواند اعلان‌های دسکتاپ را بخواند. این اعلان‌ها پیام‌ها و کدهای برنامه‌های دیگر را در خود دارند."
+  ],
+  "notifications.apps": [
+   "برنامه‌ها",
+   "فقط اعلان‌های این برنامه‌ها. خالی: هر برنامه‌ای."
+  ],
+  "notifications.mask_codes": [
+   "پوشاندن کدها",
+   "کدهای یک‌بارمصرف و کدهای تأیید پوشانده شوند."
+  ],
+  "notifications.keep": [
+   "تعداد نگه‌داری",
+   "چند اعلان نگه داشته شود (Linux)."
+  ],
+  "script.saved_as_tools": [
+   "ذخیره به‌عنوان ابزار",
+   "هر اسکریپت ذخیره‌شده خودش یک ابزار هم هست."
+  ],
+  "script.files": [
+   "فایل‌ها",
+   "فایل‌هایی که اسکریپت‌ها می‌توانند استفاده کنند: none، workspace (فقط فایل‌های پوشه‌ی اسکریپت‌ها)، read (خواندن هر فایل) یا all."
+  ],
+  "script.web": [
+   "وب",
+   "اسکریپت‌ها بتوانند از طریق http(s) واکشی و دانلود کنند."
+  ],
+  "script.max_seconds": [
+   "حداکثر زمان (ثانیه)",
+   "بیشترین مدت اجرای یک اسکریپت، با احتساب فراخوانی ابزارها."
+  ],
+  "script.dir": [
+   "پوشه",
+   "جای نگه‌داری اسکریپت‌های ذخیره‌شده. خالی: پوشه‌ی پیش‌فرض."
+  ],
+  "verify.enabled": [
+   "فعال",
+   "نتیجه‌ی هر کنش بررسی شود و اگر کار نکرد به ایجنت گفته شود."
+  ],
+  "verify.retry": [
+   "تلاش دوباره",
+   "کنشی که آشکارا شکست خورده، یک بار دیگر به روشی دیگر امتحان می‌شود."
+  ],
+  "verify.retry_on_no_change": [
+   "تلاش دوباره بدون تغییر",
+   "فشردن‌هایی که پس از آن‌ها چیز قابل‌مشاهده‌ای تغییر نکرد هم دوباره امتحان شوند. خاموش: برخی کنش‌ها (پرداخت، ارسال) اثرشان را دیر نشان می‌دهند و نباید تکرار شوند."
+  ],
+  "audit.enabled": [
+   "فعال",
+   "برای هر فراخوانی یک خط فراداده در فایل گزارش نوشته شود."
+  ],
+  "audit.path": [
+   "مسیر",
+   "فایل گزارش. خالی: audit.log در پوشه‌ی سرور."
+  ],
+  "server.log": [
+   "لاگ",
+   "میزان لاگ‌نویسی سرور."
+  ],
+  "server.instructions": [
+   "دستورالعمل‌ها",
+   "دستورالعمل‌هایی که هنگام اتصال کلاینت فرستاده می‌شود: full، short (برای کلاینت‌هایی که مهارت‌ها را بارگذاری می‌کنند) یا off."
+  ],
+  "server.result_meta": [
+   "فراداده‌ی نتیجه",
+   "برای میزبان‌هایی که زمینه‌شان را کوتاه می‌کنند: نتیجه‌ها می‌گویند کدام نتیجه‌های قبلی را تکرار می‌کنند."
+  ],
+  "server.structured_output": [
+   "خروجی ساختاریافته",
+   "برخی نتیجه‌ها به صورت داده هم برگردانده شوند، برای کلاینت‌هایی که از آن استفاده می‌کنند."
+  ],
+  "server.http_addr": [
+   "نشانی HTTP",
+   "ارائه‌ی MCP روی HTTP در این نشانی، مثلاً 127.0.0.1:8787. خالی: فقط stdio."
+  ],
+  "server.http_token": [
+   "توکن HTTP",
+   "توکن bearer که کلاینت‌های HTTP باید بفرستند."
+  ],
+  "update.enabled": [
+   "فعال",
+   "به‌روزرسانی‌ها جستجو و دانلود شوند. خاموش: هرگز خودبه‌خود به‌روز نمی‌شود."
+  ],
+  "update.check_after_mins": [
+   "بررسی پس از (دقیقه)",
+   "چند دقیقه پس از راه‌اندازی سرور، نخستین بررسی انجام شود."
+  ],
+  "update.check_every_hours": [
+   "بررسی هر (ساعت)",
+   "ساعت‌های بین بررسی‌ها هنگام اجرای سرور. وقتی دقیقه‌های زیر 0 است استفاده می‌شود."
+  ],
+  "update.check_every_mins": [
+   "بررسی هر (دقیقه)",
+   "دقیقه‌های بین بررسی‌ها، برای فاصله‌ای کوتاه‌تر از یک ساعت. دست‌کم 5. 0: استفاده از ساعت‌ها."
+  ],
+  "update.channel": [
+   "کانال",
+   "stable فقط انتشارهای رسمی را می‌گیرد. prerelease انتشارهایی را هم که GitHub پیش‌انتشار علامت زده می‌گیرد (برچسب‌هایشان عددهای ساده‌اند، مانند v4.9.0)."
+  ],
+  "update.pin": [
+   "ثابت کردن نسخه",
+   "نسخه‌ای برای ماندن روی آن، مثلاً 5.0.2: فقط همان انتشار گرفته می‌شود و نه هیچ نسخه‌ی تازه‌تری. خالی: تازه‌ترین."
+  ],
+  "update.skip_version": [
+   "رد کردن نسخه",
+   "نسخه‌ای که هرگز گرفته نشود، مثلاً نسخه‌ای که اینجا مشکل داشت."
+  ],
+  "update.install": [
+   "نصب",
+   "به‌روزرسانی دانلودشده کی نصب شود: restart (پس از راه‌اندازی دوباره‌ی رایانه)، start (راه‌اندازی بعدی سرور) یا manual."
+  ],
+  "update.repo": [
+   "مخزن",
+   "مخزن GitHub که انتشارها از آن می‌آیند (owner/name)."
+  ],
+  "linux.batch_size": [
+   "اندازه‌ی دسته",
+   "تعداد عنصرهایی که پرس‌وجوهای AT-SPI آن‌ها هم‌زمان اجرا می‌شود."
+  ],
+  "linux.text_max_chars": [
+   "حداکثر نویسه‌های متن",
+   "بلندترین متنی که از یک عنصر متنی خوانده می‌شود."
+  ],
+  "macos.batch_attributes": [
+   "خواندن دسته‌ای ویژگی‌ها",
+   "همه‌ی ویژگی‌های یک عنصر در یک فراخوانی خوانده شوند."
+  ],
+  "macos.messaging_timeout_secs": [
+   "مهلت پیام‌رسانی (ثانیه)",
+   "مهلت فراخوانی دسترسی‌پذیری."
+  ],
+  "windows.use_cache_request": [
+   "استفاده از درخواست کش",
+   "درخت کل یک پنجره در یک فراخوانی UIA واکشی شود."
+  ],
+  "panel.theme": [
+   "پوسته",
+   "روشن، تیره، یا پیروی از رایانه."
+  ],
+  "panel.accent": [
+   "رنگ تأکیدی",
+   "رنگی که پالت پنل از آن ساخته می‌شود."
+  ],
+  "panel.language": [
+   "زبان",
+   "زبان این صفحه: زبان مرورگر، انگلیسی، فارسی (راست به چپ)، چینی یا روسی."
+  ],
+  "panel.port": [
+   "پورت",
+   "پورتی که پنل هنگام باز بودن روی آن گوش می‌دهد. اگر اشغال باشد، پورت آزاد دیگری استفاده می‌شود."
+  ],
+  "panel.idle_minutes": [
+   "دقیقه‌های بی‌کاری",
+   "پنل پس از این مدت بدون درخواست بسته می‌شود."
+  ]
+ }
+}

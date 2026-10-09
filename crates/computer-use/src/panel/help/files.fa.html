@@ -1,22 +1,22 @@
-<h3>The server's folder</h3>
-<p>Everything lives in one folder: <code>~/.computer-use</code>, or the one named by the <code>COMPUTER_USE_HOME</code> environment variable.</p>
+<h3>پوشه‌ی سرور</h3>
+<p>همه‌چیز در یک پوشه است: <code>~/.computer-use</code>، یا پوشه‌ای که متغیر محیطی <code>COMPUTER_USE_HOME</code> نام می‌برد.</p>
 <table class="table">
-<tr><td><code>config.toml</code></td><td>The settings file this panel edits, comments kept.</td></tr>
-<tr><td><code>bin/</code></td><td>A copy of the program that the agents are told to start, so the folder you downloaded it to can move.</td></tr>
-<tr><td><code>updates/</code></td><td>Downloads waiting, the version kept to go back to, and when it last looked.</td></tr>
-<tr><td><code>icons/</code></td><td>The icon of the panel's shortcut.</td></tr>
-<tr><td><code>profiles/</code></td><td>Your own profiles, one small file each.</td></tr>
-<tr><td><code>scripts/</code></td><td>Scripts the agent saved.</td></tr>
-<tr><td><code>apps.json</code></td><td>How often each app needed pixels (<code>screenshot.record_apps</code>).</td></tr>
-<tr><td><code>audit.log</code></td><td>The audit log, if switched on.</td></tr>
-<tr><td><code>hub-47381.token</code>, <code>panel-47382.token</code></td><td>Keys only you can read, for the hub and this panel.</td></tr>
+<tr><td><code>config.toml</code></td><td>فایل تنظیماتی که این پنل ویرایش می‌کند، با حفظ توضیحات.</td></tr>
+<tr><td><code>bin/</code></td><td>نسخه‌ای از برنامه که به ایجنت‌ها گفته می‌شود اجرا کنند، تا پوشه‌ای که برنامه را در آن دانلود کرده‌اید بتواند جابه‌جا شود.</td></tr>
+<tr><td><code>updates/</code></td><td>دانلودهای در انتظار، نسخه‌ای که برای بازگشت نگه داشته شده، و زمان آخرین بررسی.</td></tr>
+<tr><td><code>icons/</code></td><td>آیکون میان‌بر پنل.</td></tr>
+<tr><td><code>profiles/</code></td><td>پروفایل‌های خود شما، هر کدام یک فایل کوچک.</td></tr>
+<tr><td><code>scripts/</code></td><td>اسکریپت‌هایی که ایجنت ذخیره کرده است.</td></tr>
+<tr><td><code>apps.json</code></td><td>اینکه هر برنامه چند بار به پیکسل نیاز داشته است (<code>screenshot.record_apps</code>).</td></tr>
+<tr><td><code>audit.log</code></td><td>گزارش ممیزی، اگر روشن باشد.</td></tr>
+<tr><td><code>hub-47381.token</code>، <code>panel-47382.token</code></td><td>کلیدهایی که فقط شما می‌توانید بخوانید، برای هاب و این پنل.</td></tr>
 </table>
-<h3>From a terminal</h3>
-<pre class="log">computer-use-mcp config show            the settings in effect
+<h3>در ترمینال</h3>
+<pre class="log">computer-use-mcp config show            تنظیمات در حال اجرا
 computer-use-mcp config set screenshot.attach always
-computer-use-mcp config check           validate, and report unknown keys
-computer-use-mcp doctor                 permissions, stop key, what is set up
-computer-use-mcp install --list         which agents are here
-computer-use-mcp shortcut --both        an icon that opens this panel
-computer-use-mcp update --rollback      go back one version</pre>
-<p>A running server picks up a change to the settings file by itself (<code>hot_reload</code>). A few settings (the ports, the logging level, the instructions sent when a client connects) are read when a server starts, and say so here.</p>
+computer-use-mcp config check           اعتبارسنجی و گزارش کلیدهای ناشناخته
+computer-use-mcp doctor                 دسترسی‌ها، کلید توقف، آنچه راه‌اندازی شده
+computer-use-mcp install --list         کدام ایجنت‌ها اینجا هستند
+computer-use-mcp shortcut --both        آیکونی که این پنل را باز می‌کند
+computer-use-mcp update --rollback      بازگشت به نسخه‌ی قبل</pre>
+<p>سرور در حال اجرا تغییر فایل تنظیمات را خودش اعمال می‌کند (<code>hot_reload</code>). چند تنظیم (پورت‌ها، سطح لاگ، دستورالعمل‌هایی که هنگام اتصال کلاینت فرستاده می‌شود) هنگام راه‌اندازی سرور خوانده می‌شوند و این را اینجا نشان می‌دهند.</p>

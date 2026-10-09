@@ -1,11 +1,11 @@
-<h3>Several agents on one desktop</h3>
-<p>Subagents, or Claude Code beside Codex: every server on the computer joins one hub. The first to start runs it and is agent 1; the next ones join as 2, 3 and so on.</p>
+<h3>چند ایجنت روی یک دسکتاپ</h3>
+<p>زیرایجنت‌ها، یا Claude Code در کنار Codex: همه‌ی سرورهای روی رایانه به یک هاب می‌پیوندند. نخستین سروری که راه‌اندازی شود هاب را اجرا می‌کند و ایجنت 1 است؛ بعدی‌ها به‌ترتیب با شماره‌ی 2، 3 و همین‌طور به آن می‌پیوندند.</p>
 <ul>
-<li><b>A cursor each.</b> Numbered once there are two, in a different pointer style each.</li>
-<li><b>One stop key for all.</b> The system gives a key to one program, so the hub holds it for everyone.</li>
-<li><b>Their own part of the screen, by need</b> (<code>hub.arrange</code>): only the agents at work share the screen (one that made no call for <code>hub.release_after_secs</code> has none until its next call), each by what its window needs: a big window beside two small ones gets a half and the others a quarter each. A window an agent moved or tiled itself stays where it put it, and the others share the rest. An agent can also ask for a part: full, half, third, quarter or a share such as 35%. Small changes move no window, and a window is only moved when its agent looks at it next.</li>
-<li><b>Turns at the keyboard and mouse.</b> One agent at a time; an agent that goes quiet for 30 seconds loses its turn. How long one waits is <code>hub.turn_wait_secs</code>.</li>
-<li><b>Messages</b> (<code>hub.chat</code>, off by default): short notes between agents. An agent takes another's words as information, never as instructions. You switch this on here, never through the chat.</li>
+<li><b>برای هر کدام یک نشانگر.</b> از وقتی دو ایجنت باشند شماره‌گذاری می‌شوند، و هر کدام سبک نشانگر متفاوتی دارد.</li>
+<li><b>یک کلید توقف برای همه.</b> سیستم هر کلید را فقط به یک برنامه می‌دهد، پس هاب آن را برای همه نگه می‌دارد.</li>
+<li><b>بخش خودشان از صفحه، بر اساس نیاز</b> (<code>hub.arrange</code>): فقط ایجنت‌هایی که در حال کارند صفحه را میان خود تقسیم می‌کنند (ایجنتی که به مدت <code>hub.release_after_secs</code> هیچ فراخوانی نکرده، تا فراخوانی بعدی‌اش سهمی ندارد)، هر کدام به اندازه‌ی نیاز پنجره‌اش: یک پنجره‌ی بزرگ کنار دو پنجره‌ی کوچک نیمی از صفحه را می‌گیرد و آن دو هر کدام یک‌چهارم. پنجره‌ای که خود ایجنت جابه‌جا یا چیده باشد همان‌جا می‌ماند و بقیه باقی صفحه را تقسیم می‌کنند. ایجنت می‌تواند خودش هم سهمی بخواهد: کامل، نصف، یک‌سوم، یک‌چهارم یا سهمی مانند 35%. تغییرهای کوچک هیچ پنجره‌ای را جابه‌جا نمی‌کنند، و هر پنجره فقط وقتی جابه‌جا می‌شود که ایجنتش دفعه‌ی بعد به آن نگاه کند.</li>
+<li><b>نوبت برای صفحه‌کلید و ماوس.</b> هر بار یک ایجنت؛ ایجنتی که 30 ثانیه ساکت بماند نوبتش را از دست می‌دهد. مدت انتظار هر ایجنت <code>hub.turn_wait_secs</code> است.</li>
+<li><b>پیام‌ها</b> (<code>hub.chat</code>، به‌طور پیش‌فرض خاموش): یادداشت‌های کوتاه میان ایجنت‌ها. هر ایجنت حرف ایجنت دیگر را به‌عنوان اطلاعات می‌گیرد، هرگز به‌عنوان دستور. این گزینه را اینجا روشن می‌کنید، هرگز از راه گفتگو.</li>
 </ul>
-<h3>Good to know</h3>
-<p>The hub ends a few seconds after the last agent leaves. It listens on a port of this computer only (<code>hub.port</code>, 47381), and only to programs that can read a token file in the server's folder. Claude Code's subagents share the main agent's server unless their definition starts one of its own; an example is in <code>examples/claude-code-agents</code>.</p>
+<h3>خوب است بدانید</h3>
+<p>هاب چند ثانیه پس از رفتن آخرین ایجنت بسته می‌شود. فقط روی یک پورت از همین رایانه گوش می‌دهد (<code>hub.port</code>، 47381)، و فقط به برنامه‌هایی پاسخ می‌دهد که بتوانند یک فایل توکن را در پوشه‌ی سرور بخوانند. زیرایجنت‌های Claude Code از سرور ایجنت اصلی استفاده می‌کنند، مگر آنکه تعریفشان سروری از آن خود راه‌اندازی کند؛ نمونه‌ای در <code>examples/claude-code-agents</code> هست.</p>
