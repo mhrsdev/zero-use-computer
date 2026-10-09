@@ -583,6 +583,18 @@ pub fn due(p: &Pending, install: UpdateInstall) -> bool {
 /// files, when `exe` runs from an unpacked package: its folder has
 /// `.claude-plugin/plugin.json`), then clear it from the waiting folder.
 pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
+    install_keeping(p, exe, dir, None)
+}
+
+/// `install`, also keeping the settings file at `config` beside the program
+/// it puts aside, so going back can bring the settings that worked with
+/// it back too (see [`rollback_to`]).
+pub fn install_keeping(
+    p: &Pending,
+    exe: &Path,
+    dir: &Path,
+    config: Option<&Path>,
+) -> Result<()> {
     // Already there (put in place by another server, or twice from the
     // panel): nothing to replace, and the copy kept to go back to stays.
     // (as it says it: a 5.0.0-preview is not the 5.0.0 release)
@@ -596,7 +608,7 @@ pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
     if home.join(".claude-plugin").join("plugin.json").is_file() {
         copy_tree(&p.dir, home, &p.binary())?;
     }
-    keep_previous(exe, dir);
+    keep_previous(exe, dir, config);
     replace_program(&p.binary(), exe)?;
     let _ = std::fs::remove_dir_all(&p.dir);
     let _ = std::fs::remove_file(dir.join("pending.json"));
@@ -949,6 +961,20 @@ pub struct Previous {
     pub version: String,
     /// When it was put aside (seconds since 1970).
     pub saved: u64,
+    /// Its settings file was kept with it (`previous/config.toml`).
+    #[serde(default)]
+    pub settings: bool,
+}
+
+/// The settings file kept with the version an update replaced.
+const KEPT_SETTINGS: &str = "config.toml";
+
+/// The settings the version `previous` ran with, when they were kept.
+pub fn previous_settings(dir: &Path) -> Option<PathBuf> {
+    previous(dir)
+        .filter(|p| p.settings)
+        .map(|_| previous_dir(dir).join(KEPT_SETTINGS))
+        .filter(|f| f.is_file())
 }
 
 fn previous_dir(dir: &Path) -> PathBuf {
@@ -964,17 +990,29 @@ pub fn previous(dir: &Path) -> Option<Previous> {
     previous_dir(dir).join(BIN_NAME).is_file().then_some(p)
 }
 
-/// Keep the program at `exe` (this version) before an update replaces it.
-fn keep_previous(exe: &Path, dir: &Path) {
+/// Keep the program at `exe` (this version) before an update replaces it,
+/// and the settings file at `config` (as the next version may add values
+/// this one doesn't know, or change what they mean).
+fn keep_previous(exe: &Path, dir: &Path, config: Option<&Path>) {
     let keep = previous_dir(dir);
     let done = (|| -> std::io::Result<()> {
         let _ = std::fs::remove_dir_all(&keep);
         std::fs::create_dir_all(&keep)?;
         std::fs::copy(exe, keep.join(BIN_NAME))?;
+        // The settings are kept as they are, secrets and all, under the
+        // same owner-only rule as the file they came from.
+        let settings = config.is_some_and(|c| {
+            let kept = keep.join(KEPT_SETTINGS);
+            std::fs::copy(c, &kept).is_ok() && {
+                crate::config::owner_only(&kept);
+                true
+            }
+        });
         // The program on disk, which may be newer than the one running.
         let p = Previous {
             version: said_version(exe).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             saved: now_secs(),
+            settings,
         };
         std::fs::write(
             keep.join("previous.json"),
@@ -994,6 +1032,18 @@ fn keep_previous(exe: &Path, dir: &Path) {
 /// `exe`; (the version it was, the version it is now). The update it undid
 /// is cleared; set `update.skip_version` to it so it isn't taken again.
 pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
+    rollback_to(exe, dir, None).map(|(from, to, _)| (from, to))
+}
+
+/// `rollback`, and when `settings` is the settings file, the one kept with
+/// the old version put back in its place (what it replaces is kept beside it
+/// with `.before-rollback` added, so nothing is lost). The third value is
+/// what came of the settings: `Some` when they were put back.
+pub fn rollback_to(
+    exe: &Path,
+    dir: &Path,
+    settings: Option<&Path>,
+) -> Result<(Version, Version, Option<SettingsBack>)> {
     let prev = previous(dir)
         .ok_or_else(|| Error::Platform("there is no earlier version kept to go back to".into()))?;
     let bin = previous_dir(dir).join(BIN_NAME);
@@ -1013,10 +1063,52 @@ pub fn rollback(exe: &Path, dir: &Path) -> Result<(Version, Version)> {
         .ok()
         .and_then(|said| Version::of_program(said.split_whitespace().last().unwrap_or_default()))
         .unwrap_or_else(Version::current);
+    let kept = settings.and_then(|_| previous_settings(dir));
     replace_program(&bin, exe)?;
+    let back = match (settings, kept) {
+        (Some(config), Some(kept)) => put_back_settings(&kept, config),
+        _ => None,
+    };
     discard(dir);
     let _ = std::fs::remove_dir_all(previous_dir(dir));
-    Ok((from, want.unwrap_or(from)))
+    Ok((from, want.unwrap_or(from), back))
+}
+
+/// The settings of the old version, put back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsBack {
+    /// Where the settings they replaced were kept (none when there were
+    /// none to replace).
+    pub aside: Option<PathBuf>,
+}
+
+/// Replace the settings file at `config` with `kept`; the one it replaces is
+/// kept in `<config>.before-rollback`. Whatever fails leaves the file as
+/// it was: the new file is written beside it and moved over it.
+fn put_back_settings(kept: &Path, config: &Path) -> Option<SettingsBack> {
+    let name = config.file_name()?.to_string_lossy().into_owned();
+    let aside = config.with_file_name(format!("{name}.before-rollback"));
+    let staged = config.with_file_name(format!("{name}.rolling-back"));
+    let had = config.is_file();
+    let done = (|| -> std::io::Result<()> {
+        if had {
+            std::fs::copy(config, &aside)?;
+            crate::config::owner_only(&aside);
+        }
+        std::fs::copy(kept, &staged)?;
+        crate::config::owner_only(&staged);
+        std::fs::rename(&staged, config)
+    })();
+    match done {
+        Ok(()) => Some(SettingsBack {
+            aside: had.then_some(aside),
+        }),
+        Err(e) => {
+            log::warn!("updates: couldn't put the old settings back: {e}");
+            let _ = std::fs::remove_file(&staged);
+            None
+        }
+    }
 }
 
 /// When a waiting update goes in, in words.
@@ -1554,11 +1646,70 @@ mod tests {
             serde_json::to_vec(&Previous {
                 version: "4.0.0".into(),
                 saved: 1,
+                settings: false,
             })
             .unwrap(),
         )
         .unwrap();
         assert!(rollback(&exe, &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_an_update_replaced_come_back_with_the_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("rollback-settings");
+        let exe = dir.join(BIN_NAME);
+        let config = dir.join("config.toml");
+        let put = |path: &Path, v: &str| {
+            std::fs::write(path, format!("#!/bin/sh\necho computer-use-mcp {v}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        put(&exe, &Version::current().to_string());
+        std::fs::write(&config, "[overlay]\ncursor_style = \"ice\"\n").unwrap();
+        let newer = dir.join("v99.0.0");
+        std::fs::create_dir_all(&newer).unwrap();
+        put(&newer.join(BIN_NAME), "99.0.0");
+        let p = Pending {
+            version: "99.0.0".into(),
+            dir: newer,
+            downloaded: 1,
+            sha256: String::new(),
+            prerelease: false,
+        };
+        // Without being told, no settings are kept.
+        assert!(previous_settings(&dir).is_none());
+        install_keeping(&p, &exe, &dir, Some(&config)).unwrap();
+        let kept = previous_settings(&dir).expect("kept with the program");
+        assert_eq!(std::fs::read_to_string(kept).unwrap(), "[overlay]\ncursor_style = \"ice\"\n");
+        assert!(previous(&dir).unwrap().settings);
+        // The newer version's settings, then back.
+        std::fs::write(&config, "[overlay]\ncursor_style = \"jelly\"\n[future]\nx = 1\n").unwrap();
+        let (from, to, back) = rollback_to(&exe, &dir, Some(&config)).unwrap();
+        assert_eq!((from, to), (Version(99, 0, 0), Version::current()));
+        let back = back.expect("the settings came back");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[overlay]\ncursor_style = \"ice\"\n");
+        let aside = back.aside.expect("the ones replaced are kept");
+        assert!(std::fs::read_to_string(aside).unwrap().contains("[future]"));
+        assert!(!dir.join("config.toml.rolling-back").exists());
+        assert!(previous(&dir).is_none());
+        // An update put in without settings keeps none, and going back with
+        // a file named leaves it alone.
+        let newer = dir.join("v99.0.1");
+        std::fs::create_dir_all(&newer).unwrap();
+        put(&newer.join(BIN_NAME), "99.0.1");
+        let p = Pending {
+            version: "99.0.1".into(),
+            dir: newer,
+            ..p
+        };
+        install(&p, &exe, &dir).unwrap();
+        assert!(previous_settings(&dir).is_none());
+        std::fs::write(&config, "mine = 1\n").unwrap();
+        let (_, _, back) = rollback_to(&exe, &dir, Some(&config)).unwrap();
+        assert!(back.is_none());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "mine = 1\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

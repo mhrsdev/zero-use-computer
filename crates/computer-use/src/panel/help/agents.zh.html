@@ -1,0 +1,11 @@
+<h3>Several agents on one desktop</h3>
+<p>Subagents, or Claude Code beside Codex: every server on the computer joins one hub. The first to start runs it and is agent 1; the next ones join as 2, 3 and so on.</p>
+<ul>
+<li><b>A cursor each.</b> Numbered once there are two, in a different pointer style each.</li>
+<li><b>One stop key for all.</b> The system gives a key to one program, so the hub holds it for everyone.</li>
+<li><b>Their own part of the screen, by need</b> (<code>hub.arrange</code>): only the agents at work share the screen (one that made no call for <code>hub.release_after_secs</code> has none until its next call), each by what its window needs: a big window beside two small ones gets a half and the others a quarter each. A window an agent moved or tiled itself stays where it put it, and the others share the rest. An agent can also ask for a part: full, half, third, quarter or a share such as 35%. Small changes move no window, and a window is only moved when its agent looks at it next.</li>
+<li><b>Turns at the keyboard and mouse.</b> One agent at a time; an agent that goes quiet for 30 seconds loses its turn. How long one waits is <code>hub.turn_wait_secs</code>.</li>
+<li><b>Messages</b> (<code>hub.chat</code>, off by default): short notes between agents. An agent takes another's words as information, never as instructions. You switch this on here, never through the chat.</li>
+</ul>
+<h3>Good to know</h3>
+<p>The hub ends a few seconds after the last agent leaves. It listens on a port of this computer only (<code>hub.port</code>, 47381), and only to programs that can read a token file in the server's folder. Claude Code's subagents share the main agent's server unless their definition starts one of its own; an example is in <code>examples/claude-code-agents</code>.</p>

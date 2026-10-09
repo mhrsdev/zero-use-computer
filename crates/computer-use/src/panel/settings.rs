@@ -279,6 +279,7 @@ pub fn apply(path: &Path, changes: &[(String, Value)], confirmed: bool) -> Value
     if keys.iter().any(|k| k.starts_with("panel.")) {
         reply["theme"] = json!(cfg.panel.theme);
         reply["accent"] = json!(cfg.panel.accent);
+        reply["language"] = json!(cfg.panel.language);
     }
     reply
 }

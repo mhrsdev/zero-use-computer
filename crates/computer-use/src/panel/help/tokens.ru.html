@@ -1,0 +1,18 @@
+<h3>What costs tokens</h3>
+<p>Three things, in about this order for a typical task:</p>
+<ul>
+<li><b>Pictures.</b> A picture counts as width × height ÷ 750 tokens. A whole 16:9 screen at 1280 px is about 1,230.</li>
+<li><b>The tool list,</b> sent with every request. The set the model starts with costs about 2,200 tokens with the lean descriptions; the tool manager keeps the rest out until the model asks for them.</li>
+<li><b>Trees,</b> the text of what is on screen. A busy window can run to thousands of tokens; later looks send only what changed.</li>
+</ul>
+<h3>What to turn</h3>
+<ul>
+<li><b>Picture size</b> (<code>screenshot.max_dimension</code>): the biggest lever. 1024 instead of 1280 is about a third fewer image tokens, and the text in the picture gets smaller.</li>
+<li><b>When pictures come</b> (<code>screenshot.attach</code>): auto sends one for the first look at a window, a big change or a sparse tree. Always is the most expensive; never leaves the agent to the tree.</li>
+<li><b>Smart and adaptive pictures:</b> leave a picture out when the tree already says what changed, or when the agent has looked at an app a few times without ever using pixels there. Both are on.</li>
+<li><b>Tree size</b> (<code>tree.max_nodes</code>, <code>tree.max_tokens</code>): bigger trees are folded, then cut. Folded parts stay findable.</li>
+<li><b>Tools:</b> <a href="#tool-list">Tool list</a> shows what each costs. With the tool manager on <code>dispatch</code> the model starts with the base tools and finds the rest by name.</li>
+<li><b>Fewer round trips:</b> the agent's <code>batch</code> tool runs several known steps in one call.</li>
+</ul>
+<h3>The quick way</h3>
+<p>The <a href="#profiles">Low tokens</a> profile sets the picture and tree limits for you; Balanced puts them back. The measured figures (and how they were measured) are in the benchmark section of the README. They are estimates without a prompt cache, so read them as a comparison between settings, not as a bill: your model counts its own way and the cache makes repeats cheaper.</p>

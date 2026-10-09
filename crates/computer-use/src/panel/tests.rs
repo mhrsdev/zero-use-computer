@@ -512,11 +512,17 @@ fn the_panel_window_is_recognised_by_its_title() {
 }
 
 #[test]
-fn the_panel_is_english_only() {
+fn the_panels_code_is_english_and_its_other_languages_are_in_their_own_files() {
     let arabic_script = |c: char| matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF);
+    // The page's code names the languages in their own words, once.
+    let app = include_str!("app.js")
+        .lines()
+        .filter(|l| !l.starts_with("const LANGUAGES = "))
+        .collect::<Vec<_>>()
+        .join("\n");
     for (name, text) in [
         ("index.html", include_str!("index.html")),
-        ("app.js", include_str!("app.js")),
+        ("app.js", app.as_str()),
         ("schema.rs", include_str!("schema.rs")),
         ("mod.rs", include_str!("mod.rs")),
         ("settings.rs", include_str!("settings.rs")),
@@ -524,6 +530,7 @@ fn the_panel_is_english_only() {
         ("raw.rs", include_str!("raw.rs")),
         ("status.rs", include_str!("status.rs")),
         ("updates.rs", include_str!("updates.rs")),
+        ("importing.rs", include_str!("importing.rs")),
         ("connecting.rs", include_str!("connecting.rs")),
         ("shortcuts.rs", include_str!("shortcuts.rs")),
         ("help.rs", include_str!("help.rs")),
@@ -540,6 +547,89 @@ fn the_panel_is_english_only() {
     ] {
         if let Some(c) = text.chars().find(|&c| arabic_script(c)) {
             panic!("panel/{name} has text in another script: {c}");
+        }
+    }
+}
+
+/// The names `{like_this}` in a text.
+fn placeholders(s: &str) -> Vec<String> {
+    let mut v: Vec<String> = s
+        .split('{')
+        .skip(1)
+        .filter_map(|r| r.split_once('}'))
+        .map(|(n, _)| n.to_string())
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn every_text_of_the_page_is_in_the_list_and_every_language_follows_the_list() {
+    let en: Value = serde_json::from_str(lang::SOURCE).unwrap();
+    let ui = en["ui"].as_object().unwrap();
+    // Each `t("…")`, `snack("…")` or `say("…")` of the page's code.
+    let app = include_str!("app.js");
+    for call in ["t(", "snack(", "say("] {
+        for (at, _) in app.match_indices(call) {
+            // Not the end of a longer name (`split(`, `format(`).
+            if app[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let rest = &app[at + call.len()..];
+            if let Some(lit) = rest.strip_prefix('"')
+                && let Some(end) = lit.find('"')
+                && !lit[..end].contains('\\')
+            {
+                assert!(
+                    ui.contains_key(&lit[..end]),
+                    "app.js says {:?}, which lang/en.json doesn't list: run scripts/panel-i18n.mjs",
+                    &lit[..end]
+                );
+            }
+        }
+    }
+    // Every setting that has a page of its own is in the list.
+    for e in schema::ENTRIES.iter().filter(|e| e.kind != Kind::Custom) {
+        assert!(
+            en["settings"].get(e.key).is_some(),
+            "lang/en.json lacks {}",
+            e.key
+        );
+        assert_eq!(en["settings"][e.key][1], e.help, "{} changed its help", e.key);
+    }
+    for g in schema::GROUPS {
+        assert!(ui.contains_key(*g), "lang/en.json lacks the group {g}");
+    }
+    for (code, forms) in [
+        ("fa", &["one", "other"][..]),
+        ("zh", &["other"][..]),
+        ("ru", &["one", "few", "many", "other"][..]),
+    ] {
+        let t: Value = serde_json::from_str(lang::translations(code).unwrap()).unwrap();
+        for (k, _) in ui {
+            let x = t["ui"][k].as_str().unwrap_or_default();
+            assert!(!x.trim().is_empty(), "{code} lacks {k:?}");
+            assert_eq!(placeholders(k), placeholders(x), "{code}: {k:?} -> {x:?}");
+        }
+        for k in t["ui"].as_object().unwrap().keys() {
+            assert!(ui.contains_key(k), "{code} has {k:?}, which is no text of the page");
+        }
+        for (k, v) in en["settings"].as_object().unwrap() {
+            let x = &t["settings"][k];
+            assert!(
+                x[0].as_str().is_some_and(|s| !s.is_empty()) && x[1].as_str().is_some_and(|s| !s.is_empty()),
+                "{code} lacks the setting {k}"
+            );
+            assert_eq!(placeholders(v[1].as_str().unwrap()), placeholders(x[1].as_str().unwrap()), "{code}: {k}");
+        }
+        for noun in en["plural"].as_object().unwrap().keys() {
+            let f = t["plural"][noun].as_object().unwrap();
+            assert_eq!(
+                f.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(),
+                forms.iter().copied().collect(),
+                "{code}: the forms of {noun}"
+            );
         }
     }
 }
@@ -769,6 +859,270 @@ fn settings_go_out_and_come_back_in_as_toml() {
     }
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn an_import_is_shown_before_it_is_made_and_what_this_version_cant_take_is_flagged() {
+    let dir = temp("import-preview");
+    let path = config_with_port(&dir, "[overlay]\ncursor_style = \"orbit\"\n");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let call = |route: &str, body: Value| json_of(&post(host, token, route, &body.to_string()));
+    let text = "# Zero Use Computer 99.0.0 settings\n[overlay]\ncursor_style = \"jelly\"\nborder_width = 4\nshow_label = true\nfuture_glow = 3\n[screenshot]\nmax_dimension = 99999\n[control]\nstop_hotkey = \"ctrl+alt+x\"\n";
+    let r = call("import_preview", json!({"text": text}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["exported_by"], "99.0.0");
+    assert_eq!(r["this_version"], env!("CARGO_PKG_VERSION"));
+    let row = |key: &str| {
+        r["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["key"] == key)
+            .unwrap_or_else(|| panic!("no row for {key}: {r}"))
+            .clone()
+    };
+    // A change shows what it is now and what it would be.
+    let c = row("overlay.cursor_style");
+    assert_eq!((c["status"].as_str(), c["before"].as_str(), c["after"].as_str()), (Some("change"), Some("orbit"), Some("jelly")));
+    // The value it already has is not a change.
+    let d = crate::config::OverlayConfig::default().show_label;
+    assert_eq!(row("overlay.show_label")["status"], if d { "same" } else { "change" });
+    // A setting only a newer version has, and a value this one can't take.
+    let f = row("overlay.future_glow");
+    assert_eq!(f["status"], "unsupported");
+    assert!(f["note"].as_str().unwrap().contains("newer"), "{f}");
+    let m = row("screenshot.max_dimension");
+    assert_eq!(m["status"], "invalid", "{m}");
+    // A protected one asks first.
+    assert_eq!(row("control.stop_hotkey")["status"], "protected");
+    assert_eq!(r["counts"]["unsupported"], 1);
+    // Looking changes nothing.
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+    // Without being told to leave them out, the import stops at them, as it
+    // always did, and writes nothing.
+    let r = call("import", json!({"text": text, "confirmed": true}));
+    assert_eq!(r["ok"], false);
+    assert!(r["error"].as_str().unwrap().contains("future_glow"), "{r}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    assert!(importing::backup_age_secs(&dir).is_none());
+    // Told to, it makes the changes it can, and says what it left out.
+    let r = call("import", json!({"text": text, "confirmed": true, "skip_unsupported": true}));
+    assert_eq!(r["ok"], true, "{r}");
+    let skipped: Vec<_> = r["skipped"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(skipped, ["overlay.future_glow", "screenshot.max_dimension"]);
+    let cfg = ConfigStore::load(Some(&path)).unwrap().config;
+    assert_eq!(cfg.overlay.cursor_style, "jelly");
+    assert_eq!(cfg.overlay.border_width, 4);
+    assert_eq!(cfg.control.stop_hotkey, "ctrl+alt+x");
+    assert_eq!(r["undo"], true);
+
+    // The settings from before are kept, and come back when asked (with a
+    // yes), the ones undone are kept in their turn.
+    assert!(importing::backup_age_secs(&dir).is_some());
+    assert_eq!(call("export", json!({}))["undo_secs_ago"].is_number(), true);
+    let r = call("import_undo", json!({}));
+    assert_eq!(r["ok"], false);
+    assert!(r["confirm_text"].as_str().is_some());
+    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "jelly");
+    let r = call("import_undo", json!({"confirmed": true}));
+    assert_eq!(r["ok"], true, "{r}");
+    let cfg = ConfigStore::load(Some(&path)).unwrap().config;
+    assert_eq!(cfg.overlay.cursor_style, "orbit");
+    assert_eq!(cfg.control.stop_hotkey, "ctrl+alt+escape");
+    let r = call("import_undo", json!({"confirmed": true}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "jelly");
+
+    // A secret is never shown in the preview, only that it would be replaced.
+    let r = call("import_preview", json!({"text": "[server]\nhttp_token = \"abcd-1234-5678\"\n"}));
+    assert_eq!(r["rows"][0]["after"], "••••");
+    assert!(!r.to_string().contains("abcd-1234"));
+    // A text that isn't settings at all is said so.
+    assert_eq!(call("import_preview", json!({"text": "nonsense ="}))["ok"], false);
+    assert_eq!(call("import_preview", json!({"text": "# nothing here\n"}))["ok"], false);
+    // Nothing to go back to before the first import.
+    let dir2 = temp("import-undo-none");
+    let path2 = config_with_port(&dir2, "");
+    let up2 = start(Some(path2), &dir2);
+    let r = json_of(&post(&up2.host, &up2.token, "import_undo", r#"{"confirmed":true}"#));
+    assert_eq!(r["ok"], false);
+
+    for u in [&up, &up2] {
+        u.alive.store(false, Ordering::SeqCst);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn an_export_says_which_version_made_it() {
+    let dir = temp("export-header");
+    let path = config_with_port(&dir, "[overlay]\ncursor_style = \"ice\"\n");
+    let up = start(Some(path), &dir);
+    let r = json_of(&post(&up.host, &up.token, "export", "{}"));
+    let text = r["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!("# Zero Use Computer {} settings\n", env!("CARGO_PKG_VERSION"))),
+        "{text}"
+    );
+    assert_eq!(importing::exported_by(text).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(importing::exported_by("[overlay]\n"), None);
+    assert_eq!(importing::exported_by("# Zero Use Computer 5.1 settings\n").as_deref(), Some("5.1"));
+    assert_eq!(importing::exported_by("# Zero Use Computer soon settings\n"), None);
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn going_back_a_version_brings_back_the_settings_it_ran_with() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp("upd-settings");
+    let path = config_with_port(&dir, "[overlay]\ncursor_style = \"ice\"\n");
+    let exe = dir.join("the-program");
+    let put = |p: &Path, v: &str| {
+        std::fs::write(p, format!("#!/bin/sh\necho computer-use-mcp {v}\n")).unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    put(&exe, env!("CARGO_PKG_VERSION"));
+    let updates = dir.join("updates");
+    let waiting = updates.join("v99.0.0");
+    std::fs::create_dir_all(&waiting).unwrap();
+    put(&waiting.join(crate::update::BIN_NAME), "99.0.0");
+    std::fs::write(
+        updates.join("pending.json"),
+        serde_json::to_vec(&crate::update::Pending {
+            version: "99.0.0".into(),
+            dir: waiting,
+            downloaded: 1,
+            sha256: String::new(),
+            prerelease: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let Bound::Mine(server) = Server::bind_with(
+        Some(path.clone()),
+        &dir,
+        exe.clone(),
+        crate::connect::Env::real(),
+        crate::shortcut::Places::real(),
+    )
+    .unwrap() else {
+        panic!("another panel answered");
+    };
+    let (host, token, alive) = (server.page.host.clone(), server.page.token.clone(), server.page.alive.clone());
+    std::thread::spawn(move || server.run());
+    let call = |route: &str, body: &str| json_of(&post(&host, &token, route, body));
+
+    // The update goes in with the settings as they are.
+    assert_eq!(call("update_install", r#"{"confirmed":true}"#)["ok"], true);
+    let s = call("update_status", "{}");
+    assert_eq!(s["previous"]["settings_kept"], true, "{s}");
+    // The new version's settings: another value, and one the old one lacks.
+    call("set", r#"{"changes":[{"key":"overlay.cursor_style","value":"jelly"}]}"#);
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("\n[future]\nsetting = 1\n");
+    std::fs::write(&path, &text).unwrap();
+    // Going back says the settings come too, and does so when it is told.
+    let r = call("update_rollback", "{}");
+    assert!(r["confirm_text"].as_str().unwrap().contains("settings you had before"), "{r}");
+    let r = call("update_rollback", r#"{"confirmed":true}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("settings from before the update are back"), "{r}");
+    let back = std::fs::read_to_string(&path).unwrap();
+    assert!(back.contains("ice") && !back.contains("[future]"), "{back}");
+    // What they replace is kept beside the file.
+    let aside = std::fs::read_to_string(dir.join("config.toml.before-rollback")).unwrap();
+    assert!(aside.contains("jelly") && aside.contains("[future]"), "{aside}");
+    let c = ConfigStore::load(Some(&path)).unwrap().config;
+    assert_eq!(c.overlay.cursor_style, "ice");
+    assert_eq!(c.update.skip_version, "99.0.0");
+
+    // The same, when the user would rather keep the settings of the new one.
+    put(&waiting_again(&dir), "99.0.0");
+    std::fs::write(
+        updates.join("pending.json"),
+        serde_json::to_vec(&crate::update::Pending {
+            version: "99.0.0".into(),
+            dir: waiting_again(&dir).parent().unwrap().to_path_buf(),
+            downloaded: 1,
+            sha256: String::new(),
+            prerelease: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    call("set", r#"{"confirmed":true,"changes":[{"key":"update.skip_version","value":""}]}"#);
+    assert_eq!(call("update_install", r#"{"confirmed":true}"#)["ok"], true);
+    call("set", r#"{"changes":[{"key":"overlay.cursor_style","value":"paper"}]}"#);
+    let r = call("update_rollback", r#"{"confirmed":true,"settings":false}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "paper");
+    alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn waiting_again(dir: &Path) -> PathBuf {
+    let d = dir.join("updates").join("v99.0.0");
+    std::fs::create_dir_all(&d).unwrap();
+    d.join(crate::update::BIN_NAME)
+}
+
+#[test]
+fn the_page_speaks_the_language_chosen_and_persian_is_laid_out_right_to_left() {
+    let dir = temp("lang");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let call = |route: &str, body: Value| json_of(&post(host, token, route, &body.to_string()));
+    let page = |host: &str, token: &str| get(host, token, "");
+    // Left to the browser, until told.
+    let p = page(host, token);
+    assert!(p.contains("<html lang=\"auto\" dir=\"ltr\""), "{}", &p[..400]);
+    assert_eq!(call("state", json!({}))["language"], "auto");
+    for (code, dir_) in [("fa", "rtl"), ("zh", "ltr"), ("ru", "ltr"), ("en", "ltr")] {
+        let r = call("set", json!({"changes":[{"key":"panel.language","value":code}]}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["language"], code);
+        assert_eq!(call("state", json!({}))["language"], code);
+        let p = page(host, token);
+        assert!(p.contains(&format!("<html lang=\"{code}\" dir=\"{dir_}\"")), "{code}");
+        // The panel's mark in the title is the same in every language.
+        assert!(p.contains("<title>Zero panel [private]</title>"));
+    }
+    let r = call("set", json!({"changes":[{"key":"panel.language","value":"klingon"}]}));
+    assert_eq!(r["ok"], false);
+    // A language is sent only when asked for, and as JSON.
+    for code in ["fa", "zh", "ru"] {
+        let r = get(host, token, &format!("lang/{code}.json"));
+        assert!(r.starts_with("HTTP/1.1 200"), "{code}");
+        let t = json_of(&r);
+        assert!(t["ui"].as_object().is_some_and(|u| u.len() > 400));
+    }
+    assert!(get(host, token, "lang/en.json").starts_with("HTTP/1.1 404"));
+    assert!(get(host, token, "lang/xx.json").starts_with("HTTP/1.1 404"));
+    assert!(get(host, token, "lang/../schema.json").starts_with("HTTP/1.1 404"));
+    // The guide in each language, and in English when it has none.
+    let en = get(host, token, "help/start");
+    let fa = get(host, token, "help/fa/start");
+    assert!(en.starts_with("HTTP/1.1 200") && fa.starts_with("HTTP/1.1 200"));
+    assert_ne!(en.split_once("\r\n\r\n").unwrap().1, fa.split_once("\r\n\r\n").unwrap().1);
+    assert_eq!(en.split_once("\r\n\r\n").unwrap().1, get(host, token, "help/xx/start").split_once("\r\n\r\n").unwrap().1);
+    assert!(get(host, token, "help/fa/nothing").starts_with("HTTP/1.1 404"));
+    // The Persian font comes with the page (nothing from outside is loaded).
+    let f = request(host, &format!("GET /{token}/font/vazirmatn.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n"));
+    assert!(f.starts_with("HTTP/1.1 200") && f.contains("Content-Type: font/woff2"));
+    assert!(f.contains("font-src 'self'"));
+    assert!(p_has_no_outside_loads(&page(host, token)));
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn p_has_no_outside_loads(page: &str) -> bool {
+    !page.contains("http://") && !page.contains("https://") || page.matches("https://").count() == page.matches("https://api.").count()
 }
 
 #[test]

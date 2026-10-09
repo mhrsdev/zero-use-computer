@@ -1,0 +1,17 @@
+<h3>What this is</h3>
+<p>Zero Use Computer lets an AI agent use your computer. It reads an app the way a screen reader does, with numbered elements, and presses real controls through the system's accessibility interface. It looks at pixels only when the text isn't enough. This panel is where you decide how it behaves. The agent has no tool to open it or change anything in it.</p>
+<h3>First minutes</h3>
+<ol>
+<li><b>Connect an agent.</b> <a href="#connect">Connect an agent</a> adds the program to Claude Code, Claude Desktop, Codex, Cursor or VS Code with a button.</li>
+<li><b>Check the machine.</b> Run <code>computer-use-mcp doctor</code> in a terminal. It says whether the permissions are in place and whether the stop key works. <a href="#help-trouble">Trouble</a> has what to do on each system.</li>
+<li><b>Know the stop key.</b> <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Esc</kbd> (on a Mac <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd>) stops the agent at once, from any app. Press it again to let it go on.</li>
+<li><b>Give the agent its skills.</b> The <code>skills</code> folder of the release holds how to work with the tools and the safety rules. Claude Code and the Claude apps load them from there; other clients get the same files over MCP.</li>
+</ol>
+<h3>Opening this panel</h3>
+<p><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> from any app, <code>computer-use-mcp settings</code> in a terminal, or an icon on the desktop (<a href="#shortcut">Desktop shortcut</a> makes one). Both open the same address every time, so it can be bookmarked. The panel listens only while it is open and closes after fifteen quiet minutes (<code>panel.idle_minutes</code>).</p>
+<h3>Where to go next</h3>
+<ul>
+<li><a href="#help-tokens">Spending fewer tokens</a> if the agent costs too much.</li>
+<li><a href="#profiles">Profiles</a> to change many settings at once, and go back.</li>
+<li><a href="#pointer">Pointer</a> to choose how the agent's cursor looks.</li>
+</ul>

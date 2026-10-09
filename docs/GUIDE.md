@@ -846,7 +846,12 @@ From v4.0 the server keeps itself up to date (`[update]`):
 only with `computer-use-mcp update --install`; `enabled = false` stops
 looking. `computer-use-mcp update --rollback` (or **Go back** in the panel)
 puts the kept version back and sets `skip_version` to the one left, so it
-isn't downloaded again. `doctor` shows what is waiting. Updates use `curl`,
+isn't downloaded again. The settings file is kept with the program an update
+replaces (`updates/previous/config.toml`), and going back puts it back too,
+so a version that doesn't know what a newer one wrote runs with the settings
+it had (the ones it replaces stay beside the file as
+`config.toml.before-rollback`; `--keep-settings` and the panel's checkbox
+leave the settings as they are). `doctor` shows what is waiting. Updates use `curl`,
 which every supported system has.
 
 GitHub allows 60 anonymous requests an hour for each address. A look asks
@@ -891,6 +896,11 @@ you can read. It listens only while it is open, and closes after
   with its comments kept and used by running servers at once. A secret (the
   decision model's key, the HTTP token) is written but never shown again,
   only its last four characters.
+- **Languages**: English, Persian (فارسی, laid out right to left, with its
+  own font, Vazirmatn), Chinese (中文) and Russian (Русский), chosen at the
+  top of the page or with `panel.language` (`auto` follows the browser).
+  The texts are in `crates/computer-use/src/panel/lang/`; anything a
+  translation lacks shows in English. See `lang/README.md` to add one.
 - **Previews**: how the pointer glides (the real path maker, so each press
   of "Another set" is a fresh sample), how the overlay's border, label and
   colours fit together, what a picture costs in tokens.
@@ -903,7 +913,12 @@ you can read. It listens only while it is open, and closes after
   text, checked as a whole before it is written, secrets covered (a file with
   a mistake that may hold a secret isn't shown at all, a kept key never
   follows a new address, and a file changed since it was shown isn't
-  written over); import and export as TOML.
+  written over); import and export as TOML. An import is shown before it
+  is made: each setting as it is now and as it would be, the ones that need
+  a yes marked, and the ones this version can't take (a setting a newer one
+  made, or a value out of range) flagged and left out; the export says
+  which version made it. The settings from before an import are kept, so
+  **Undo the last import** puts them back.
 - **Updates**: how often it looks (never, every 5 or 10 minutes, hourly,
   daily…), what waits and its notes, look now, put it in place now, go back.
 - **Connect an agent**: add the program to Claude Code, Claude Desktop,

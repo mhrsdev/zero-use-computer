@@ -65,6 +65,9 @@ pub struct PanelConfig {
     pub theme: String,
     /// The accent colour the panel's palette is made from (#RRGGBB).
     pub accent: String,
+    /// The language of the panel: "auto" (the browser's), "en", "fa", "zh"
+    /// or "ru".
+    pub language: String,
 }
 
 impl Default for PanelConfig {
@@ -74,6 +77,7 @@ impl Default for PanelConfig {
             idle_minutes: 15,
             theme: "system".into(),
             accent: "#1A73E8".into(),
+            language: "auto".into(),
         }
     }
 }
@@ -1361,6 +1365,12 @@ impl Config {
             return Err(format!(
                 "panel.theme must be system, light or dark (got \"{}\")",
                 p.theme
+            ));
+        }
+        if !matches!(p.language.trim(), "auto" | "en" | "fa" | "zh" | "ru") {
+            return Err(format!(
+                "panel.language must be auto, en, fa, zh or ru (got \"{}\")",
+                p.language
             ));
         }
         let accent = p.accent.trim();

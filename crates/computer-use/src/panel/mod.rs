@@ -18,6 +18,8 @@
 
 mod connecting;
 mod help;
+mod importing;
+mod lang;
 mod profiles;
 mod raw;
 mod schema;
@@ -501,10 +503,23 @@ impl Page {
                     "application/json",
                     settings::schema_json().as_bytes(),
                 ),
-                r if r.starts_with("help/") => match help::page(&r[5..]) {
-                    Some(h) => respond(&mut stream, 200, "text/html; charset=utf-8", h.as_bytes()),
-                    None => respond(&mut stream, 404, "text/plain", b"not found"),
-                },
+                // `help/<slug>` in English, `help/<language>/<slug>`.
+                r if r.starts_with("help/") => {
+                    let (code, slug) = r[5..].split_once('/').unwrap_or(("en", &r[5..]));
+                    match help::page(slug, code) {
+                        Some(h) => {
+                            respond(&mut stream, 200, "text/html; charset=utf-8", h.as_bytes())
+                        }
+                        None => respond(&mut stream, 404, "text/plain", b"not found"),
+                    }
+                }
+                r if r.starts_with("lang/") => {
+                    match r[5..].strip_suffix(".json").and_then(lang::translations) {
+                        Some(t) => respond(&mut stream, 200, "application/json", t.as_bytes()),
+                        None => respond(&mut stream, 404, "text/plain", b"not found"),
+                    }
+                }
+                "font/vazirmatn.woff2" => respond(&mut stream, 200, "font/woff2", lang::font()),
                 r => match r
                     .strip_prefix("cursor/")
                     .and_then(|n| n.strip_suffix(".png"))
@@ -577,7 +592,11 @@ impl Page {
         } else {
             "#1A73E8"
         };
-        let key = format!("{theme} {accent}");
+        let language = match lang::known(p.language.trim()) {
+            "en" if p.language.trim() != "en" => "auto", // the browser decides
+            l => l,
+        };
+        let key = format!("{theme} {accent} {language}");
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, page)) = cache.as_ref()
             && *k == key
@@ -587,6 +606,8 @@ impl Page {
         let page = Arc::new(
             PAGE.replace("__THEME__", theme)
                 .replace("__ACCENT__", accent)
+                .replace("__LANG__", language)
+                .replace("__DIR__", if lang::is_rtl(language) { "rtl" } else { "ltr" })
                 .replace("/*__SCRIPT__*/", APP),
         );
         *cache = Some((key, page.clone()));
@@ -627,8 +648,23 @@ impl Page {
                 }
                 self.with_path(|p| raw::run(p, text, confirmed, save, seen))
             }
-            "export" => self.with_config(export),
+            "export" => self.with_config(|c| {
+                let mut x = export(c);
+                x["undo_secs_ago"] = json!(importing::backup_age_secs(&self.home));
+                x
+            }),
+            "import_preview" => {
+                let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
+                self.with_config(|c| match importing::plan(c, text) {
+                    Ok(p) => p.json(),
+                    Err(e) => fail(&e),
+                })
+            }
             "import" => self.import(body),
+            "import_undo" => {
+                let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
+                self.with_path(|p| importing::undo(p, &self.home, yes))
+            }
             "overview" => self.with_config(|c| status::overview(self.path.as_deref(), c)),
             "tools" => self.with_config(status::tool_list),
             "apps" => status::apps(),
@@ -658,11 +694,22 @@ impl Page {
             "update_check" => self.with_config(|c| updates::check(c, &self.updates_dir())),
             "update_install" => {
                 let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
-                self.with_config(|c| updates::install(c, &self.updates_dir(), &self.exe, yes))
+                self.with_config(|c| {
+                    updates::install(c, &self.updates_dir(), &self.exe, self.path.as_deref(), yes)
+                })
             }
             "update_rollback" => {
                 let yes = body.get("confirmed").and_then(Value::as_bool) == Some(true);
-                updates::rollback(self.path.as_deref(), &self.updates_dir(), &self.exe, yes)
+                // The settings from before the update come back with the
+                // program, unless the page says otherwise.
+                let settings = body.get("settings").and_then(Value::as_bool) != Some(false);
+                updates::rollback(
+                    self.path.as_deref(),
+                    &self.updates_dir(),
+                    &self.exe,
+                    settings,
+                    yes,
+                )
             }
             "test" => self.test(body),
             "save" => self.save(body),
@@ -703,6 +750,7 @@ impl Page {
             "path": self.path.as_ref().map(|p| p.display().to_string()),
             "theme": cfg.panel.theme,
             "accent": cfg.panel.accent,
+            "language": cfg.panel.language,
             "values": settings::changed_values(&cfg),
             "decision": {
                 "provider": d.provider,
@@ -771,23 +819,44 @@ impl Page {
     }
 
     /// Settings typed or pasted as TOML (what `export` makes): each key
-    /// is changed as if set on the page.
+    /// is changed as if set on the page. Settings this version doesn't have,
+    /// or can't take the value of, stop the import, unless `skip_unsupported`
+    /// says to leave them out (the page shows them first, in the preview).
+    /// The settings as they were are kept to go back to.
     fn import(&self, body: &Value) -> Value {
         let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
-        if text.len() > 64 * 1024 {
-            return fail("that is too long to be a list of settings");
-        }
-        let table: toml::Table = match text.parse() {
-            Ok(t) => t,
-            Err(e) => return fail(&e.to_string()),
-        };
-        let mut changes = Vec::new();
-        flatten("", &table, &mut changes);
-        if changes.is_empty() {
-            return fail("there are no settings in it");
-        }
+        let skip = body.get("skip_unsupported").and_then(Value::as_bool) == Some(true);
         let confirmed = body.get("confirmed").and_then(Value::as_bool) == Some(true);
-        self.with_path(|p| apply(p, &changes, confirmed))
+        let plan = match self.config().and_then(|c| importing::plan(&c, text)) {
+            Ok(p) => p,
+            Err(e) => return fail(&e),
+        };
+        let changes = match plan.changes(skip) {
+            Ok(c) => c,
+            Err(e) => return fail(&e),
+        };
+        self.with_path(|p| {
+            // Kept first; it replaces the older copy only when the import
+            // went in (a protected setting not yet confirmed writes nothing).
+            let backup = if changes.is_empty() {
+                None
+            } else {
+                importing::Backup::take(p, &self.home)
+            };
+            let mut reply = apply(p, &changes, confirmed);
+            match (reply["ok"].as_bool() == Some(true), backup) {
+                (true, Some(b)) => {
+                    b.commit();
+                    reply["undo"] = json!(true);
+                }
+                (_, Some(b)) => b.discard(),
+                _ => {}
+            }
+            if skip {
+                reply["skipped"] = json!(plan.skipped());
+            }
+            reply
+        })
     }
 
     // The decision model's page.
@@ -940,9 +1009,21 @@ fn export(cfg: &Config) -> Value {
         };
         insert_dotted(&mut table, key, v);
     }
+    let text = if table.is_empty() {
+        String::new()
+    } else {
+        // Which version made it, so an import can say why a setting is
+        // unknown to it.
+        format!(
+            "{}{} settings\n{}",
+            importing::HEADER,
+            env!("CARGO_PKG_VERSION"),
+            toml::to_string_pretty(&table).unwrap_or_default()
+        )
+    };
     json!({
         "ok": true,
-        "text": toml::to_string_pretty(&table).unwrap_or_default(),
+        "text": text,
         "skipped_secrets": skipped,
     })
 }
@@ -1000,7 +1081,7 @@ fn respond(stream: &mut TcpStream, code: u16, kind: &str, body: &[u8]) {
         _ => "Bad Request",
     };
     let head = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'self'; img-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(head.as_bytes());

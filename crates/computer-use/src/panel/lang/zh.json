@@ -1,0 +1,1218 @@
+{
+ "ui": {
+  ", before the tool manager hides most of them until the model asks (tools.manager is dispatch)": "，未计入工具管理器的效果：它会先隐藏大部分工具，直到模型请求时才提供（tools.manager 为 dispatch）",
+  ", not yet": "，尚未检查",
+  "({d}% against the default)": "（相比默认 {d}%）",
+  "(no notes)": "（无说明）",
+  "(not made yet: the first change makes it)": "（尚未创建：首次更改时创建）",
+  "{key}: must be a list": "{key}：必须是列表",
+  "{key}: must be a number": "{key}：必须是数字",
+  "{key}: must be a whole number, not negative": "{key}：必须是非负整数",
+  "{key}: must be between {min} and {max}": "{key}：必须介于 {min} 和 {max} 之间",
+  "{key}: must be on or off": "{key}：必须为开或关",
+  "{key}: must be one line of text": "{key}：必须是单行文本",
+  "{key}: must be one of {choices}": "{key}：必须是 {choices} 之一",
+  "{key}: must be text": "{key}：必须是文本",
+  "{n} already the same": "{n} 项已相同",
+  "{n} ask to confirm": "{n} 项需确认",
+  "{n} changed": "已更改 {n} 项",
+  "{n} this version can't take": "{n} 项此版本无法接受",
+  "{n} to change": "{n} 项待更改",
+  "{name} applied.": "已应用 {name}。",
+  "{name} picker": "{name} 取色器",
+  "{name} slider": "{name} 滑块",
+  "{px} px → about {tokens} tokens": "{px} px → 约 {tokens} 个 token",
+  "{v} is back.": "已回退到 {v}。",
+  "{v} is downloaded and checked.": "{v} 已下载并通过校验。",
+  "{v} is in place.": "{v} 已安装。",
+  "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "当前设置已不再需要 {v}（已跳过、固定了其他版本，或是稳定通道上的预发布版），因此已将其忽略",
+  "{v} is the latest under these settings.": "按当前设置，{v} 已是最新版本。",
+  "{v} will not be taken again.": "不会再安装 {v}。",
+  "{x} ago": "{x}前",
+  "{x} allowed by the settings.": "设置允许 {x}。",
+  "{x} in it": "含 {x}",
+  "{x} match “{query}”.": "有 {x}匹配“{query}”。",
+  "{x} would change": "将更改 {x}",
+  "`{key}` is changed on its own page": "`{key}` 需在其专属页面更改",
+  "`{key}` is not a setting": "`{key}` 不是设置项",
+  "1 hour": "1 小时",
+  "10 min": "10 分钟",
+  "12 hours": "12 小时",
+  "30 min": "30 分钟",
+  "5 min": "5 分钟",
+  "a change has no key": "某项更改缺少键名",
+  "a change needs a value": "更改需要提供值",
+  "A different one each session, and for each agent at once": "每个会话不同，同时工作的各个智能体也各不相同",
+  "A fast model that answers small questions about what is on screen.": "一个快速模型，回答关于屏幕内容的小问题。",
+  "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "智能体可以向这个快速模型询问关于屏幕内容的是非题、选择题和评分题，从而少读内容、更快决策。你的密钥保存在本机，绝不会经过对话。",
+  "A hub is running on port {port}.": "中枢正在端口 {port} 上运行。",
+  "A line for each call: the tool, the app and how it ended. Never the arguments, the tree or a picture.": "每次调用一行：工具、应用及结果。从不记录参数、无障碍树或图片。",
+  "a list holds text": "列表只能包含文本",
+  "A picture counts as width × height ÷ 750 tokens, here for a 16:9 screen; text counts as four characters a token. An estimate: your model counts its own way, and the prompt cache makes repeats cheaper.": "一张图片按 宽 × 高 ÷ 750 个 token 计算，此处以 16:9 屏幕为例；文本按每四个字符一个 token 计算。这只是估算：模型有自己的计数方式，提示缓存也会让重复内容更便宜。",
+  "A profile only sets the settings it names and puts back the defaults of the ones another profile sets. It never touches protected settings or secrets.": "配置方案只设置其中列出的设置，并把其他配置方案设置过的项恢复为默认值。它从不改动受保护的设置或机密信息。",
+  "A random one each session, and a different one for each agent at once.": "每个会话随机选一个，同时工作的各个智能体各不相同。",
+  "A record of every call, without the data.": "每次调用的记录，不含数据。",
+  "a restart": "重启",
+  "a saved secret is replaced, not reset, here": "已保存的机密信息在这里只能替换，不能重置",
+  "A whole screen": "整个屏幕",
+  "Accessibility tree": "无障碍树",
+  "Add": "添加",
+  "Add and press Enter": "输入后按 Enter 添加",
+  "Add to {name}": "添加到 {name}",
+  "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak.": "一键将 Zero 添加到你使用的智能体。只写入它自己的条目；各智能体的其余设置保持不变，原文件旁还会保留一份 .bak 副本。",
+  "Added": "已添加",
+  "Added, other program": "已添加（其他程序）",
+  "Address (base URL)": "地址（base URL）",
+  "advanced": "高级",
+  "After adding:": "添加后：",
+  "After the import": "导入后",
+  "Already applied": "已应用",
+  "Also put back the settings from before that update (the ones you have now are kept beside the file)": "同时恢复该次更新之前的设置（当前设置会保存在设置文件旁）",
+  "Always {style}.": "始终为 {style}。",
+  "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open).": "一个用于打开此面板的图标，无需快捷键或终端。它以 settings 参数启动程序，程序在独立端口上提供面板并在浏览器中打开（或显示已打开的面板）。",
+  "An overview": "概览",
+  "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count).": "更新下载后会与 GitHub 提供的 SHA-256 进行校验，之后仅在服务器启动时安装，绝不会在智能体可能正在工作时安装。可以每隔几分钟检查一次（GitHub 每小时允许 60 次匿名请求，且内容未变的响应不计数）。",
+  "Another file of that name": "已有同名文件",
+  "Another set": "换一组",
+  "API key": "API 密钥",
+  "App": "应用",
+  "applies after a restart": "重启后生效",
+  "Apply": "应用",
+  "Apps report": "应用报告",
+  "Apps with a high share in the third column are the ones the tree serves badly: they get text read off the screen and more pictures. Kept in {file}.": "第三列占比高的应用，其无障碍树提供的信息不足：会对它们识别屏幕文字并发送更多图片。保存在 {file}。",
+  "Asked us to slow down; looking again in about {x}.": "要求放慢请求；约 {x}后再次检查。",
+  "Asking the model…": "正在询问模型…",
+  "asks to confirm": "需确认",
+  "At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.": "长边最多 {px} px（16:9 整屏约 {tokens} 个 token），附加方式：{attach}。",
+  "Audit log": "审计日志",
+  "Auto": "自动",
+  "Back to the default": "恢复默认",
+  "Back to the default.": "已恢复默认。",
+  "Balanced": "均衡",
+  "Best quality": "最佳质量",
+  "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "大图片、整个窗口、更长的树，且不做缩减。token 用量最多；适用于难以读取的应用。",
+  "Can go back to": "可回退到",
+  "Can't change safely": "无法安全更改",
+  "can't make the profiles folder": "无法创建配置方案文件夹",
+  "can't take it": "无法接受",
+  "Cancel": "取消",
+  "cells": "格",
+  "Change": "更改",
+  "Change protected settings?": "更改受保护的设置？",
+  "changed": "已更改",
+  "Changed from default": "与默认不同",
+  "characters": "字符",
+  "Check": "检查",
+  "Check now": "立即检查",
+  "Checking actions": "动作校验",
+  "choose a kind of model": "请选择模型类型",
+  "Choose a kind of model first.": "请先选择模型类型。",
+  "Choose a pointer": "选择指针",
+  "choose an agent": "请选择智能体",
+  "Comes with the program": "程序自带",
+  "Connect an agent": "连接智能体",
+  "Copied.": "已复制。",
+  "Copy": "复制",
+  "couldn't keep the settings you have now, so nothing was changed": "无法保存当前设置，因此未做任何更改",
+  "Couldn't read the settings.": "无法读取设置。",
+  "Daily": "每天",
+  "Dark": "深色",
+  "Decision model": "决策模型",
+  "default:": "默认：",
+  "Delete": "删除",
+  "Delete the profile “{name}”?": "删除配置方案“{name}”？",
+  "Desktop shortcut": "桌面快捷方式",
+  "Done": "完成",
+  "Download": "下载",
+  "Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots.": "根据你的设置绘制，展示它们组合起来的效果。真实的叠加层可点击穿透，且不会出现在智能体的截图中。",
+  "e.g. gpt-4.1-nano, llama-3.1-8b-instant": "例如 gpt-4.1-nano、llama-3.1-8b-instant",
+  "each field must be one line": "每个字段必须为单行",
+  "Each press makes new ones: no two hands are the same.": "每按一次都会生成新的路径：手的轨迹不会有两次相同。",
+  "elements": "个元素",
+  "Emergency stop": "紧急停止",
+  "empty": "空",
+  "Error": "出错",
+  "Every {x}": "每 {x}",
+  "Export": "导出",
+  "File:": "文件：",
+  "Files and the command line": "文件与命令行",
+  "Fix it in a text editor: {path}": "请在文本编辑器中修改：{path}",
+  "for example ctrl+alt+escape": "例如 ctrl+alt+escape",
+  "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "用于录制演示：更大的指针和边框、更长的滑动、显示按键和文字，完成状态也会在屏幕上多停留一会儿。",
+  "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "在终端中可用 `computer-use-mcp install` 完成同样的操作（添加到本机找到的所有智能体），`--client NAME` 只添加一个，`--list` 查看，`--remove` 移除。",
+  "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "终端命令：computer-use-mcp shortcut（桌面），--menu、--both、--remove、--list。只会移除本程序创建的快捷方式。",
+  "General": "常规",
+  "Getting started": "入门",
+  "GitHub": "GitHub",
+  "give the profile a name": "请为配置方案命名",
+  "Go back": "回退",
+  "Go back to {v}": "回退到 {v}",
+  "Go back to version {v}?": "回退到版本 {v}？",
+  "Guide": "指南",
+  "Home": "首页",
+  "hours": "小时",
+  "How much of the app's tree the model reads, and how it is shortened.": "模型读取应用无障碍树的多少内容，以及如何缩减。",
+  "How often it looks": "检查频率",
+  "How often it looks for a new release": "检查新版本的频率",
+  "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.": "智能体自己的指针在屏幕上的外观和移动方式。不会动你的真实鼠标。",
+  "How the pointer glides": "指针如何滑动",
+  "How the program keeps itself up to date. Changes ask you to confirm.": "程序如何保持最新。更改需确认。",
+  "How the real mouse goes": "真实鼠标的移动方式",
+  "How the real mouse moves when an action has to use it.": "动作必须用到真实鼠标时，鼠标如何移动。",
+  "If the agent spends too much, try the Low tokens profile. If it can't read an app, try Best quality. To record a demo, Showcase makes the pointer and border bigger.": "如果智能体花费太多，试试“低 token”配置方案。如果它读不懂某个应用，试试“最佳质量”。录制演示时，“演示”会让指针和边框更大。",
+  "Import": "导入",
+  "Import {x}": "导入 {x}",
+  "Import and export": "导入与导出",
+  "Import the {n} it can take": "导入可接受的 {n} 项",
+  "Imported {x}; left out {n} this version can't take.": "已导入 {x}；略去了此版本无法接受的 {n} 项。",
+  "Imported {x}.": "已导入 {x}。",
+  "It goes in {when}.": "安装时机：{when}。",
+  "It is changed on its own page, not by an import": "此项需在其专属页面更改，不能通过导入更改",
+  "It looks every {x}.": "每 {x}检查一次。",
+  "It starts {program} settings, which opens the panel in your browser.": "它会运行 {program} settings，在浏览器中打开面板。",
+  "It will not look for updates.": "不会检查更新。",
+  "items": "项",
+  "Jev (TypeSafe System One)": "Jev（TypeSafe System One）",
+  "just now": "刚刚",
+  "KB": "KB",
+  "Keep": "保存",
+  "Keep the current settings as a profile": "将当前设置保存为配置方案",
+  "Kept {x}.": "已保存 {x}。",
+  "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "已保存 {x}。略去了 {n} 项配置方案不能包含的设置（机密信息、受保护的设置、端口）。",
+  "Language": "语言",
+  "last {when}": "上次：{when}",
+  "Leave empty for {url}.": "留空则使用 {url}。",
+  "Left out": "已略去",
+  "levels": "层",
+  "Light": "浅色",
+  "lines": "行",
+  "Little in the tree": "树中信息少",
+  "Logging, the instructions sent to clients and the optional HTTP transport.": "日志、发送给客户端的说明，以及可选的 HTTP 传输。",
+  "Looking": "检查",
+  "Looking…": "正在检查…",
+  "Looks": "查看次数",
+  "Low tokens": "低 token",
+  "Made {path}.": "已创建 {path}。",
+  "Made by version {v}; this is version {w}.": "由版本 {v} 生成；当前版本为 {w}。",
+  "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.": "专为决策打造：远不到一秒即可作答，并给出概率。也可使用任何支持同一 API 的服务器。",
+  "Make": "创建",
+  "Make again": "重新创建",
+  "make it again to start": "重新创建以启动",
+  "min": "分钟",
+  "minutes": "分钟",
+  "Model": "模型",
+  "Model and API key": "模型与 API 密钥",
+  "ms": "ms",
+  "must be a list": "必须是列表",
+  "must be a number": "必须是数字",
+  "must be a whole number, not negative": "必须是非负整数",
+  "must be between {min} and {max}": "必须介于 {min} 和 {max} 之间",
+  "must be on or off": "必须为开或关",
+  "must be one line of text": "必须是单行文本",
+  "must be one of {choices}": "必须是 {choices} 之一",
+  "must be text": "必须是文本",
+  "Name, for example Work laptop": "名称，例如“工作笔记本”",
+  "never": "从未",
+  "Never": "从不",
+  "Never {v}.": "永不安装 {v}。",
+  "next in about {x}": "下次约在 {x}后",
+  "no import has been made yet, so there is nothing to go back to": "尚未进行过导入，没有可回退的内容",
+  "No key for this panel": "此面板无快捷键",
+  "No log yet: turn it on above.": "暂无日志：请在上方开启。",
+  "no update is waiting": "没有待安装的更新",
+  "none": "无",
+  "None set up.": "未设置。",
+  "None yet. Change some settings, then keep them here under a name.": "暂无。先更改一些设置，再在这里以某个名称保存。",
+  "None: this server keeps its settings in memory.": "无：此服务器将设置保存在内存中。",
+  "not a setting: {keys}": "不是设置项：{keys}",
+  "Not added": "未添加",
+  "Not found here": "本机未找到",
+  "not in this version": "此版本中没有",
+  "Not needed for a server on this computer.": "本机上的服务器无需填写。",
+  "Not reset.": "未重置。",
+  "Not saved.": "未保存。",
+  "Not set": "未设置",
+  "Not there": "不存在",
+  "Nothing counted yet. Each time the agent looks at an app, the program notes how much its accessibility tree told it and whether it had to use pixels; the apps that needed pixels most show here. It is kept in {file} (screenshot.record_apps).": "尚无统计。智能体每次查看应用时，程序都会记录其无障碍树提供了多少信息，以及是否不得不使用像素；最依赖像素的应用会显示在这里。数据保存在 {file}（screenshot.record_apps）。",
+  "Nothing differs from the defaults yet.": "目前没有与默认值不同的设置。",
+  "nothing differs from the defaults, so there is nothing to keep": "没有与默认值不同的设置，因此没有可保存的内容",
+  "Nothing in this group differs from its default.": "此组中没有与默认值不同的设置。",
+  "Nothing kept yet.": "尚未保存任何内容。",
+  "Nothing matches.": "没有匹配项。",
+  "Nothing to show.": "没有可显示的内容。",
+  "Nothing would change.": "不会有任何更改。",
+  "Nothing written yet.": "尚未写入任何内容。",
+  "Nothing.": "无。",
+  "notifications": "通知",
+  "Notifications": "通知",
+  "Now": "当前",
+  "of {kb} KB": "（共 {kb} KB）",
+  "of {n}": "共 {n} 项",
+  "off": "关",
+  "Off: the agent works from the tree alone.": "关闭：智能体仅依靠无障碍树工作。",
+  "Off.": "已关闭。",
+  "Off. It never updates by itself.": "已关闭。不会自行更新。",
+  "Off. Nothing is looked for or downloaded.": "已关闭。不检查也不下载任何内容。",
+  "on": "开",
+  "On, last looked {when}.": "已开启，上次检查：{when}。",
+  "On; it has not looked yet.": "已开启；尚未检查。",
+  "On; no hub is running right now.": "已开启；目前没有中枢在运行。",
+  "On.": "已开启。",
+  "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "tools.enabled 中只列出了 {n} 个工具，因此无论开关如何设置，其他工具都保持隐藏。",
+  "OpenAI-compatible chat model": "OpenAI 兼容的聊天模型",
+  "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.": "OpenAI、Groq、Cerebras、OpenRouter、Ollama、LM Studio…小而快的模型效果最好。",
+  "Overlay": "叠加层",
+  "Overview": "概览",
+  "panel": "面板",
+  "Panel": "面板",
+  "Paste settings as TOML (what Export makes). You see each one as it is now and as it would be before anything is changed; protected ones ask first, and settings this version doesn't have are shown and left out. The settings you have now are kept, so you can go back.": "以 TOML 格式粘贴设置（即“导出”生成的内容）。在做任何更改之前，会列出每项设置的当前值和导入后的值；受保护的设置会先询问，此版本没有的设置会列出并略去。当前设置会被保存，因此可以回退。",
+  "Path style": "路径样式",
+  "Paused": "已暂停",
+  "Pauses and waits around actions.": "动作前后的暂停与等待。",
+  "Pictures": "图片",
+  "Pictures sent": "已发送图片",
+  "Platform": "平台",
+  "Pointer": "指针",
+  "Pointer style": "指针样式",
+  "Pointers and the mouse": "指针与鼠标",
+  "points at": "指向",
+  "port": "端口",
+  "Press Ctrl+C on the text below.": "在下方文本上按 Ctrl+C。",
+  "Press Ctrl+C to copy.": "按 Ctrl+C 复制。",
+  "Preview": "预览",
+  "Privacy": "隐私",
+  "Profile name": "配置方案名称",
+  "Profiles": "配置方案",
+  "Program": "程序",
+  "Put a shortcut to this panel at {path}?": "在 {path} 创建此面板的快捷方式？",
+  "Put it in place now": "立即安装",
+  "Put the settings back as they were before the last import?": "将设置恢复到上次导入之前的状态？",
+  "Put version {v} in place of this program now?": "立即用版本 {v} 替换当前程序？",
+  "px": "px",
+  "Read from the environment variable {name}.": "从环境变量 {name} 读取。",
+  "Reading desktop notifications.": "读取桌面通知。",
+  "Reading text off the screen for apps whose tree says little.": "为无障碍树信息不足的应用识别屏幕文字。",
+  "Real mouse": "真实鼠标",
+  "Refresh": "刷新",
+  "reload the page: it didn't say which version of the file it showed": "请重新加载页面：无法确定页面显示的是文件的哪个版本",
+  "Remembering screens the model has already seen.": "记住模型已看过的屏幕。",
+  "Remove": "移除",
+  "Remove {item}": "移除 {item}",
+  "Remove the decision model and its key?": "移除决策模型及其密钥？",
+  "Removed {path}.": "已移除 {path}。",
+  "Removed.": "已移除。",
+  "Replace": "替换",
+  "Reset": "重置",
+  "Revert": "还原",
+  "Right now": "当前状态",
+  "s": "秒",
+  "same": "相同",
+  "Save": "保存",
+  "Saved {hint}. Type to replace.": "已保存 {hint}。输入以替换。",
+  "Saved to {path}.": "已保存到 {path}。",
+  "Saved: {hint}. Leave empty to keep it.": "已保存：{hint}。留空则保留。",
+  "Saved. Running servers use it now.": "已保存。运行中的服务器已开始使用。",
+  "Saving…": "正在保存…",
+  "say create or remove": "请指定 create 或 remove",
+  "say desktop or menu": "请指定 desktop 或 menu",
+  "say install or remove": "请指定 install 或 remove",
+  "say which settings to change": "请指定要更改的设置",
+  "say which settings to reset": "请指定要重置的设置",
+  "Screen memory": "屏幕记忆",
+  "screens": "个屏幕",
+  "Screenshots": "截图",
+  "Scripts": "脚本",
+  "Search all settings": "搜索所有设置",
+  "Search results": "搜索结果",
+  "seconds": "秒",
+  "Server": "服务器",
+  "Setting": "设置项",
+  "Settings": "设置",
+  "Settings changed": "已更改的设置",
+  "Settings file": "设置文件",
+  "Settings file:": "设置文件：",
+  "Settings for one operating system.": "特定操作系统的设置。",
+  "Settings groups": "设置分组",
+  "Settings to import": "要导入的设置",
+  "Several agents": "多个智能体",
+  "Show advanced": "显示高级",
+  "Showcase": "演示",
+  "Small programs the agent writes and the server runs.": "由智能体编写、服务器运行的小程序。",
+  "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "更小的图片和更短的树。一张整屏截图约省三分之一；很小的文字可能更难辨认。",
+  "spaces": "个空格",
+  "Spending fewer tokens": "节省 token",
+  "Start your MCP client again to use it.": "重新启动 MCP 客户端即可使用。",
+  "starts": "启动",
+  "State": "状态",
+  "Status and controls": "状态与控制",
+  "Staying in control": "保持掌控",
+  "Staying on {v}.": "固定在 {v}。",
+  "Stopped": "已停止",
+  "Subagents, or Claude Code beside Codex, on one desktop.": "子智能体，或 Claude Code 与 Codex 并用，同在一个桌面上。",
+  "Switches that apply to the whole program.": "作用于整个程序的开关。",
+  "Take the panel's shortcut away from {path}?": "从 {path} 移除面板的快捷方式？",
+  "Test": "测试",
+  "Text on screen (OCR)": "屏幕文字（OCR）",
+  "Text read off screen": "屏幕识别文字",
+  "that is not a setting": "这不是设置项",
+  "that is not one of your profiles": "这不是你的配置方案",
+  "that is too long to be a list of settings": "内容过长，不可能是设置列表",
+  "that name belongs to a profile that comes with the program": "该名称属于程序自带的配置方案",
+  "that name can't be kept": "无法以该名称保存",
+  "That page isn't here.": "该页面不存在。",
+  "The {n} this version can't take are left out; the rest go in.": "此版本无法接受的 {n} 项将被略去；其余项会导入。",
+  "the address must start with https:// (or http:// for a server on this computer)": "地址必须以 https:// 开头（本机上的服务器可用 http://）",
+  "The agent can use it now.": "智能体现在可以使用它了。",
+  "The agent has no decision model now.": "智能体现在没有决策模型。",
+  "The border, label and colours shown while the agent works.": "智能体工作时显示的边框、标签和颜色。",
+  "the computer to restart": "电脑重启",
+  "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "虚线表示跳跃：真实鼠标会立即跳到距目标 70 到 140 px 处，只走完最后这一段，然后回到你原来放的位置。叠加层中的指针则全程滑动。",
+  "The decision model": "决策模型",
+  "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "紧急停止，以及你使用电脑时的暂停。更改需确认。",
+  "The file as saved has a mistake in it; mend it here.": "已保存的文件有错误；请在这里修正。",
+  "The file is empty.": "文件为空。",
+  "the file is too long to be a settings file": "文件过长，不可能是设置文件",
+  "The last {n} lines": "最后 {n} 行",
+  "The newest stable release.": "最新的稳定版。",
+  "The newest, pre-releases included.": "最新版本，包括预发布版。",
+  "the next start": "下次启动",
+  "the next time the server starts": "服务器下次启动时",
+  "The ones you had are kept in {path}.": "原来的设置保存在 {path}。",
+  "The ones you have now are kept, so this can be undone too.": "当前设置会被保存，因此此操作也可撤销。",
+  "The plain arrow": "普通箭头",
+  "The plain arrow.": "普通箭头。",
+  "The program's own defaults for every setting the other profiles touch.": "其他配置方案涉及的每项设置都使用程序自身的默认值。",
+  "The server didn't answer: {error}": "服务器无响应：{error}",
+  "The settings as they were before the last import are kept ({when}).": "上次导入之前的设置已保存（{when}）。",
+  "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file.": "以文本形式显示的设置文件，包括注释。机密信息已遮盖；保持原样即可保留。写入前会整体检查，因此笔误不会损坏文件。",
+  "the settings file changed since it was shown here (another tab, a command, a profile): press Revert to see it as it is now, then make your change again": "设置文件在此处显示后已被更改（其他标签页、命令或配置方案）：请按“还原”查看当前内容，然后重新进行更改",
+  "The settings file has a mistake in it and may hold a secret, so it isn't shown here.": "设置文件有错误，且可能包含机密信息，因此不在此显示。",
+  "The settings from before the import are back.": "已恢复导入之前的设置。",
+  "The settings from before the update are back.": "已恢复更新之前的设置。",
+  "The settings that differ from the defaults. No secrets: {x} left out.": "与默认值不同的设置。不含机密信息：已略去 {x}。",
+  "The settings that differ from the defaults. No secrets: none were set.": "与默认值不同的设置。不含机密信息：未设置任何机密信息。",
+  "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "该次更新之前的设置会一并恢复；当前设置保存在设置文件旁。",
+  "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "工具列表随每次请求发送，因此已开启的工具每次约花费 {tokens} 个 token{manager}。开销按当前使用的描述（{descriptions}）计算，每四个字符算一个 token。",
+  "The version you have now is not taken again unless you clear update.skip_version.": "除非清除 update.skip_version，否则不会再安装当前版本。",
+  "Theme": "主题",
+  "There": "已存在",
+  "there are no settings in it": "其中没有任何设置",
+  "there is no earlier version kept to go back to": "没有保留可回退的旧版本",
+  "there is no release of this program for this system": "本程序没有适用于此系统的发布版本",
+  "there is no such profile": "没有这个配置方案",
+  "There was none.": "原本没有。",
+  "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:": "这些设置会限制智能体能做什么、能看到什么，或程序如何更新。请确认确实要更改它们：",
+  "these settings need the user's confirmation first": "这些设置需先经用户确认",
+  "Thinking": "思考中",
+  "this needs the user's confirmation first": "此项需先经用户确认",
+  "This page.": "本页。",
+  "This panel:": "此面板：",
+  "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "本程序从 {from} 运行，该位置可能会被清理或移动。因此在 {to} 保留了一份副本，提供给智能体的就是这份副本。",
+  "this server keeps its settings in memory": "此服务器将设置保存在内存中",
+  "This server keeps its settings in memory, so nothing can be saved here.": "此服务器将设置保存在内存中，因此无法在这里保存。",
+  "this server keeps its settings in memory, so there is no file": "此服务器将设置保存在内存中，因此没有文件",
+  "this server keeps its settings in memory, so they can't be saved here": "此服务器将设置保存在内存中，因此无法在这里保存",
+  "This system has no such place.": "此系统没有这个位置。",
+  "This version": "当前版本",
+  "This version ({v}) has no such setting": "此版本（{v}）没有该设置",
+  "This version ({v}) has no such setting: the export is from {w}, a newer one": "此版本（{v}）没有该设置：导出内容来自更新的版本 {w}",
+  "Three sample paths of the {style} style": "{style} 样式的三条示例路径",
+  "Timing": "时序",
+  "tokens": "token",
+  "Tool list": "工具列表",
+  "Tools": "工具",
+  "Tools and tokens": "工具与 token",
+  "under 2 minutes": "不到 2 分钟",
+  "Undo the last import": "撤销上次导入",
+  "Updates": "更新",
+  "Valid. {x} would change, {n} of them protected.": "有效。将更改 {x}，其中 {n} 项受保护。",
+  "Valid. {x} would change.": "有效。将更改 {x}。",
+  "Valid. Nothing would change.": "有效。不会有任何更改。",
+  "Verifying that an action did what it should.": "验证动作是否达到预期效果。",
+  "Version": "版本",
+  "Version {v} (kept when the last update went in), with the settings you had then.": "版本 {v}（上次安装更新时保留），连同当时的设置。",
+  "Version {v} (kept when the last update went in).": "版本 {v}（上次安装更新时保留）。",
+  "Version {v} is downloaded and waits for {when}.": "版本 {v} 已下载，正在等待{when}。",
+  "Version {v}, but the settings no longer take it (skipped, pinned or a pre-release): it will not go in.": "版本 {v}，但当前设置已不再接受它（已跳过、已固定版本或为预发布版）：不会安装。",
+  "Version {v}, downloaded {when}. It goes in {install}.": "版本 {v}，{when}下载。安装时机：{install}。",
+  "Waiting": "待安装",
+  "What {v} says about itself": "{v} 的版本说明",
+  "What a picture costs": "图片的开销",
+  "What is masked before anything reaches the model. Changes ask you to confirm.": "内容发送给模型之前要遮盖哪些信息。更改需确认。",
+  "What would be written for {name}": "将为 {name} 写入的内容",
+  "When pictures are sent to the model, and how big. The biggest lever on image tokens.": "何时向模型发送图片，以及图片多大。这是影响图片 token 最大的因素。",
+  "When something is wrong": "故障排查",
+  "when the server starts after the computer restarts": "电脑重启后服务器启动时",
+  "Where to start": "从哪里开始",
+  "Which": "目标版本",
+  "Which tools the model sees. The tool list is sent with every request.": "模型能看到哪些工具。工具列表随每次请求发送。",
+  "with `computer-use-mcp update --install`": "运行 `computer-use-mcp update --install` 时",
+  "Working": "工作中",
+  "Write the audit log": "写入审计日志",
+  "You can close this tab.": "可以关闭此标签页了。",
+  "you to run `computer-use-mcp update --install`": "你运行 `computer-use-mcp update --install`",
+  "Your control": "由你掌控",
+  "Your MCP clients use it the next time they start.": "MCP 客户端下次启动时就会使用它。",
+  "Your own: a snapshot of settings you changed.": "你自己的：已更改设置的快照。",
+  "Your settings": "你的设置",
+  "Yours": "你的"
+ },
+ "plural": {
+  "setting": {
+   "other": "项设置"
+  },
+  "tool": {
+   "other": "个工具"
+  },
+  "secret": {
+   "other": "项机密信息"
+  },
+  "minute": {
+   "other": "分钟"
+  },
+  "hour": {
+   "other": "小时"
+  },
+  "day": {
+   "other": "天"
+  }
+ },
+ "settings": {
+  "clipboard": [
+   "剪贴板",
+   "允许智能体读写剪贴板（get_clipboard 和 set_clipboard 工具）。"
+  ],
+  "text_only": [
+   "仅文本",
+   "任何地方都不附加截图。token 用量最低，但智能体看不到图片。"
+  ],
+  "follow_new_windows": [
+   "跟随新窗口",
+   "动作打开对话框或菜单时，切换到它来生成变化报告并进行下一次查看。"
+  ],
+  "hot_reload": [
+   "热重载",
+   "无需重启，即可将设置文件的更改应用到运行中的服务器。"
+  ],
+  "launch_timeout_secs": [
+   "启动超时（秒）",
+   "launch_app 等待新应用显示窗口的时长。"
+  ],
+  "natural_mouse": [
+   "自然鼠标",
+   "像人手一样移动真实鼠标：沿曲线移动，先加速后减速，并带有轻微抖动。关闭时直接跳转。"
+  ],
+  "mouse_path": [
+   "鼠标路径",
+   "真实鼠标的移动轨迹。mixed 每次移动随机选一种。拖动始终走直线。"
+  ],
+  "mouse_speed": [
+   "鼠标速度",
+   "真实鼠标的移动速度，以人手速度的倍数表示。2 表示快一倍；有些应用对移动极快的指针反应迟钝。"
+  ],
+  "mouse_overshoot": [
+   "鼠标过冲",
+   "长距离移动（超过 250 px）时略微越过目标再返回的频率，以百分比计。0 表示从不。只有 hand 样式会这样过冲。"
+  ],
+  "mouse_jitter": [
+   "鼠标抖动",
+   "路径抖动的程度，以人手抖动的比例表示。0 为平滑曲线。"
+  ],
+  "restore_pointer": [
+   "恢复指针",
+   "智能体点击、滚动或拖动后，把鼠标指针放回原位，绝不占用你的鼠标。"
+  ],
+  "overlay.cursor_style": [
+   "指针样式",
+   "智能体的指针。random 为每个会话分配一个，同时工作的各个智能体各不相同。"
+  ],
+  "overlay.cursor_color": [
+   "指针颜色",
+   "普通箭头的颜色，以及指针光环的基色。"
+  ],
+  "overlay.cursor_tag": [
+   "指针标签",
+   "指针旁显示的名称。留空：不显示名称。"
+  ],
+  "overlay.cursor_motion": [
+   "指针动效",
+   "指针移动时会倾斜、留下拖尾、呼吸，并显示拖动和滚动。"
+  ],
+  "overlay.trail": [
+   "拖尾",
+   "指针移动时留下的拖尾，由其自身材质构成（闪光、碎屑、霜花、铬滴）。需开启指针动效。"
+  ],
+  "overlay.trail_strength": [
+   "拖尾强度",
+   "拖尾的长度。100 为原始设计；0 则没有拖尾。"
+  ],
+  "overlay.lean_strength": [
+   "倾斜强度",
+   "指针移动时倾斜的幅度。0 保持直立。"
+  ],
+  "overlay.breathe": [
+   "呼吸",
+   "指针等待时会呼吸：果冻膨胀，纸张摇摆。需开启指针动效。"
+  ],
+  "overlay.breathe_strength": [
+   "呼吸强度",
+   "呼吸的幅度。"
+  ],
+  "overlay.cursor_path": [
+   "指针路径",
+   "指针滑动到操作位置的方式。"
+  ],
+  "overlay.show_keys": [
+   "显示按键",
+   "在指针旁以键帽形式显示按下的键，输入的文字在旁边依次显示。"
+  ],
+  "overlay.click_effect": [
+   "点击效果",
+   "智能体点击处的波纹。"
+  ],
+  "overlay.show_cursor": [
+   "显示指针",
+   "绘制智能体自己的指针。真实鼠标不会因此移动。"
+  ],
+  "overlay.move_ms": [
+   "移动时长（ms）",
+   "指针滑动所需的时间。动作会等它到达。"
+  ],
+  "overlay.scale": [
+   "缩放",
+   "叠加层所有绘制内容的尺寸倍数。0 跟随显示器缩放。"
+  ],
+  "overlay.enabled": [
+   "启用",
+   "智能体工作时显示屏幕指示。它可点击穿透，且不会出现在智能体的截图中。"
+  ],
+  "overlay.show_border": [
+   "显示边框",
+   "围绕智能体所操作的屏幕或窗口的发光边框。"
+  ],
+  "overlay.show_label": [
+   "显示标签",
+   "状态标签。"
+  ],
+  "overlay.border_target": [
+   "边框范围",
+   "边框围绕整个屏幕，还是只围绕正在操作的窗口。"
+  ],
+  "overlay.border_width": [
+   "边框宽度",
+   "边框中明亮的核心线条。"
+  ],
+  "overlay.glow_size": [
+   "光晕大小",
+   "光晕渐隐的范围。0 为普通线条。"
+  ],
+  "overlay.label_working": [
+   "“工作中”标签",
+   "智能体操作电脑时的标签。"
+  ],
+  "overlay.label_thinking": [
+   "“思考中”标签",
+   "模型思考时的标签。"
+  ],
+  "overlay.label_error": [
+   "“出错”标签",
+   "出错后的标签。"
+  ],
+  "overlay.label_done": [
+   "“完成”标签",
+   "工作完成时的标签。"
+  ],
+  "overlay.label_paused": [
+   "“已暂停”标签",
+   "等待你停止使用鼠标和键盘时的标签。"
+  ],
+  "overlay.label_stopped": [
+   "“已停止”标签",
+   "紧急停止后的标签。{hotkey} 会替换为停止键。"
+  ],
+  "overlay.color_thinking": [
+   "“思考中”颜色",
+   "模型思考时的颜色。"
+  ],
+  "overlay.color_working": [
+   "“工作中”颜色",
+   "智能体操作时的颜色。"
+  ],
+  "overlay.color_error": [
+   "“出错”颜色",
+   "出错后的颜色。"
+  ],
+  "overlay.color_done": [
+   "“完成”颜色",
+   "工作完成时的颜色。"
+  ],
+  "overlay.color_paused": [
+   "“已暂停”颜色",
+   "为你暂停时的颜色。"
+  ],
+  "overlay.color_stopped": [
+   "“已停止”颜色",
+   "紧急停止后的颜色。"
+  ],
+  "overlay.done_after_ms": [
+   "判定完成（ms）",
+   "超过这段时间没有新动作，即视为工作完成。"
+  ],
+  "overlay.done_linger_ms": [
+   "完成停留（ms）",
+   "“完成”状态显示多久后全部消失。"
+  ],
+  "overlay.error_hold_ms": [
+   "错误停留（ms）",
+   "错误状态显示的时长。"
+  ],
+  "overlay.fade_in_ms": [
+   "淡入（ms）",
+   "在这段时间内逐渐出现。"
+  ],
+  "overlay.fade_out_ms": [
+   "淡出（ms）",
+   "在这段时间内逐渐消失。"
+  ],
+  "overlay.transition_ms": [
+   "过渡（ms）",
+   "在这段时间内从一种状态颜色过渡到下一种。"
+  ],
+  "overlay.capture_hide_ms": [
+   "截图隐藏（ms）",
+   "仅限 X11：隐藏叠加层后、截图前的暂停时间。"
+  ],
+  "overlay.font": [
+   "字体",
+   "标签使用的字体文件。留空：使用系统字体。"
+  ],
+  "overlay.command": [
+   "命令",
+   "叠加层的辅助程序，供嵌入该库的程序使用。"
+  ],
+  "screenshot.enabled": [
+   "启用",
+   "是否允许截图。"
+  ],
+  "screenshot.attach": [
+   "附加图片",
+   "查看时何时附带图片：auto（首次查看、较大变化或树信息稀少时）、always（token 最多）或 never。"
+  ],
+  "screenshot.auto_sparse_threshold": [
+   "自动稀疏阈值",
+   "在 auto 模式下，树中可交互元素少于此数时附加图片。"
+  ],
+  "screenshot.max_dimension": [
+   "最大尺寸",
+   "图片的最长边。这是影响图片 token 的主要设置：1024 比 1280 约省 35%。"
+  ],
+  "screenshot.overview_max_dimension": [
+   "概览最大尺寸",
+   "对于树已能说明内容的窗口，图片使用更小的尺寸。0：始终使用上面的尺寸。"
+  ],
+  "screenshot.format": [
+   "格式",
+   "图片格式。"
+  ],
+  "screenshot.jpeg_quality": [
+   "JPEG 质量",
+   "JPEG 质量。"
+  ],
+  "screenshot.png_compression": [
+   "PNG 压缩",
+   "PNG 压缩级别。只影响文件大小。"
+  ],
+  "screenshot.resize_filter": [
+   "缩放滤镜",
+   "图片缩小的方式。"
+  ],
+  "screenshot.scope": [
+   "范围",
+   "模型已看过的屏幕的后续图片：只发送变化部分（auto），或发送整个窗口（full）。"
+  ],
+  "screenshot.region_max_ratio": [
+   "区域最大比例",
+   "变化超过窗口的这一比例时，发送整个窗口。"
+  ],
+  "screenshot.region_padding": [
+   "区域边距",
+   "变化部分周围的边距。"
+  ],
+  "screenshot.region_min_size": [
+   "区域最小尺寸",
+   "变化部分每边至少这么大，以保留上下文。"
+  ],
+  "screenshot.adaptive": [
+   "自适应",
+   "对描述充分的窗口，如果模型已查看多次且从未用到像素，就不再附加图片。"
+  ],
+  "screenshot.smart": [
+   "智能",
+   "如果变化的内容树中已有报告，就不附加图片。"
+  ],
+  "screenshot.record_apps": [
+   "记录应用",
+   "统计每个应用需要像素的频率（doctor 命令会显示）。"
+  ],
+  "screenshot.locate_picture": [
+   "定位图片",
+   "locate 会发送窗口图片，并为找到的位置编号。"
+  ],
+  "screenshot.icon_sprite": [
+   "图标条",
+   "实验性：未附加图片时，发送一小条没有名称的按钮的图像，并为其编号。"
+  ],
+  "tree.max_nodes": [
+   "最大节点数",
+   "每次查看显示的元素数。"
+  ],
+  "tree.max_walk": [
+   "最大遍历数",
+   "裁剪前从应用读取的元素数。"
+  ],
+  "tree.max_depth": [
+   "最大深度",
+   "树的深度。"
+  ],
+  "tree.max_text_len": [
+   "最大文本长度",
+   "每个元素显示的文本或值的字符数。"
+  ],
+  "tree.indent": [
+   "缩进",
+   "每层树缩进的空格数。"
+  ],
+  "tree.show_actions": [
+   "显示动作",
+   "显示每个元素提供的动作。"
+  ],
+  "tree.show_states": [
+   "显示状态",
+   "显示聚焦、禁用、选中等状态。"
+  ],
+  "tree.diff": [
+   "差异",
+   "之后的查看只返回变化部分。"
+  ],
+  "tree.diff_full_ratio": [
+   "全量阈值比例",
+   "变化超过此比例时显示整棵树。"
+  ],
+  "tree.report_changes": [
+   "报告变化",
+   "在动作结果中附上动作后的状态。"
+  ],
+  "tree.report_changes_max_lines": [
+   "变化报告最大行数",
+   "一份报告中最多包含多少行变化。"
+  ],
+  "tree.report": [
+   "报告",
+   "报告的内容：full（每项变化）、relevant（操作对象附近）或 brief（仅计数）。"
+  ],
+  "tree.max_tokens": [
+   "最大 token 数",
+   "单棵树的 token 预算。更大的树会被缩减。0：不限制。"
+  ],
+  "tree.summarize": [
+   "缩减方式",
+   "超出预算的树如何缩减：normal（先折叠再截断）、light（只折叠列表）或 off。"
+  ],
+  "tree.fold_keep": [
+   "折叠保留",
+   "折叠列表开头保留的项数（末尾保留 2 项）。"
+  ],
+  "tree.brief_repeats": [
+   "简述重复",
+   "说明首次完整给出，之后从简。"
+  ],
+  "tree.compact": [
+   "紧凑",
+   "每件事只说一次且不丢失信息：相似的同级元素合并为记录、索引写成范围等。"
+  ],
+  "tree.quiet_volatile": [
+   "静默易变项",
+   "会自行变化的内容（时钟、加载动画）在几次报告后汇总为一行。"
+  ],
+  "tools.disabled": [
+   "禁用",
+   "模型永远看不到的工具，例如 drag 或 batch。"
+  ],
+  "tools.enabled": [
+   "启用",
+   "如果不为空，只提供这些工具。"
+  ],
+  "tools.descriptions": [
+   "描述",
+   "工具描述的长度。lean 使用的 token 最少。"
+  ],
+  "tools.manager": [
+   "管理器",
+   "模型一开始能看到哪些工具。dispatch：基础工具加 find_tools，其余按需提供，列表始终不变。"
+  ],
+  "tools.preset": [
+   "预设",
+   "full：其他设置允许的所有工具。small：为较小模型准备的固定小工具集。"
+  ],
+  "tools.default_app": [
+   "默认应用",
+   "未指定应用的调用，作用于上一次指定了应用的调用所用的应用。"
+  ],
+  "tools.launch_look": [
+   "启动后查看",
+   "launch_app 会返回应用的初始状态。"
+  ],
+  "tools.design_steps": [
+   "设计步骤",
+   "design 何时列出绘制设计的步骤。"
+  ],
+  "timing.settle_ms": [
+   "稳定等待（ms）",
+   "每个动作之后、再次查看之前的暂停。"
+  ],
+  "timing.settle": [
+   "稳定方式",
+   "adaptive 等到屏幕不再变化；fixed 只做固定暂停。"
+  ],
+  "timing.settle_max_ms": [
+   "最长稳定等待（ms）",
+   "自适应等待的最长时间。"
+  ],
+  "timing.settle_poll_ms": [
+   "稳定轮询（ms）",
+   "等待期间检查屏幕的间隔。"
+  ],
+  "timing.key_delay_ms": [
+   "按键间隔（ms）",
+   "按键序列中各键之间的暂停。"
+  ],
+  "timing.app_cache_ms": [
+   "应用缓存（ms）",
+   "在这段时间内复用运行中应用的列表。"
+  ],
+  "timing.wait_timeout_ms": [
+   "等待超时（ms）",
+   "wait_for 的默认超时。"
+  ],
+  "timing.wait_poll_ms": [
+   "等待轮询（ms）",
+   "wait_for 的默认轮询间隔。"
+  ],
+  "timing.expect_wait_ms": [
+   "预期等待（ms）",
+   "带 expect 的动作等待结果出现的时长。"
+  ],
+  "timing.adaptive_grace": [
+   "自适应宽限",
+   "对即时显示变化的应用，在 200 ms 而不是 500 ms 后就报告“无变化”。"
+  ],
+  "cache.enabled": [
+   "启用",
+   "记住模型看过的屏幕：再次回到某个屏幕时只发送差异部分。"
+  ],
+  "cache.max_screens": [
+   "最大屏幕数",
+   "记住的屏幕数量，所有应用合计。"
+  ],
+  "cache.max_memory_kb": [
+   "最大内存（KB）",
+   "记住的屏幕可使用的内存。"
+  ],
+  "cache.match_threshold": [
+   "匹配阈值",
+   "共同元素占多大比例即视为同一屏幕。"
+  ],
+  "cache.dedupe_screenshots": [
+   "截图去重",
+   "同一屏幕未变化的图片绝不发送两次。"
+  ],
+  "cache.pixel_grid": [
+   "像素网格",
+   "图片指纹沿较长边划分的格数。"
+  ],
+  "cache.pixel_tolerance": [
+   "像素容差",
+   "每格亮度偏移在此范围内仍视为未变化。"
+  ],
+  "cache.snapshot_ttl_ms": [
+   "快照有效期（ms）",
+   "如果此后没有执行任何操作，复用不超过这么久的读取结果。0：关闭。"
+  ],
+  "cache.rebase_after_tokens": [
+   "重发阈值（token）",
+   "结果累计达到这么多 token 后，重新发送完整的树和一张图片。0：从不。"
+  ],
+  "ocr.mode": [
+   "模式",
+   "为无障碍树信息不足的应用识别屏幕文字：auto（仅树稀疏时）、always 或 off。"
+  ],
+  "ocr.engine": [
+   "引擎",
+   "识别引擎：系统自带的，或 Tesseract。"
+  ],
+  "ocr.sparse_threshold": [
+   "稀疏阈值",
+   "在 auto 模式下，树中可交互元素少于此数时进行识别。"
+  ],
+  "ocr.languages": [
+   "语言",
+   "要识别的语言，例如 en 或 de。留空：使用你自己的语言。"
+  ],
+  "ocr.min_confidence": [
+   "最低置信度",
+   "略去置信度低于此值的识别行。"
+  ],
+  "ocr.max_lines": [
+   "最大行数",
+   "最多识别这么多行。"
+  ],
+  "ocr.tesseract_path": [
+   "Tesseract 路径",
+   "Tesseract 程序。"
+  ],
+  "ocr.blind_regions": [
+   "盲区识别",
+   "在其他元素很多的窗口中，也识别树中没有描述的区域（画布、图片）。"
+  ],
+  "decision.auto": [
+   "自动",
+   "在能为智能体省去一轮交互的地方，服务器会自行询问模型。"
+  ],
+  "decision.auto_timeout_ms": [
+   "自动超时（ms）",
+   "这些问题的最长等待时间。"
+  ],
+  "decision.timeout_ms": [
+   "超时（ms）",
+   "单个回答的最长等待时间。"
+  ],
+  "decision.max_state_chars": [
+   "最大状态字符数",
+   "更长的状态会保留开头和结尾。"
+  ],
+  "decision.parallel": [
+   "并行",
+   "评判多个项目时同时发出的请求数。"
+  ],
+  "decision.cache_seconds": [
+   "缓存（秒）",
+   "对同一状态的同一问题，在这段时间内只回答一次。"
+  ],
+  "privacy.redact_passwords": [
+   "遮盖密码",
+   "在文本中遮盖密码字段，并在图片中将其涂黑。"
+  ],
+  "privacy.redact_card_numbers": [
+   "遮盖卡号",
+   "遮盖银行卡号（只保留最后 4 位）。"
+  ],
+  "privacy.redact_labels": [
+   "遮盖标签",
+   "标签包含其中任一词语的字段也会被遮盖。"
+  ],
+  "privacy.style": [
+   "样式",
+   "图片中隐私区域的隐藏方式。"
+  ],
+  "control.stop_hotkey": [
+   "停止快捷键",
+   "紧急停止：在任何应用中立即停止智能体。留空：没有停止键。"
+  ],
+  "control.pause_on_user_input": [
+   "用户操作时暂停",
+   "你使用鼠标或键盘时等待。只读取系统空闲时间，绝不读取你输入的内容。"
+  ],
+  "control.resume_after_idle_ms": [
+   "空闲后恢复（ms）",
+   "你需要空闲多久，智能体才会继续。"
+  ],
+  "control.max_pause_secs": [
+   "最长暂停（秒）",
+   "超过这段时间，动作失败，并告知智能体原因。"
+  ],
+  "control.settings_hotkey": [
+   "设置快捷键",
+   "在任何应用中打开此面板。留空：没有快捷键。"
+  ],
+  "hub.enabled": [
+   "启用",
+   "同一桌面上的多个智能体共用一个中枢：各有一个指针，共用一个停止键，分配屏幕，轮流使用键盘和鼠标。"
+  ],
+  "hub.port": [
+   "端口",
+   "中枢在本机上的端口。"
+  ],
+  "hub.arrange": [
+   "排列窗口",
+   "有两个或更多智能体时，把每个智能体的窗口移到它分得的屏幕区域。"
+  ],
+  "hub.chat": [
+   "聊天",
+   "允许智能体之间互发简短消息。"
+  ],
+  "hub.turn_wait_secs": [
+   "轮候等待（秒）",
+   "智能体等待轮到自己使用键盘和鼠标的最长时间。"
+  ],
+  "hub.release_after_secs": [
+   "释放区域（秒）",
+   "智能体在这段时间内没有任何调用，就把它的屏幕区域让给其他智能体，直到它下次调用；刚启动的服务器没有屏幕区域。"
+  ],
+  "notifications.enabled": [
+   "启用",
+   "允许智能体读取桌面通知。通知中含有其他应用的消息和验证码。"
+  ],
+  "notifications.apps": [
+   "应用",
+   "只读取这些应用的通知。留空：所有应用。"
+  ],
+  "notifications.mask_codes": [
+   "遮盖验证码",
+   "遮盖一次性密码和验证码。"
+  ],
+  "notifications.keep": [
+   "保留数量",
+   "保留多少条通知（Linux）。"
+  ],
+  "script.saved_as_tools": [
+   "保存为工具",
+   "每个保存的脚本同时也是一个独立的工具。"
+  ],
+  "script.files": [
+   "文件",
+   "脚本可使用的文件：none、workspace（仅脚本文件夹中的文件）、read（可读取任何文件）或 all。"
+  ],
+  "script.web": [
+   "网络",
+   "允许脚本通过 http(s) 获取和下载内容。"
+  ],
+  "script.max_seconds": [
+   "最长运行（秒）",
+   "单个脚本的最长运行时间，包括工具调用。"
+  ],
+  "script.dir": [
+   "目录",
+   "保存脚本的位置。留空：默认文件夹。"
+  ],
+  "verify.enabled": [
+   "启用",
+   "检查每个动作的结果，未生效时告知智能体。"
+  ],
+  "verify.retry": [
+   "重试",
+   "明显失败的动作会换一种方式再试一次。"
+  ],
+  "verify.retry_on_no_change": [
+   "无变化时重试",
+   "按下后没有任何可见变化时也重试。关闭的理由：某些动作（付款、发送）生效较晚，不能重复执行。"
+  ],
+  "audit.enabled": [
+   "启用",
+   "每次调用向日志文件写入一行元数据。"
+  ],
+  "audit.path": [
+   "路径",
+   "日志文件。留空：服务器文件夹中的 audit.log。"
+  ],
+  "server.log": [
+   "日志",
+   "服务器日志的详细程度。"
+  ],
+  "server.instructions": [
+   "说明",
+   "客户端连接时发送的说明：full、short（适用于会加载技能的客户端）或 off。"
+  ],
+  "server.result_meta": [
+   "结果元数据",
+   "适用于会裁剪上下文的宿主：结果会注明它重复了哪些先前的结果。"
+  ],
+  "server.structured_output": [
+   "结构化输出",
+   "同时以数据形式返回部分结果，供支持的客户端使用。"
+  ],
+  "server.http_addr": [
+   "HTTP 地址",
+   "在此地址上通过 HTTP 提供 MCP，例如 127.0.0.1:8787。留空：仅 stdio。"
+  ],
+  "server.http_token": [
+   "HTTP token",
+   "HTTP 客户端必须发送的 bearer token。"
+  ],
+  "update.enabled": [
+   "启用",
+   "检查并下载更新。关闭：从不自行更新。"
+  ],
+  "update.check_after_mins": [
+   "首次检查（分钟）",
+   "服务器启动后多少分钟进行首次检查。"
+  ],
+  "update.check_every_hours": [
+   "检查间隔（小时）",
+   "服务器运行期间两次检查之间的小时数。在下方的分钟数为 0 时使用。"
+  ],
+  "update.check_every_mins": [
+   "检查间隔（分钟）",
+   "两次检查之间的分钟数，用于短于一小时的间隔。至少为 5。0：使用小时数。"
+  ],
+  "update.channel": [
+   "通道",
+   "stable 只接受正式版本。prerelease 也接受 GitHub 标记为预发布的版本（其标签是纯数字，例如 v4.9.0）。"
+  ],
+  "update.pin": [
+   "固定版本",
+   "要固定使用的版本，例如 5.0.2：只接受该版本，不接受任何更新的版本。留空：最新版本。"
+  ],
+  "update.skip_version": [
+   "跳过版本",
+   "永不安装的版本，例如在本机出过问题的版本。"
+  ],
+  "update.install": [
+   "安装时机",
+   "下载的更新何时安装：restart（电脑重启后）、start（服务器下次启动时）或 manual（手动）。"
+  ],
+  "update.repo": [
+   "仓库",
+   "发布版本所在的 GitHub 仓库（owner/name）。"
+  ],
+  "linux.batch_size": [
+   "批量大小",
+   "同时执行 AT-SPI 查询的元素数。"
+  ],
+  "linux.text_max_chars": [
+   "文本最大字符数",
+   "从文本元素读取的最长文本。"
+  ],
+  "macos.batch_attributes": [
+   "批量读取属性",
+   "一次调用读取元素的所有属性。"
+  ],
+  "macos.messaging_timeout_secs": [
+   "消息超时（秒）",
+   "无障碍调用的超时时间。"
+  ],
+  "windows.use_cache_request": [
+   "使用缓存请求",
+   "一次 UIA 调用获取整个窗口的树。"
+  ],
+  "panel.theme": [
+   "主题",
+   "浅色、深色或跟随系统。"
+  ],
+  "panel.accent": [
+   "强调色",
+   "生成面板配色所用的颜色。"
+  ],
+  "panel.language": [
+   "语言",
+   "本页的语言：跟随浏览器、英语、波斯语（从右到左）、中文或俄语。"
+  ],
+  "panel.port": [
+   "端口",
+   "面板打开时监听的端口。如果被占用，会改用一个空闲端口。"
+  ],
+  "panel.idle_minutes": [
+   "空闲关闭（分钟）",
+   "无请求超过这段时间后面板关闭。"
+  ]
+ }
+}

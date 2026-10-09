@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **The settings panel speaks Persian, Chinese and Russian** (English as
+  before): a language picker at the top, `panel.language` (`auto` follows
+  the browser). Persian is laid out right to left (mirrored layout, the
+  switch's knob, tables and numbers kept left to right, no letter spacing
+  that would break joined letters) and brings its own font (Vazirmatn, SIL
+  OFL); Chinese uses the system's. Every setting, its help, the guide pages
+  and the messages are translated; a text without a translation shows in
+  English. `scripts/panel-i18n.mjs` makes the list of texts and
+  `scripts/panel-i18n-check.mjs` checks a translation against it; a test
+  fails when a text of the page isn't in the list or a language lacks one.
+- **An import is shown before it is made.** Paste settings and the page lists
+  each one as it is now and as it would be, which ask for a yes, and which
+  this version can't take (a setting only a newer version has, or a value
+  out of range): those are flagged, left out, and named afterwards. An
+  export says which version made it (`# Zero Use Computer 5.0.2 settings`),
+  so the page can say why a setting is unknown. The settings from before an
+  import are kept (`settings-before-import.toml`) and **Undo the last
+  import** brings them back.
+- **Going back to a version brings its settings back.** The settings file is
+  kept with the program an update replaces, and `update --rollback` / the
+  panel's **Go back** put it back with it (`--keep-settings` or the
+  checkbox to leave the settings as they are); the ones it replaces stay
+  beside the file as `config.toml.before-rollback`.
+- A page of the panel that waits on the server no longer lands on the page
+  the user went to meanwhile.
+
 ## v5.0.2
 
 The plugin installs the program itself: the repository's `plugin/` folder,

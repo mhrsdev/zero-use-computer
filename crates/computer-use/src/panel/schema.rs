@@ -352,6 +352,7 @@ pub const ENTRIES: &[Entry] = &[
     // Panel
     e("panel.theme", PANEL, "Light, dark, or follow the computer.").choice(&["system", "light", "dark"]),
     e("panel.accent", PANEL, "The colour the panel's palette is made from.").kind(Kind::Color),
+    e("panel.language", PANEL, "The language of this page: the browser's, English, Persian (right to left), Chinese or Russian.").choice(&["auto", "en", "fa", "zh", "ru"]),
     e("panel.port", PANEL, "The port the panel listens on while it is open. A free one is used if this one is taken.").number("port").restart().advanced(),
     e("panel.idle_minutes", PANEL, "The panel closes after this long without a request.").range(1.0, 240.0, 1.0, "min"),
 ];

@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="en" data-theme="__THEME__" data-accent="__ACCENT__">
+<html lang="__LANG__" dir="__DIR__" data-theme="__THEME__" data-accent="__ACCENT__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Zero panel [private]</title>
+<script>
+// "Automatic": the browser's language, settled before anything is drawn so
+// a right-to-left page never starts left to right.
+(function () {
+  var d = document.documentElement;
+  if (d.lang !== "auto") return;
+  var l = String(navigator.language || "en").slice(0, 2).toLowerCase();
+  if (l !== "fa" && l !== "zh" && l !== "ru") l = "en";
+  d.lang = l; d.dir = l === "fa" ? "rtl" : "ltr"; d.dataset.auto = "1";
+})();
+</script>
 <link rel="icon" type="image/png" href="cursor/orbit.png">
 <style>
   :root {
@@ -16,7 +27,18 @@
     --error: #b3261e; --on-error: #ffffff; --ok: #146c2e;
     --radius: 16px; --focus: 2px solid var(--primary);
     --font: "Google Sans", "Roboto", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
+  /* Persian brings its font (Vazirmatn, SIL OFL: it has Latin letters and
+     digits too, so a line of both keeps one look); Chinese uses the fonts
+     each system has for it, as it is too big to carry. */
+  @font-face {
+    font-family: "Vazirmatn"; font-display: swap; font-weight: 100 900;
+    src: url("font/vazirmatn.woff2") format("woff2");
+  }
+  html[lang=fa] { --font: "Vazirmatn", "Segoe UI", Tahoma, "Noto Sans Arabic", "Geeza Pro", system-ui, sans-serif; }
+  html[lang=zh] { --font: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei", system-ui, sans-serif; }
+  html[lang=ru] { --font: "Roboto", "Segoe UI", system-ui, -apple-system, "Noto Sans", "DejaVu Sans", sans-serif; }
   * { box-sizing: border-box; }
   html { color-scheme: light dark; }
   html[data-theme=light] { color-scheme: light; }
@@ -25,6 +47,11 @@
     margin: 0; background: var(--surface); color: var(--on-surface);
     font: 400 14px/20px var(--font); -webkit-font-smoothing: antialiased;
   }
+  /* Letters of a cursive script join: spacing them apart breaks the words. */
+  html[lang=fa] body { line-height: 24px; }
+  html[lang=fa] *, html[lang=zh] * { letter-spacing: 0 !important; text-transform: none !important; }
+  html[lang=zh] body { line-height: 22px; }
+  html[lang=ru] body { line-height: 21px; }
   button, input, select { font: inherit; color: inherit; }
   :focus-visible { outline: var(--focus); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -35,7 +62,7 @@
     height: 64px; padding: 0 16px 0 24px; background: var(--surface);
   }
   header.bar h1 { font: 400 22px/28px var(--font); margin: 0; white-space: nowrap; }
-  header.bar .ver { color: var(--on-surface-variant); font-size: 12px; margin-left: 8px; }
+  header.bar .ver { color: var(--on-surface-variant); font-size: 12px; margin-inline-start: 8px; direction: ltr; unicode-bidi: isolate; display: inline-block; }
   .search {
     flex: 1; max-width: 560px; margin: 0 auto; display: flex; align-items: center; gap: 8px;
     height: 48px; border-radius: 28px; padding: 0 16px; background: var(--surface-2);
@@ -49,9 +76,9 @@
   .seg { display: inline-flex; border: 1px solid var(--outline); border-radius: 20px; overflow: hidden; }
   .seg button {
     border: 0; background: transparent; height: 32px; padding: 0 14px; cursor: pointer;
-    border-left: 1px solid var(--outline); color: var(--on-surface);
+    border-inline-start: 1px solid var(--outline); color: var(--on-surface);
   }
-  .seg button:first-child { border-left: 0; }
+  .seg button:first-child { border-inline-start: 0; }
   .seg button[aria-pressed=true] { background: var(--primary-container); color: var(--on-primary-container); font-weight: 500; }
   .seg button:hover { background: color-mix(in srgb, var(--on-surface) 8%, transparent); }
   .seg button[aria-pressed=true]:hover { background: var(--primary-container); }
@@ -61,7 +88,7 @@
   nav.rail { position: sticky; top: 64px; align-self: flex-start; width: 236px; flex: none; padding: 8px 0; max-height: calc(100vh - 72px); overflow: auto; }
   nav.rail button {
     display: flex; align-items: center; justify-content: space-between; width: 100%; height: 48px;
-    padding: 0 16px; border: 0; border-radius: 28px; background: transparent; cursor: pointer; text-align: left;
+    padding: 0 16px; border: 0; border-radius: 28px; background: transparent; cursor: pointer; text-align: start;
     color: var(--on-surface-variant);
   }
   nav.rail button:hover { background: color-mix(in srgb, var(--on-surface) 8%, transparent); }
@@ -88,7 +115,7 @@
   .row .label, .profile .label { font-weight: 500; }
   .row .help, .profile .help { color: var(--on-surface-variant); }
   .row .meta, .profile .meta { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--on-surface-variant); }
-  .row .meta code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .row .meta code { font: 12px var(--mono); }
   .badge { padding: 0 8px; border-radius: 8px; background: var(--surface-3); line-height: 18px; }
   .badge.changed { background: var(--primary-container); color: var(--on-primary-container); }
   .badge.warn { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }
@@ -140,7 +167,7 @@
   .btn:disabled { opacity: .5; cursor: default; }
   .btn.small { height: 28px; padding: 0 12px; font-size: 12px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
-  .chips .tag { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 6px 0 12px; border-radius: 8px; border: 1px solid var(--outline); }
+  .chips .tag { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding-block: 0; padding-inline: 12px 6px; border-radius: 8px; border: 1px solid var(--outline); }
   .chips .tag button { border: 0; background: transparent; cursor: pointer; width: 20px; height: 20px; border-radius: 50%; line-height: 1; }
   .chips .tag button:hover { background: color-mix(in srgb, var(--on-surface) 12%, transparent); }
   .chips input { width: 160px; height: 32px; }
@@ -182,7 +209,7 @@
   dialog { border: 0; border-radius: 28px; padding: 24px; max-width: min(480px, 92vw); background: var(--surface-2); color: var(--on-surface); }
   dialog::backdrop { background: rgba(0, 0, 0, .4); }
   dialog h3 { font: 400 24px/32px var(--font); margin: 0 0 12px; }
-  dialog ul { margin: 8px 0 0; padding-left: 20px; }
+  dialog ul { margin: 8px 0 0; padding-inline-start: 20px; }
   dialog .actions { justify-content: flex-end; margin-top: 24px; }
   footer.where { color: var(--on-surface-variant); font-size: 12px; padding: 8px 8px 0; overflow-wrap: anywhere; }
 
@@ -193,8 +220,8 @@
   .prose p, .prose ul, .prose ol { margin: 0 0 12px; }
   .prose li { margin: 0 0 6px; }
   .prose a { color: var(--primary); }
-  .prose code { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; }
-  .prose kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid var(--outline); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); }
+  .prose code { font: 13px var(--mono); background: var(--surface-3); padding: 1px 5px; border-radius: 4px; }
+  .prose kbd { font: 12px var(--mono); border: 1px solid var(--outline); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); }
   .prose pre.log { padding: 12px 14px; background: var(--surface-3); border-radius: 8px; }
   .prose table.table td { vertical-align: top; }
   .prose table.table td:first-child { white-space: nowrap; }
@@ -221,21 +248,21 @@
   .profile + .profile { border-top: 1px solid var(--outline-variant); }
   .profile .text { flex: 1; min-width: 0; }
   .table { width: 100%; border-collapse: collapse; }
-  .table th { text-align: left; font-weight: 500; color: var(--on-surface-variant); padding: 8px 12px; }
+  .table th { text-align: start; font-weight: 500; color: var(--on-surface-variant); padding: 8px 12px; }
   .table td { padding: 8px 12px; border-top: 1px solid var(--outline-variant); }
-  .table td.num, .table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .table td.num, .table th.num { text-align: end; font-variant-numeric: tabular-nums; }
   .scroll { overflow-x: auto; }
   .toolrow { display: flex; align-items: center; gap: 16px; padding: 8px 24px; }
   .toolrow + .toolrow { border-top: 1px solid var(--outline-variant); }
-  .toolrow .name { flex: 1; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .toolrow .cost { color: var(--on-surface-variant); font-variant-numeric: tabular-nums; width: 90px; text-align: right; }
+  .toolrow .name { flex: 1; font: 14px var(--mono); direction: ltr; text-align: start; unicode-bidi: isolate; }
+  .toolrow .cost { color: var(--on-surface-variant); font-variant-numeric: tabular-nums; width: 90px; text-align: end; direction: ltr; }
   textarea {
     width: 100%; min-height: 360px; resize: vertical; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--outline);
-    background: var(--surface); color: var(--on-surface); font: 13px/20px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2;
+    background: var(--surface); color: var(--on-surface); font: 13px/20px var(--mono); tab-size: 2;
   }
   textarea.short { min-height: 140px; }
   textarea:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
-  pre.log { margin: 0; padding: 12px 24px; max-height: 480px; overflow: auto; font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre.log { margin: 0; padding: 12px 24px; max-height: 480px; overflow: auto; font: 12px/18px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
   .note { padding: 8px 24px 12px; color: var(--on-surface-variant); }
   .note.pad0 { padding: 0 0 12px; }
 
@@ -254,15 +281,40 @@
   .mock .ptr img { width: 100%; display: block; }
   .mock .ptr span { display: inline-block; margin-top: 2px; padding: 1px 8px; border-radius: 10px; font-size: 10px; color: #fff; }
   .stop { position: fixed; }
+
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+  .table tr.off td { opacity: .65; }
+  .table td .label { font-weight: 500; }
+  .table td .hint { margin-top: 2px; }
+  .preview-box { margin-top: 12px; }
+  .check { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .check input { width: 18px; height: 18px; flex: none; accent-color: var(--primary); }
+
+  /* language picker */
+  #lang { height: 32px; padding: 0 8px; border-radius: 16px; background: var(--surface); }
+
+  /* Things that are read left to right whatever the language: keys of
+     settings, code, paths, numbers, addresses. */
+  code, kbd, pre, .row .meta code, .facts .v code, textarea, .mock, .preview canvas { direction: ltr; unicode-bidi: isolate; text-align: start; }
+  textarea { unicode-bidi: plaintext; }
+  input[type=url], input[type=password], input[type=number], input[type=range], input[type=color] { direction: ltr; }
+  input[type=text] { unicode-bidi: plaintext; text-align: start; }
+  .mock .pill { direction: ltr; }
+  html[dir=rtl] .prose pre.log, html[dir=rtl] pre.log { text-align: left; }
+  /* The switch's knob and the facts' columns follow the reading direction. */
+  html[dir=rtl] .switch span::after { left: auto; right: 6px; }
+  html[dir=rtl] .switch input:checked + span::after { left: auto; right: 2px; transform: translate(-20px, -2px); }
+  html[dir=rtl] .picker, html[dir=rtl] .pick { direction: rtl; }
 </style>
 </head>
 <body>
 <header class="bar">
-  <h1>Zero<span class="long"> panel</span><span class="ver" id="ver"></span></h1>
+  <h1>Zero<span class="long" id="panel_word"> panel</span><span class="ver" id="ver"></span></h1>
   <label class="search" aria-label="Search settings">
     <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14"/></svg>
     <input id="q" type="text" placeholder="Search all settings" autocomplete="off" spellcheck="false">
   </label>
+  <select id="lang" aria-label="Language" title="Language"></select>
   <div class="seg" role="group" aria-label="Theme" id="themes">
     <button data-t="light" aria-pressed="false">Light</button>
     <button data-t="system" aria-pressed="false">Auto</button>

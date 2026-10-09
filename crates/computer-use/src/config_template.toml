@@ -392,6 +392,7 @@ port = 47382                # a free port is used if this one is taken
 idle_minutes = 15           # it closes after this long without a request
 theme = "system"            # "system" (follow the computer), "light" or "dark"
 accent = "#1A73E8"          # the colour its palette is made from
+language = "auto"           # "auto" (the browser's), "en", "fa" (فارسی), "zh" (中文) or "ru" (Русский)
 
 [update]
 # A while after the server starts it asks GitHub for the latest release; a

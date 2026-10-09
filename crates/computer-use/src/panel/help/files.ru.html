@@ -1,0 +1,22 @@
+<h3>The server's folder</h3>
+<p>Everything lives in one folder: <code>~/.computer-use</code>, or the one named by the <code>COMPUTER_USE_HOME</code> environment variable.</p>
+<table class="table">
+<tr><td><code>config.toml</code></td><td>The settings file this panel edits, comments kept.</td></tr>
+<tr><td><code>bin/</code></td><td>A copy of the program that the agents are told to start, so the folder you downloaded it to can move.</td></tr>
+<tr><td><code>updates/</code></td><td>Downloads waiting, the version kept to go back to, and when it last looked.</td></tr>
+<tr><td><code>icons/</code></td><td>The icon of the panel's shortcut.</td></tr>
+<tr><td><code>profiles/</code></td><td>Your own profiles, one small file each.</td></tr>
+<tr><td><code>scripts/</code></td><td>Scripts the agent saved.</td></tr>
+<tr><td><code>apps.json</code></td><td>How often each app needed pixels (<code>screenshot.record_apps</code>).</td></tr>
+<tr><td><code>audit.log</code></td><td>The audit log, if switched on.</td></tr>
+<tr><td><code>hub-47381.token</code>, <code>panel-47382.token</code></td><td>Keys only you can read, for the hub and this panel.</td></tr>
+</table>
+<h3>From a terminal</h3>
+<pre class="log">computer-use-mcp config show            the settings in effect
+computer-use-mcp config set screenshot.attach always
+computer-use-mcp config check           validate, and report unknown keys
+computer-use-mcp doctor                 permissions, stop key, what is set up
+computer-use-mcp install --list         which agents are here
+computer-use-mcp shortcut --both        an icon that opens this panel
+computer-use-mcp update --rollback      go back one version</pre>
+<p>A running server picks up a change to the settings file by itself (<code>hot_reload</code>). A few settings (the ports, the logging level, the instructions sent when a client connects) are read when a server starts, and say so here.</p>

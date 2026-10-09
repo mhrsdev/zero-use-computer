@@ -1,0 +1,17 @@
+<h3>这是什么</h3>
+<p>Zero Use Computer 让 AI 智能体使用你的电脑。它像屏幕阅读器那样读取应用，为元素编号，并通过系统的无障碍接口按下真实的控件。只有文本不够用时，它才会查看像素。在这个面板里，你可以决定它的行为方式。智能体没有任何工具可以打开此面板或更改其中的内容。</p>
+<h3>最初几分钟</h3>
+<ol>
+<li><b>连接智能体。</b><a href="#connect">连接智能体</a>可一键将本程序添加到 Claude Code、Claude Desktop、Codex、Cursor 或 VS Code。</li>
+<li><b>检查本机。</b>在终端中运行 <code>computer-use-mcp doctor</code>。它会告诉你权限是否就绪、停止键是否可用。<a href="#help-trouble">故障排查</a>介绍了各个系统上的处理方法。</li>
+<li><b>记住停止键。</b><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Esc</kbd>（Mac 上为 <kbd>Control</kbd>+<kbd>Option</kbd>+<kbd>Esc</kbd>）可在任何应用中立即停止智能体。再按一次即可让它继续。</li>
+<li><b>为智能体提供技能。</b>发布包中的 <code>skills</code> 文件夹包含使用这些工具的方法和安全规则。Claude Code 和 Claude 应用会从那里加载；其他客户端通过 MCP 获取相同的文件。</li>
+</ol>
+<h3>打开此面板</h3>
+<p>在任何应用中按 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>，在终端中运行 <code>computer-use-mcp settings</code>，或点击桌面上的图标（用<a href="#shortcut">桌面快捷方式</a>创建）。每次打开的都是同一个地址，因此可以加入书签。面板只在打开时监听，空闲十五分钟后关闭（<code>panel.idle_minutes</code>）。</p>
+<h3>下一步</h3>
+<ul>
+<li>如果智能体花费太多，请看<a href="#help-tokens">节省 token</a>。</li>
+<li><a href="#profiles">配置方案</a>可一次更改多项设置，也能回退。</li>
+<li>在<a href="#pointer">指针</a>中选择智能体指针的外观。</li>
+</ul>

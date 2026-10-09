@@ -1,45 +1,45 @@
 //! The guide inside the panel: short pages written by hand, kept in the
-//! program. Each is a piece of HTML the page shows as it is.
+//! program. Each is a piece of HTML the page shows as it is, in English
+//! (`help/<slug>.html`) and in the other languages (`help/<slug>.<lang>.html`).
 
-/// (address, title, text). The address is `help-` plus the first part.
-pub const PAGES: &[(&str, &str, &str)] = &[
-    ("start", "Getting started", include_str!("help/start.html")),
-    (
-        "pointers",
-        "Pointers and the mouse",
-        include_str!("help/pointers.html"),
-    ),
-    (
-        "tokens",
-        "Spending fewer tokens",
-        include_str!("help/tokens.html"),
-    ),
-    ("agents", "Several agents", include_str!("help/agents.html")),
-    (
-        "safety",
-        "Staying in control",
-        include_str!("help/safety.html"),
-    ),
-    ("updates", "Updates", include_str!("help/updates.html")),
-    (
-        "decision",
-        "The decision model",
-        include_str!("help/decision.html"),
-    ),
-    (
-        "files",
-        "Files and the command line",
-        include_str!("help/files.html"),
-    ),
-    (
-        "trouble",
-        "When something is wrong",
-        include_str!("help/trouble.html"),
-    ),
+macro_rules! page {
+    ($slug:literal, $title:literal) => {
+        (
+            $slug,
+            $title,
+            include_str!(concat!("help/", $slug, ".html")),
+            [
+                include_str!(concat!("help/", $slug, ".fa.html")),
+                include_str!(concat!("help/", $slug, ".zh.html")),
+                include_str!(concat!("help/", $slug, ".ru.html")),
+            ],
+        )
+    };
+}
+
+/// (address, title, text, the text in Persian, Chinese and Russian). The
+/// address is `help-` plus the first part.
+pub const PAGES: &[(&str, &str, &str, [&str; 3])] = &[
+    page!("start", "Getting started"),
+    page!("pointers", "Pointers and the mouse"),
+    page!("tokens", "Spending fewer tokens"),
+    page!("agents", "Several agents"),
+    page!("safety", "Staying in control"),
+    page!("updates", "Updates"),
+    page!("decision", "The decision model"),
+    page!("files", "Files and the command line"),
+    page!("trouble", "When something is wrong"),
 ];
 
-pub fn page(slug: &str) -> Option<&'static str> {
-    PAGES.iter().find(|p| p.0 == slug).map(|p| p.2)
+/// The page `slug` in `lang` (English when it has no such translation).
+pub fn page(slug: &str, lang: &str) -> Option<&'static str> {
+    let p = PAGES.iter().find(|p| p.0 == slug)?;
+    Some(match lang {
+        "fa" => p.3[0],
+        "zh" => p.3[1],
+        "ru" => p.3[2],
+        _ => p.2,
+    })
 }
 
 /// For the schema: what the page lists.
@@ -90,33 +90,39 @@ mod tests {
             .map(String::from),
         );
         ids.extend(PAGES.iter().map(|p| format!("help-{}", p.0)));
-        for (name, _, text) in PAGES {
-            for l in links(text) {
-                assert!(
-                    ids.iter().any(|i| i == l),
-                    "help/{name}.html links to #{l}, which is not a page"
-                );
+        for (name, _, text, others) in PAGES {
+            for text in std::iter::once(text).chain(others) {
+                for l in links(text) {
+                    assert!(
+                        ids.iter().any(|i| i == l),
+                        "help/{name}.html links to #{l}, which is not a page"
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn the_pages_are_whole_and_plain() {
-        for (name, title, text) in PAGES {
-            assert!(text.len() > 500, "{name} is short");
+        for (name, title, text, others) in PAGES {
             assert!(!title.is_empty());
-            assert!(
-                !text.contains("<script")
-                    && !text.contains("onclick")
-                    && !text.contains("javascript:"),
-                "{name}"
-            );
-            // Every tag opened is closed.
-            for tag in ["h3", "p", "ul", "ol", "li", "b", "table", "tr", "td"] {
-                let open = text.matches(&format!("<{tag}>")).count()
-                    + text.matches(&format!("<{tag} ")).count();
-                let close = text.matches(&format!("</{tag}>")).count();
-                assert_eq!(open, close, "{name}: <{tag}> opened {open}, closed {close}");
+            for (i, text) in std::iter::once(text).chain(others).enumerate() {
+                let name = format!("{name} ({})", ["en", "fa", "zh", "ru"][i]);
+                // A translation is shorter in Chinese, longer in Russian.
+                assert!(text.len() > 300, "{name} is short");
+                assert!(
+                    !text.contains("<script")
+                        && !text.contains("onclick")
+                        && !text.contains("javascript:"),
+                    "{name}"
+                );
+                // Every tag opened is closed.
+                for tag in ["h3", "p", "ul", "ol", "li", "b", "table", "tr", "td"] {
+                    let open = text.matches(&format!("<{tag}>")).count()
+                        + text.matches(&format!("<{tag} ")).count();
+                    let close = text.matches(&format!("</{tag}>")).count();
+                    assert_eq!(open, close, "{name}: <{tag}> opened {open}, closed {close}");
+                }
             }
         }
     }

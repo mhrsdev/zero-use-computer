@@ -116,9 +116,14 @@ enum Command {
         #[arg(long)]
         install: bool,
         /// Go back to the version the last update replaced, and don't take
-        /// that update again (sets update.skip_version).
+        /// that update again (sets update.skip_version). The settings file
+        /// kept when that update went in comes back too (the one it
+        /// replaces is kept beside it as `.before-rollback`).
         #[arg(long)]
         rollback: bool,
+        /// With --rollback: leave the settings as they are now.
+        #[arg(long, requires = "rollback")]
+        keep_settings: bool,
     },
     /// Add this program to the agents you use (Claude Code, Claude Desktop,
     /// Codex, Cursor, VS Code), or take it out. Only its own entry is
@@ -379,7 +384,7 @@ fn run() -> Result<()> {
     warn_unknown_keys(&config_path(&cli.common));
 
     if matches!(command, Command::Serve) {
-        install_waiting_update(&store.config);
+        install_waiting_update(&store.config, store.path.as_deref());
         // Look for updates a while from now, then now and then, with the
         // settings of the moment (none when the file can't be read).
         let path = config_path(&cli.common);
@@ -412,12 +417,13 @@ fn run() -> Result<()> {
             check,
             install,
             rollback,
+            keep_settings,
         } => update_cmd(
             &store.config,
             &config_path(&cli.common),
             check,
             install,
-            rollback,
+            rollback.then_some(!keep_settings),
         ),
         Command::Apps => run_and_print(&cli.common, store, "list_apps", json!({})),
         Command::State {
@@ -478,7 +484,7 @@ fn run() -> Result<()> {
 /// Before serving: an update waiting since before the computer restarted
 /// (or as `update.install` says) takes this program's place, and the
 /// server starts again as the new version. Whatever fails, this one serves.
-fn install_waiting_update(cfg: &Config) {
+fn install_waiting_update(cfg: &Config, settings: Option<&std::path::Path>) {
     use computer_use::update;
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -506,7 +512,7 @@ fn install_waiting_update(cfg: &Config) {
         );
         return;
     }
-    match update::install(&p, &exe, &dir) {
+    match update::install_keeping(&p, &exe, &dir, settings) {
         Ok(()) => {
             log::info!("updates: {} is in place; starting it", p.version);
             restart(&exe);
@@ -684,14 +690,15 @@ fn update_cmd(
     path: &std::path::Path,
     check: bool,
     install: bool,
-    rollback: bool,
+    // `Some(restore the settings too)` to go back.
+    rollback: Option<bool>,
 ) -> Result<()> {
     use computer_use::update::{self, Found};
     let current = update::Version::current();
     let dir = update::updates_dir();
-    if rollback {
+    if let Some(restore) = rollback {
         let exe = std::env::current_exe()?;
-        let (from, to) = update::rollback(&exe, &dir)?;
+        let (from, to, back) = update::rollback_to(&exe, &dir, restore.then_some(path))?;
         // The update that was undone is not taken again.
         config::edit_file(
             path,
@@ -702,6 +709,15 @@ fn update_cmd(
             "{to} is back in place of {from} ({}); start your MCP client again to use it. {from} will not be taken again (update.skip_version)",
             exe.display()
         );
+        if let Some(b) = back {
+            println!(
+                "the settings from before that update are back ({}){}",
+                path.display(),
+                b.aside
+                    .map(|a| format!("; the ones you had are kept in {}", a.display()))
+                    .unwrap_or_default()
+            );
+        }
         return Ok(());
     }
     if check {
@@ -734,7 +750,7 @@ fn update_cmd(
     }
     if install {
         let exe = std::env::current_exe()?;
-        update::install(&p, &exe, &dir)?;
+        update::install_keeping(&p, &exe, &dir, Some(path))?;
         println!(
             "{} is in place ({}); start your MCP client again to use it",
             p.version,

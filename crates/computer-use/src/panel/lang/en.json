@@ -1,0 +1,1224 @@
+{
+ "ui": {
+  ", before the tool manager hides most of them until the model asks (tools.manager is dispatch)": ", before the tool manager hides most of them until the model asks (tools.manager is dispatch)",
+  ", not yet": ", not yet",
+  "({d}% against the default)": "({d}% against the default)",
+  "(no notes)": "(no notes)",
+  "(not made yet: the first change makes it)": "(not made yet: the first change makes it)",
+  "{key}: must be a list": "{key}: must be a list",
+  "{key}: must be a number": "{key}: must be a number",
+  "{key}: must be a whole number, not negative": "{key}: must be a whole number, not negative",
+  "{key}: must be between {min} and {max}": "{key}: must be between {min} and {max}",
+  "{key}: must be on or off": "{key}: must be on or off",
+  "{key}: must be one line of text": "{key}: must be one line of text",
+  "{key}: must be one of {choices}": "{key}: must be one of {choices}",
+  "{key}: must be text": "{key}: must be text",
+  "{n} already the same": "{n} already the same",
+  "{n} ask to confirm": "{n} ask to confirm",
+  "{n} changed": "{n} changed",
+  "{n} this version can't take": "{n} this version can't take",
+  "{n} to change": "{n} to change",
+  "{name} applied.": "{name} applied.",
+  "{name} picker": "{name} picker",
+  "{name} slider": "{name} slider",
+  "{px} px → about {tokens} tokens": "{px} px → about {tokens} tokens",
+  "{v} is back.": "{v} is back.",
+  "{v} is downloaded and checked.": "{v} is downloaded and checked.",
+  "{v} is in place.": "{v} is in place.",
+  "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten",
+  "{v} is the latest under these settings.": "{v} is the latest under these settings.",
+  "{v} will not be taken again.": "{v} will not be taken again.",
+  "{x} ago": "{x} ago",
+  "{x} allowed by the settings.": "{x} allowed by the settings.",
+  "{x} in it": "{x} in it",
+  "{x} match “{query}”.": "{x} match “{query}”.",
+  "{x} would change": "{x} would change",
+  "`{key}` is changed on its own page": "`{key}` is changed on its own page",
+  "`{key}` is not a setting": "`{key}` is not a setting",
+  "1 hour": "1 hour",
+  "10 min": "10 min",
+  "12 hours": "12 hours",
+  "30 min": "30 min",
+  "5 min": "5 min",
+  "a change has no key": "a change has no key",
+  "a change needs a value": "a change needs a value",
+  "A different one each session, and for each agent at once": "A different one each session, and for each agent at once",
+  "A fast model that answers small questions about what is on screen.": "A fast model that answers small questions about what is on screen.",
+  "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.",
+  "A hub is running on port {port}.": "A hub is running on port {port}.",
+  "A line for each call: the tool, the app and how it ended. Never the arguments, the tree or a picture.": "A line for each call: the tool, the app and how it ended. Never the arguments, the tree or a picture.",
+  "a list holds text": "a list holds text",
+  "A picture counts as width × height ÷ 750 tokens, here for a 16:9 screen; text counts as four characters a token. An estimate: your model counts its own way, and the prompt cache makes repeats cheaper.": "A picture counts as width × height ÷ 750 tokens, here for a 16:9 screen; text counts as four characters a token. An estimate: your model counts its own way, and the prompt cache makes repeats cheaper.",
+  "A profile only sets the settings it names and puts back the defaults of the ones another profile sets. It never touches protected settings or secrets.": "A profile only sets the settings it names and puts back the defaults of the ones another profile sets. It never touches protected settings or secrets.",
+  "A random one each session, and a different one for each agent at once.": "A random one each session, and a different one for each agent at once.",
+  "A record of every call, without the data.": "A record of every call, without the data.",
+  "a restart": "a restart",
+  "a saved secret is replaced, not reset, here": "a saved secret is replaced, not reset, here",
+  "A whole screen": "A whole screen",
+  "Accessibility tree": "Accessibility tree",
+  "Add": "Add",
+  "Add and press Enter": "Add and press Enter",
+  "Add to {name}": "Add to {name}",
+  "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak.": "Add Zero to the agents you use with a button. Only its own entry is written; the rest of each agent's settings stays as it was, and a copy of the file is kept next to it as .bak.",
+  "Added": "Added",
+  "Added, other program": "Added, other program",
+  "Address (base URL)": "Address (base URL)",
+  "advanced": "advanced",
+  "After adding:": "After adding:",
+  "After the import": "After the import",
+  "Already applied": "Already applied",
+  "Also put back the settings from before that update (the ones you have now are kept beside the file)": "Also put back the settings from before that update (the ones you have now are kept beside the file)",
+  "Always {style}.": "Always {style}.",
+  "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open).": "An icon that opens this panel, so you don't need the key or a terminal. It starts the program with settings, which serves the panel on its own port and opens it in your browser (or shows the one already open).",
+  "An overview": "An overview",
+  "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count).": "An update is downloaded and checked against GitHub's SHA-256, then goes in only when a server starts, never while an agent may be working. Looking every few minutes is allowed (GitHub lets 60 anonymous requests an hour, and an unchanged answer doesn't count).",
+  "Another file of that name": "Another file of that name",
+  "Another set": "Another set",
+  "API key": "API key",
+  "App": "App",
+  "applies after a restart": "applies after a restart",
+  "Apply": "Apply",
+  "Apps report": "Apps report",
+  "Apps with a high share in the third column are the ones the tree serves badly: they get text read off the screen and more pictures. Kept in {file}.": "Apps with a high share in the third column are the ones the tree serves badly: they get text read off the screen and more pictures. Kept in {file}.",
+  "Asked us to slow down; looking again in about {x}.": "Asked us to slow down; looking again in about {x}.",
+  "Asking the model…": "Asking the model…",
+  "asks to confirm": "asks to confirm",
+  "At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.": "At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.",
+  "Audit log": "Audit log",
+  "Auto": "Auto",
+  "Back to the default": "Back to the default",
+  "Back to the default.": "Back to the default.",
+  "Balanced": "Balanced",
+  "Best quality": "Best quality",
+  "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.",
+  "Can go back to": "Can go back to",
+  "Can't change safely": "Can't change safely",
+  "can't make the profiles folder": "can't make the profiles folder",
+  "can't take it": "can't take it",
+  "Cancel": "Cancel",
+  "cells": "cells",
+  "Change": "Change",
+  "Change protected settings?": "Change protected settings?",
+  "changed": "changed",
+  "Changed from default": "Changed from default",
+  "characters": "characters",
+  "Check": "Check",
+  "Check now": "Check now",
+  "Checking actions": "Checking actions",
+  "choose a kind of model": "choose a kind of model",
+  "Choose a kind of model first.": "Choose a kind of model first.",
+  "Choose a pointer": "Choose a pointer",
+  "choose an agent": "choose an agent",
+  "Comes with the program": "Comes with the program",
+  "Connect an agent": "Connect an agent",
+  "Copied.": "Copied.",
+  "Copy": "Copy",
+  "couldn't keep the settings you have now, so nothing was changed": "couldn't keep the settings you have now, so nothing was changed",
+  "Couldn't read the settings.": "Couldn't read the settings.",
+  "Daily": "Daily",
+  "Dark": "Dark",
+  "Decision model": "Decision model",
+  "default:": "default:",
+  "Delete": "Delete",
+  "Delete the profile “{name}”?": "Delete the profile “{name}”?",
+  "Desktop shortcut": "Desktop shortcut",
+  "Done": "Done",
+  "Download": "Download",
+  "Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots.": "Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots.",
+  "e.g. gpt-4.1-nano, llama-3.1-8b-instant": "e.g. gpt-4.1-nano, llama-3.1-8b-instant",
+  "each field must be one line": "each field must be one line",
+  "Each press makes new ones: no two hands are the same.": "Each press makes new ones: no two hands are the same.",
+  "elements": "elements",
+  "Emergency stop": "Emergency stop",
+  "empty": "empty",
+  "Error": "Error",
+  "Every {x}": "Every {x}",
+  "Export": "Export",
+  "File:": "File:",
+  "Files and the command line": "Files and the command line",
+  "Fix it in a text editor: {path}": "Fix it in a text editor: {path}",
+  "for example ctrl+alt+escape": "for example ctrl+alt+escape",
+  "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.",
+  "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.",
+  "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.",
+  "General": "General",
+  "Getting started": "Getting started",
+  "GitHub": "GitHub",
+  "give the profile a name": "give the profile a name",
+  "Go back": "Go back",
+  "Go back to {v}": "Go back to {v}",
+  "Go back to version {v}?": "Go back to version {v}?",
+  "Guide": "Guide",
+  "Home": "Home",
+  "hours": "hours",
+  "How much of the app's tree the model reads, and how it is shortened.": "How much of the app's tree the model reads, and how it is shortened.",
+  "How often it looks": "How often it looks",
+  "How often it looks for a new release": "How often it looks for a new release",
+  "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.": "How the agent's own pointer looks and moves on screen. Your real mouse is not touched.",
+  "How the pointer glides": "How the pointer glides",
+  "How the program keeps itself up to date. Changes ask you to confirm.": "How the program keeps itself up to date. Changes ask you to confirm.",
+  "How the real mouse goes": "How the real mouse goes",
+  "How the real mouse moves when an action has to use it.": "How the real mouse moves when an action has to use it.",
+  "If the agent spends too much, try the Low tokens profile. If it can't read an app, try Best quality. To record a demo, Showcase makes the pointer and border bigger.": "If the agent spends too much, try the Low tokens profile. If it can't read an app, try Best quality. To record a demo, Showcase makes the pointer and border bigger.",
+  "Import": "Import",
+  "Import {x}": "Import {x}",
+  "Import and export": "Import and export",
+  "Import the {n} it can take": "Import the {n} it can take",
+  "Imported {x}; left out {n} this version can't take.": "Imported {x}; left out {n} this version can't take.",
+  "Imported {x}.": "Imported {x}.",
+  "It goes in {when}.": "It goes in {when}.",
+  "It is changed on its own page, not by an import": "It is changed on its own page, not by an import",
+  "It looks every {x}.": "It looks every {x}.",
+  "It starts {program} settings, which opens the panel in your browser.": "It starts {program} settings, which opens the panel in your browser.",
+  "It will not look for updates.": "It will not look for updates.",
+  "items": "items",
+  "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
+  "just now": "just now",
+  "KB": "KB",
+  "Keep": "Keep",
+  "Keep the current settings as a profile": "Keep the current settings as a profile",
+  "Kept {x}.": "Kept {x}.",
+  "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).",
+  "Language": "Language",
+  "last {when}": "last {when}",
+  "Leave empty for {url}.": "Leave empty for {url}.",
+  "Left out": "Left out",
+  "levels": "levels",
+  "Light": "Light",
+  "lines": "lines",
+  "Little in the tree": "Little in the tree",
+  "Logging, the instructions sent to clients and the optional HTTP transport.": "Logging, the instructions sent to clients and the optional HTTP transport.",
+  "Looking": "Looking",
+  "Looking…": "Looking…",
+  "Looks": "Looks",
+  "Low tokens": "Low tokens",
+  "Made {path}.": "Made {path}.",
+  "Made by version {v}; this is version {w}.": "Made by version {v}; this is version {w}.",
+  "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.": "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.",
+  "Make": "Make",
+  "Make again": "Make again",
+  "make it again to start": "make it again to start",
+  "min": "min",
+  "minutes": "minutes",
+  "Model": "Model",
+  "Model and API key": "Model and API key",
+  "ms": "ms",
+  "must be a list": "must be a list",
+  "must be a number": "must be a number",
+  "must be a whole number, not negative": "must be a whole number, not negative",
+  "must be between {min} and {max}": "must be between {min} and {max}",
+  "must be on or off": "must be on or off",
+  "must be one line of text": "must be one line of text",
+  "must be one of {choices}": "must be one of {choices}",
+  "must be text": "must be text",
+  "Name, for example Work laptop": "Name, for example Work laptop",
+  "never": "never",
+  "Never": "Never",
+  "Never {v}.": "Never {v}.",
+  "next in about {x}": "next in about {x}",
+  "no import has been made yet, so there is nothing to go back to": "no import has been made yet, so there is nothing to go back to",
+  "No key for this panel": "No key for this panel",
+  "No log yet: turn it on above.": "No log yet: turn it on above.",
+  "no update is waiting": "no update is waiting",
+  "none": "none",
+  "None set up.": "None set up.",
+  "None yet. Change some settings, then keep them here under a name.": "None yet. Change some settings, then keep them here under a name.",
+  "None: this server keeps its settings in memory.": "None: this server keeps its settings in memory.",
+  "not a setting: {keys}": "not a setting: {keys}",
+  "Not added": "Not added",
+  "Not found here": "Not found here",
+  "not in this version": "not in this version",
+  "Not needed for a server on this computer.": "Not needed for a server on this computer.",
+  "Not reset.": "Not reset.",
+  "Not saved.": "Not saved.",
+  "Not set": "Not set",
+  "Not there": "Not there",
+  "Nothing counted yet. Each time the agent looks at an app, the program notes how much its accessibility tree told it and whether it had to use pixels; the apps that needed pixels most show here. It is kept in {file} (screenshot.record_apps).": "Nothing counted yet. Each time the agent looks at an app, the program notes how much its accessibility tree told it and whether it had to use pixels; the apps that needed pixels most show here. It is kept in {file} (screenshot.record_apps).",
+  "Nothing differs from the defaults yet.": "Nothing differs from the defaults yet.",
+  "nothing differs from the defaults, so there is nothing to keep": "nothing differs from the defaults, so there is nothing to keep",
+  "Nothing in this group differs from its default.": "Nothing in this group differs from its default.",
+  "Nothing kept yet.": "Nothing kept yet.",
+  "Nothing matches.": "Nothing matches.",
+  "Nothing to show.": "Nothing to show.",
+  "Nothing would change.": "Nothing would change.",
+  "Nothing written yet.": "Nothing written yet.",
+  "Nothing.": "Nothing.",
+  "notifications": "notifications",
+  "Notifications": "Notifications",
+  "Now": "Now",
+  "of {kb} KB": "of {kb} KB",
+  "of {n}": "of {n}",
+  "off": "off",
+  "Off: the agent works from the tree alone.": "Off: the agent works from the tree alone.",
+  "Off.": "Off.",
+  "Off. It never updates by itself.": "Off. It never updates by itself.",
+  "Off. Nothing is looked for or downloaded.": "Off. Nothing is looked for or downloaded.",
+  "on": "on",
+  "On, last looked {when}.": "On, last looked {when}.",
+  "On; it has not looked yet.": "On; it has not looked yet.",
+  "On; no hub is running right now.": "On; no hub is running right now.",
+  "On.": "On.",
+  "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.",
+  "OpenAI-compatible chat model": "OpenAI-compatible chat model",
+  "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.": "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.",
+  "Overlay": "Overlay",
+  "Overview": "Overview",
+  "panel": "panel",
+  "Panel": "Panel",
+  "Paste settings as TOML (what Export makes). You see each one as it is now and as it would be before anything is changed; protected ones ask first, and settings this version doesn't have are shown and left out. The settings you have now are kept, so you can go back.": "Paste settings as TOML (what Export makes). You see each one as it is now and as it would be before anything is changed; protected ones ask first, and settings this version doesn't have are shown and left out. The settings you have now are kept, so you can go back.",
+  "Path style": "Path style",
+  "Paused": "Paused",
+  "Pauses and waits around actions.": "Pauses and waits around actions.",
+  "Pictures": "Pictures",
+  "Pictures sent": "Pictures sent",
+  "Platform": "Platform",
+  "Pointer": "Pointer",
+  "Pointer style": "Pointer style",
+  "Pointers and the mouse": "Pointers and the mouse",
+  "points at": "points at",
+  "port": "port",
+  "Press Ctrl+C on the text below.": "Press Ctrl+C on the text below.",
+  "Press Ctrl+C to copy.": "Press Ctrl+C to copy.",
+  "Preview": "Preview",
+  "Privacy": "Privacy",
+  "Profile name": "Profile name",
+  "Profiles": "Profiles",
+  "Program": "Program",
+  "Put a shortcut to this panel at {path}?": "Put a shortcut to this panel at {path}?",
+  "Put it in place now": "Put it in place now",
+  "Put the settings back as they were before the last import?": "Put the settings back as they were before the last import?",
+  "Put version {v} in place of this program now?": "Put version {v} in place of this program now?",
+  "px": "px",
+  "Read from the environment variable {name}.": "Read from the environment variable {name}.",
+  "Reading desktop notifications.": "Reading desktop notifications.",
+  "Reading text off the screen for apps whose tree says little.": "Reading text off the screen for apps whose tree says little.",
+  "Real mouse": "Real mouse",
+  "Refresh": "Refresh",
+  "reload the page: it didn't say which version of the file it showed": "reload the page: it didn't say which version of the file it showed",
+  "Remembering screens the model has already seen.": "Remembering screens the model has already seen.",
+  "Remove": "Remove",
+  "Remove {item}": "Remove {item}",
+  "Remove the decision model and its key?": "Remove the decision model and its key?",
+  "Removed {path}.": "Removed {path}.",
+  "Removed.": "Removed.",
+  "Replace": "Replace",
+  "Reset": "Reset",
+  "Revert": "Revert",
+  "Right now": "Right now",
+  "s": "s",
+  "same": "same",
+  "Save": "Save",
+  "Saved {hint}. Type to replace.": "Saved {hint}. Type to replace.",
+  "Saved to {path}.": "Saved to {path}.",
+  "Saved: {hint}. Leave empty to keep it.": "Saved: {hint}. Leave empty to keep it.",
+  "Saved. Running servers use it now.": "Saved. Running servers use it now.",
+  "Saving…": "Saving…",
+  "say create or remove": "say create or remove",
+  "say desktop or menu": "say desktop or menu",
+  "say install or remove": "say install or remove",
+  "say which settings to change": "say which settings to change",
+  "say which settings to reset": "say which settings to reset",
+  "Screen memory": "Screen memory",
+  "screens": "screens",
+  "Screenshots": "Screenshots",
+  "Scripts": "Scripts",
+  "Search all settings": "Search all settings",
+  "Search results": "Search results",
+  "seconds": "seconds",
+  "Server": "Server",
+  "Setting": "Setting",
+  "Settings": "Settings",
+  "Settings changed": "Settings changed",
+  "Settings file": "Settings file",
+  "Settings file:": "Settings file:",
+  "Settings for one operating system.": "Settings for one operating system.",
+  "Settings groups": "Settings groups",
+  "Settings to import": "Settings to import",
+  "Several agents": "Several agents",
+  "Show advanced": "Show advanced",
+  "Showcase": "Showcase",
+  "Small programs the agent writes and the server runs.": "Small programs the agent writes and the server runs.",
+  "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.",
+  "spaces": "spaces",
+  "Spending fewer tokens": "Spending fewer tokens",
+  "Start your MCP client again to use it.": "Start your MCP client again to use it.",
+  "starts": "starts",
+  "State": "State",
+  "Status and controls": "Status and controls",
+  "Staying in control": "Staying in control",
+  "Staying on {v}.": "Staying on {v}.",
+  "Stopped": "Stopped",
+  "Subagents, or Claude Code beside Codex, on one desktop.": "Subagents, or Claude Code beside Codex, on one desktop.",
+  "Switches that apply to the whole program.": "Switches that apply to the whole program.",
+  "Take the panel's shortcut away from {path}?": "Take the panel's shortcut away from {path}?",
+  "Test": "Test",
+  "Text on screen (OCR)": "Text on screen (OCR)",
+  "Text read off screen": "Text read off screen",
+  "that is not a setting": "that is not a setting",
+  "that is not one of your profiles": "that is not one of your profiles",
+  "that is too long to be a list of settings": "that is too long to be a list of settings",
+  "that name belongs to a profile that comes with the program": "that name belongs to a profile that comes with the program",
+  "that name can't be kept": "that name can't be kept",
+  "That page isn't here.": "That page isn't here.",
+  "The {n} this version can't take are left out; the rest go in.": "The {n} this version can't take are left out; the rest go in.",
+  "the address must start with https:// (or http:// for a server on this computer)": "the address must start with https:// (or http:// for a server on this computer)",
+  "The agent can use it now.": "The agent can use it now.",
+  "The agent has no decision model now.": "The agent has no decision model now.",
+  "The border, label and colours shown while the agent works.": "The border, label and colours shown while the agent works.",
+  "the computer to restart": "the computer to restart",
+  "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.",
+  "The decision model": "The decision model",
+  "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "The emergency stop and the pause while you use the computer. Changes ask you to confirm.",
+  "The file as saved has a mistake in it; mend it here.": "The file as saved has a mistake in it; mend it here.",
+  "The file is empty.": "The file is empty.",
+  "the file is too long to be a settings file": "the file is too long to be a settings file",
+  "The last {n} lines": "The last {n} lines",
+  "The newest stable release.": "The newest stable release.",
+  "The newest, pre-releases included.": "The newest, pre-releases included.",
+  "the next start": "the next start",
+  "the next time the server starts": "the next time the server starts",
+  "The ones you had are kept in {path}.": "The ones you had are kept in {path}.",
+  "The ones you have now are kept, so this can be undone too.": "The ones you have now are kept, so this can be undone too.",
+  "The plain arrow": "The plain arrow",
+  "The plain arrow.": "The plain arrow.",
+  "The program's own defaults for every setting the other profiles touch.": "The program's own defaults for every setting the other profiles touch.",
+  "The server didn't answer: {error}": "The server didn't answer: {error}",
+  "The settings as they were before the last import are kept ({when}).": "The settings as they were before the last import are kept ({when}).",
+  "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file.": "The settings file as text, comments and all. Secrets are covered; leave them as they are to keep them. It is checked as a whole before anything is written, so a typo can't break the file.",
+  "the settings file changed since it was shown here (another tab, a command, a profile): press Revert to see it as it is now, then make your change again": "the settings file changed since it was shown here (another tab, a command, a profile): press Revert to see it as it is now, then make your change again",
+  "The settings file has a mistake in it and may hold a secret, so it isn't shown here.": "The settings file has a mistake in it and may hold a secret, so it isn't shown here.",
+  "The settings from before the import are back.": "The settings from before the import are back.",
+  "The settings from before the update are back.": "The settings from before the update are back.",
+  "The settings that differ from the defaults. No secrets: {x} left out.": "The settings that differ from the defaults. No secrets: {x} left out.",
+  "The settings that differ from the defaults. No secrets: none were set.": "The settings that differ from the defaults. No secrets: none were set.",
+  "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "The settings you had before that update come back with it; the ones you have now are kept beside the file.",
+  "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.",
+  "The version you have now is not taken again unless you clear update.skip_version.": "The version you have now is not taken again unless you clear update.skip_version.",
+  "Theme": "Theme",
+  "There": "There",
+  "there are no settings in it": "there are no settings in it",
+  "there is no earlier version kept to go back to": "there is no earlier version kept to go back to",
+  "there is no release of this program for this system": "there is no release of this program for this system",
+  "there is no such profile": "there is no such profile",
+  "There was none.": "There was none.",
+  "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:": "These settings limit what the agent can do or see, or how the program updates. Check that you meant to change them:",
+  "these settings need the user's confirmation first": "these settings need the user's confirmation first",
+  "Thinking": "Thinking",
+  "this needs the user's confirmation first": "this needs the user's confirmation first",
+  "This page.": "This page.",
+  "This panel:": "This panel:",
+  "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.",
+  "this server keeps its settings in memory": "this server keeps its settings in memory",
+  "This server keeps its settings in memory, so nothing can be saved here.": "This server keeps its settings in memory, so nothing can be saved here.",
+  "this server keeps its settings in memory, so there is no file": "this server keeps its settings in memory, so there is no file",
+  "this server keeps its settings in memory, so they can't be saved here": "this server keeps its settings in memory, so they can't be saved here",
+  "This system has no such place.": "This system has no such place.",
+  "This version": "This version",
+  "This version ({v}) has no such setting": "This version ({v}) has no such setting",
+  "This version ({v}) has no such setting: the export is from {w}, a newer one": "This version ({v}) has no such setting: the export is from {w}, a newer one",
+  "Three sample paths of the {style} style": "Three sample paths of the {style} style",
+  "Timing": "Timing",
+  "tokens": "tokens",
+  "Tool list": "Tool list",
+  "Tools": "Tools",
+  "Tools and tokens": "Tools and tokens",
+  "under 2 minutes": "under 2 minutes",
+  "Undo the last import": "Undo the last import",
+  "Updates": "Updates",
+  "Valid. {x} would change, {n} of them protected.": "Valid. {x} would change, {n} of them protected.",
+  "Valid. {x} would change.": "Valid. {x} would change.",
+  "Valid. Nothing would change.": "Valid. Nothing would change.",
+  "Verifying that an action did what it should.": "Verifying that an action did what it should.",
+  "Version": "Version",
+  "Version {v} (kept when the last update went in), with the settings you had then.": "Version {v} (kept when the last update went in), with the settings you had then.",
+  "Version {v} (kept when the last update went in).": "Version {v} (kept when the last update went in).",
+  "Version {v} is downloaded and waits for {when}.": "Version {v} is downloaded and waits for {when}.",
+  "Version {v}, but the settings no longer take it (skipped, pinned or a pre-release): it will not go in.": "Version {v}, but the settings no longer take it (skipped, pinned or a pre-release): it will not go in.",
+  "Version {v}, downloaded {when}. It goes in {install}.": "Version {v}, downloaded {when}. It goes in {install}.",
+  "Waiting": "Waiting",
+  "What {v} says about itself": "What {v} says about itself",
+  "What a picture costs": "What a picture costs",
+  "What is masked before anything reaches the model. Changes ask you to confirm.": "What is masked before anything reaches the model. Changes ask you to confirm.",
+  "What would be written for {name}": "What would be written for {name}",
+  "When pictures are sent to the model, and how big. The biggest lever on image tokens.": "When pictures are sent to the model, and how big. The biggest lever on image tokens.",
+  "When something is wrong": "When something is wrong",
+  "when the server starts after the computer restarts": "when the server starts after the computer restarts",
+  "Where to start": "Where to start",
+  "Which": "Which",
+  "Which tools the model sees. The tool list is sent with every request.": "Which tools the model sees. The tool list is sent with every request.",
+  "with `computer-use-mcp update --install`": "with `computer-use-mcp update --install`",
+  "Working": "Working",
+  "Write the audit log": "Write the audit log",
+  "You can close this tab.": "You can close this tab.",
+  "you to run `computer-use-mcp update --install`": "you to run `computer-use-mcp update --install`",
+  "Your control": "Your control",
+  "Your MCP clients use it the next time they start.": "Your MCP clients use it the next time they start.",
+  "Your own: a snapshot of settings you changed.": "Your own: a snapshot of settings you changed.",
+  "Your settings": "Your settings",
+  "Yours": "Yours"
+ },
+ "plural": {
+  "setting": {
+   "one": "setting",
+   "other": "settings"
+  },
+  "tool": {
+   "one": "tool",
+   "other": "tools"
+  },
+  "secret": {
+   "one": "secret",
+   "other": "secrets"
+  },
+  "minute": {
+   "one": "minute",
+   "other": "minutes"
+  },
+  "hour": {
+   "one": "hour",
+   "other": "hours"
+  },
+  "day": {
+   "one": "day",
+   "other": "days"
+  }
+ },
+ "settings": {
+  "clipboard": [
+   "Clipboard",
+   "Let the agent read and write the clipboard (the get_clipboard and set_clipboard tools)."
+  ],
+  "text_only": [
+   "Text only",
+   "Never attach screenshots anywhere. The lowest token use, but the agent can't see pictures."
+  ],
+  "follow_new_windows": [
+   "Follow new windows",
+   "When an action opens a dialog or a menu, switch to it for the change report and the next look."
+  ],
+  "hot_reload": [
+   "Hot reload",
+   "Apply changes to the settings file to running servers without a restart."
+  ],
+  "launch_timeout_secs": [
+   "Launch timeout secs",
+   "How long launch_app waits for a new app to show a window."
+  ],
+  "natural_mouse": [
+   "Natural mouse",
+   "Move the real mouse like a hand does: along a curve, speeding up and slowing down, with a faint tremor. Off: it jumps."
+  ],
+  "mouse_path": [
+   "Mouse path",
+   "The way the real mouse goes. Mixed picks one at random for each move. Drags always go straight."
+  ],
+  "mouse_speed": [
+   "Mouse speed",
+   "How fast the real mouse moves, as a multiple of a hand's pace. 2 is twice as quick; some apps are slow to notice a very fast pointer."
+  ],
+  "mouse_overshoot": [
+   "Mouse overshoot",
+   "How often a long reach (over 250 px) goes a touch past its target and back, in percent of reaches. 0 never does. Only the hand style overshoots this way."
+  ],
+  "mouse_jitter": [
+   "Mouse jitter",
+   "How much the path trembles, as a share of a hand's. 0 is a clean curve."
+  ],
+  "restore_pointer": [
+   "Restore pointer",
+   "Put your mouse pointer back where it was after the agent clicks, scrolls or drags, so it never takes your mouse away."
+  ],
+  "overlay.cursor_style": [
+   "Cursor style",
+   "The agent's pointer. Random gives each session one, and a different one to each agent at once."
+  ],
+  "overlay.cursor_color": [
+   "Cursor color",
+   "The colour of the plain arrow and the base of the pointer's ring."
+  ],
+  "overlay.cursor_tag": [
+   "Cursor tag",
+   "The name beside the pointer. Empty: no name."
+  ],
+  "overlay.cursor_motion": [
+   "Cursor motion",
+   "The pointer leans as it moves, leaves a trail, breathes, and shows drags and scrolls."
+  ],
+  "overlay.trail": [
+   "Trail",
+   "The trail the pointer leaves as it moves, made of its own material (sparkles, flecks, frost, chrome drops). Needs cursor motion."
+  ],
+  "overlay.trail_strength": [
+   "Trail strength",
+   "How long the trail is. 100 is as it was made; 0 leaves none."
+  ],
+  "overlay.lean_strength": [
+   "Lean strength",
+   "How far the pointer leans into a move. 0 keeps it upright."
+  ],
+  "overlay.breathe": [
+   "Breathe",
+   "The pointer breathes while it waits: the jelly swells, the paper sways. Needs cursor motion."
+  ],
+  "overlay.breathe_strength": [
+   "Breathe strength",
+   "How deeply it breathes."
+  ],
+  "overlay.cursor_path": [
+   "Cursor path",
+   "How the pointer glides to where it acts."
+  ],
+  "overlay.show_keys": [
+   "Show keys",
+   "Show pressed keys as keycaps by the pointer, and typed text running out beside it."
+  ],
+  "overlay.click_effect": [
+   "Click effect",
+   "A ripple where the agent clicks."
+  ],
+  "overlay.show_cursor": [
+   "Show cursor",
+   "Draw the agent's own pointer. The real mouse is never moved for this."
+  ],
+  "overlay.move_ms": [
+   "Move ms",
+   "How long the pointer takes to glide. An action waits for it to arrive."
+  ],
+  "overlay.scale": [
+   "Scale",
+   "Size multiplier for everything the overlay draws. 0 follows the display scaling."
+  ],
+  "overlay.enabled": [
+   "Enabled",
+   "Show the on-screen indicator while the agent works. It is click-through and left out of the agent's screenshots."
+  ],
+  "overlay.show_border": [
+   "Show border",
+   "A glowing border around the screen or window the agent works on."
+  ],
+  "overlay.show_label": [
+   "Show label",
+   "A status label."
+  ],
+  "overlay.border_target": [
+   "Border target",
+   "Whether the border goes around the whole screen or only the window worked on."
+  ],
+  "overlay.border_width": [
+   "Border width",
+   "The bright core line of the border."
+  ],
+  "overlay.glow_size": [
+   "Glow size",
+   "How far the glow fades out. 0 is a plain line."
+  ],
+  "overlay.label_working": [
+   "Label working",
+   "Label while the agent acts on the computer."
+  ],
+  "overlay.label_thinking": [
+   "Label thinking",
+   "Label while the model is thinking."
+  ],
+  "overlay.label_error": [
+   "Label error",
+   "Label after an error."
+  ],
+  "overlay.label_done": [
+   "Label done",
+   "Label when the work is finished."
+  ],
+  "overlay.label_paused": [
+   "Label paused",
+   "Label while it waits for you to stop using the mouse and keyboard."
+  ],
+  "overlay.label_stopped": [
+   "Label stopped",
+   "Label after the emergency stop. {hotkey} becomes the stop key."
+  ],
+  "overlay.color_thinking": [
+   "Color thinking",
+   "Colour while the model is thinking."
+  ],
+  "overlay.color_working": [
+   "Color working",
+   "Colour while the agent acts."
+  ],
+  "overlay.color_error": [
+   "Color error",
+   "Colour after an error."
+  ],
+  "overlay.color_done": [
+   "Color done",
+   "Colour when the work is finished."
+  ],
+  "overlay.color_paused": [
+   "Color paused",
+   "Colour while paused for you."
+  ],
+  "overlay.color_stopped": [
+   "Color stopped",
+   "Colour after the emergency stop."
+  ],
+  "overlay.done_after_ms": [
+   "Done after ms",
+   "No new action for this long: the work counts as done."
+  ],
+  "overlay.done_linger_ms": [
+   "Done linger ms",
+   "How long \"done\" stays before everything disappears."
+  ],
+  "overlay.error_hold_ms": [
+   "Error hold ms",
+   "How long an error stays."
+  ],
+  "overlay.fade_in_ms": [
+   "Fade in ms",
+   "Appear gradually over this time."
+  ],
+  "overlay.fade_out_ms": [
+   "Fade out ms",
+   "Disappear gradually over this time."
+  ],
+  "overlay.transition_ms": [
+   "Transition ms",
+   "Blend from one state colour to the next over this time."
+  ],
+  "overlay.capture_hide_ms": [
+   "Capture hide ms",
+   "X11 only: the pause after hiding the overlay before a screenshot."
+  ],
+  "overlay.font": [
+   "Font",
+   "A font file for the label. Empty: a system font."
+  ],
+  "overlay.command": [
+   "Command",
+   "A helper program for the overlay, for programs that embed the library."
+  ],
+  "screenshot.enabled": [
+   "Enabled",
+   "Allow screenshots at all."
+  ],
+  "screenshot.attach": [
+   "Attach",
+   "When a look includes a picture: auto (first view, a big change, or a sparse tree), always (most tokens) or never."
+  ],
+  "screenshot.auto_sparse_threshold": [
+   "Auto sparse threshold",
+   "In auto mode, attach a picture when the tree has fewer interactive elements than this."
+  ],
+  "screenshot.max_dimension": [
+   "Max dimension",
+   "The longest edge of a picture. This is the main image-token setting: 1024 costs about 35% less than 1280."
+  ],
+  "screenshot.overview_max_dimension": [
+   "Overview max dimension",
+   "A smaller size for pictures of windows whose tree already says what is there. 0: always the size above."
+  ],
+  "screenshot.format": [
+   "Format",
+   "Picture format."
+  ],
+  "screenshot.jpeg_quality": [
+   "Jpeg quality",
+   "JPEG quality."
+  ],
+  "screenshot.png_compression": [
+   "Png compression",
+   "PNG compression. It changes the file size only."
+  ],
+  "screenshot.resize_filter": [
+   "Resize filter",
+   "How a picture is shrunk."
+  ],
+  "screenshot.scope": [
+   "Scope",
+   "Follow-up pictures of a screen the model has seen: only the part that changed (auto), or the whole window (full)."
+  ],
+  "screenshot.region_max_ratio": [
+   "Region max ratio",
+   "A change bigger than this share of the window sends the whole window."
+  ],
+  "screenshot.region_padding": [
+   "Region padding",
+   "Margin around the changed part."
+  ],
+  "screenshot.region_min_size": [
+   "Region min size",
+   "The changed part is at least this big on each side, for context."
+  ],
+  "screenshot.adaptive": [
+   "Adaptive",
+   "Leave pictures out of well-described windows once the model has looked a few times without using pixels there."
+  ],
+  "screenshot.smart": [
+   "Smart",
+   "Leave out a picture when all that changed is what the tree already reports."
+  ],
+  "screenshot.record_apps": [
+   "Record apps",
+   "Count how often each app needed pixels (the doctor command shows it)."
+  ],
+  "screenshot.locate_picture": [
+   "Locate picture",
+   "Locate sends the window with the places it found numbered."
+  ],
+  "screenshot.icon_sprite": [
+   "Icon sprite",
+   "Experimental: when no picture is attached, a small strip of the buttons that have no name, numbered."
+  ],
+  "tree.max_nodes": [
+   "Max nodes",
+   "Elements shown per look."
+  ],
+  "tree.max_walk": [
+   "Max walk",
+   "Elements read from the app before pruning."
+  ],
+  "tree.max_depth": [
+   "Max depth",
+   "How deep the tree goes."
+  ],
+  "tree.max_text_len": [
+   "Max text len",
+   "Characters of text or value shown per element."
+  ],
+  "tree.indent": [
+   "Indent",
+   "Spaces per tree level."
+  ],
+  "tree.show_actions": [
+   "Show actions",
+   "Show the actions each element offers."
+  ],
+  "tree.show_states": [
+   "Show states",
+   "Show states such as focused, disabled and checked."
+  ],
+  "tree.diff": [
+   "Diff",
+   "Later looks return only what changed."
+  ],
+  "tree.diff_full_ratio": [
+   "Diff full ratio",
+   "Show the whole tree when more than this share changed."
+  ],
+  "tree.report_changes": [
+   "Report changes",
+   "Add the state after the action to an action's result."
+  ],
+  "tree.report_changes_max_lines": [
+   "Report changes max lines",
+   "At most this many lines of changes in a report."
+  ],
+  "tree.report": [
+   "Report",
+   "What a report says: full (every change), relevant (around what was acted on) or brief (counts)."
+  ],
+  "tree.max_tokens": [
+   "Max tokens",
+   "Token budget of one tree. Bigger trees are shortened. 0: no limit."
+  ],
+  "tree.summarize": [
+   "Summarize",
+   "How a tree over the budget is shortened: normal (fold, then cut), light (only fold lists) or off."
+  ],
+  "tree.fold_keep": [
+   "Fold keep",
+   "Items kept at the start of a folded list (and 2 at its end)."
+  ],
+  "tree.brief_repeats": [
+   "Brief repeats",
+   "Explain notes in full once, then briefly."
+  ],
+  "tree.compact": [
+   "Compact",
+   "Say each thing once without losing anything: look-alike siblings as records, ranges of indices, and so on."
+  ],
+  "tree.quiet_volatile": [
+   "Quiet volatile",
+   "Things that change on their own (clocks, spinners) are summed up in one line after a few reports."
+  ],
+  "tools.disabled": [
+   "Disabled",
+   "Tools the model never sees, for example drag or batch."
+  ],
+  "tools.enabled": [
+   "Enabled",
+   "If not empty, only these tools are offered."
+  ],
+  "tools.descriptions": [
+   "Descriptions",
+   "How long the tool descriptions are. Lean uses the fewest tokens."
+  ],
+  "tools.manager": [
+   "Manager",
+   "Which tools the model sees at first. Dispatch: the base tools plus find_tools, the rest on demand, and the list never changes."
+  ],
+  "tools.preset": [
+   "Preset",
+   "Full: every tool the other settings allow. Small: a fixed small set for smaller models."
+  ],
+  "tools.default_app": [
+   "Default app",
+   "A call without an app acts on the app of the last call that named one."
+  ],
+  "tools.launch_look": [
+   "Launch look",
+   "launch_app answers with the app's first state."
+  ],
+  "tools.design_steps": [
+   "Design steps",
+   "When design lists the steps to paint a design."
+  ],
+  "timing.settle_ms": [
+   "Settle ms",
+   "Pause after each action before looking again."
+  ],
+  "timing.settle": [
+   "Settle",
+   "Adaptive waits until the screen stops changing; fixed only pauses."
+  ],
+  "timing.settle_max_ms": [
+   "Settle max ms",
+   "The longest an adaptive wait lasts."
+  ],
+  "timing.settle_poll_ms": [
+   "Settle poll ms",
+   "How often the screen is checked while waiting."
+  ],
+  "timing.key_delay_ms": [
+   "Key delay ms",
+   "Pause between keys in a key sequence."
+  ],
+  "timing.app_cache_ms": [
+   "App cache ms",
+   "Reuse the running-app list for this long."
+  ],
+  "timing.wait_timeout_ms": [
+   "Wait timeout ms",
+   "The default timeout of wait_for."
+  ],
+  "timing.wait_poll_ms": [
+   "Wait poll ms",
+   "The default poll interval of wait_for."
+  ],
+  "timing.expect_wait_ms": [
+   "Expect wait ms",
+   "How long an action with expect waits for the result to show."
+  ],
+  "timing.adaptive_grace": [
+   "Adaptive grace",
+   "Say \"nothing changed\" after 200 ms instead of 500 for apps that show changes at once."
+  ],
+  "cache.enabled": [
+   "Enabled",
+   "Remember screens the model has seen: coming back to one sends only what differs."
+  ],
+  "cache.max_screens": [
+   "Max screens",
+   "Screens remembered, all apps together."
+  ],
+  "cache.max_memory_kb": [
+   "Max memory kb",
+   "Memory the remembered screens may use."
+  ],
+  "cache.match_threshold": [
+   "Match threshold",
+   "Share of common elements that counts as the same screen."
+  ],
+  "cache.dedupe_screenshots": [
+   "Dedupe screenshots",
+   "Never send an unchanged picture of a screen twice."
+  ],
+  "cache.pixel_grid": [
+   "Pixel grid",
+   "Cells across the longer side for the picture fingerprint."
+  ],
+  "cache.pixel_tolerance": [
+   "Pixel tolerance",
+   "Brightness drift per cell still counted as unchanged."
+  ],
+  "cache.snapshot_ttl_ms": [
+   "Snapshot ttl ms",
+   "Reuse a read this recent if nothing ran since. 0: off."
+  ],
+  "cache.rebase_after_tokens": [
+   "Rebase after tokens",
+   "After this many tokens of results, send a tree whole again with a picture. 0: never."
+  ],
+  "ocr.mode": [
+   "Mode",
+   "Read text off the screen for apps whose tree says little: auto (sparse trees only), always or off."
+  ],
+  "ocr.engine": [
+   "Engine",
+   "The reader: the system's own, or Tesseract."
+  ],
+  "ocr.sparse_threshold": [
+   "Sparse threshold",
+   "In auto mode, read when the tree has fewer interactive elements than this."
+  ],
+  "ocr.languages": [
+   "Languages",
+   "Languages to read, for example en or de. Empty: your own languages."
+  ],
+  "ocr.min_confidence": [
+   "Min confidence",
+   "Leave out lines recognised with less confidence."
+  ],
+  "ocr.max_lines": [
+   "Max lines",
+   "At most this many lines."
+  ],
+  "ocr.tesseract_path": [
+   "Tesseract path",
+   "The Tesseract program."
+  ],
+  "ocr.blind_regions": [
+   "Blind regions",
+   "Also read areas the tree says nothing about (a canvas, a picture) in windows that have plenty of other elements."
+  ],
+  "decision.auto": [
+   "Auto",
+   "The server asks the model on its own where that saves the agent a turn."
+  ],
+  "decision.auto_timeout_ms": [
+   "Auto timeout ms",
+   "The longest wait for those questions."
+  ],
+  "decision.timeout_ms": [
+   "Timeout ms",
+   "The longest wait for one answer."
+  ],
+  "decision.max_state_chars": [
+   "Max state chars",
+   "A longer state keeps its start and its end."
+  ],
+  "decision.parallel": [
+   "Parallel",
+   "Requests at once when judging several items."
+  ],
+  "decision.cache_seconds": [
+   "Cache seconds",
+   "The same question about the same state is answered once for this long."
+  ],
+  "privacy.redact_passwords": [
+   "Redact passwords",
+   "Mask password fields in text and black them out of pictures."
+  ],
+  "privacy.redact_card_numbers": [
+   "Redact card numbers",
+   "Mask card numbers (only the last 4 digits stay)."
+  ],
+  "privacy.redact_labels": [
+   "Redact labels",
+   "Fields whose label contains one of these are masked too."
+  ],
+  "privacy.style": [
+   "Style",
+   "How private areas are hidden in pictures."
+  ],
+  "control.stop_hotkey": [
+   "Stop hotkey",
+   "The emergency stop: stops the agent at once from any app. Empty: no stop key."
+  ],
+  "control.pause_on_user_input": [
+   "Pause on user input",
+   "Wait while you use the mouse or keyboard. Only the system idle time is read, never what you type."
+  ],
+  "control.resume_after_idle_ms": [
+   "Resume after idle ms",
+   "How long you must be idle before the agent continues."
+  ],
+  "control.max_pause_secs": [
+   "Max pause secs",
+   "After this long the action fails and the agent is told why."
+  ],
+  "control.settings_hotkey": [
+   "Settings hotkey",
+   "Opens this panel from any app. Empty: no key."
+  ],
+  "hub.enabled": [
+   "Enabled",
+   "Several agents on one desktop share one hub: a cursor each, one stop key, the screen shared out, turns at the keyboard and mouse."
+  ],
+  "hub.port": [
+   "Port",
+   "The hub's port on this computer."
+  ],
+  "hub.arrange": [
+   "Arrange",
+   "With two agents or more, move each agent's window into its part of the screen."
+  ],
+  "hub.chat": [
+   "Chat",
+   "Let the agents send each other short messages."
+  ],
+  "hub.turn_wait_secs": [
+   "Turn wait secs",
+   "The longest an agent waits for its turn at the keyboard and mouse."
+  ],
+  "hub.release_after_secs": [
+   "Release after secs",
+   "An agent that makes no call for this long gives its part of the screen to the others until its next call; a server that was only started has none."
+  ],
+  "notifications.enabled": [
+   "Enabled",
+   "Let the agent read desktop notifications. They carry other apps' messages and codes."
+  ],
+  "notifications.apps": [
+   "Apps",
+   "Only notifications from these apps. Empty: any app."
+  ],
+  "notifications.mask_codes": [
+   "Mask codes",
+   "Mask one-time and verification codes."
+  ],
+  "notifications.keep": [
+   "Keep",
+   "How many are kept (Linux)."
+  ],
+  "script.saved_as_tools": [
+   "Saved as tools",
+   "Each saved script is also a tool of its own."
+  ],
+  "script.files": [
+   "Files",
+   "Files scripts may use: none, workspace (only the scripts folder's files), read (read any file) or all."
+  ],
+  "script.web": [
+   "Web",
+   "Let scripts fetch and download over http(s)."
+  ],
+  "script.max_seconds": [
+   "Max seconds",
+   "The longest run of one script, tool calls included."
+  ],
+  "script.dir": [
+   "Dir",
+   "Where saved scripts are kept. Empty: the default folder."
+  ],
+  "verify.enabled": [
+   "Enabled",
+   "Check each action's result and tell the agent when it didn't work."
+  ],
+  "verify.retry": [
+   "Retry",
+   "An action that clearly failed is tried once more another way."
+  ],
+  "verify.retry_on_no_change": [
+   "Retry on no change",
+   "Also retry presses after which nothing visible changed. Off: some actions (pay, send) show their effect late and must not be repeated."
+  ],
+  "audit.enabled": [
+   "Enabled",
+   "Write a line of metadata per call to a log file."
+  ],
+  "audit.path": [
+   "Path",
+   "The log file. Empty: audit.log in the server's folder."
+  ],
+  "server.log": [
+   "Log",
+   "How much the server logs."
+  ],
+  "server.instructions": [
+   "Instructions",
+   "The instructions sent when a client connects: full, short (for clients that load the skills) or off."
+  ],
+  "server.result_meta": [
+   "Result meta",
+   "For hosts that trim their context: results say which earlier results they repeat."
+  ],
+  "server.structured_output": [
+   "Structured output",
+   "Also return some results as data, for clients that use it."
+  ],
+  "server.http_addr": [
+   "Http addr",
+   "Serve MCP over HTTP at this address, for example 127.0.0.1:8787. Empty: stdio only."
+  ],
+  "server.http_token": [
+   "Http token",
+   "The bearer token HTTP clients must send."
+  ],
+  "update.enabled": [
+   "Enabled",
+   "Look for updates and download them. Off: it never updates by itself."
+  ],
+  "update.check_after_mins": [
+   "Check after mins",
+   "Minutes after the server starts before the first look."
+  ],
+  "update.check_every_hours": [
+   "Check every hours",
+   "Hours between looks while the server runs. Used when the minutes below are 0."
+  ],
+  "update.check_every_mins": [
+   "Check every mins",
+   "Minutes between looks, for a shorter wait than an hour. At least 5. 0: use the hours."
+  ],
+  "update.channel": [
+   "Channel",
+   "Stable takes only proper releases. Prerelease also takes releases GitHub marks as pre-releases (their tags are plain numbers, such as v4.9.0)."
+  ],
+  "update.pin": [
+   "Pin",
+   "A version to stay on, for example 5.0.2: only that release is taken, and nothing newer. Empty: the newest."
+  ],
+  "update.skip_version": [
+   "Skip version",
+   "A version never to take, for example one that went wrong here."
+  ],
+  "update.install": [
+   "Install",
+   "When a downloaded update goes in: restart (after the computer restarts), start (the next server start) or manual."
+  ],
+  "update.repo": [
+   "Repo",
+   "The GitHub repository releases come from (owner/name)."
+  ],
+  "linux.batch_size": [
+   "Batch size",
+   "Elements whose AT-SPI queries run at once."
+  ],
+  "linux.text_max_chars": [
+   "Text max chars",
+   "The longest text read from a text element."
+  ],
+  "macos.batch_attributes": [
+   "Batch attributes",
+   "Read all of an element's attributes in one call."
+  ],
+  "macos.messaging_timeout_secs": [
+   "Messaging timeout secs",
+   "The accessibility call timeout."
+  ],
+  "windows.use_cache_request": [
+   "Use cache request",
+   "Fetch a whole window's tree in one UIA call."
+  ],
+  "panel.theme": [
+   "Theme",
+   "Light, dark, or follow the computer."
+  ],
+  "panel.accent": [
+   "Accent",
+   "The colour the panel's palette is made from."
+  ],
+  "panel.language": [
+   "Language",
+   "The language of this page: the browser's, English, Persian (right to left), Chinese or Russian."
+  ],
+  "panel.port": [
+   "Port",
+   "The port the panel listens on while it is open. A free one is used if this one is taken."
+  ],
+  "panel.idle_minutes": [
+   "Idle minutes",
+   "The panel closes after this long without a request."
+  ]
+ }
+}

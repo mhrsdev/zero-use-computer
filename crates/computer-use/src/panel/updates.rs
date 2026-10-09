@@ -55,7 +55,12 @@ pub fn status(cfg: &Config, dir: &Path) -> Value {
             "since_secs": now().saturating_sub(p.downloaded),
             "wanted": wanted,
         })),
-        "previous": update::previous(dir).map(|p| json!({"version": p.version})),
+        "previous": update::previous(dir).map(|p| json!({
+            "version": p.version,
+            // The settings kept with it, to bring back when going back.
+            "settings_kept": update::previous_settings(dir).is_some(),
+            "since_secs": now().saturating_sub(p.saved),
+        })),
         "notes": update::release_notes(dir).map(|n| json!({"version": n.version, "text": n.notes, "page": n.page})),
         "can_update": update::asset_name().is_some(),
     })
@@ -87,7 +92,13 @@ fn confirm_text(text: &str) -> Value {
 
 /// Put the waiting update in place of the program at `exe` now. The
 /// servers already running keep the old one until they start again.
-pub fn install(cfg: &Config, dir: &Path, exe: &Path, confirmed: bool) -> Value {
+pub fn install(
+    cfg: &Config,
+    dir: &Path,
+    exe: &Path,
+    settings: Option<&Path>,
+    confirmed: bool,
+) -> Value {
     let Some(p) = update::pending(dir) else {
         return fail("no update is waiting");
     };
@@ -104,7 +115,8 @@ pub fn install(cfg: &Config, dir: &Path, exe: &Path, confirmed: bool) -> Value {
             p.version
         ));
     }
-    match update::install(&p, exe, dir) {
+    // The settings go aside with the program, to come back with it.
+    match update::install_keeping(&p, exe, dir, settings) {
         Ok(()) => {
             json!({"ok": true, "message": format!("{} is in place. Start your MCP client again to use it.", p.version)})
         }
@@ -113,20 +125,38 @@ pub fn install(cfg: &Config, dir: &Path, exe: &Path, confirmed: bool) -> Value {
 }
 
 /// Go back to the version the last update replaced, and don't take that
-/// update again.
-pub fn rollback(path: Option<&Path>, dir: &Path, exe: &Path, confirmed: bool) -> Value {
+/// update again. With `restore_settings`, the settings file as it was when
+/// that update went in comes back too (the ones it replaces are kept).
+pub fn rollback(
+    path: Option<&Path>,
+    dir: &Path,
+    exe: &Path,
+    restore_settings: bool,
+    confirmed: bool,
+) -> Value {
     let Some(prev) = update::previous(dir) else {
         return fail("there is no earlier version kept to go back to");
     };
+    let restore = restore_settings && path.is_some() && update::previous_settings(dir).is_some();
     if !confirmed {
-        return confirm_text(&format!(
+        let mut text = format!(
             "Go back to version {}? The version you have now is not taken again unless you clear update.skip_version.",
             prev.version
-        ));
+        );
+        if restore {
+            text.push_str(" The settings you had before that update come back with it; the ones you have now are kept beside the file.");
+        }
+        return confirm_text(&text);
     }
-    match update::rollback(exe, dir) {
-        Ok((from, to)) => {
+    match update::rollback_to(exe, dir, path.filter(|_| restore)) {
+        Ok((from, to, back)) => {
             let mut message = format!("{to} is back. Start your MCP client again to use it.");
+            if let Some(b) = back {
+                message.push_str(" The settings from before the update are back.");
+                if let Some(a) = b.aside {
+                    message.push_str(&format!(" The ones you had are kept in {}.", a.display()));
+                }
+            }
             if let Some(p) = path {
                 match config::edit_file(
                     p,
