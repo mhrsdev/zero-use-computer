@@ -2033,24 +2033,34 @@ pub fn run(args: &[String]) -> i32 {
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
         let cfg = machine.config();
         let buttons: Vec<_> = painter.buttons().map(|b| (0, b)).into_iter().collect();
-        let rows = [Row {
-            agent: Some(0),
-            look: draw::MenuRow {
-                title: match cfg.cursor_tag.trim() {
-                    "" => "Zero".into(),
-                    tag => tag.to_string(),
+        // The list (this one agent) and the tag only while the pointer is
+        // on them.
+        let busy = controls.busy();
+        let rows: Vec<Row> = busy
+            .then(|| Row {
+                agent: Some(0),
+                look: draw::MenuRow {
+                    title: match cfg.cursor_tag.trim() {
+                        "" => "Zero".into(),
+                        tag => tag.to_string(),
+                    },
+                    detail: machine.doing().into(),
+                    color: machine.color_now(now),
+                    stopped: machine.stopped(),
                 },
-                detail: machine.doing().into(),
-                color: machine.color_now(now),
-                stopped: machine.stopped(),
-            },
-        }];
+            })
+            .into_iter()
+            .collect();
         let keys = (stop_key.as_ref(), settings_now.as_ref());
-        let texts = Texts::new(
-            keys.0.map_or("", |k| k.0.as_str()),
-            keys.1.map_or("", |k| k.0.as_str()),
-            false,
-        );
+        let texts = if busy {
+            Texts::new(
+                keys.0.map_or("", |k| k.0.as_str()),
+                keys.1.map_or("", |k| k.0.as_str()),
+                false,
+            )
+        } else {
+            Texts::default()
+        };
         controls.paint(
             &buttons,
             &rows,

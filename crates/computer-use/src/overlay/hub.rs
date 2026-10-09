@@ -1899,14 +1899,20 @@ impl Hub {
             }
         }
         if self.surface.is_some() {
-            let (buttons, rows) = (self.buttons(), self.rows(now));
+            // The list and the tag only while the pointer is on them.
+            let (buttons, busy) = (self.buttons(), self.controls.busy());
+            let rows = if busy { self.rows(now) } else { Vec::new() };
             let key =
                 |k: &Option<(String, bool)>| k.as_ref().map(|k| k.0.clone()).unwrap_or_default();
-            let texts = Texts::new(
-                &key(&self.hotkey),
-                &key(&self.settings_key),
-                self.looks.len() >= 2,
-            );
+            let texts = if busy {
+                Texts::new(
+                    &key(&self.hotkey),
+                    &key(&self.settings_key),
+                    self.looks.len() >= 2,
+                )
+            } else {
+                Texts::default()
+            };
             let scale = self
                 .looks
                 .values()
