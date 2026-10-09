@@ -695,6 +695,19 @@ own, as before.
   may well have happened: it is reported as "sent, may or may not have
   happened; look before repeating it" and never retried another way.
 
+- **A window that opened since the last look holds the action back.** If a
+  window the model has never seen (a dialog the app opened by itself, an
+  "Replace file?" box) is in front of the app when it presses, types or
+  sends a key, nothing is done: the answer names the window and says to
+  look at it (`get_app_state window="…"`) first. A modal takes the input of
+  the window under it, so a press sent anyway might go nowhere or into the
+  wrong place, and the tool would still say it succeeded. A window the
+  model's own action opened is not held back (the look that follows each
+  action has recorded it), nor is one that opened behind. Two windows with a
+  button of the same name are told apart the same way: an action belongs to
+  the window of the latest `get_app_state`, and naming the other one is an
+  error.
+
 ## Never stuck
 
 Every call ends, whatever the app or the input does:

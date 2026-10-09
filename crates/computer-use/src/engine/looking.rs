@@ -924,10 +924,45 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// A window the model has never seen is now in front of the app, since it
+    /// last looked: a dialog that opened by itself, say. A modal one takes the
+    /// input of the window the model chose its element from, so a press or a
+    /// key sent now may go nowhere, or into the wrong place. Nothing is done:
+    /// the model looks (the new window is then known) and acts on what it
+    /// sees. A window the agent's own action opened is not that: the look
+    /// that follows every action has recorded it already.
+    fn refuse_if_covered(&mut self, app: &AppInfo) -> Result<()> {
+        let Some((seen, mine)) = self
+            .states
+            .get(&app.pid)
+            .filter(|s| s.stamped)
+            .map(|s| (s.seen_windows.clone(), s.window_id))
+        else {
+            return Ok(());
+        };
+        let Ok(windows) = self.list_windows(app, false) else {
+            return Ok(());
+        };
+        let Some(front) = windows.iter().find(|w| {
+            w.focused
+                && !w.minimized
+                && !seen.contains(&w.id)
+                && Some(w.id) != mine
+                && !crate::panel::is_panel_window(&w.title)
+        }) else {
+            return Ok(());
+        };
+        Err(Error::InvalidArgs(format!(
+            "nothing was done: a window \"{}\" opened in {} since you last looked, and it is in front of the one you were working in, so it may be taking the input. Call get_app_state with window=\"{}\" to see it, then act.",
+            front.title, app.name, front.title
+        )))
+    }
+
     /// Actions act on the window of the latest `get_app_state` (their
     /// element indices and x/y belong to it). A `window` argument naming
     /// another window is an error, not silently ignored.
     pub(super) fn check_window(&mut self, app: &AppInfo, window: Option<&str>) -> Result<()> {
+        self.refuse_if_covered(app)?;
         let Some(w) = window.map(str::trim).filter(|w| !w.is_empty()) else {
             return Ok(());
         };

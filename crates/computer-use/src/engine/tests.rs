@@ -6023,3 +6023,255 @@ fn keys_typing_and_clicks_never_reach_the_settings_panel() {
         e.backend().events
     );
 }
+
+// -- two windows with the same button, and a modal that opens before the click --
+
+/// "Notes" with two windows, "Doc A" and "Doc B", each with a "Save" button
+/// and a status line; pressing a Save makes its own window's status say so.
+fn two_documents(pid: u32) -> (MockApp, MockApp, MockApp) {
+    let win = |id: u64, title: &str, root: u64, x: f64, focused: bool| MockWindow {
+        id,
+        title: title.into(),
+        bounds: Rect::new(x, 0.0, 400.0, 300.0),
+        root,
+        focused,
+    };
+    let status = |h: u64, text: &str, parent: u64, x: f64| {
+        MockElement::new(h, "text", text, Rect::new(x + 10.0, 60.0, 200.0, 20.0)).child_of(parent)
+    };
+    let build = |a_saved: bool, b_saved: bool| {
+        let mut app = MockBackend::text_editor(pid);
+        app.info.name = "Notes".into();
+        app.elements.clear();
+        app.windows = vec![
+            win(1, "Doc A", 1, 0.0, true),
+            win(2, "Doc B", 10, 450.0, false),
+        ];
+        let a = |text: &str| status(4, text, 1, 0.0);
+        let b = |text: &str| status(13, text, 10, 450.0);
+        app.elements = vec![
+            MockElement::new(1, "window", "Doc A", Rect::new(0.0, 0.0, 400.0, 300.0)),
+            button(3, "Save", 1, 10.0),
+            a(if a_saved { "A: saved" } else { "A: unsaved" }),
+            MockElement::new(10, "window", "Doc B", Rect::new(450.0, 0.0, 400.0, 300.0)),
+            button(12, "Save", 10, 460.0),
+            b(if b_saved { "B: saved" } else { "B: unsaved" }),
+        ];
+        for el in &mut app.elements {
+            el.states.enabled = true;
+        }
+        app.info.frontmost = true;
+        app
+    };
+    (build(false, false), build(true, false), build(false, true))
+}
+
+/// "Notes" looked at in window "Doc B", with the Save buttons that open
+/// nothing: pressing one makes its own window's status say so.
+fn two_documents_engine() -> Engine<MockBackend> {
+    let (start, a_saved, b_saved) = two_documents(31);
+    let mut backend = MockBackend::new();
+    backend.add_app(start);
+    backend.on_press.insert(3, a_saved);
+    backend.on_press.insert(12, b_saved);
+    Engine::new(backend, ConfigStore::in_memory(no_wait())).with_time(Instant::now, |_| {})
+}
+
+fn look_at(e: &mut Engine<MockBackend>, window: &str) -> ToolOutput {
+    let out = e.call_tool(
+        "get_app_state",
+        serde_json::json!({"app": "Notes", "window": window}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    out
+}
+
+fn actions(e: &Engine<MockBackend>) -> Vec<(u64, String)> {
+    e.backend()
+        .events
+        .iter()
+        .filter_map(|ev| match ev {
+            Event::Action(h, a) => Some((*h, a.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A modal dialog in front of whatever was open, as an app opens one by itself.
+fn open_modal(e: &mut Engine<MockBackend>, title: &str) {
+    let app = e.backend_mut().app_mut(31).unwrap();
+    for w in &mut app.windows {
+        w.focused = false;
+    }
+    app.windows.push(MockWindow {
+        id: 3,
+        title: title.into(),
+        bounds: Rect::new(500.0, 80.0, 300.0, 120.0),
+        root: 40,
+        focused: true,
+    });
+    app.elements.push(MockElement::new(
+        40,
+        "dialog",
+        title,
+        Rect::new(500.0, 80.0, 300.0, 120.0),
+    ));
+    let mut replace = button(41, "Replace", 40, 520.0);
+    replace.bounds = Rect::new(520.0, 150.0, 60.0, 24.0);
+    app.elements.push(replace);
+}
+
+#[test]
+fn a_button_in_two_windows_is_pressed_in_the_window_that_was_looked_at() {
+    let mut e = two_documents_engine();
+    // The model looks at Doc B: its "Save" is the one it can press.
+    look_at(&mut e, "Doc B");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Notes", "window": "Doc B", "name": "Save"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    // The press went to Doc B's button, not to the other one of that name,
+    // and what changed is Doc B's status, said so in the report.
+    assert_eq!(actions(&e), [(12, "AXPress".to_string())]);
+    assert!(out.text.contains("B: saved"), "{}", out.text);
+    assert!(!out.text.contains("A: saved"), "{}", out.text);
+    let status = |e: &mut Engine<MockBackend>, h: u64| {
+        e.backend_mut()
+            .app_mut(31)
+            .unwrap()
+            .elements
+            .iter()
+            .find(|el| el.handle == h)
+            .and_then(|el| el.name.clone())
+            .unwrap()
+    };
+    assert_eq!(status(&mut e, 4), "A: unsaved", "Doc A was left alone");
+    assert_eq!(status(&mut e, 13), "B: saved");
+
+    // Naming Doc A while the last look was Doc B is refused, not guessed at.
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Notes", "window": "Doc A", "name": "Save"}),
+    );
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.contains("window=\"Doc A\""), "{}", out.text);
+    assert_eq!(actions(&e).len(), 1, "nothing else was pressed");
+    // After looking at Doc A, the same words press Doc A's button.
+    look_at(&mut e, "Doc A");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Notes", "window": "Doc A", "name": "Save"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(actions(&e)[1], (3, "AXPress".to_string()));
+    assert!(out.text.contains("A: saved"), "{}", out.text);
+    assert_eq!(status(&mut e, 4), "A: saved");
+}
+
+#[test]
+fn a_modal_that_opens_between_looking_and_pressing_stops_the_press() {
+    let mut e = two_documents_engine();
+    look_at(&mut e, "Doc B");
+    let save = index_of_in(&e, 31, "Save");
+    open_modal(&mut e, "Replace file?");
+    // Every kind of action is held back, and says why and what to do.
+    for (tool, args) in [
+        (
+            "click",
+            serde_json::json!({"app": "Notes", "element_index": save}),
+        ),
+        (
+            "click",
+            serde_json::json!({"app": "Notes", "x": 10.0, "y": 10.0}),
+        ),
+        (
+            "type_text",
+            serde_json::json!({"app": "Notes", "text": "hello"}),
+        ),
+        (
+            "press_key",
+            serde_json::json!({"app": "Notes", "key": "Return"}),
+        ),
+        (
+            "set_value",
+            serde_json::json!({"app": "Notes", "element_index": save, "value": "x"}),
+        ),
+    ] {
+        let out = e.call_tool(tool, args);
+        assert!(out.is_error, "{tool}: {}", out.text);
+        assert!(
+            out.text.contains("\"Replace file?\"")
+                && out.text.contains("nothing was done")
+                && out.text.contains("get_app_state"),
+            "{tool}: {}",
+            out.text
+        );
+    }
+    // Nothing reached the app: no press, key, click or text.
+    assert!(
+        e.backend().events.is_empty(),
+        "the modal got input it should not have: {:?}",
+        e.backend().events
+    );
+    // After looking, the model sees the dialog and presses its button.
+    let out = look_at(&mut e, "Replace file?");
+    assert!(out.text.contains("Replace"), "{}", out.text);
+    let replace = index_of_in(&e, 31, "Replace");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Notes", "element_index": replace}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(actions(&e), [(41, "AXPress".to_string())]);
+}
+
+#[test]
+fn a_window_the_actions_own_press_opened_does_not_stop_the_next_one() {
+    // The dialog came from the model's own press: it was looked at on the
+    // way back (the change report), so what follows isn't held back.
+    let mut e = dialog_engine(no_wait());
+    state_of(&mut e, serde_json::json!({}));
+    let save_as = index_named(&e, 4242, "Save As");
+    press(&mut e, save_as);
+    let save = index_named(&e, 4242, "Save");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "element_index": save}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+}
+
+#[test]
+fn a_window_that_opens_behind_does_not_stop_anything() {
+    let mut e = two_documents_engine();
+    look_at(&mut e, "Doc B");
+    let save = index_of_in(&e, 31, "Save");
+    // A window nobody is in: not in front, so it takes no input.
+    {
+        let app = e.backend_mut().app_mut(31).unwrap();
+        app.windows.push(MockWindow {
+            id: 9,
+            title: "Doc C".into(),
+            bounds: Rect::new(0.0, 400.0, 300.0, 100.0),
+            root: 90,
+            focused: false,
+        });
+        app.elements.push(MockElement::new(
+            90,
+            "window",
+            "Doc C",
+            Rect::new(0.0, 400.0, 300.0, 100.0),
+        ));
+    }
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "Notes", "element_index": save}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(actions(&e), [(12, "AXPress".to_string())]);
+}
+
+fn index_of_in(e: &Engine<MockBackend>, pid: u32, name: &str) -> u32 {
+    index_named(e, pid, name)
+}

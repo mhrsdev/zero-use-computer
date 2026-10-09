@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **A window that opened since the last look holds the action back.** A
+  dialog the app opened by itself between the model's look and its press
+  (or key, or typed text) takes the input of the window under it, so the
+  press might go nowhere or into the wrong place while the tool said it
+  worked. Now nothing is done and the answer says which window is in front
+  and to look at it first. A window the model's own action opened, and one
+  that opened behind, don't hold anything back. New tests: two windows with
+  a button of the same name (the press goes to, and the report names, the
+  window that was looked at), and a modal that opens before the press (no
+  press, key, click or text reaches the app).
+
 ## v5.5.0
 
 The settings panel in Persian, Chinese and Russian, an import you can look
