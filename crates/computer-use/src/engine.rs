@@ -1532,6 +1532,8 @@ impl<B: Backend> Engine<B> {
         let out = self.dispatch(call);
         if self.ctx.depth == 1 && self.overlay.is_some() {
             let ok = out.as_ref().is_ok_and(|o| !o.is_error);
+            // Done with the real mouse too, whatever the call was.
+            self.overlay_mouse(false);
             self.overlay_send(OverlayCmd::End { ok });
         }
         self.ctx.depth -= 1;
@@ -1832,6 +1834,7 @@ impl<B: Backend> Engine<B> {
                 self.partial_report = None;
                 self.cancel.store(false, Ordering::SeqCst);
                 self.epoch += 1;
+                self.overlay_mouse(false);
                 self.overlay_send(OverlayCmd::End { ok: false });
                 ToolOutput::error(&Error::Internal(format!(
                     "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"

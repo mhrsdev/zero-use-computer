@@ -466,6 +466,22 @@ their mouse:
 - **A glow around the screen** (or around the window being worked on:
   `overlay.border_target = "window"`) and a small **label** such as
   "Zero is using the computer".
+- **Two buttons beside the label** (`overlay.show_buttons`, on): a round
+  **stop** button on the side the label starts from, and a **settings**
+  (gear) button on the other (mirrored for right-to-left labels).
+  - A click on the stop button stops every agent, exactly as the stop key
+    does. With the pointer on it, a list drops out under it (above it at
+    the bottom of the screen, kept on screen): "Stop all" with the stop
+    key, "All agents" when there are two or more, then each agent as its
+    label names it ("2 · codex", its state colour, the app it works
+    with). A row stops just that agent; the row of a stopped agent lets
+    it continue (▶). The list stays while the pointer is on it, and goes a
+    moment after it leaves.
+  - A click on the settings button opens the [settings panel](#settings-panel),
+    as `Ctrl+Alt+J` does; its tag says so ("Settings · Ctrl+Alt+J").
+  - They light up under the pointer and are at least 24 px across (at
+    100%). Only they and the list take the pointer; the rest of the
+    overlay stays click-through, and nothing ever takes the keyboard focus.
 - **State colours**, for the glow, the label and the cursor's ring:
 
 | State | Colour | When |
@@ -495,10 +511,23 @@ How it stays out of the way:
 - Its windows are **click-through**, never take focus, and are **left out of
   the agent's screenshots**: `WDA_EXCLUDEFROMCAPTURE` on Windows,
   `sharingType = none` on macOS, and on X11 (which can't exclude a window)
-  it is hidden for the instant of a capture.
+  it is hidden for the instant of a capture. The label's two buttons and
+  their list are the only exception to click-through, and are left out of
+  the screenshots the same way.
+- **The agent can't press them.** Before the engine moves or clicks the
+  real mouse (a click, drag, scroll or drawing at a point), it has the
+  overlay let the pointer through the buttons too, and waits until it
+  does; they take clicks again when the action is over. So a click of the
+  agent's that lands where a button is reaches the app below, as before,
+  and never stops an agent or opens the panel. (Meanwhile a click of yours
+  there goes to the app too: the stop key always works.)
 - Native on each OS: layered windows on Windows, `NSWindow`s on macOS,
   override-redirect windows with an empty input shape on X11 (smooth glow with
-  a compositing manager; a solid band without one).
+  a compositing manager; a solid band without one). The buttons: X11 gives
+  their windows an input shape again; Windows drops `WS_EX_TRANSPARENT`
+  from them (a click never activates them); macOS makes them
+  non-activating panels; Wayland gives their surfaces an input region and
+  reads the seat's pointer (no buttons without one).
 
 A host agent that knows more (e.g. when its model is generating, or when the
 task is complete) can say so with a JSON-RPC notification:
@@ -533,7 +562,10 @@ whichever client started it:
   plain arrow, and `overlay.agent_cursors` gives an agent its own by its
   client's name or its tag (`{ codex = "metal", "claude-code" = "jelly" }`).
 - **One stop key** stops them all. (Before v3.9 a second server couldn't
-  even register it: the system gives a key to one program.)
+  even register it: the system gives a key to one program.) So does the
+  stop button beside any agent's label; its list stops one agent alone
+  (it is refused its calls just as with the stop key) or lets one go on.
+  With any agent stopped, the stop key lets them all continue.
 - **The screen shared out by need**, among the agents at work only: one
   that has made no call for `hub.release_after_secs` (120) gives its part
   to the others until its next call, and a server that was only started
@@ -602,6 +634,12 @@ own, as before.
 - **Settings key** — `Ctrl+Alt+J` (`control.settings_hotkey`) opens the
   [settings panel](#settings-panel), registered the same way (a binding in
   Hyprland or sway).
+- **Stop and settings buttons** beside the overlay's label do the same
+  with the mouse: stop every agent (or one, from the stop button's list),
+  or open the panel (`overlay.show_buttons`; see
+  [On-screen indicator](#on-screen-indicator-overlay)). Clicking them is
+  input like any other: an agent you didn't stop waits until you leave the
+  mouse (pause while you work), never longer than `max_pause_secs`.
 - **Pause while you work** (`control.pause_on_user_input`, on by default).
   Before each action, the engine checks how long ago anyone last used the
   mouse or keyboard (the system idle time: `GetLastInputInfo`,

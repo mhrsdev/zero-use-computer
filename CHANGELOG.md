@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- **Stop and settings buttons beside the overlay's label**
+  (`overlay.show_buttons`, on). A round stop button on the side the label
+  starts from stops every agent, as the stop key does; with the pointer
+  on it, a list drops out with "All agents" and each agent as its label
+  names it ("2 · codex", its state colour, its app): a row stops that one
+  agent alone (it is refused its calls as with the stop key), or lets a
+  stopped one continue. A gear on the other side opens the settings panel,
+  as `Ctrl+Alt+J` does. They light up under the pointer, say what they do,
+  and are at least 24 px across. Only they and the list take the pointer:
+  the rest of the overlay stays click-through, and nothing takes the
+  keyboard focus. The agent can't press them: before it moves or clicks
+  the real mouse the overlay lets its input through them (and says so
+  before the engine goes on), until the action is over. With any agent
+  stopped, the stop key now lets every agent continue.
+- X11 tested (Xvfb, two agents on a hub, clicks through XTEST); the
+  Windows, macOS and Wayland code is built for those systems but not yet
+  run there. Without a pointer to read (a Wayland seat without one), the
+  buttons aren't shown.
+
 ## v5.0.2
 
 The plugin installs the program itself: the repository's `plugin/` folder,
