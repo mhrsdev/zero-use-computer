@@ -573,7 +573,11 @@ fn every_text_of_the_page_is_in_the_list_and_every_language_follows_the_list() {
     for call in ["t(", "snack(", "say("] {
         for (at, _) in app.match_indices(call) {
             // Not the end of a longer name (`split(`, `format(`).
-            if app[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            if app[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
                 continue;
             }
             let rest = &app[at + call.len()..];
@@ -596,7 +600,11 @@ fn every_text_of_the_page_is_in_the_list_and_every_language_follows_the_list() {
             "lang/en.json lacks {}",
             e.key
         );
-        assert_eq!(en["settings"][e.key][1], e.help, "{} changed its help", e.key);
+        assert_eq!(
+            en["settings"][e.key][1], e.help,
+            "{} changed its help",
+            e.key
+        );
     }
     for g in schema::GROUPS {
         assert!(ui.contains_key(*g), "lang/en.json lacks the group {g}");
@@ -613,20 +621,30 @@ fn every_text_of_the_page_is_in_the_list_and_every_language_follows_the_list() {
             assert_eq!(placeholders(k), placeholders(x), "{code}: {k:?} -> {x:?}");
         }
         for k in t["ui"].as_object().unwrap().keys() {
-            assert!(ui.contains_key(k), "{code} has {k:?}, which is no text of the page");
+            assert!(
+                ui.contains_key(k),
+                "{code} has {k:?}, which is no text of the page"
+            );
         }
         for (k, v) in en["settings"].as_object().unwrap() {
             let x = &t["settings"][k];
             assert!(
-                x[0].as_str().is_some_and(|s| !s.is_empty()) && x[1].as_str().is_some_and(|s| !s.is_empty()),
+                x[0].as_str().is_some_and(|s| !s.is_empty())
+                    && x[1].as_str().is_some_and(|s| !s.is_empty()),
                 "{code} lacks the setting {k}"
             );
-            assert_eq!(placeholders(v[1].as_str().unwrap()), placeholders(x[1].as_str().unwrap()), "{code}: {k}");
+            assert_eq!(
+                placeholders(v[1].as_str().unwrap()),
+                placeholders(x[1].as_str().unwrap()),
+                "{code}: {k}"
+            );
         }
         for noun in en["plural"].as_object().unwrap().keys() {
             let f = t["plural"][noun].as_object().unwrap();
             assert_eq!(
-                f.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(),
+                f.keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
                 forms.iter().copied().collect(),
                 "{code}: the forms of {noun}"
             );
@@ -885,10 +903,20 @@ fn an_import_is_shown_before_it_is_made_and_what_this_version_cant_take_is_flagg
     };
     // A change shows what it is now and what it would be.
     let c = row("overlay.cursor_style");
-    assert_eq!((c["status"].as_str(), c["before"].as_str(), c["after"].as_str()), (Some("change"), Some("orbit"), Some("jelly")));
+    assert_eq!(
+        (
+            c["status"].as_str(),
+            c["before"].as_str(),
+            c["after"].as_str()
+        ),
+        (Some("change"), Some("orbit"), Some("jelly"))
+    );
     // The value it already has is not a change.
     let d = crate::config::OverlayConfig::default().show_label;
-    assert_eq!(row("overlay.show_label")["status"], if d { "same" } else { "change" });
+    assert_eq!(
+        row("overlay.show_label")["status"],
+        if d { "same" } else { "change" }
+    );
     // A setting only a newer version has, and a value this one can't take.
     let f = row("overlay.future_glow");
     assert_eq!(f["status"], "unsupported");
@@ -909,9 +937,17 @@ fn an_import_is_shown_before_it_is_made_and_what_this_version_cant_take_is_flagg
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     assert!(importing::backup_age_secs(&dir).is_none());
     // Told to, it makes the changes it can, and says what it left out.
-    let r = call("import", json!({"text": text, "confirmed": true, "skip_unsupported": true}));
+    let r = call(
+        "import",
+        json!({"text": text, "confirmed": true, "skip_unsupported": true}),
+    );
     assert_eq!(r["ok"], true, "{r}");
-    let skipped: Vec<_> = r["skipped"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap().to_string()).collect();
+    let skipped: Vec<_> = r["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["key"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(skipped, ["overlay.future_glow", "screenshot.max_dimension"]);
     let cfg = ConfigStore::load(Some(&path)).unwrap().config;
     assert_eq!(cfg.overlay.cursor_style, "jelly");
@@ -922,11 +958,18 @@ fn an_import_is_shown_before_it_is_made_and_what_this_version_cant_take_is_flagg
     // The settings from before are kept, and come back when asked (with a
     // yes), the ones undone are kept in their turn.
     assert!(importing::backup_age_secs(&dir).is_some());
-    assert_eq!(call("export", json!({}))["undo_secs_ago"].is_number(), true);
+    assert!(call("export", json!({}))["undo_secs_ago"].is_number());
     let r = call("import_undo", json!({}));
     assert_eq!(r["ok"], false);
     assert!(r["confirm_text"].as_str().is_some());
-    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "jelly");
+    assert_eq!(
+        ConfigStore::load(Some(&path))
+            .unwrap()
+            .config
+            .overlay
+            .cursor_style,
+        "jelly"
+    );
     let r = call("import_undo", json!({"confirmed": true}));
     assert_eq!(r["ok"], true, "{r}");
     let cfg = ConfigStore::load(Some(&path)).unwrap().config;
@@ -934,20 +977,41 @@ fn an_import_is_shown_before_it_is_made_and_what_this_version_cant_take_is_flagg
     assert_eq!(cfg.control.stop_hotkey, "ctrl+alt+escape");
     let r = call("import_undo", json!({"confirmed": true}));
     assert_eq!(r["ok"], true, "{r}");
-    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "jelly");
+    assert_eq!(
+        ConfigStore::load(Some(&path))
+            .unwrap()
+            .config
+            .overlay
+            .cursor_style,
+        "jelly"
+    );
 
     // A secret is never shown in the preview, only that it would be replaced.
-    let r = call("import_preview", json!({"text": "[server]\nhttp_token = \"abcd-1234-5678\"\n"}));
+    let r = call(
+        "import_preview",
+        json!({"text": "[server]\nhttp_token = \"abcd-1234-5678\"\n"}),
+    );
     assert_eq!(r["rows"][0]["after"], "••••");
     assert!(!r.to_string().contains("abcd-1234"));
     // A text that isn't settings at all is said so.
-    assert_eq!(call("import_preview", json!({"text": "nonsense ="}))["ok"], false);
-    assert_eq!(call("import_preview", json!({"text": "# nothing here\n"}))["ok"], false);
+    assert_eq!(
+        call("import_preview", json!({"text": "nonsense ="}))["ok"],
+        false
+    );
+    assert_eq!(
+        call("import_preview", json!({"text": "# nothing here\n"}))["ok"],
+        false
+    );
     // Nothing to go back to before the first import.
     let dir2 = temp("import-undo-none");
     let path2 = config_with_port(&dir2, "");
     let up2 = start(Some(path2), &dir2);
-    let r = json_of(&post(&up2.host, &up2.token, "import_undo", r#"{"confirmed":true}"#));
+    let r = json_of(&post(
+        &up2.host,
+        &up2.token,
+        "import_undo",
+        r#"{"confirmed":true}"#,
+    ));
     assert_eq!(r["ok"], false);
 
     for u in [&up, &up2] {
@@ -965,13 +1029,25 @@ fn an_export_says_which_version_made_it() {
     let r = json_of(&post(&up.host, &up.token, "export", "{}"));
     let text = r["text"].as_str().unwrap();
     assert!(
-        text.starts_with(&format!("# Zero Use Computer {} settings\n", env!("CARGO_PKG_VERSION"))),
+        text.starts_with(&format!(
+            "# Zero Use Computer {} settings\n",
+            env!("CARGO_PKG_VERSION")
+        )),
         "{text}"
     );
-    assert_eq!(importing::exported_by(text).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        importing::exported_by(text).as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(importing::exported_by("[overlay]\n"), None);
-    assert_eq!(importing::exported_by("# Zero Use Computer 5.1 settings\n").as_deref(), Some("5.1"));
-    assert_eq!(importing::exported_by("# Zero Use Computer soon settings\n"), None);
+    assert_eq!(
+        importing::exported_by("# Zero Use Computer 5.1 settings\n").as_deref(),
+        Some("5.1")
+    );
+    assert_eq!(
+        importing::exported_by("# Zero Use Computer soon settings\n"),
+        None
+    );
     up.alive.store(false, Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1013,7 +1089,11 @@ fn going_back_a_version_brings_back_the_settings_it_ran_with() {
     .unwrap() else {
         panic!("another panel answered");
     };
-    let (host, token, alive) = (server.page.host.clone(), server.page.token.clone(), server.page.alive.clone());
+    let (host, token, alive) = (
+        server.page.host.clone(),
+        server.page.token.clone(),
+        server.page.alive.clone(),
+    );
     std::thread::spawn(move || server.run());
     let call = |route: &str, body: &str| json_of(&post(&host, &token, route, body));
 
@@ -1022,21 +1102,39 @@ fn going_back_a_version_brings_back_the_settings_it_ran_with() {
     let s = call("update_status", "{}");
     assert_eq!(s["previous"]["settings_kept"], true, "{s}");
     // The new version's settings: another value, and one the old one lacks.
-    call("set", r#"{"changes":[{"key":"overlay.cursor_style","value":"jelly"}]}"#);
+    call(
+        "set",
+        r#"{"changes":[{"key":"overlay.cursor_style","value":"jelly"}]}"#,
+    );
     let mut text = std::fs::read_to_string(&path).unwrap();
     text.push_str("\n[future]\nsetting = 1\n");
     std::fs::write(&path, &text).unwrap();
     // Going back says the settings come too, and does so when it is told.
     let r = call("update_rollback", "{}");
-    assert!(r["confirm_text"].as_str().unwrap().contains("settings you had before"), "{r}");
+    assert!(
+        r["confirm_text"]
+            .as_str()
+            .unwrap()
+            .contains("settings you had before"),
+        "{r}"
+    );
     let r = call("update_rollback", r#"{"confirmed":true}"#);
     assert_eq!(r["ok"], true, "{r}");
-    assert!(r["message"].as_str().unwrap().contains("settings from before the update are back"), "{r}");
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("settings from before the update are back"),
+        "{r}"
+    );
     let back = std::fs::read_to_string(&path).unwrap();
     assert!(back.contains("ice") && !back.contains("[future]"), "{back}");
     // What they replace is kept beside the file.
     let aside = std::fs::read_to_string(dir.join("config.toml.before-rollback")).unwrap();
-    assert!(aside.contains("jelly") && aside.contains("[future]"), "{aside}");
+    assert!(
+        aside.contains("jelly") && aside.contains("[future]"),
+        "{aside}"
+    );
     let c = ConfigStore::load(Some(&path)).unwrap().config;
     assert_eq!(c.overlay.cursor_style, "ice");
     assert_eq!(c.update.skip_version, "99.0.0");
@@ -1055,12 +1153,25 @@ fn going_back_a_version_brings_back_the_settings_it_ran_with() {
         .unwrap(),
     )
     .unwrap();
-    call("set", r#"{"confirmed":true,"changes":[{"key":"update.skip_version","value":""}]}"#);
+    call(
+        "set",
+        r#"{"confirmed":true,"changes":[{"key":"update.skip_version","value":""}]}"#,
+    );
     assert_eq!(call("update_install", r#"{"confirmed":true}"#)["ok"], true);
-    call("set", r#"{"changes":[{"key":"overlay.cursor_style","value":"paper"}]}"#);
+    call(
+        "set",
+        r#"{"changes":[{"key":"overlay.cursor_style","value":"paper"}]}"#,
+    );
     let r = call("update_rollback", r#"{"confirmed":true,"settings":false}"#);
     assert_eq!(r["ok"], true, "{r}");
-    assert_eq!(ConfigStore::load(Some(&path)).unwrap().config.overlay.cursor_style, "paper");
+    assert_eq!(
+        ConfigStore::load(Some(&path))
+            .unwrap()
+            .config
+            .overlay
+            .cursor_style,
+        "paper"
+    );
     alive.store(false, Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1081,19 +1192,32 @@ fn the_page_speaks_the_language_chosen_and_persian_is_laid_out_right_to_left() {
     let page = |host: &str, token: &str| get(host, token, "");
     // Left to the browser, until told.
     let p = page(host, token);
-    assert!(p.contains("<html lang=\"auto\" dir=\"ltr\""), "{}", &p[..400]);
+    assert!(
+        p.contains("<html lang=\"auto\" dir=\"ltr\""),
+        "{}",
+        &p[..400]
+    );
     assert_eq!(call("state", json!({}))["language"], "auto");
     for (code, dir_) in [("fa", "rtl"), ("zh", "ltr"), ("ru", "ltr"), ("en", "ltr")] {
-        let r = call("set", json!({"changes":[{"key":"panel.language","value":code}]}));
+        let r = call(
+            "set",
+            json!({"changes":[{"key":"panel.language","value":code}]}),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["language"], code);
         assert_eq!(call("state", json!({}))["language"], code);
         let p = page(host, token);
-        assert!(p.contains(&format!("<html lang=\"{code}\" dir=\"{dir_}\"")), "{code}");
+        assert!(
+            p.contains(&format!("<html lang=\"{code}\" dir=\"{dir_}\"")),
+            "{code}"
+        );
         // The panel's mark in the title is the same in every language.
         assert!(p.contains("<title>Zero panel [private]</title>"));
     }
-    let r = call("set", json!({"changes":[{"key":"panel.language","value":"klingon"}]}));
+    let r = call(
+        "set",
+        json!({"changes":[{"key":"panel.language","value":"klingon"}]}),
+    );
     assert_eq!(r["ok"], false);
     // A language is sent only when asked for, and as JSON.
     for code in ["fa", "zh", "ru"] {
@@ -1109,11 +1233,23 @@ fn the_page_speaks_the_language_chosen_and_persian_is_laid_out_right_to_left() {
     let en = get(host, token, "help/start");
     let fa = get(host, token, "help/fa/start");
     assert!(en.starts_with("HTTP/1.1 200") && fa.starts_with("HTTP/1.1 200"));
-    assert_ne!(en.split_once("\r\n\r\n").unwrap().1, fa.split_once("\r\n\r\n").unwrap().1);
-    assert_eq!(en.split_once("\r\n\r\n").unwrap().1, get(host, token, "help/xx/start").split_once("\r\n\r\n").unwrap().1);
+    assert_ne!(
+        en.split_once("\r\n\r\n").unwrap().1,
+        fa.split_once("\r\n\r\n").unwrap().1
+    );
+    assert_eq!(
+        en.split_once("\r\n\r\n").unwrap().1,
+        get(host, token, "help/xx/start")
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .1
+    );
     assert!(get(host, token, "help/fa/nothing").starts_with("HTTP/1.1 404"));
     // The Persian font comes with the page (nothing from outside is loaded).
-    let f = request(host, &format!("GET /{token}/font/vazirmatn.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n"));
+    let f = request(
+        host,
+        &format!("GET /{token}/font/vazirmatn.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+    );
     assert!(f.starts_with("HTTP/1.1 200") && f.contains("Content-Type: font/woff2"));
     assert!(f.contains("font-src 'self'"));
     assert!(p_has_no_outside_loads(&page(host, token)));
@@ -1122,7 +1258,8 @@ fn the_page_speaks_the_language_chosen_and_persian_is_laid_out_right_to_left() {
 }
 
 fn p_has_no_outside_loads(page: &str) -> bool {
-    !page.contains("http://") && !page.contains("https://") || page.matches("https://").count() == page.matches("https://api.").count()
+    !page.contains("http://") && !page.contains("https://")
+        || page.matches("https://").count() == page.matches("https://api.").count()
 }
 
 #[test]

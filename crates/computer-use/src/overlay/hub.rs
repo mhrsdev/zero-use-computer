@@ -17,7 +17,7 @@
 //! those that read its token: a file in the server's folder that only this
 //! user can read. It ends a few seconds after the last agent leaves.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use super::controls::{Action, Controls, Row, Texts};
+use super::draw::MenuRow;
 use super::helper::{Hotkey, Machine, Painter, Surface, SurfaceEvent};
 use super::text::Fonts;
 use super::{AreaWant, Cmd, HUB_PROTO, Launcher, Message, Peer, Reply};
@@ -476,6 +478,14 @@ impl HubState {
         self.agents
             .get(&agent)
             .map(|a| a.client.clone())
+            .unwrap_or_default()
+    }
+
+    /// The app the agent said it works with ("" when it didn't).
+    pub fn app(&self, agent: u32) -> String {
+        self.agents
+            .get(&agent)
+            .map(|a| a.app.clone())
             .unwrap_or_default()
     }
 
@@ -1150,6 +1160,14 @@ struct Hub {
     stopped: bool,
     /// When the stop key last let everyone continue.
     continued: Option<Instant>,
+    /// Agents stopped one by one (from the stop button's list) while the
+    /// others go on, and when each stopped one was let go on the same way.
+    alone: BTreeSet<u32>,
+    let_go: HashMap<u32, Instant>,
+    /// The label's buttons, and the agents moving the real mouse now (the
+    /// buttons let that through, and take no click, until they are done).
+    controls: Controls,
+    mouse: BTreeSet<u32>,
     last_hotkey: Option<Instant>,
     last_settings: Option<Instant>,
     started: Instant,
@@ -1202,6 +1220,10 @@ impl Hub {
             asked: HashMap::new(),
             stopped: false,
             continued: None,
+            alone: BTreeSet::new(),
+            let_go: HashMap::new(),
+            controls: Controls::default(),
+            mouse: BTreeSet::new(),
             last_hotkey: None,
             last_settings: None,
             started: Instant::now(),
@@ -1228,7 +1250,8 @@ impl Hub {
         const HOTKEY_QUIET: Duration = Duration::from_millis(400);
         loop {
             let now = Instant::now();
-            let animating = self.looks.values().any(|l| l.machine.animating(now));
+            let animating =
+                self.looks.values().any(|l| l.machine.animating(now)) || self.controls.busy();
             let wait = Duration::from_millis(if animating { 16 } else { 100 });
             let mut first = match rx.recv_timeout(wait) {
                 Ok(e) => Some(e),
@@ -1252,7 +1275,7 @@ impl Hub {
                         let repeat = self.last_hotkey.is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
                         self.last_hotkey = Some(Instant::now());
                         if !repeat {
-                            self.stop(!self.stopped);
+                            self.stop_key();
                         }
                     }
                     SurfaceEvent::Hotkey(Hotkey::Settings) => {
@@ -1261,8 +1284,14 @@ impl Hub {
                             .is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
                         self.last_settings = Some(Instant::now());
                         // One page, opened by the first agent.
-                        if !repeat && let Some(first) = self.state.ids().first() {
-                            self.reply(*first, &Reply::Settings);
+                        if !repeat {
+                            self.open_settings();
+                        }
+                    }
+                    SurfaceEvent::Pointer(p) => {
+                        let buttons = self.buttons();
+                        if let Some(action) = self.controls.pointer(p, &buttons, Instant::now()) {
+                            self.act(action);
                         }
                     }
                 }
@@ -1361,6 +1390,11 @@ impl Hub {
                 self.outs.remove(&agent);
                 self.hiders.remove(&agent);
                 self.asked.remove(&agent);
+                self.alone.remove(&agent);
+                self.let_go.remove(&agent);
+                if self.mouse.remove(&agent) {
+                    self.pass_mouse();
+                }
                 self.told.retain(|a, _| *a != agent);
                 if let Some(mut look) = self.looks.remove(&agent)
                     && let Some(s) = self.surface.as_mut()
@@ -1398,8 +1432,28 @@ impl Hub {
         {
             self.areas_changed();
         }
+        // A call that ended is done with the mouse, whatever it said.
+        if matches!(cmd, Cmd::End { .. }) && self.mouse.remove(&agent) {
+            self.pass_mouse();
+        }
         match cmd {
             Cmd::Hello { .. } | Cmd::Quit => {}
+            // This agent moves the real mouse: every agent's buttons let
+            // it through from now on (said once they do), and take clicks
+            // again when it is done.
+            Cmd::Mouse { on, id } => {
+                let changed = if on {
+                    self.mouse.insert(agent)
+                } else {
+                    self.mouse.remove(&agent)
+                };
+                if changed {
+                    self.pass_mouse();
+                }
+                if let Some(id) = id {
+                    self.reply(agent, &Reply::Mouse { id });
+                }
+            }
             Cmd::Client { name } => {
                 if self.state.describe(agent, Some(&name), None) {
                     self.agents_changed();
@@ -1502,8 +1556,10 @@ impl Hub {
                 // An agent that is stopped (a hub started again under it)
                 // stops the others too: the stop key is everyone's. Not
                 // one that hasn't yet heard the key let it continue.
-                let stopped = stopped && !self.just_continued(now);
-                if stopped && !self.stopped {
+                let stopped = stopped && !self.just_let_go(agent, now);
+                // (Not one stopped alone: it stops only itself.)
+                let alone = self.alone.contains(&agent);
+                if stopped && !self.stopped && !alone {
                     self.stop(true);
                 }
                 if self.font_path.as_deref() != Some(&config.font) {
@@ -1535,7 +1591,7 @@ impl Hub {
                             config,
                             hotkey: self.hotkey.clone().map(|h| h.0).unwrap_or_default(),
                             settings_key,
-                            stopped: stopped || self.stopped,
+                            stopped: stopped || self.stopped || alone,
                         },
                         now,
                     );
@@ -1550,9 +1606,15 @@ impl Hub {
             // by itself leaves the others stopped. Right after the stop key
             // let everyone continue, it was sent before the agent heard
             // (it used to stop everyone again): it is left out.
-            Cmd::Stopped { on: true } if self.just_continued(now) => {}
-            Cmd::Stopped { on: true } if !self.stopped => self.stop(true),
+            // One stopped alone shows it again, and stops no one else.
+            Cmd::Stopped { on: true } if self.just_let_go(agent, now) => {}
+            Cmd::Stopped { on: true } if !self.stopped && !self.alone.contains(&agent) => {
+                self.stop(true)
+            }
             other => {
+                if other == (Cmd::Stopped { on: false }) {
+                    self.alone.remove(&agent);
+                }
                 if let Some(look) = self.looks.get_mut(&agent) {
                     look.machine.apply(other, now);
                 }
@@ -1620,6 +1682,8 @@ impl Hub {
         if !on {
             self.continued = Some(now);
         }
+        self.alone.clear();
+        self.let_go.clear();
         for look in self.looks.values_mut() {
             look.machine.apply(Cmd::Stopped { on }, now);
         }
@@ -1632,6 +1696,141 @@ impl Hub {
             && self
                 .continued
                 .is_some_and(|t| now.saturating_duration_since(t) < CONTINUE_ECHO)
+    }
+
+    /// The stop key pressed: with any agent stopped (all, or one from the
+    /// stop button's list), every one continues; else every one stops.
+    fn stop_key(&mut self) {
+        let any = self.stopped || !self.alone.is_empty();
+        self.stop(!any);
+    }
+
+    /// Whether `agent` was let go on a moment ago: by the stop key, or by
+    /// its row in the stop button's list (what it says it is now, it said
+    /// before it heard).
+    fn just_let_go(&self, agent: u32, now: Instant) -> bool {
+        self.just_continued(now)
+            || (!self.stopped
+                && !self.alone.contains(&agent)
+                && self
+                    .let_go
+                    .get(&agent)
+                    .is_some_and(|t| now.saturating_duration_since(*t) < CONTINUE_ECHO))
+    }
+
+    /// Stop one agent while the others go on (`on`), or let one stopped
+    /// continue while the others stay as they are: from the stop button's
+    /// list. It hears it as from the stop key, and is stopped the same way.
+    fn stop_one(&mut self, agent: u32, on: bool) {
+        if !self.looks.contains_key(&agent) {
+            return;
+        }
+        let now = Instant::now();
+        if on {
+            if self.stopped || !self.alone.insert(agent) {
+                return;
+            }
+            self.let_go.remove(&agent);
+        } else {
+            if self.stopped {
+                // All were stopped: the others stay so, each alone.
+                self.stopped = false;
+                self.alone = self.looks.keys().copied().filter(|a| *a != agent).collect();
+            } else if !self.alone.remove(&agent) {
+                return;
+            }
+            self.let_go.insert(agent, now);
+        }
+        if let Some(look) = self.looks.get_mut(&agent) {
+            look.machine.apply(Cmd::Stopped { on }, now);
+        }
+        self.reply(agent, &Reply::Stop { on });
+    }
+
+    /// Open the settings panel, as the settings key does: one page, opened
+    /// by the first agent.
+    fn open_settings(&self) {
+        if let Some(first) = self.state.ids().first() {
+            self.reply(*first, &Reply::Settings);
+        }
+    }
+
+    /// What a click on the label's buttons asked for.
+    fn act(&mut self, action: Action) {
+        match action {
+            Action::StopAll => self.stop(true),
+            Action::ContinueAll => self.stop(false),
+            Action::Stop(agent) => self.stop_one(agent, true),
+            Action::Continue(agent) => self.stop_one(agent, false),
+            Action::Settings => self.open_settings(),
+        }
+    }
+
+    /// Where each agent's buttons are on screen.
+    fn buttons(&self) -> Vec<(u32, [Rect; 2])> {
+        self.looks
+            .iter()
+            .filter_map(|(a, l)| l.painter.buttons().map(|b| (*a, b)))
+            .collect()
+    }
+
+    /// The stop button's list: all the agents (with two or more), then
+    /// each, as its label names it.
+    fn rows(&self, now: Instant) -> Vec<Row> {
+        let many = self.looks.len() >= 2;
+        let stopped = |a: u32| self.stopped || self.alone.contains(&a);
+        let mut rows = Vec::with_capacity(self.looks.len() + 1);
+        if many && let Some(first) = self.looks.values().next() {
+            let cfg = first.machine.config();
+            rows.push(Row {
+                agent: None,
+                look: MenuRow {
+                    title: "All agents".into(),
+                    detail: String::new(),
+                    color: super::draw::parse_color(&cfg.color_stopped)
+                        .unwrap_or(tiny_skia::Color::WHITE),
+                    stopped: self.looks.keys().all(|a| stopped(*a)),
+                },
+            });
+        }
+        for (a, look) in &self.looks {
+            let client = self.state.client(*a);
+            let name = match (client.trim(), look.machine.config().cursor_tag.trim()) {
+                ("", "") => "Zero".to_string(),
+                ("", tag) => tag.to_string(),
+                (c, _) => c.to_string(),
+            };
+            let app = self.state.app(*a);
+            rows.push(Row {
+                agent: Some(*a),
+                look: MenuRow {
+                    title: if many { format!("{a} · {name}") } else { name },
+                    detail: if app.trim().is_empty() {
+                        look.machine.doing().into()
+                    } else {
+                        app
+                    },
+                    color: look.machine.color_now(now),
+                    stopped: stopped(*a),
+                },
+            });
+        }
+        rows
+    }
+
+    /// Whether an agent moves the real mouse decides, at once, whether the
+    /// buttons take the pointer.
+    fn pass_mouse(&mut self) {
+        let blocked = !self.mouse.is_empty();
+        let Some(s) = self.surface.as_mut() else {
+            self.controls.block(blocked, None);
+            return;
+        };
+        self.controls.block(blocked, Some(s.as_mut()));
+        for (agent, look) in &mut self.looks {
+            look.painter
+                .set_buttons(self.controls.look(*agent), !blocked, s.as_mut());
+        }
     }
 
     fn update_hidden(&mut self) {
@@ -1685,15 +1884,43 @@ impl Hub {
 
     fn paint(&mut self, now: Instant) {
         let mut arrived = Vec::new();
+        let allow = self.mouse.is_empty();
         for (agent, look) in &mut self.looks {
             look.machine.tick(now);
             if let Some(s) = self.surface.as_mut() {
                 let scene = look.machine.scene(now);
                 look.painter
+                    .set_buttons(self.controls.look(*agent), allow, s.as_mut());
+                look.painter
                     .paint(&scene, look.machine.config(), &self.fonts, s.as_mut());
             }
             if let Some(id) = look.machine.arrived(now) {
                 arrived.push((*agent, id));
+            }
+        }
+        if self.surface.is_some() {
+            // The list and the tag only while the pointer is on them.
+            let (buttons, busy) = (self.buttons(), self.controls.busy());
+            let rows = if busy { self.rows(now) } else { Vec::new() };
+            let key =
+                |k: &Option<(String, bool)>| k.as_ref().map(|k| k.0.clone()).unwrap_or_default();
+            let texts = if busy {
+                Texts::new(
+                    &key(&self.hotkey),
+                    &key(&self.settings_key),
+                    self.looks.len() >= 2,
+                )
+            } else {
+                Texts::default()
+            };
+            let scale = self
+                .looks
+                .values()
+                .next()
+                .map_or(0.0, |l| l.machine.config().scale);
+            if let Some(s) = self.surface.as_mut() {
+                self.controls
+                    .paint(&buttons, &rows, &texts, scale, &self.fonts, s.as_mut(), now);
             }
         }
         for (agent, id) in arrived {
@@ -2368,6 +2595,125 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r, Reply::Stop { on: false }))
         );
+    }
+
+    /// The stop button's list stops one agent: only that one hears it (as
+    /// from the stop key), and its own showing of it stops no one else. The
+    /// stop key then lets everyone continue.
+    #[test]
+    fn a_row_of_the_stop_buttons_list_stops_one_agent() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        hub.act(Action::Stop(2));
+        assert!(replies(&second).contains(&Reply::Stop { on: true }));
+        assert!(
+            !replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Stop { .. }))
+        );
+        assert!(!hub.stopped);
+        // Its next call shows it stopped, and its settings say so: still
+        // only it.
+        hub.command(2, Cmd::Stopped { on: true });
+        hub.command(
+            2,
+            Cmd::Config {
+                config: Box::default(),
+                hotkey: String::new(),
+                settings_key: String::new(),
+                stopped: true,
+            },
+        );
+        assert!(!hub.stopped);
+        assert!(
+            !replies(&first)
+                .iter()
+                .any(|r| matches!(r, Reply::Stop { .. }))
+        );
+        let rows = hub.rows(Instant::now());
+        assert_eq!(rows.len(), 3, "all, then each");
+        assert_eq!(
+            rows.iter().map(|r| r.look.stopped).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        // The stop key: with one stopped, everyone continues.
+        hub.stop_key();
+        assert!(replies(&second).contains(&Reply::Stop { on: false }));
+        assert!(hub.alone.is_empty() && !hub.stopped);
+        // And pressed again, everyone stops.
+        hub.stop_key();
+        assert!(hub.stopped);
+        assert!(replies(&first).contains(&Reply::Stop { on: true }));
+    }
+
+    /// All stopped, one row lets that agent continue and leaves the others
+    /// stopped; the stop button stops everyone again.
+    #[test]
+    fn a_row_lets_one_agent_continue_while_the_others_stay_stopped() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        let _third = joined(&mut hub, 3);
+        hub.act(Action::StopAll);
+        assert!(hub.stopped);
+        let _ = (replies(&first), replies(&second));
+        hub.act(Action::Continue(1));
+        assert!(replies(&first).contains(&Reply::Stop { on: false }));
+        assert!(replies(&second).is_empty(), "the others stay as they were");
+        assert!(!hub.stopped);
+        assert_eq!(hub.alone, BTreeSet::from([2, 3]));
+        // Its own "stopped", sent before it heard, stops no one.
+        hub.command(1, Cmd::Stopped { on: true });
+        assert!(!hub.stopped && !hub.alone.contains(&1));
+        // "All agents" when they aren't all stopped: stop them all.
+        let all = &hub.rows(Instant::now())[0];
+        assert!(all.agent.is_none() && !all.look.stopped);
+        hub.act(Action::StopAll);
+        assert!(hub.stopped && hub.alone.is_empty());
+        assert!(replies(&first).contains(&Reply::Stop { on: true }));
+        // An agent stopped alone that goes on by itself (its host let it).
+        hub.act(Action::ContinueAll);
+        hub.act(Action::Stop(3));
+        hub.command(3, Cmd::Stopped { on: false });
+        assert!(hub.alone.is_empty());
+    }
+
+    /// The settings button opens one page, through the first agent; an
+    /// agent moving the real mouse makes every button let it through until
+    /// it is done (or its call ends), and is told once they do.
+    #[test]
+    fn the_settings_button_and_the_engines_own_mouse() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        hub.act(Action::Settings);
+        assert!(replies(&first).contains(&Reply::Settings));
+        assert!(!replies(&second).contains(&Reply::Settings));
+        hub.command(
+            2,
+            Cmd::Mouse {
+                on: true,
+                id: Some(9),
+            },
+        );
+        assert!(replies(&second).contains(&Reply::Mouse { id: 9 }));
+        assert!(hub.controls.blocked());
+        hub.command(1, Cmd::Mouse { on: true, id: None });
+        hub.command(2, Cmd::End { ok: true });
+        assert!(hub.controls.blocked(), "agent 1 still moves it");
+        hub.command(
+            1,
+            Cmd::Mouse {
+                on: false,
+                id: None,
+            },
+        );
+        assert!(!hub.controls.blocked());
+        // One that leaves while it moves the mouse lets the buttons go too.
+        hub.command(2, Cmd::Mouse { on: true, id: None });
+        hub.event(Event::Left { conn: 2 });
+        assert!(!hub.controls.blocked());
     }
 
     #[test]

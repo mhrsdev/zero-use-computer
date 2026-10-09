@@ -5,7 +5,7 @@ screen reader does, acts on real controls, and looks at pixels only when
 they matter. One Rust binary, any MCP client, Windows, macOS and Linux.
 
 [Download](https://github.com/mhrsdev/zero-use-computer/releases/latest)
-(v5.0.2: the plugin installs the program itself; v5.0: the settings panel: [what is new](CHANGELOG.md))
+(v5.5.0: the panel in Persian, Chinese and Russian, stop and settings buttons on the overlay; v5.0: the settings panel: [what is new](CHANGELOG.md))
 (from v4.0 it keeps itself up to date: [Updates](docs/GUIDE.md#updates))
 · [Connect a client](docs/CONNECT.md)
 · [Guide](docs/GUIDE.md)

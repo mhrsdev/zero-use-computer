@@ -607,7 +607,10 @@ impl Page {
             PAGE.replace("__THEME__", theme)
                 .replace("__ACCENT__", accent)
                 .replace("__LANG__", language)
-                .replace("__DIR__", if lang::is_rtl(language) { "rtl" } else { "ltr" })
+                .replace(
+                    "__DIR__",
+                    if lang::is_rtl(language) { "rtl" } else { "ltr" },
+                )
                 .replace("/*__SCRIPT__*/", APP),
         );
         *cache = Some((key, page.clone()));

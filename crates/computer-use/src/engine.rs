@@ -1261,6 +1261,14 @@ impl<B: Backend> Engine<B> {
         Ok(self.target_of(app))
     }
 
+    /// [`Engine::input_target`] for the real mouse: the overlay's buttons
+    /// let the engine's moves and clicks through to the app from now until
+    /// the action ends, and never take them for the user's.
+    fn mouse_target(&mut self, app: &AppInfo) -> Result<InputTarget> {
+        self.overlay_mouse(true);
+        self.input_target(app)
+    }
+
     fn bring_to_front(&mut self, app: &AppInfo) -> Result<()> {
         let front = |e: &mut Self| -> Result<Option<AppInfo>> {
             Ok(e.find_apps()?.into_iter().find(|a| a.frontmost))
@@ -1524,6 +1532,8 @@ impl<B: Backend> Engine<B> {
         let out = self.dispatch(call);
         if self.ctx.depth == 1 && self.overlay.is_some() {
             let ok = out.as_ref().is_ok_and(|o| !o.is_error);
+            // Done with the real mouse too, whatever the call was.
+            self.overlay_mouse(false);
             self.overlay_send(OverlayCmd::End { ok });
         }
         self.ctx.depth -= 1;
@@ -1617,6 +1627,7 @@ impl<B: Backend> Engine<B> {
         if mutating {
             self.last_input = Some((self.clock)());
             self.end_turn(true);
+            self.overlay_mouse(false);
         }
         let out = out?;
         if let Some(query) = pixels_of_app
@@ -1823,6 +1834,7 @@ impl<B: Backend> Engine<B> {
                 self.partial_report = None;
                 self.cancel.store(false, Ordering::SeqCst);
                 self.epoch += 1;
+                self.overlay_mouse(false);
                 self.overlay_send(OverlayCmd::End { ok: false });
                 ToolOutput::error(&Error::Internal(format!(
                     "{name} failed unexpectedly ({what}); the screen may have changed, call get_app_state before going on"

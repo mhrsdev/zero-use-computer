@@ -213,9 +213,10 @@ pub fn backup_path(home: &Path) -> PathBuf {
 }
 
 fn sibling(config: &Path, suffix: &str) -> PathBuf {
-    let name = config
-        .file_name()
-        .map_or_else(|| "config.toml".into(), |n| n.to_string_lossy().into_owned());
+    let name = config.file_name().map_or_else(
+        || "config.toml".into(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     config.with_file_name(format!("{name}.{suffix}"))
 }
 

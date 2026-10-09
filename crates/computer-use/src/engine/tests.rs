@@ -2406,6 +2406,68 @@ fn answering_helper(log: &std::path::Path, delay: &str) -> Launcher {
     }
 }
 
+/// A stand-in helper that records what it is told, says the cursor
+/// arrived, and says at once that its buttons let the engine's mouse
+/// through.
+#[cfg(unix)]
+fn button_helper(log: &std::path::Path) -> Launcher {
+    Launcher {
+        program: "sh".into(),
+        args: vec![
+            "-c".into(),
+            format!(
+                r#"while IFS= read -r l; do printf '%s\n' "$l" >> '{}'; case "$l" in *'"id":'*) id=${{l##*\"id\":}}; id=${{id%%[!0-9]*}}; case "$l" in *'"t":"pointer"'*) printf '{{"t":"arrived","id":%s}}\n' "$id";; *'"t":"mouse"'*) printf '{{"t":"mouse","id":%s}}\n' "$id";; esac;; esac; done"#,
+                log.display()
+            ),
+        ],
+    }
+}
+
+/// The overlay's buttons take the pointer, but never the engine's own
+/// clicks: before it moves the real mouse it has them let it through (and
+/// waits until they do), and after the action they take clicks again. A
+/// press through accessibility moves no mouse, and changes nothing.
+#[cfg(unix)]
+#[test]
+fn the_overlay_buttons_let_the_engines_own_mouse_through() {
+    let dir = std::env::temp_dir().join(format!("cu-buttons-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("buttons.log");
+    let mut e = engine().with_overlay(button_helper(&log));
+    state_of(&mut e, serde_json::json!({}));
+    let bold = index_named(&e, 4242, "Bold");
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "element_index": bold}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "x": 100, "y": 100}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    drop(e);
+    let t = read_log(&log);
+    let lines: Vec<&str> = t.lines().collect();
+    let at = |what: &str| lines.iter().position(|l| l.contains(what));
+    let on = at(r#""t":"mouse","on":true,"id":"#).unwrap_or_else(|| panic!("{t}"));
+    let off = at(r#""t":"mouse","on":false"#).unwrap_or_else(|| panic!("{t}"));
+    let pointers: Vec<usize> = (0..lines.len())
+        .filter(|i| lines[*i].contains(r#""t":"pointer""#))
+        .collect();
+    assert_eq!(pointers.len(), 2, "{t}");
+    // The press (the first glide) moved no mouse; the click at a point did,
+    // between its glide and the end of the call.
+    assert!(pointers[0] < on && pointers[1] < on && on < off, "{t}");
+    assert_eq!(t.matches(r#""t":"mouse""#).count(), 2, "{t}");
+    let end = lines
+        .iter()
+        .rposition(|l| l.contains(r#""t":"end""#))
+        .unwrap();
+    assert!(off < end, "{t}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn the_pen_is_found_by_how_far_it_moved() {
     let strokes = vec![

@@ -1,6 +1,8 @@
 //! Windows overlay: per-pixel-alpha layered windows (`UpdateLayeredWindow`)
 //! that are topmost, never activated, click-through (`WS_EX_TRANSPARENT`,
-//! `HTTRANSPARENT`) and left out of screen captures
+//! `HTTRANSPARENT`; the label's buttons and their list drop
+//! `WS_EX_TRANSPARENT` while they take the pointer) and left out of screen
+//! captures
 //! (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`, Windows 10 2004+;
 //! older systems fall back to hiding for the moment of a capture). Fading
 //! uses the windows' constant alpha. The helper keeps the same DPI awareness
@@ -11,12 +13,12 @@
 //! the user brings forward) can come above them: the overlay puts itself
 //! back on top when the foreground window changes, and every second.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{
-    COLORREF, CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM,
+    COLORREF, CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -33,21 +35,24 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
-    UnregisterHotKey,
+    ReleaseCapture, SetCapture, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-    GetSystemMetrics, HTTRANSPARENT, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
-    SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage,
-    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_NCHITTEST, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GetCursorPos,
+    GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HTTRANSPARENT,
+    HWND_TOPMOST, IDC_HAND, LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW,
+    RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor,
+    SetWindowDisplayAffinity, SetWindowLongW, SetWindowPos, ShowWindow, TranslateMessage,
+    ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WM_HOTKEY, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_SETCURSOR, WNDCLASSW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
 use super::draw;
-use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Pointer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -60,12 +65,57 @@ const HOTKEY_IDS: [i32; 2] = [0x5A01, 0x5A02];
 const RAISE_EVERY: Duration = Duration::from_secs(1);
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_NCHITTEST {
-        // Never take the mouse: let it fall through to the window below.
-        return LRESULT(HTTRANSPARENT as isize);
+    match msg {
+        // Never take the mouse: let it fall through to the window below
+        // (the label's buttons, while they take the pointer, are hit).
+        WM_NCHITTEST if !live(hwnd) => return LRESULT(HTTRANSPARENT as isize),
+        // A click on a button never activates it: the user's window keeps
+        // the keyboard.
+        WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+        WM_SETCURSOR if live(hwnd) => {
+            // SAFETY: a system cursor, set while it is over our window.
+            unsafe {
+                let _ = SetCursor(LoadCursorW(None, IDC_HAND).ok());
+            }
+            return LRESULT(1);
+        }
+        _ => {}
     }
     // SAFETY: forwarding a message we received to the default handler.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Whether one of our windows takes the pointer (it isn't `WS_EX_TRANSPARENT`).
+fn live(hwnd: HWND) -> bool {
+    // SAFETY: reading our own window's style.
+    let ex = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    ex & WS_EX_TRANSPARENT.0 == 0
+}
+
+/// Let one of our windows take the pointer (`live`), or let it through.
+fn make_live(hwnd: HWND, live: bool) {
+    // SAFETY: changing our own window's style, then letting the system
+    // take the change.
+    unsafe {
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        let new = if live {
+            ex & !WS_EX_TRANSPARENT.0
+        } else {
+            ex | WS_EX_TRANSPARENT.0
+        };
+        if new != ex {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, new as i32);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
 }
 
 struct Win {
@@ -85,6 +135,10 @@ pub struct WinSurface {
     /// The foreground window when the overlay last went back on top, and when.
     foreground: isize,
     raised: Instant,
+    /// Layers that take the pointer (the label's buttons), and whether the
+    /// pointer is on one (its leaving is noticed by where it is).
+    live: HashSet<Layer>,
+    pointing: bool,
 }
 
 impl WinSurface {
@@ -113,6 +167,8 @@ impl WinSurface {
             hotkeys: [false; 2],
             foreground: 0,
             raised: Instant::now(),
+            live: HashSet::new(),
+            pointing: false,
         };
         // Find out now whether captures can leave us out, before telling the
         // engine: a never-shown test window.
@@ -272,6 +328,22 @@ impl WinSurface {
         }
     }
 
+    /// Whether the pointer at (x, y) is on a window that takes it.
+    fn on_live(&self, x: i32, y: i32) -> bool {
+        self.live
+            .iter()
+            .filter_map(|l| self.layers.get(l).filter(|w| w.visible))
+            .any(|w| {
+                let mut r = RECT::default();
+                // SAFETY: reading our own window's place.
+                unsafe { GetWindowRect(w.hwnd, &mut r) }.is_ok()
+                    && x >= r.left
+                    && x < r.right
+                    && y >= r.top
+                    && y < r.bottom
+            })
+    }
+
     fn raise(hwnd: HWND) {
         // SAFETY: repositioning our own window in the z-order.
         let _ = unsafe {
@@ -359,6 +431,9 @@ impl Surface for WinSurface {
                 let Some(hwnd) = self.create_window() else {
                     return;
                 };
+                if self.live.contains(&layer) {
+                    make_live(hwnd, true);
+                }
                 self.layers.insert(
                     layer,
                     Win {
@@ -455,6 +530,21 @@ impl Surface for WinSurface {
         true
     }
 
+    fn pointer_input(&self) -> bool {
+        true
+    }
+
+    fn set_live(&mut self, layer: Layer, live: bool) {
+        if live {
+            self.live.insert(layer);
+        } else {
+            self.live.remove(&layer);
+        }
+        if let Some(w) = self.layers.get(&layer) {
+            make_live(w.hwnd, live);
+        }
+    }
+
     fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
         let (i, id) = (which.index(), HOTKEY_IDS[which.index()]);
         if self.hotkeys[i] {
@@ -504,8 +594,43 @@ impl Surface for WinSurface {
                     events.push(SurfaceEvent::Hotkey(Hotkey::ALL[i]));
                     continue;
                 }
+                // The pointer on a button (at the screen point the message
+                // was sent for). It is held from the press to the release,
+                // which then comes here wherever the pointer is.
+                let ours = !msg.hwnd.is_invalid()
+                    && self.layers.values().any(|w| w.hwnd == msg.hwnd)
+                    && live(msg.hwnd);
+                let (x, y) = (f64::from(msg.pt.x), f64::from(msg.pt.y));
+                let pointer = match msg.message {
+                    WM_MOUSEMOVE if ours => Some(Pointer::Move(x, y)),
+                    WM_LBUTTONDOWN if ours => {
+                        let _ = SetCapture(msg.hwnd);
+                        Some(Pointer::Press(x, y))
+                    }
+                    WM_LBUTTONUP if ours => {
+                        let _ = ReleaseCapture();
+                        Some(Pointer::Release(x, y))
+                    }
+                    _ => None,
+                };
+                if let Some(p) = pointer {
+                    self.pointing = true;
+                    events.push(SurfaceEvent::Pointer(p));
+                    continue;
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
+            }
+        }
+        // Off the buttons: windows hear no leaving unless asked to, so it
+        // is told by where the pointer is now.
+        if self.pointing {
+            let mut p = POINT::default();
+            // SAFETY: reading the cursor position into a local.
+            let off = unsafe { GetCursorPos(&mut p) }.is_ok() && !self.on_live(p.x, p.y);
+            if off {
+                self.pointing = false;
+                events.push(SurfaceEvent::Pointer(Pointer::Leave));
             }
         }
         self.keep_on_top();

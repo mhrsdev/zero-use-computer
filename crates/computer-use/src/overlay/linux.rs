@@ -1,6 +1,9 @@
 //! X11 overlay: override-redirect windows (no window-manager decoration or
 //! focus) whose input region is empty, so every click passes through to the
-//! apps below. With a compositing manager the windows use a 32-bit ARGB
+//! apps below. The label's buttons and their list (`set_live`) take the
+//! pointer instead: their input region is the whole window, and they hear
+//! the pointer's moves and clicks (an override-redirect window is never
+//! given the keyboard focus for it). With a compositing manager the windows use a 32-bit ARGB
 //! visual for smooth edges; without one, a SHAPE mask cuts them out. X11 has
 //! no "exclude from capture", so the engine asks the helper to hide the
 //! overlay for the instant of a screenshot. When this process dies, the X
@@ -17,7 +20,7 @@
 //! compositors for no shadow and no animation, and name the windows
 //! (`WM_CLASS` "computer-use-overlay") for users' compositor rules.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use tiny_skia::Pixmap;
@@ -29,14 +32,14 @@ use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xfixes::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux,
-    ConnectionExt as _, CreateGCAux, CreateWindowAux, GrabMode, ImageFormat, ModMask, PropMode,
-    Rectangle, StackMode, VisualClass, Window, WindowClass,
+    ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, ImageFormat, ModMask,
+    PropMode, Rectangle, StackMode, VisualClass, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::draw;
-use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Pointer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -205,6 +208,10 @@ pub struct X11Surface {
     last_refresh: Instant,
     /// The global keys' passive grabs (stop key, settings key).
     grabs: [Option<Grab>; 2],
+    /// Layers that take the pointer (the label's buttons), and the hand
+    /// shown over them (made when first needed).
+    live: HashSet<Layer>,
+    hand: Option<u32>,
 }
 
 /// A global key's passive grab, and its state.
@@ -363,6 +370,8 @@ impl X11Surface {
             last_raise: Instant::now(),
             last_refresh: Instant::now(),
             grabs: [None; 2],
+            live: HashSet::new(),
+            hand: None,
         };
         s.refresh();
         Ok(s)
@@ -458,6 +467,77 @@ impl X11Surface {
         match self.argb_visual {
             Some((visual, cmap)) if self.argb => (32, visual, cmap),
             _ => self.plain,
+        }
+    }
+
+    /// The pointing hand of the cursor font, shown over the buttons.
+    fn hand(&mut self) -> u32 {
+        if let Some(h) = self.hand {
+            return h;
+        }
+        /// `XC_hand2` in the standard cursor font.
+        const HAND2: u16 = 60;
+        let c = &self.conn;
+        let made = (|| -> Result<u32, String> {
+            let font = c.generate_id().map_err(err)?;
+            c.open_font(font, b"cursor").map_err(err)?;
+            let cursor = c.generate_id().map_err(err)?;
+            c.create_glyph_cursor(
+                cursor,
+                font,
+                font,
+                HAND2,
+                HAND2 + 1,
+                0,
+                0,
+                0,
+                0xffff,
+                0xffff,
+                0xffff,
+            )
+            .map_err(err)?;
+            let _ = c.close_font(font);
+            Ok(cursor)
+        })();
+        let h = made.unwrap_or(x11rb::NONE);
+        self.hand = Some(h);
+        h
+    }
+
+    /// Let the pointer use the window `id` (its whole input region, its
+    /// moves and clicks, a hand over it), or pass through it again (an
+    /// empty input region, as every overlay window has by default).
+    fn input(&mut self, id: Window, live: bool) {
+        if live {
+            let hand = self.hand();
+            let events = EventMask::ENTER_WINDOW
+                | EventMask::LEAVE_WINDOW
+                | EventMask::POINTER_MOTION
+                | EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE;
+            let aux = ChangeWindowAttributesAux::new()
+                .event_mask(events)
+                .cursor(hand);
+            let _ = self.conn.change_window_attributes(id, &aux);
+            // The default input region: the whole window (as far as it is
+            // shown, the bounding shape).
+            let _ = self
+                .conn
+                .shape_mask(shape::SO::SET, shape::SK::INPUT, id, 0, 0, x11rb::NONE);
+        } else {
+            let _ = self.conn.shape_rectangles(
+                shape::SO::SET,
+                shape::SK::INPUT,
+                ClipOrdering::UNSORTED,
+                id,
+                0,
+                0,
+                &[],
+            );
+            let aux = ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::NO_EVENT)
+                .cursor(x11rb::NONE);
+            let _ = self.conn.change_window_attributes(id, &aux);
         }
     }
 
@@ -771,6 +851,11 @@ impl Surface for X11Surface {
                 Err(_) => return,
             },
         };
+        // A window made anew (another visual, after a while unused) for a
+        // layer that takes the pointer takes it again.
+        if fresh && self.live.contains(&layer) {
+            self.input(win.id, true);
+        }
         if (win.w, win.h) != (w, h) {
             // A pixmap can't be resized: a new one. (The window keeps the
             // old one as its background until it is given the new one.)
@@ -852,6 +937,25 @@ impl Surface for X11Surface {
         } else {
             self.raise_all();
             let _ = self.conn.flush();
+        }
+    }
+
+    fn pointer_input(&self) -> bool {
+        true
+    }
+
+    fn set_live(&mut self, layer: Layer, live: bool) {
+        let changed = if live {
+            self.live.insert(layer)
+        } else {
+            self.live.remove(&layer)
+        };
+        if let Some(id) = self.layers.get(&layer).map(|w| w.id)
+            && changed
+        {
+            self.input(id, live);
+            // Done once the server has it: the engine clicks right after.
+            self.sync();
         }
     }
 
@@ -946,6 +1050,24 @@ impl Surface for X11Surface {
                         }
                     }
                 }
+                // The pointer on the buttons (root coordinates are the
+                // overlay's screen units here). Only the left button
+                // clicks them; the wheel and the others do nothing.
+                Event::LeaveNotify(_) => events.push(SurfaceEvent::Pointer(Pointer::Leave)),
+                Event::EnterNotify(e) => events.push(SurfaceEvent::Pointer(Pointer::Move(
+                    f64::from(e.root_x),
+                    f64::from(e.root_y),
+                ))),
+                Event::MotionNotify(e) => events.push(SurfaceEvent::Pointer(Pointer::Move(
+                    f64::from(e.root_x),
+                    f64::from(e.root_y),
+                ))),
+                Event::ButtonPress(e) if e.detail == 1 => events.push(SurfaceEvent::Pointer(
+                    Pointer::Press(f64::from(e.root_x), f64::from(e.root_y)),
+                )),
+                Event::ButtonRelease(e) if e.detail == 1 => events.push(SurfaceEvent::Pointer(
+                    Pointer::Release(f64::from(e.root_x), f64::from(e.root_y)),
+                )),
                 _ => {}
             }
         }

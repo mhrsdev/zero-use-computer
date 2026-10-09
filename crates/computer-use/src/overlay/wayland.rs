@@ -2,7 +2,10 @@
 //! layer-shell): each layer is a layer-shell surface on the overlay layer,
 //! anchored to its output's top-left corner and placed by its margins, with
 //! an empty input region (clicks pass through), no keyboard focus and no
-//! exclusive zone.
+//! exclusive zone. The label's buttons and their list take the pointer
+//! instead (their whole surface is their input region): the seat's pointer
+//! tells where it is on them and what it presses, with a hand cursor where
+//! the compositor has cursor-shape.
 //!
 //! Compositors animate a surface when it is mapped and unmapped (Hyprland's
 //! fades and pop-ins), and the overlay hides around every screenshot. So a
@@ -22,18 +25,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tiny_skia::Pixmap;
+use wayland_client::backend::ObjectId;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_output, wl_pointer, wl_region, wl_registry, wl_seat,
+    wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use super::draw;
-use super::helper::{Hotkey, Layer, Part, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Part, Pointer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -107,6 +114,23 @@ impl Out {
     }
 }
 
+/// What the seat's pointer did on one of our surfaces (its own logical
+/// units, from its top-left corner).
+enum PointerEv {
+    Enter {
+        surface: ObjectId,
+        at: (f64, f64),
+        serial: u32,
+    },
+    Motion((f64, f64)),
+    Leave,
+    /// The left button went down (true) or up.
+    Button(bool),
+}
+
+/// `BTN_LEFT` (linux/input-event-codes.h).
+const BTN_LEFT: u32 = 0x110;
+
 #[derive(Default)]
 struct State {
     /// Outputs by their registry name.
@@ -116,6 +140,9 @@ struct State {
     /// Layers whose surface the compositor closed (its output went away).
     closed: Vec<Layer>,
     synced: bool,
+    /// The seat's pointer (when it has one), and what it did since `pump`.
+    pointer: Option<wl_pointer::WlPointer>,
+    pointer_events: Vec<PointerEv>,
 }
 
 /// A wl_shm buffer in a memfd of its own.
@@ -261,6 +288,13 @@ pub struct WaylandSurface {
     hidden: bool,
     /// The global keys, bound in the compositor (stop, settings).
     keys: [super::wayland_stop::BoundKey; 2],
+    /// Layers that take the pointer (the label's buttons), the surface the
+    /// pointer is on and where, and the hand shown over them.
+    live: std::collections::HashSet<Layer>,
+    pointer_on: Option<(ObjectId, (f64, f64))>,
+    seat: Option<wl_seat::WlSeat>,
+    cursor_shapes: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
+    cursor: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
 }
 
 impl WaylandSurface {
@@ -282,6 +316,9 @@ impl WaylandSurface {
             })?;
         let xdg_outputs = globals.bind(&qh, 1..=3, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
+        // The pointer, for the label's buttons; none, and they aren't shown.
+        let seat: Option<wl_seat::WlSeat> = globals.bind(&qh, 1..=5, ()).ok();
+        let cursor_shapes = globals.bind(&qh, 1..=1, ()).ok();
         let mut s = Self {
             conn,
             queue,
@@ -298,6 +335,11 @@ impl WaylandSurface {
             orphans: HashMap::new(),
             hidden: false,
             keys: Hotkey::ALL.map(super::wayland_stop::BoundKey::new),
+            live: std::collections::HashSet::new(),
+            pointer_on: None,
+            seat,
+            cursor_shapes,
+            cursor: None,
         };
         s.bind_outputs();
         s.sync();
@@ -446,10 +488,12 @@ impl WaylandSurface {
         if !self.surfs.contains_key(&layer) {
             let wl_out = self.state.outputs.get(&output)?.wl.clone()?;
             let surface = self.compositor.create_surface(&self.qh, ());
-            // Clicks go to whatever is underneath.
-            let region = self.compositor.create_region(&self.qh, ());
-            surface.set_input_region(Some(&region));
-            region.destroy();
+            // Clicks go to whatever is underneath (but on the buttons).
+            if !self.live.contains(&layer) {
+                let region = self.compositor.create_region(&self.qh, ());
+                surface.set_input_region(Some(&region));
+                region.destroy();
+            }
             let ls = self.layer_shell.get_layer_surface(
                 &surface,
                 Some(&wl_out),
@@ -596,6 +640,73 @@ impl WaylandSurface {
         true
     }
 
+    /// The layer whose surface `id` is.
+    fn layer_of(&self, id: &ObjectId) -> Option<Layer> {
+        self.surfs
+            .iter()
+            .find(|(_, s)| s.surface.id() == *id)
+            .map(|(l, _)| *l)
+    }
+
+    /// What the seat's pointer did on the buttons since last asked, in
+    /// screen units.
+    fn pointer_events(&mut self) -> Vec<Pointer> {
+        let mut out = Vec::new();
+        for ev in std::mem::take(&mut self.state.pointer_events) {
+            let button = match ev {
+                PointerEv::Button(down) => Some(down),
+                _ => None,
+            };
+            match ev {
+                PointerEv::Enter {
+                    surface,
+                    at,
+                    serial,
+                } => {
+                    // A hand over the buttons, where the compositor can
+                    // show one by name.
+                    if let (Some(shapes), Some(pointer)) =
+                        (&self.cursor_shapes, &self.state.pointer)
+                    {
+                        let device = self
+                            .cursor
+                            .get_or_insert_with(|| shapes.get_pointer(pointer, &self.qh, ()));
+                        device.set_shape(serial, wp_cursor_shape_device_v1::Shape::Pointer);
+                    }
+                    self.pointer_on = Some((surface, at));
+                }
+                PointerEv::Motion(at) => {
+                    if let Some((_, p)) = &mut self.pointer_on {
+                        *p = at;
+                    }
+                }
+                PointerEv::Leave => {
+                    self.pointer_on = None;
+                    out.push(Pointer::Leave);
+                    continue;
+                }
+                PointerEv::Button(_) => {}
+            }
+            let Some((surface, (sx, sy))) = &self.pointer_on else {
+                continue;
+            };
+            let Some(&(x, y)) = self
+                .layer_of(surface)
+                .filter(|l| self.live.contains(l))
+                .and_then(|l| self.placed.get(&l))
+            else {
+                continue;
+            };
+            let (x, y) = (x + sx, y + sy);
+            out.push(match button {
+                Some(true) => Pointer::Press(x, y),
+                Some(false) => Pointer::Release(x, y),
+                None => Pointer::Move(x, y),
+            });
+        }
+        out
+    }
+
     /// Show `image` for `layer` at (x, y) on a new surface (its old one
     /// was closed); false when no output is there.
     fn restore(&mut self, layer: Layer, x: f64, y: f64, image: (Vec<u8>, u32, u32)) -> bool {
@@ -719,6 +830,32 @@ impl Surface for WaylandSurface {
         self.sync();
     }
 
+    fn pointer_input(&self) -> bool {
+        self.seat.is_some()
+    }
+
+    fn set_live(&mut self, layer: Layer, live: bool) {
+        let changed = if live {
+            self.live.insert(layer)
+        } else {
+            self.live.remove(&layer)
+        };
+        let Some(s) = self.surfs.get(&layer).filter(|_| changed) else {
+            return;
+        };
+        if live {
+            // No region: all of the surface.
+            s.surface.set_input_region(None);
+        } else {
+            let region = self.compositor.create_region(&self.qh, ());
+            s.surface.set_input_region(Some(&region));
+            region.destroy();
+        }
+        s.surface.commit();
+        // Done once the compositor has it: the engine clicks right after.
+        self.sync();
+    }
+
     fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
         self.keys[which.index()].set(combo)
     }
@@ -739,7 +876,11 @@ impl Surface for WaylandSurface {
             }
         }
         let _ = self.conn.flush();
-        let mut events = Vec::new();
+        let mut events: Vec<SurfaceEvent> = self
+            .pointer_events()
+            .into_iter()
+            .map(SurfaceEvent::Pointer)
+            .collect();
         for (key, which) in self.keys.iter_mut().zip(Hotkey::ALL) {
             key.refresh();
             if key.pressed() {
@@ -860,6 +1001,66 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Layer> for State {
     }
 }
 
+impl Dispatch<wl_seat::WlSeat, ()> for State {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(c),
+        } = event
+            && c.contains(wl_seat::Capability::Pointer)
+            && state.pointer.is_none()
+        {
+            state.pointer = Some(seat.get_pointer(qh, ()));
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let ev = match event {
+            wl_pointer::Event::Enter {
+                serial,
+                surface,
+                surface_x,
+                surface_y,
+            } => PointerEv::Enter {
+                surface: surface.id(),
+                at: (surface_x, surface_y),
+                serial,
+            },
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => PointerEv::Motion((surface_x, surface_y)),
+            wl_pointer::Event::Leave { .. } => PointerEv::Leave,
+            wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(pressed),
+                ..
+            } if button == BTN_LEFT => {
+                PointerEv::Button(pressed == wl_pointer::ButtonState::Pressed)
+            }
+            _ => return,
+        };
+        // (Only our surfaces get the pointer: only the buttons take it.)
+        state.pointer_events.push(ev);
+    }
+}
+
 impl Dispatch<wl_buffer::WlBuffer, Arc<AtomicBool>> for State {
     fn event(
         _: &mut Self,
@@ -899,3 +1100,5 @@ delegate_noop!(State: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(State: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
 delegate_noop!(State: ignore wp_viewporter::WpViewporter);
 delegate_noop!(State: ignore wp_viewport::WpViewport);
+delegate_noop!(State: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
+delegate_noop!(State: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);

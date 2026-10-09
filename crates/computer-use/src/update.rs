@@ -589,12 +589,7 @@ pub fn install(p: &Pending, exe: &Path, dir: &Path) -> Result<()> {
 /// `install`, also keeping the settings file at `config` beside the program
 /// it puts aside, so going back can bring the settings that worked with
 /// it back too (see [`rollback_to`]).
-pub fn install_keeping(
-    p: &Pending,
-    exe: &Path,
-    dir: &Path,
-    config: Option<&Path>,
-) -> Result<()> {
+pub fn install_keeping(p: &Pending, exe: &Path, dir: &Path, config: Option<&Path>) -> Result<()> {
     // Already there (put in place by another server, or twice from the
     // panel): nothing to replace, and the copy kept to go back to stays.
     // (as it says it: a 5.0.0-preview is not the 5.0.0 release)
@@ -1682,14 +1677,24 @@ mod tests {
         assert!(previous_settings(&dir).is_none());
         install_keeping(&p, &exe, &dir, Some(&config)).unwrap();
         let kept = previous_settings(&dir).expect("kept with the program");
-        assert_eq!(std::fs::read_to_string(kept).unwrap(), "[overlay]\ncursor_style = \"ice\"\n");
+        assert_eq!(
+            std::fs::read_to_string(kept).unwrap(),
+            "[overlay]\ncursor_style = \"ice\"\n"
+        );
         assert!(previous(&dir).unwrap().settings);
         // The newer version's settings, then back.
-        std::fs::write(&config, "[overlay]\ncursor_style = \"jelly\"\n[future]\nx = 1\n").unwrap();
+        std::fs::write(
+            &config,
+            "[overlay]\ncursor_style = \"jelly\"\n[future]\nx = 1\n",
+        )
+        .unwrap();
         let (from, to, back) = rollback_to(&exe, &dir, Some(&config)).unwrap();
         assert_eq!((from, to), (Version(99, 0, 0), Version::current()));
         let back = back.expect("the settings came back");
-        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[overlay]\ncursor_style = \"ice\"\n");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "[overlay]\ncursor_style = \"ice\"\n"
+        );
         let aside = back.aside.expect("the ones replaced are kept");
         assert!(std::fs::read_to_string(aside).unwrap().contains("[future]"));
         assert!(!dir.join("config.toml.rolling-back").exists());

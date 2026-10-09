@@ -177,6 +177,7 @@ pub const ENTRIES: &[Entry] = &[
     e("overlay.enabled", OVERLAY, "Show the on-screen indicator while the agent works. It is click-through and left out of the agent's screenshots."),
     e("overlay.show_border", OVERLAY, "A glowing border around the screen or window the agent works on."),
     e("overlay.show_label", OVERLAY, "A status label."),
+    e("overlay.show_buttons", OVERLAY, "Stop and settings buttons beside the label: stop every agent or one from the list, or open this panel."),
     e("overlay.border_target", OVERLAY, "Whether the border goes around the whole screen or only the window worked on.").choice(&["screen", "window"]),
     e("overlay.border_width", OVERLAY, "The bright core line of the border.").range(0.0, 40.0, 1.0, "px"),
     e("overlay.glow_size", OVERLAY, "How far the glow fades out. 0 is a plain line.").range(0.0, 200.0, 1.0, "px"),

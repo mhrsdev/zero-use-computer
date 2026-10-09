@@ -3,8 +3,14 @@
 //! is an accessory app with no Dock icon) and have `sharingType = none`, so
 //! screen captures leave them out. AppKit never animates them. The window
 //! server removes the windows if the helper process dies.
+//!
+//! The label's buttons and their list are non-activating panels instead: a
+//! click on one never makes the helper the active app (the user's window
+//! keeps the keyboard). While they take the pointer they don't ignore the
+//! mouse; their clicks are read from the event queue and the pointer's
+//! place polled, never passed on to AppKit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -12,14 +18,15 @@ use std::time::{Duration, Instant};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEventMask,
-    NSImage, NSImageScaling, NSImageView, NSScreen, NSScreenSaverWindowLevel, NSWindow,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSEvent,
+    NSEventMask, NSEventType, NSImage, NSImageScaling, NSImageView, NSPanel, NSScreen,
+    NSScreenSaverWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
+    NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 use tiny_skia::Pixmap;
 
-use super::helper::{Hotkey, Layer, Surface, SurfaceEvent};
+use super::helper::{Hotkey, Layer, Part, Pointer, Surface, SurfaceEvent};
 use crate::keys::KeyCombo;
 use crate::types::Rect;
 
@@ -231,6 +238,10 @@ pub struct MacSurface {
     /// handler is installed.
     hotkeys: [Option<*mut c_void>; 2],
     handler: bool,
+    /// Layers that take the pointer (the label's buttons), and whether the
+    /// pointer is on one or pressed one.
+    live: HashSet<Layer>,
+    pointing: bool,
 }
 
 impl MacSurface {
@@ -252,6 +263,8 @@ impl MacSurface {
                 opacity: 1.0,
                 hotkeys: [None; 2],
                 handler: false,
+                live: HashSet::new(),
+                pointing: false,
             })
         })
     }
@@ -292,16 +305,32 @@ impl MacSurface {
         Some(image)
     }
 
-    fn create(&self, rect: NSRect, image: &NSImage) -> Win {
-        // SAFETY: a borderless window created and configured on the main thread.
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
+    fn create(&self, rect: NSRect, image: &NSImage, layer: Layer) -> Win {
+        // A part that can take the pointer is a non-activating panel: a
+        // click on it never activates the helper.
+        let window = if matches!(layer.part, Part::Stop | Part::Gear | Part::Menu) {
+            let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
                 self.mtm.alloc(),
                 rect,
-                NSWindowStyleMask::Borderless,
+                NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
                 NSBackingStoreType::Buffered,
                 false,
-            )
+            );
+            panel.setBecomesKeyOnlyIfNeeded(true);
+            // Panels hide when their app isn't active, and the helper never is.
+            panel.setHidesOnDeactivate(false);
+            Retained::into_super(panel)
+        } else {
+            // SAFETY: a borderless window created and configured on the main thread.
+            unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(
+                    self.mtm.alloc(),
+                    rect,
+                    NSWindowStyleMask::Borderless,
+                    NSBackingStoreType::Buffered,
+                    false,
+                )
+            }
         };
         // SAFETY: we keep our own reference; closing must not free it.
         unsafe { window.setReleasedWhenClosed(false) };
@@ -312,7 +341,7 @@ impl MacSurface {
         window.setAnimationBehavior(NSWindowAnimationBehavior::None);
         // Still up when another app's "Hide Others" hides this one.
         window.setCanHide(false);
-        window.setIgnoresMouseEvents(true);
+        window.setIgnoresMouseEvents(!self.live.contains(&layer));
         window.setLevel(NSScreenSaverWindowLevel);
         // Left out of screenshots and screen recordings.
         window.setSharingType(NSWindowSharingType::None);
@@ -333,6 +362,35 @@ impl MacSurface {
             size: (rect.size.width, rect.size.height),
             visible: false,
         }
+    }
+}
+
+impl MacSurface {
+    /// Where the pointer is, in top-left screen units.
+    fn pointer_at(&self) -> (f64, f64) {
+        let p = NSEvent::mouseLocation();
+        (p.x, self.geo.primary_h - p.y)
+    }
+
+    /// Whether (x, y) is on a shown layer that takes the pointer.
+    fn over_live(&self, x: f64, y: f64) -> bool {
+        self.live
+            .iter()
+            .filter_map(|l| self.layers.get(l).filter(|w| w.visible))
+            .any(|w| {
+                x >= w.pos.0 && y >= w.pos.1 && x < w.pos.0 + w.size.0 && y < w.pos.1 + w.size.1
+            })
+    }
+
+    /// Whether `event` happened in one of the windows that take the pointer.
+    fn on_live_window(&self, event: &NSEvent) -> bool {
+        let Some(win) = event.window(self.mtm) else {
+            return false;
+        };
+        self.live
+            .iter()
+            .filter_map(|l| self.layers.get(l))
+            .any(|w| Retained::as_ptr(&w.window) == Retained::as_ptr(&win))
     }
 }
 
@@ -383,7 +441,7 @@ impl Surface for MacSurface {
                     w.size = size;
                 }
                 None => {
-                    let w = self.create(rect, &image);
+                    let w = self.create(rect, &image, layer);
                     self.layers.insert(layer, w);
                 }
             }
@@ -434,6 +492,21 @@ impl Surface for MacSurface {
             }
         });
         true
+    }
+
+    fn pointer_input(&self) -> bool {
+        true
+    }
+
+    fn set_live(&mut self, layer: Layer, live: bool) {
+        if live {
+            self.live.insert(layer);
+        } else {
+            self.live.remove(&layer);
+        }
+        if let Some(w) = self.layers.get(&layer) {
+            autoreleasepool(|_| w.window.setIgnoresMouseEvents(!live));
+        }
     }
 
     fn set_hotkey(&mut self, which: Hotkey, combo: Option<KeyCombo>) -> bool {
@@ -497,6 +570,7 @@ impl Surface for MacSurface {
     }
 
     fn pump(&mut self) -> Vec<SurfaceEvent> {
+        let mut events = Vec::new();
         autoreleasepool(|_| {
             let past = NSDate::distantPast();
             // SAFETY: reading a constant Foundation string.
@@ -507,6 +581,22 @@ impl Surface for MacSurface {
                 mode,
                 true,
             ) {
+                // A click on a button: told here, not passed to AppKit.
+                let kind = event.r#type();
+                if (kind == NSEventType::LeftMouseDown || kind == NSEventType::LeftMouseUp)
+                    && self.on_live_window(&event)
+                {
+                    let (x, y) = self.pointer_at();
+                    events.push(SurfaceEvent::Pointer(
+                        if kind == NSEventType::LeftMouseDown {
+                            self.pointing = true;
+                            Pointer::Press(x, y)
+                        } else {
+                            Pointer::Release(x, y)
+                        },
+                    ));
+                    continue;
+                }
                 self.app.sendEvent(&event);
             }
             if self.geo_at.elapsed() >= GEOMETRY_EVERY {
@@ -514,7 +604,17 @@ impl Surface for MacSurface {
                 self.refresh_geometry();
             }
         });
-        let mut events = Vec::new();
+        // The pointer over the buttons: where it is now (windows that never
+        // become key hear no moves).
+        if !self.live.is_empty() {
+            let (x, y) = self.pointer_at();
+            if self.over_live(x, y) {
+                self.pointing = true;
+                events.push(SurfaceEvent::Pointer(Pointer::Move(x, y)));
+            } else if std::mem::take(&mut self.pointing) {
+                events.push(SurfaceEvent::Pointer(Pointer::Leave));
+            }
+        }
         for which in Hotkey::ALL {
             if HOTKEY_HIT[which.index()].swap(false, Ordering::SeqCst) {
                 events.push(SurfaceEvent::Hotkey(which));

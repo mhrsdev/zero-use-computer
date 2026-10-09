@@ -190,6 +190,13 @@ fn invisible(c: char) -> bool {
         || crate::text::is_bidi_control(c)
 }
 
+/// Whether `text` reads right to left (as [`layout`] decides it).
+pub fn is_rtl(text: &str) -> bool {
+    let line = text.replace(['\n', '\r'], " ");
+    let bidi = unicode_bidi::BidiInfo::new(&line, None);
+    bidi.paragraphs.first().is_some_and(|p| p.level.is_rtl())
+}
+
 /// Lay out one line of `text` at `px` pixels per em, in visual order.
 pub fn layout(fonts: &Fonts, text: &str, px: f32) -> TextPath {
     let parsed: Vec<Face> = fonts

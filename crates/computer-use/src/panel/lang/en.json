@@ -600,6 +600,10 @@
    "Show label",
    "A status label."
   ],
+  "overlay.show_buttons": [
+   "Show buttons",
+   "Stop and settings buttons beside the label: stop every agent or one from the list, or open this panel."
+  ],
   "overlay.border_target": [
    "Border target",
    "Whether the border goes around the whole screen or only the window worked on."

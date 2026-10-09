@@ -1,3 +1,15 @@
+# Upgrading to v5.5.0
+
+From v5.0.2: nothing to change. New: the settings panel has a language
+picker (`panel.language`, `auto` follows the browser; Persian, Chinese,
+Russian), an import is shown before it is made and can be undone, an update
+keeps your settings file beside the program it replaces and going back
+(`update --rollback`, or **Go back**) puts it back too (`--keep-settings`
+to leave the settings as they are), and the overlay's label has a stop
+button and a settings gear (`overlay.show_buttons = false` takes them off).
+After the first update to this version, the program kept to go back to has
+no settings with it: the next update keeps them.
+
 # Upgrading to v5.0.2
 
 From v5.0.1: nothing to change; the program is the same. New is the

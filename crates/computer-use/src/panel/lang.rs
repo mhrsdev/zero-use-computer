@@ -39,8 +39,5 @@ pub fn is_rtl(code: &str) -> bool {
 
 /// `code` if it is one the page has, else English.
 pub fn known(code: &str) -> &'static str {
-    LANGUAGES
-        .iter()
-        .find(|l| l.0 == code)
-        .map_or("en", |l| l.0)
+    LANGUAGES.iter().find(|l| l.0 == code).map_or("en", |l| l.0)
 }

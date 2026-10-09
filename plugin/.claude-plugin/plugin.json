@@ -1,6 +1,6 @@
 {
   "name": "zero-use-computer",
-  "version": "5.0.2",
+  "version": "5.5.0",
   "description": "Control desktop apps (Windows, macOS, Linux) through their accessibility tree plus screenshots: an MCP server with an on-screen indicator, an emergency stop key, and skills for using it and for staying safe.",
   "author": { "name": "mhrsdev" },
   "homepage": "https://github.com/mhrsdev/zero-use-computer",
