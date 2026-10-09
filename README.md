@@ -94,6 +94,54 @@ State after the steps:
   Code, Claude Desktop, Codex, Cursor and VS Code. A shortcut on the
   desktop (`computer-use-mcp shortcut`) opens it. The agent can't use it.
 
+## Against Claude's and Codex's computer use
+
+Both Anthropic and OpenAI ship computer use of their own: Claude's in
+Claude Desktop and Claude Code, Codex's in the Codex app. This is how Zero
+stands beside them, as their documentation described them in October 2026
+([Claude's help page](https://support.claude.com/en/articles/14128542-let-claude-use-your-computer-in-cowork),
+[Claude Code's desktop docs](https://code.claude.com/docs/en/desktop),
+[OpenAI's announcement](https://x.com/OpenAI/status/2044827932145897652)).
+Both change fast; "not documented" means nothing was found, not that it
+isn't there.
+
+| | Claude | Codex | **Zero** |
+|---|---|---|---|
+| How it reads the app | screenshots | its own cursor: "seeing, clicking, and typing"; accessibility first | the accessibility tree, numbered; a picture only when it adds something |
+| Where it runs | macOS and Windows (Claude Desktop, beta, Pro and Max plans); Claude Code on macOS, Linux not yet | macOS | Windows, macOS, Linux (X11, and Wayland with wlroots compositors) |
+| Which agent | Claude | Codex | any MCP client: Claude Code, Codex, Cursor, VS Code, Claude Desktop, your own |
+| Your mouse and keyboard | left alone on macOS 15+; waits while you type | its own cursor, in the background | its own cursor, in the background; pauses while you use the computer; a stop key |
+| Coming back to a screen | not documented | not documented | "seen before": only the changes, and never the same picture twice |
+| Several agents at once | not documented | several Codex agents on one Mac | agents from any clients, Claude Code beside Codex: numbered cursors, parts of the screen, turns at the keyboard, one stop key |
+| Small judgments (which of 50 reviews, has the page loaded) | the main model | the main model | a fast decision model, optional: TypeSafe's Jev or any OpenAI-compatible one; the server asks it on its own where that saves a turn |
+| Before it touches an app | asks you for each app; trading and crypto apps blocked by default; your own blocklist | not documented | nothing in the server: a [security skill](skills/computer-use-security/SKILL.md) the agent follows, plus what an agent can't do for itself (input kept to its app, passwords and cards masked, the stop key) |
+| Drawing, design, 3D | not documented | not documented | `draw`, `trace_image`, a 2D `design` board, a 3D `scene`, `locate` |
+| Scripts | not documented | not documented | `script` (Rhai) around any tool; a saved script becomes a tool |
+| Text only in pixels | in the screenshot | not documented | read off the screen, clickable |
+| Licence | closed | closed | Apache-2.0, one Rust binary |
+
+What this table can't say:
+
+- **No token figures against Claude.** Claude's computer use has not been
+  run on the benchmark. The figures against Codex, [below](#against-codex-style-computer-use),
+  come from a simulation of its behaviour on this server, not from Codex.
+- **Codex's parallel agents are its own.** OpenAI says several Codex
+  agents can work on a Mac at once. What Zero adds is agents from
+  different clients on one desktop, and on three systems; the hub was
+  tested under Xvfb with two real servers (one saying it is Claude Code,
+  one Codex), not with the real clients' subagents, nor on Windows and
+  macOS.
+- **The decision model is measured with a stand-in**, not with Jev
+  itself; the gain is in turns and reads the main model doesn't make, not
+  in a number yet.
+- **Zero never asks you before an app.** Claude does, and blocks some by
+  default. Here that is the agent's job, through the security skill,
+  because a server can't know what the task is; the server keeps the
+  stop key, the pause while you work and the masking. Choose Claude's if
+  you want to be asked.
+- **Not tested on real Windows and macOS hardware**, only in CI; both
+  Claude and Codex ship on a Mac first.
+
 ## Numbers
 
 Six real tasks in a GTK app (a form, a 300-row table, a canvas, a dialog
@@ -134,7 +182,9 @@ well with fewer pictures hasn't been measured.
 ### Against Codex-style computer use
 
 Codex's computer use is the model this project started from: the same ten
-core tools, accessibility first. The benchmark can run Zero the way Codex
+core tools, accessibility first (how the two, and Claude's, compare
+feature by feature is [above](#against-claudes-and-codexs-computer-use)).
+The benchmark can run Zero the way Codex
 behaves (a screenshot with every look, no screen memory, no change report
 after an action, every tool listed) and compare. This is a **simulation of
 Codex's behaviour on this server, not a run of Codex or of a GPT model**:
