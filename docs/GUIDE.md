@@ -675,7 +675,14 @@ own, as before.
 - **Verification** (`[verify]`). Each action's result is checked. If a value
   didn't take, typed text didn't land in the field, or nothing changed after a
   press, the model is told so ("Nothing on screen changed after it; check
-  before repeating it").
+  before repeating it"). This, like `expect`, checks what the app shows,
+  not what it stored: a web app can show a value its own state never took
+  (a React field set without the events it listens to), and save the old
+  one. A live test edits a React form in Chrome (Linux) and Edge (Windows)
+  and checks what the backend received; both browsers pass (Chrome takes
+  no value from accessibility, so the text is typed with keys; Edge takes
+  it and sends the input events). When a save matters, reopen the record
+  and look.
 - **Retry another way** when an action clearly failed (`verify.retry`):
 
   | Failure | Retry |

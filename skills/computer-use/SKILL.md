@@ -66,7 +66,8 @@ Every result stays in the conversation, so ask only for what you need:
   comes up that a step didn't `expect`, and ends with one report.
 - `expect` on an action (`"dialog"`, `"change"`, `"value"`, `"gone"`, or a
   text to see) waits for it and says confirmed, not seen or uncertain:
-  look before repeating anything not confirmed.
+  look before repeating anything not confirmed. It checks the screen, not
+  what the app stored: when a save matters, reopen the record and look.
 - `get_app_state(about="shipping address")` shows just the parts about
   that. `wait_for` instead of polling; one `script` for work that repeats
   or branches.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A live test of a React form, by what was saved.** A record editor
+  written as React apps are (a controlled input; Save sends React's state)
+  is edited through the server in Chrome on Linux and Edge on Windows, and
+  the test checks what the backend received and what the reopened record
+  shows, not only the field: a value set behind React's back shows in the
+  field and the accessibility tree while the old one is saved. Both pass:
+  Chrome takes no value from accessibility, so the text is typed; Edge takes
+  it through UI Automation and sends the input events React listens to. The
+  fixture fails that way when a value is set without them. macOS and other
+  browsers aren't covered. The skill says that `expect` checks the screen,
+  not what the app stored.
 - **A window that opened since the last look holds the action back.** A
   dialog the app opened by itself between the model's look and its press
   (or key, or typed text) takes the input of the window under it, so the
