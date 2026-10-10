@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Record editor</title>
+<style>
+  body { font: 16px sans-serif; margin: 24px; }
+  label { display: block; margin: 12px 0 4px; }
+  input { font: inherit; padding: 6px; width: 320px; }
+  button { font: inherit; margin-top: 12px; padding: 6px 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="react.production.min.js"></script>
+<script src="react-dom.production.min.js"></script>
+<script>
+// A record editor as React apps are written: the field is a controlled
+// input (its value lives in React's state, changed only by onChange), and
+// Save sends that state, not what the field shows.
+const e = React.createElement;
+function Editor() {
+  const [record, setRecord] = React.useState(null);
+  const [title, setTitle] = React.useState("");
+  const [note, setNote] = React.useState("");
+  React.useEffect(() => {
+    fetch("record").then((r) => r.json()).then((r) => { setRecord(r); setTitle(r.title); });
+  }, []);
+  if (!record) return e("p", null, "Loading…");
+  const save = async (ev) => {
+    ev.preventDefault();
+    const r = await fetch("save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
+    setNote(r.ok ? "Saved record " + record.id : "Not saved");
+  };
+  return e("form", { onSubmit: save },
+    e("h1", null, "Record " + record.id),
+    e("label", { htmlFor: "title" }, "Title"),
+    e("input", { id: "title", "aria-label": "Title", value: title, onChange: (ev) => setTitle(ev.target.value) }),
+    e("div", null, e("button", { type: "submit" }, "Save")),
+    e("p", { role: "status" }, note));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(e(Editor));
+</script>
+</body>
+</html>

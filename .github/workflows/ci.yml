@@ -109,6 +109,10 @@ jobs:
       # 6.9 crashed on a call the server made, and took KWin with it.
       - name: Run live Qt test
         run: bash crates/computer-use/tests/run_live_qt.sh
+      # A React form in Chrome: what is saved, not only what the field shows
+      # (a value set behind React's back shows, and the old one is saved).
+      - name: Run live web form test (React in Chrome)
+        run: bash crates/computer-use/tests/run_live_web.sh
 
   live-wayland:
     name: Live Wayland test (headless sway + AT-SPI)
@@ -153,6 +157,10 @@ jobs:
       # Calls 4 s apart, as a model's: the server keeps its hub and the
       # overlay shows after every call (v3.9.0-v3.9.4 lost both on Windows).
       - run: python crates/computer-use/tests/live_windows_overlay.py target\debug\computer-use-mcp.exe
+      # A React form in Edge, through UI Automation: what is saved, not only
+      # what the field shows.
+      - name: Live web form test (React in Edge)
+        run: python crates/computer-use/tests/live_web.py target\debug\computer-use-mcp.exe "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 
   package:
     name: Package ${{ matrix.name }}
