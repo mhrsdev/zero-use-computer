@@ -216,6 +216,28 @@ impl<B: Backend> Engine<B> {
                     node.label()
                 );
             }
+            // What was typed came after the old text: the selection hadn't
+            // landed yet. Select with the keyboard and type it once more
+            // (never when the field holds something else, such as a masked
+            // or reformatted value: typing again would not help).
+            let late = self
+                .node_by_index(&app, args.element_index)
+                .ok()
+                .and_then(|n| n.value.clone())
+                .is_some_and(|v| v.len() > args.value.len() && v.ends_with(args.value.as_str()));
+            if retry
+                && late
+                && self.verified()
+                && self.value_took(&app, args.element_index, &args.value) == Some(false)
+                && let Some(n) = self.node_by_index(&app, args.element_index).ok().cloned()
+            {
+                self.retype_by_keys(&app, n.handle, &n, &args.value)?;
+                self.settle_on(&app);
+                msg = format!(
+                    "Set {} to \"{shown}\" (the old text was still there after typing; selected it with the keyboard and typed it again).",
+                    node.label()
+                );
+            }
             if self.verified()
                 && self.value_took(&app, args.element_index, &args.value) == Some(false)
             {
@@ -570,6 +592,24 @@ impl<B: Backend> Engine<B> {
             self.backend
                 .press_key(&target, &keys::parse_combo("primary+a")?)?;
         }
+        self.type_into_focus(app, text, crate::privacy::is_password(&node.role))
+    }
+
+    /// `retype`, selecting what is there with the keyboard. A text field
+    /// that took "select all" by the accessibility API may show the
+    /// selection a moment late (a browser does), and what is typed then goes
+    /// after the old text; a key chord is applied in order with the typing.
+    fn retype_by_keys(
+        &mut self,
+        app: &AppInfo,
+        handle: ElementHandle,
+        node: &Node,
+        text: &str,
+    ) -> Result<()> {
+        self.focus_element(app, handle, node)?;
+        let target = self.input_target(app)?;
+        self.backend
+            .press_key(&target, &keys::parse_combo("primary+a")?)?;
         self.type_into_focus(app, text, crate::privacy::is_password(&node.role))
     }
 

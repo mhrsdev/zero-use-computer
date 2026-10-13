@@ -3089,6 +3089,41 @@ fn a_value_that_does_not_take_is_typed_instead() {
 }
 
 #[test]
+fn a_selection_that_lands_late_does_not_leave_the_old_text_in_front() {
+    // A browser says "selected" and shows the selection a moment later: the
+    // text typed meanwhile goes after the old one. set_value sees it in the
+    // read-back, selects with the keyboard and types once more.
+    let mut e = engine();
+    let out = state_of(&mut e, serde_json::json!({}));
+    let doc = index_of_name(&out.text, "\"Document\"");
+    e.backend_mut().ignore_set_value.insert(5);
+    e.backend_mut().late_selection.insert(5);
+    let out = e.call_tool(
+        "set_value",
+        serde_json::json!({"app": "TextEdit", "element_index": doc, "value": "Replaced"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert!(
+        out.text.contains("selected it with the keyboard"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("Note: it now shows"), "{}", out.text);
+    let out = state_of(&mut e, serde_json::json!({"disable_diff": true}));
+    assert!(out.text.contains("Replaced"), "{}", out.text);
+    assert!(!out.text.contains("HelloReplaced"), "{}", out.text);
+    // It typed the text twice in all: once after the old text, once over it
+    // (the first, wrong one was replaced by the select-all of the second).
+    let typed = e
+        .backend()
+        .events
+        .iter()
+        .filter(|ev| matches!(ev, Event::Type(..)))
+        .count();
+    assert_eq!(typed, 2);
+}
+
+#[test]
 fn typing_that_does_not_show_is_never_typed_twice() {
     let mut e = engine();
     let out = state_of(&mut e, serde_json::json!({}));

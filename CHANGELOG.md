@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`set_value` no longer leaves the old text in front of the new.** In a
+  browser field the accessibility "select all" may land a moment after it
+  says yes, and the text typed meanwhile went after the old one ("Old
+  titleNew title"; the answer said so, but the field was wrong, and a form
+  saved it). When the read-back shows the new text after the old, the field is
+  now selected with the keyboard and the text typed once more. A mock
+  backend with a late selection tests it; the live React form test
+  (Chrome, in CI) found it.
 - **The pointer is yours to make.** `overlay.cursor_style = "custom"` draws
   your own picture (`overlay.cursor_image`: a PNG, or a GIF or APNG that
   plays and loops) as the agent's pointer, its tip at `cursor_hotspot_x`/`_y`

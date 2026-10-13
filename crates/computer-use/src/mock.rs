@@ -143,6 +143,10 @@ pub struct MockBackend {
     pub panic_on_key: Option<String>,
     /// Elements that accept set_value but keep their old value.
     pub ignore_set_value: std::collections::HashSet<ElementHandle>,
+    /// Elements whose `select_text` says yes but whose selection lands too
+    /// late (a browser applies it a moment after the call): text typed next
+    /// is added to the old one. Selecting with the keyboard does work.
+    pub late_selection: std::collections::HashSet<ElementHandle>,
     /// Elements whose focus() reports success without focusing.
     pub fake_focus: std::collections::HashSet<ElementHandle>,
     /// Windows refuse to come to the front (like Windows' focus-stealing
@@ -581,7 +585,7 @@ impl Backend for MockBackend {
         occurrence: usize,
     ) -> Result<()> {
         self.element(element)?;
-        if text.is_none() {
+        if text.is_none() && !self.late_selection.contains(&element) {
             self.select_all = Some(element);
         }
         self.events.push(Event::SelectText(
@@ -690,6 +694,17 @@ impl Backend for MockBackend {
             panic!("the backend failed on {combo}");
         }
         self.events.push(Event::Key(target.pid, combo.to_string()));
+        // Select all by keyboard: the field with the focus.
+        if combo.to_string().to_lowercase().ends_with("+a")
+            && let Some(app) = self.app_mut(target.pid)
+            && let Some(f) = app
+                .elements
+                .iter()
+                .find(|e| e.states.editable && e.states.focused)
+                .map(|e| e.handle)
+        {
+            self.select_all = Some(f);
+        }
         Ok(())
     }
 
