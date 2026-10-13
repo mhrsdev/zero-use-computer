@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The pointer is yours to make.** `overlay.cursor_style = "custom"` draws
+  your own picture (`overlay.cursor_image`: a PNG, or a GIF or APNG that
+  plays and loops) as the agent's pointer, its tip at `cursor_hotspot_x`/`_y`
+  and its size `cursor_image_scale`; it leans, trails, breathes and clicks
+  like the others, and an `agent_cursors` value may be a picture's path so
+  each agent has its own. Pictures are read once, in the background, with
+  hard limits (4 MB, 512 px a side; an animation's first 150 frames and
+  5 s); one that can't be used leaves the default pointer and one warning in
+  the log. The settings panel's Pointer page has a card for it: choose a
+  file (checked by the same reader, kept in the program's folder), see it
+  play, click where its tip is, set its size, take it away. Clicks can show
+  a `pulse`, a `burst` or `sparkle` instead of the ripple
+  (`click_effect_style`, `click_effect_color`, `click_effect_ms`; a double
+  click shows two beats), and while the agent holds the button down (a
+  drag, a drawing) the pointer glows (`hold_effect`: glow, ring or none).
+  Sounds, off by default (`overlay.sound`): a click, keys, done, an error and
+  a stop, made by the program or from WAV files of yours, played by the
+  system's player (`pw-play`/`paplay`/`aplay`, `afplay`, `PlaySound`) without
+  a shell and rate-limited; the panel can test each. With the defaults every
+  built-in pointer and its click draw exactly as in 5.5.0 (a test pins it).
+  Untested on real Windows and macOS: the PlaySound and afplay paths.
 - **A live test of a React form, by what was saved.** A record editor
   written as React apps are (a controlled input; Save sends React's state)
   is edited through the server in Chrome on Linux and Edge on Windows, and

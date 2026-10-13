@@ -493,6 +493,44 @@ their mouse:
 | paused | grey | waiting while you use the mouse or keyboard |
 | stopped | orange | you pressed the emergency stop key |
 
+- **Your own pointer.** `overlay.cursor_style = "custom"` draws your own
+  picture instead (`overlay.cursor_image`): a PNG with a clear background,
+  or a GIF or APNG, still or animated (it loops, each frame for as long as
+  the file says, 20 ms at least, and the helper wakes for the next frame
+  only while it is on screen). Its tip is `cursor_hotspot_x`/`_y` (fractions
+  of its width and height; 0, 0 is its top left corner, like the built-in
+  pointers), its size `cursor_image_scale` (its longer side is 48 px at 1,
+  times `scale`). It leans, trails, breathes and clicks as the other
+  pointers do, with the state colour glowing behind it and its name tag
+  under it. A value in `agent_cursors` may be a picture's path
+  (`{ codex = "~/pics/cat.gif" }`): each agent its own picture. The settings
+  panel stores one for you (below). Limits, checked before anything is
+  drawn: the file at most 4 MB, the picture at most 512 px a side, an
+  animation's first 150 frames and 5 seconds (a longer one is cut short, not
+  refused, and the log says so). A file that is missing, broken, too big or
+  has no frames leaves the default pointer and one warning in the log; it
+  is read once, in the background, and again only when the file changes.
+  The path comes only from your settings: no tool of the agent's sets it.
+- **Clicks and holds.** `click_effect_style` picks what a click shows:
+  `ripple` (as before: each pointer clicks its own way, the arrow ripples),
+  `pulse` (an expanding ring), `burst` (particles), `sparkle` or `none`, in
+  `click_effect_color` ("" = the pointer's own) for `click_effect_ms`; a
+  double click shows two beats. While the agent holds the button down (a
+  `drag`, a `draw` stroke) the pointer shows `hold_effect`: a soft `glow`
+  that pulses (the default), a `ring`, or `none`; it fades when the button
+  is let go. `click_effect = false` still turns every click effect off.
+- **Sounds** (`overlay.sound`, off by default): a click, keys and typing, the
+  work done, an error, the agent stopped (the stop key or button), each with
+  its own switch (`sound_click`…) and an optional WAV file of yours
+  (`sound_click_file`…), at `sound_volume`. The built-in sounds are made by
+  the program (short tones written once into the cache folder, at the
+  volume asked for). The overlay's helper plays them with the system's
+  player, started directly (never through a shell) and never waited for: on
+  Linux the first of `pw-play`, `paplay` and `aplay` on `PATH`, on macOS
+  `afplay`, on Windows `PlaySound`. Each sound is rate-limited (keys at most
+  about seven a second, all sounds six a second, three players at once), and
+  one that can't play is skipped and said once in the log. With `aplay`
+  and on Windows your own files play at their own volume.
 - **Nothing pops.** It fades in when it appears, blends from one state colour
   to the next, and fades out slowly when the work is done (`fade_in_ms`,
   `transition_ms`, `fade_out_ms`). All of its texts are English by default
@@ -961,7 +999,16 @@ you can read. It listens only while it is open, and closes after
   translation lacks shows in English. See `lang/README.md` to add one.
 - **Previews**: how the pointer glides (the real path maker, so each press
   of "Another set" is a fresh sample), how the overlay's border, label and
-  colours fit together, what a picture costs in tokens.
+  colours fit together, the click and hold effects as they play, what a
+  picture costs in tokens; a test button for each sound.
+- **Your own picture** (the Pointer page): **Choose a file** sends a PNG,
+  GIF or APNG to the panel, which checks it with the overlay's own reader
+  and limits, keeps it as `cursors/custom.png` (or `.gif`) in the program's
+  folder and sets `overlay.cursor_image` and `cursor_style = "custom"`. The
+  card shows it as it plays; a click on it puts the tip there; **Remove**
+  puts back the pointer it replaced and deletes the kept file (a picture of
+  your own elsewhere is only no longer used). Only this upload may send
+  more than 64 KB to the panel (6 MB at most).
 - **Profiles**: Low tokens, Balanced, Best quality and Showcase, and your own
   (a snapshot of what you changed). A profile never holds a secret or a
   protected setting.
