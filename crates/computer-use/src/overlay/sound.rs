@@ -65,7 +65,7 @@ impl Event {
     }
 
     /// Whether the settings want it, and their own file for it ("").
-    fn wanted<'a>(self, cfg: &'a OverlayConfig) -> (bool, &'a str) {
+    fn wanted(self, cfg: &OverlayConfig) -> (bool, &str) {
         match self {
             Event::Click => (cfg.sound_click, &cfg.sound_click_file),
             Event::Key => (cfg.sound_key, &cfg.sound_key_file),

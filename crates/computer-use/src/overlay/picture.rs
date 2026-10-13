@@ -321,9 +321,12 @@ enum Slot {
     Done(std::result::Result<Arc<Picture>, String>),
 }
 
-fn cache() -> &'static Mutex<HashMap<PathBuf, (Stamp, Slot, u64)>> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, (Stamp, Slot, u64)>>> =
-        std::sync::OnceLock::new();
+/// Each picture's file as read, what came of it, and when it was last asked
+/// for (the oldest goes first when the cache is full).
+type Cache = HashMap<PathBuf, (Stamp, Slot, u64)>;
+
+fn cache() -> &'static Mutex<Cache> {
+    static CACHE: std::sync::OnceLock<Mutex<Cache>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
