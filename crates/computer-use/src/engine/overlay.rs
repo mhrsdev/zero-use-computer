@@ -340,6 +340,21 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// The mouse button is held down (a drag or a drawing under way), or
+    /// let go: the cursor shows the hold effect meanwhile.
+    pub(super) fn overlay_held(&mut self, on: bool) {
+        if self.overlay.is_some() {
+            self.overlay_send(OverlayCmd::Held { on });
+        }
+    }
+
+    /// The next click shown is `n` clicks (a double click shows two beats).
+    pub(super) fn overlay_clicks(&mut self, n: u32) {
+        if self.overlay.is_some() && n > 1 {
+            self.overlay_send(OverlayCmd::Clicks { n: n.min(3) as u8 });
+        }
+    }
+
     /// Show a key combination being pressed by the agent cursor.
     pub(super) fn overlay_keys(&mut self, combo: &KeyCombo) {
         if self.overlay.is_some() && self.store.config.overlay.show_keys {

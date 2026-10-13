@@ -1177,6 +1177,8 @@ struct Hub {
     /// The agents at work when last looked (a change shares the screen
     /// out again).
     working: Vec<u32>,
+    /// Plays the agents' sounds (made when the first is asked for).
+    player: Option<super::sound::Player>,
 }
 
 impl Hub {
@@ -1230,6 +1232,7 @@ impl Hub {
             empty_since: None,
             joined: false,
             working: Vec::new(),
+            player: None,
         }
     }
 
@@ -1252,7 +1255,16 @@ impl Hub {
             let now = Instant::now();
             let animating =
                 self.looks.values().any(|l| l.machine.animating(now)) || self.controls.busy();
-            let wait = Duration::from_millis(if animating { 16 } else { 100 });
+            let mut wait = Duration::from_millis(if animating { 16 } else { 100 });
+            // Animated pictures: woken for the next frame, not sooner.
+            if let Some(next) = self
+                .looks
+                .values()
+                .filter_map(|l| l.machine.next_frame_in(now))
+                .min()
+            {
+                wait = wait.min(next.max(Duration::from_millis(5)));
+            }
             let mut first = match rx.recv_timeout(wait) {
                 Ok(e) => Some(e),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -1418,6 +1430,7 @@ impl Hub {
             Cmd::Lock { .. }
             | Cmd::Hold
             | Cmd::Pointer { .. }
+            | Cmd::Held { .. }
             | Cmd::Keys { .. }
             | Cmd::Typed { .. }
             | Cmd::Scroll { .. }
@@ -1884,9 +1897,23 @@ impl Hub {
 
     fn paint(&mut self, now: Instant) {
         let mut arrived = Vec::new();
+        let mut warnings = Vec::new();
         let allow = self.mouse.is_empty();
         for (agent, look) in &mut self.looks {
             look.machine.tick(now);
+            // Each agent's sounds as its settings say, one player for all
+            // (so they are rate-limited together).
+            for e in look.machine.take_sounds() {
+                let p = self.player.get_or_insert_with(super::sound::Player::new);
+                p.play(e, look.machine.config(), now);
+                warnings.extend(p.take_warnings().into_iter().map(|w| (*agent, w)));
+            }
+            warnings.extend(
+                look.machine
+                    .take_warnings()
+                    .into_iter()
+                    .map(|w| (*agent, w)),
+            );
             if let Some(s) = self.surface.as_mut() {
                 let scene = look.machine.scene(now);
                 look.painter
@@ -1925,6 +1952,9 @@ impl Hub {
         }
         for (agent, id) in arrived {
             self.reply(agent, &Reply::Arrived { id });
+        }
+        for (agent, text) in warnings {
+            self.reply(agent, &Reply::Warn { text });
         }
     }
 }

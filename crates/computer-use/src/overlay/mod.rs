@@ -17,9 +17,12 @@
 
 pub mod controls;
 pub mod draw;
+pub mod effects;
 pub mod helper;
 pub mod hub;
+pub mod picture;
 mod pointers;
+pub mod sound;
 pub mod text;
 
 #[cfg(target_os = "linux")]
@@ -124,6 +127,16 @@ pub enum Cmd {
     },
     /// The glide just asked for is a drag (a button held): draw its line.
     Dragging,
+    /// The agent holds the mouse button down (on: a drag or a drawing
+    /// starts) or lets it go (off): the hold effect shows meanwhile.
+    Held {
+        on: bool,
+    },
+    /// The next click is this many (a double click: 2), shown as as many
+    /// beats.
+    Clicks {
+        n: u8,
+    },
     /// Keys pressed together ("ctrl+s"), shown as keycaps by the pointer.
     Keys {
         keys: String,
@@ -347,6 +360,11 @@ pub enum Reply {
     /// ([`Cmd::Mouse`] `id`).
     Mouse {
         id: u64,
+    },
+    /// Something the user should find in the log, said once (a pointer's
+    /// picture that can't be used, a sound that can't be played).
+    Warn {
+        text: String,
     },
     // -- from the hub only --
     /// Joined: this agent's number.
@@ -702,6 +720,7 @@ impl Overlay {
                                 *h = Some((key, ok));
                             }
                         }
+                        Reply::Warn { text } => log::warn!("overlay: {text}"),
                         Reply::Settings => {
                             log::info!("the user pressed the settings key");
                             if let Some(f) = &on_settings {
@@ -1191,6 +1210,8 @@ mod tests {
             Cmd::Paused { on: true },
             Cmd::Stopped { on: false },
             Cmd::Dragging,
+            Cmd::Held { on: true },
+            Cmd::Clicks { n: 2 },
             Cmd::Keys {
                 keys: "ctrl+s".into(),
             },

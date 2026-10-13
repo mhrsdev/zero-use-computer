@@ -139,7 +139,7 @@ pub const GROUPS: &[&str] = &[
 
 const PATHS: &[&str] = &["mixed", "hand", "sine", "arc", "spring", "spiral"];
 const POINTERS: &[&str] = &[
-    "random", "classic", "crystal", "paper", "jelly", "ice", "metal", "orbit",
+    "random", "classic", "crystal", "paper", "jelly", "ice", "metal", "orbit", "custom",
 ];
 const ONOFF: &[&str] = &["auto", "always", "never"];
 
@@ -158,7 +158,11 @@ pub const ENTRIES: &[Entry] = &[
     e("mouse_jitter", MOUSE, "How much the path trembles, as a share of a hand's. 0 is a clean curve.").range(0.0, 200.0, 10.0, "%"),
     e("restore_pointer", MOUSE, "Put your mouse pointer back where it was after the agent clicks, scrolls or drags, so it never takes your mouse away."),
     // Pointer
-    e("overlay.cursor_style", POINTER, "The agent's pointer. Random gives each session one, and a different one to each agent at once.").choice(POINTERS),
+    e("overlay.cursor_style", POINTER, "The agent's pointer. Random gives each session one, and a different one to each agent at once. Custom is your own picture.").choice(POINTERS),
+    e("overlay.cursor_image", POINTER, "Your own picture for the custom pointer: a PNG, or a GIF or APNG that plays. At most 4 MB and 512 px a side. Empty: none."),
+    e("overlay.cursor_image_scale", POINTER, "How big your picture is drawn, on top of the overlay's size. At 1 its longer side is 48 px.").range(0.25, 4.0, 0.05, "×"),
+    e("overlay.cursor_hotspot_x", POINTER, "Where in your picture the tip is, across: 0 is its left edge, 1 its right edge.").range(0.0, 1.0, 0.01, ""),
+    e("overlay.cursor_hotspot_y", POINTER, "Where in your picture the tip is, down: 0 is its top edge, 1 its bottom edge.").range(0.0, 1.0, 0.01, ""),
     e("overlay.cursor_color", POINTER, "The colour of the plain arrow and the base of the pointer's ring.").kind(Kind::Color),
     e("overlay.cursor_tag", POINTER, "The name beside the pointer. Empty: no name."),
     e("overlay.cursor_motion", POINTER, "The pointer leans as it moves, leaves a trail, breathes, and shows drags and scrolls."),
@@ -178,6 +182,22 @@ pub const ENTRIES: &[Entry] = &[
     e("overlay.show_border", OVERLAY, "A glowing border around the screen or window the agent works on."),
     e("overlay.show_label", OVERLAY, "A status label."),
     e("overlay.show_buttons", OVERLAY, "Stop and settings buttons beside the label: stop every agent or one from the list, or open this panel."),
+    e("overlay.click_effect_style", OVERLAY, "What a click shows: ripple (each pointer its own way), a pulse, a burst, sparkles, or nothing.").choice(&["ripple", "pulse", "burst", "sparkle", "none"]),
+    e("overlay.click_effect_color", OVERLAY, "The colour of the click and hold effects. Empty: the pointer's own."),
+    e("overlay.click_effect_ms", OVERLAY, "How long a click shows.").range(100.0, 3000.0, 50.0, "ms"),
+    e("overlay.hold_effect", OVERLAY, "While the agent holds the button down (a drag, a drawing): a soft glow that pulses, a ring, or nothing.").choice(&["glow", "ring", "none"]),
+    e("overlay.sound", OVERLAY, "Sounds for what the agent does: a click, keys, the work done, an error, a stop. Played with your system's player."),
+    e("overlay.sound_volume", OVERLAY, "How loud the sounds are.").range(0.0, 100.0, 5.0, "%"),
+    e("overlay.sound_click", OVERLAY, "A sound when the agent clicks."),
+    e("overlay.sound_click_file", OVERLAY, "Your own WAV file for a click. Empty: the built-in sound.").advanced(),
+    e("overlay.sound_key", OVERLAY, "A soft tick when the agent presses keys or types, at most a few a second."),
+    e("overlay.sound_key_file", OVERLAY, "Your own WAV file for keys. Empty: the built-in sound.").advanced(),
+    e("overlay.sound_done", OVERLAY, "A chime when the work is done."),
+    e("overlay.sound_done_file", OVERLAY, "Your own WAV file for done. Empty: the built-in sound.").advanced(),
+    e("overlay.sound_error", OVERLAY, "A sound when an action fails."),
+    e("overlay.sound_error_file", OVERLAY, "Your own WAV file for an error. Empty: the built-in sound.").advanced(),
+    e("overlay.sound_stopped", OVERLAY, "A sound when you stop the agent with the stop key or button."),
+    e("overlay.sound_stopped_file", OVERLAY, "Your own WAV file for a stop. Empty: the built-in sound.").advanced(),
     e("overlay.border_target", OVERLAY, "Whether the border goes around the whole screen or only the window worked on.").choice(&["screen", "window"]),
     e("overlay.border_width", OVERLAY, "The bright core line of the border.").range(0.0, 40.0, 1.0, "px"),
     e("overlay.glow_size", OVERLAY, "How far the glow fades out. 0 is a plain line.").range(0.0, 200.0, 1.0, "px"),

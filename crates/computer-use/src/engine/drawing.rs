@@ -329,10 +329,14 @@ impl<B: Backend> Engine<B> {
             }
             Ok(())
         };
+        if let Some(o) = overlay {
+            o.send(&OverlayCmd::Held { on: true });
+        }
         let drawn = self
             .backend
             .draw(&target, &plan.strokes, args.button, &mut pace);
         self.last_input = Some((self.clock)());
+        self.overlay_held(false);
         self.overlay_glide(last);
         drawn?;
         self.settle_on(&app);

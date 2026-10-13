@@ -65,7 +65,7 @@ impl Picture {
 }
 
 /// Half the size, each pixel the average of four (premultiplied).
-fn halve(src: &Pixmap) -> Option<Pixmap> {
+pub(super) fn halve(src: &Pixmap) -> Option<Pixmap> {
     let (w, h) = (src.width() / 2, src.height() / 2);
     let mut out = Pixmap::new(w.max(1), h.max(1))?;
     let (from, sw) = (src.data(), src.width() as usize);
@@ -213,7 +213,7 @@ pub(super) fn draw(
             .pre_translate(-pic.origin.0, -pic.origin.1)
     };
     match style {
-        CursorStyle::Classic => {}
+        CursorStyle::Classic | CursorStyle::Custom => {}
         CursorStyle::Crystal => {
             image(pm, pic, on_pic(base), 1.0, BlendMode::SourceOver, None);
             if let Some(k) = click {
@@ -837,7 +837,7 @@ pub(super) fn tag(
 /// a light one (`ring` for the classic arrow).
 pub(super) fn accent(style: CursorStyle, ring: Color) -> (Color, Color) {
     match style {
-        CursorStyle::Classic => (ring, Color::WHITE),
+        CursorStyle::Classic | CursorStyle::Custom => (ring, Color::WHITE),
         CursorStyle::Crystal => (rgba(170, 140, 255, 1.0), rgba(255, 255, 255, 1.0)),
         CursorStyle::Paper => (rgba(222, 142, 64, 1.0), rgba(255, 228, 176, 1.0)),
         CursorStyle::Jelly => (rgba(146, 108, 246, 1.0), rgba(206, 188, 255, 1.0)),
@@ -866,7 +866,13 @@ fn sparkle(pm: &mut Pixmap, (x, y): (f32, f32), r: f32, c: Color) {
 /// What a moving pointer leaves behind, at `points` (px, newest first):
 /// sparkles of colour (crystal), gold flecks (paper), a gooey tail (jelly),
 /// frost (ice), chrome drops (metal), a glowing streak (orbit).
-pub(super) fn trail(pm: &mut Pixmap, style: CursorStyle, points: &[(f32, f32)], s: f32) {
+pub(super) fn trail(
+    pm: &mut Pixmap,
+    style: CursorStyle,
+    points: &[(f32, f32)],
+    s: f32,
+    ring: Color,
+) {
     let n = points.len().max(1) as f32;
     let id = Transform::identity();
     if style == CursorStyle::Orbit && points.len() >= 2 {
@@ -942,6 +948,21 @@ pub(super) fn trail(pm: &mut Pixmap, style: CursorStyle, points: &[(f32, f32)], 
                     let r = 2.8 * s * a + 0.5;
                     bead(pm, x, y, r, rgba(176, 178, 188, a), rgba(70, 70, 80, a), id);
                 }
+            }
+            // The user's picture: soft dots in the state colour.
+            CursorStyle::Custom => {
+                let r = (4.5 * a + 1.0) * s;
+                let c = |k: f32| {
+                    let mut c = ring;
+                    c.set_alpha(k * a);
+                    c
+                };
+                fill(
+                    pm,
+                    &circle(x, y, r),
+                    &radial((x, y), r, &[(0.0, c(0.7)), (0.6, c(0.35)), (1.0, c(0.0))]),
+                    id,
+                );
             }
             CursorStyle::Classic | CursorStyle::Orbit => {}
         }
@@ -1019,7 +1040,7 @@ pub(super) fn drag_line(
             pm.stroke_path(&line, &solid(fade(main, 0.9)), &stroke(3.4 * s), id, None);
             pm.stroke_path(&line, &solid(fade(light, 1.0)), &stroke(1.3 * s), id, None);
         }
-        CursorStyle::Classic => {
+        CursorStyle::Classic | CursorStyle::Custom => {
             pm.stroke_path(&line, &solid(fade(main, 1.0)), &stroke(3.0 * s), id, None);
         }
     }

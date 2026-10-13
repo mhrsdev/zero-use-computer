@@ -207,6 +207,12 @@ show_cursor = true
 show_label = true
 show_buttons = true          # stop and settings buttons beside the label (the rest stays click-through)
 click_effect = true          # a ripple where the agent clicks
+click_effect_style = "ripple" # what a click shows: "ripple" (each pointer its own way), "pulse",
+                             # "burst", "sparkle" or "none"
+click_effect_color = ""      # its colour (#RRGGBB); "" = the pointer's own
+click_effect_ms = 700        # how long a click shows (100 to 3000)
+hold_effect = "glow"         # while the agent holds the button down (a drag, a drawing):
+                             # "glow" (a soft ring that pulses), "ring" or "none"
 border_target = "screen"     # glow around the whole "screen" or the "window" worked on
 border_width = 3             # bright core line
 glow_size = 36               # how far the glow fades out (0 = a plain line)
@@ -228,8 +234,19 @@ color_stopped = "#FF6D00"    # orange: stopped with the emergency stop key
 cursor_color = "#9C27B0"     # the agent cursor itself; its ring follows the state
 cursor_tag = "Zero"          # name tag beside the agent cursor ("" = none)
 cursor_style = "random"      # "random" (a pointer per session, another per agent at once), "classic" (the plain arrow),
-                             # or one: "crystal", "paper", "jelly", "ice", "metal", "orbit"
-agent_cursors = {}           # a pointer per agent, by MCP client or tag: { codex = "metal", "claude-code" = "jelly" }
+                             # one: "crystal", "paper", "jelly", "ice", "metal", "orbit",
+                             # or "custom": your own picture, cursor_image
+# Your own picture as the pointer (cursor_style = "custom"): a PNG with
+# transparency, or a GIF or APNG, still or animated (it loops). At most 4 MB
+# and 512 px a side; an animation keeps its first 150 frames and 5 seconds.
+# A picture that can't be read leaves the default pointer (and says why in
+# the log). "~" is your home folder; the settings panel can store one for you.
+cursor_image = ""
+cursor_image_scale = 1.0     # its size on top of `scale` (0.25 to 4; its longer side is 48 px at 1)
+cursor_hotspot_x = 0.0       # where its tip is, as a fraction of its width (0 = left edge)
+cursor_hotspot_y = 0.0       # ... and of its height (0 = top edge)
+agent_cursors = {}           # a pointer per agent, by MCP client or tag: { codex = "metal", "claude-code" = "jelly" };
+                             # a picture's path gives one its own picture: { codex = "~/pics/cat.gif" }
 cursor_motion = true         # the pointer leans as it moves, leaves a trail, breathes, shows drags and scrolls
 trail = true                 # (with cursor_motion) the trail it leaves
 trail_strength = 100         # 0 to 100: how long the trail is
@@ -238,6 +255,22 @@ breathe = true               # (with cursor_motion) it breathes while it waits
 breathe_strength = 100       # 0 to 100: how deeply
 cursor_path = "mixed"        # how it glides there: "mixed", "hand", "sine", "arc", "spring" or "spiral"
 show_keys = true             # keys pressed show as keycaps by the pointer; typed text runs out beside it
+# Sounds (off by default), played by the overlay's helper with the system's
+# player (pw-play, paplay or aplay on Linux; afplay on macOS; the system's
+# own on Windows). The built-in sounds are made by the program; your own
+# file must be a WAV. Each sound is rate-limited, so typing doesn't rattle.
+sound = false
+sound_volume = 60            # 0 to 100
+sound_click = true           # a click
+sound_click_file = ""        # your own WAV instead ("" = built in)
+sound_key = true             # keys pressed and text typed
+sound_key_file = ""
+sound_done = true            # the work is done
+sound_done_file = ""
+sound_error = true           # an action failed
+sound_error_file = ""
+sound_stopped = true         # stopped with the stop key or the stop button
+sound_stopped_file = ""
 done_after_ms = 20000        # no new action for this long: done, then hidden
 done_linger_ms = 1500
 error_hold_ms = 2500

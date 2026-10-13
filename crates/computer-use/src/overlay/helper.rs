@@ -3,13 +3,16 @@
 //! [`Surface`]. It exits as soon as stdin closes or its parent is gone.
 
 use std::io::{BufRead, Write};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use tiny_skia::{Color, Pixmap};
 
 use super::controls::{Action, Controls, Row, Texts};
 use super::draw;
+use super::effects::{ClickFx, ClickStyle, HoldFx, HoldStyle};
+use super::picture::{self, Picture};
+use super::sound;
 use super::text::Fonts;
 use super::{Cmd, Reply, Status};
 use crate::config::OverlayConfig;
@@ -299,8 +302,12 @@ impl Colors {
 
 /// The look a `cursor_style` setting names; "random" (or anything else)
 /// picks a pointer, avoiding `taken`.
+/// "custom" is one of the pointers until the user's picture is read (and
+/// stays one if it can't be).
 fn style_for(setting: &str, taken: &[draw::CursorStyle]) -> draw::CursorStyle {
-    draw::CursorStyle::named(setting).unwrap_or_else(|| draw::CursorStyle::random(taken))
+    draw::CursorStyle::named(setting)
+        .filter(|s| *s != draw::CursorStyle::Custom)
+        .unwrap_or_else(|| draw::CursorStyle::random(taken))
 }
 
 struct Glide {
@@ -312,8 +319,6 @@ struct Glide {
     path: Option<motion::Path>,
 }
 
-/// How long a click shows (the pointers each click in their own way).
-const RIPPLE: Duration = Duration::from_millis(700);
 /// One breath of a pointer waiting.
 const IDLE_CYCLE: f32 = 3.2;
 /// How long keys pressed show.
@@ -488,14 +493,41 @@ pub struct Machine {
     keys: Option<(Vec<String>, Instant)>,
     typed: Option<Typed>,
     scroll: Option<((i8, i8), Instant)>,
+    /// What a click shows, how many beats the click showing has, and how
+    /// many the next one will (a double click: 2).
+    click_style: ClickStyle,
+    beats: u8,
+    next_clicks: u8,
+    /// The click sound waits for the pointer to get there.
+    click_sound: bool,
+    /// The button held since, and let go at.
+    hold: Option<(Instant, Option<Instant>)>,
+    /// The user's picture (`cursor_style = "custom"`): where it is, the
+    /// picture once read, since when it shows, and the last picture a
+    /// warning was given for.
+    picture_path: Option<std::path::PathBuf>,
+    picture: Option<Arc<Picture>>,
+    picture_since: Instant,
+    picture_said: Option<std::path::PathBuf>,
+    /// Sounds to play and things to say in the log, for the loop to take.
+    sounds: Vec<sound::Event>,
+    warnings: Vec<String>,
 }
+
+/// A double click's second beat comes this long after the first.
+const BEAT: Duration = Duration::from_millis(200);
+/// A hold's effect fades in this fast, and out after the button is let go.
+const HOLD_IN: Duration = Duration::from_millis(120);
+const HOLD_FADE: Duration = Duration::from_millis(260);
+/// One pulse of a hold.
+const HOLD_CYCLE: f32 = 1.2;
 
 impl Machine {
     pub fn new(cfg: OverlayConfig, now: Instant) -> Self {
         let colors = Colors::from(&cfg);
         let start = colors.working;
         let style_setting = cfg.cursor_style.trim().to_ascii_lowercase();
-        Self {
+        let mut m = Self {
             style: style_for(&style_setting, &[]),
             style_setting,
             colors,
@@ -522,7 +554,202 @@ impl Machine {
             keys: None,
             typed: None,
             scroll: None,
+            click_style: ClickStyle::Ripple,
+            beats: 1,
+            next_clicks: 1,
+            click_sound: false,
+            hold: None,
+            picture_path: None,
+            picture: None,
+            picture_since: now,
+            picture_said: None,
+            sounds: Vec::new(),
+            warnings: Vec::new(),
+        };
+        m.settings_changed(now);
+        m
+    }
+
+    /// Sounds to play now (`overlay.sound`), oldest first.
+    pub fn take_sounds(&mut self) -> Vec<sound::Event> {
+        std::mem::take(&mut self.sounds)
+    }
+
+    /// What should be said in the log (once each).
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    fn sound(&mut self, e: sound::Event) {
+        if self.cfg.sound && self.cfg.enabled {
+            self.sounds.push(e);
         }
+    }
+
+    /// The newer settings taken in: the click's look, and the user's
+    /// picture (read in the background; meanwhile, and if it can't be
+    /// used, the default pointer shows).
+    fn settings_changed(&mut self, now: Instant) {
+        self.click_style = ClickStyle::named(&self.cfg.click_effect_style);
+        if self.style_setting != "custom" {
+            self.picture_path = None;
+            self.picture = None;
+            return;
+        }
+        let path = self.cfg.cursor_image_path();
+        if path != self.picture_path {
+            self.picture = None;
+            self.picture_path = path;
+        }
+        if self.picture_path.is_none() {
+            self.picture_failed("no picture is set (overlay.cursor_image)".into());
+        }
+        self.look_for_picture(now);
+    }
+
+    /// Whether the user's picture is read yet: it shows once it is.
+    fn look_for_picture(&mut self, now: Instant) {
+        let Some(path) = self.picture_path.clone() else {
+            return;
+        };
+        match picture::get(&path) {
+            picture::Lookup::Ready(p) => {
+                let fresh = !self.picture.as_ref().is_some_and(|q| Arc::ptr_eq(q, &p));
+                if fresh {
+                    if let Some(note) = &p.note {
+                        self.warnings
+                            .push(format!("the pointer's picture {}: {note}", path.display()));
+                    }
+                    self.picture = Some(p);
+                    self.picture_since = now;
+                    self.picture_said = None;
+                }
+                self.style = draw::CursorStyle::Custom;
+            }
+            picture::Lookup::Loading => {}
+            picture::Lookup::Failed(why) => {
+                self.picture = None;
+                self.picture_failed(why);
+            }
+        }
+    }
+
+    /// The user's picture can't be used: the default pointer shows, and
+    /// why is said once.
+    fn picture_failed(&mut self, why: String) {
+        let path = self.picture_path.clone().unwrap_or_default();
+        if self.picture_said.as_ref() != Some(&path) {
+            self.picture_said = Some(path.clone());
+            self.warnings.push(if path.as_os_str().is_empty() {
+                format!("the custom pointer has no picture: {why}; the default pointer shows instead")
+            } else {
+                format!(
+                    "the pointer's picture {} can't be used ({why}); the default pointer shows instead",
+                    path.display()
+                )
+            });
+        }
+        if self.style == draw::CursorStyle::Custom {
+            self.style = draw::CursorStyle::random(&[]);
+        }
+    }
+
+    /// How long until the user's animated picture shows its next frame,
+    /// while it is on screen (the loop wakes then, not sooner).
+    pub fn next_frame_in(&self, now: Instant) -> Option<Duration> {
+        let p = self.picture.as_ref().filter(|p| p.animated())?;
+        let shown = self.cfg.enabled
+            && self.cfg.show_cursor
+            && self.phase != Phase::Off
+            && self.style == draw::CursorStyle::Custom;
+        if !shown {
+            return None;
+        }
+        let ms = now
+            .saturating_duration_since(self.picture_since)
+            .as_millis() as u64;
+        p.until_next(ms).map(Duration::from_millis)
+    }
+
+    /// How long a click shows (one beat).
+    fn click_dur(&self) -> Duration {
+        Duration::from_millis(self.cfg.click_effect_ms.clamp(100, 3000))
+    }
+
+    /// Each beat of the click showing: how far through it is (0–1), the
+    /// ones started so far.
+    fn beats_now(&self, now: Instant) -> Vec<f32> {
+        let Some(t) = self.ripple_at else {
+            return Vec::new();
+        };
+        let gone = now.saturating_duration_since(t);
+        let dur = self.click_dur().as_secs_f32();
+        (0..u32::from(self.beats.max(1)))
+            .filter_map(|k| {
+                let since = gone.checked_sub(BEAT * k)?;
+                let p = since.as_secs_f32() / dur;
+                (p < 1.0).then_some(p)
+            })
+            .collect()
+    }
+
+    /// The colour of the click and hold effects: the setting's, else the
+    /// pointer's own (the state colour for the plain arrow, the pointer's
+    /// colour for a picture).
+    fn effect_color(&self, ring: Color) -> Color {
+        draw::parse_color(&self.cfg.click_effect_color).unwrap_or(match self.style {
+            draw::CursorStyle::Classic => ring,
+            draw::CursorStyle::Custom => self.colors.cursor,
+            s => super::pointers::accent(s, ring).0,
+        })
+    }
+
+    /// What the newer settings add to the pointer now (see `draw::Extra`).
+    fn extra(&self, now: Instant, ring: Color) -> draw::Extra {
+        let mut x = draw::Extra {
+            ripple_color: draw::parse_color(&self.cfg.click_effect_color),
+            ..draw::Extra::default()
+        };
+        if self.style == draw::CursorStyle::Custom
+            && let Some(p) = &self.picture
+        {
+            let ms = now
+                .saturating_duration_since(self.picture_since)
+                .as_millis() as u64;
+            x.custom = Some(draw::CustomLook {
+                picture: p.clone(),
+                frame: p.frame_at(ms),
+                hotspot: (
+                    self.cfg.cursor_hotspot_x as f32,
+                    self.cfg.cursor_hotspot_y as f32,
+                ),
+                size: self.cfg.cursor_image_scale as f32,
+            });
+        }
+        let beats = self.beats_now(now);
+        if !beats.is_empty() && !matches!(self.click_style, ClickStyle::Ripple | ClickStyle::None) {
+            x.click = Some(ClickFx {
+                style: self.click_style,
+                beats,
+                color: self.effect_color(ring),
+            });
+        }
+        let hold = HoldStyle::named(&self.cfg.hold_effect);
+        if let (Some((since, let_go)), false) = (self.hold, hold == HoldStyle::None) {
+            let fade_in =
+                now.saturating_duration_since(since).as_secs_f32() / HOLD_IN.as_secs_f32();
+            let fade_out = let_go.map_or(1.0, |t| {
+                1.0 - now.saturating_duration_since(t).as_secs_f32() / HOLD_FADE.as_secs_f32()
+            });
+            let phase = (now.saturating_duration_since(since).as_secs_f32() / HOLD_CYCLE).fract();
+            x.hold = Some(HoldFx {
+                style: hold,
+                phase,
+                alpha: fade_in.min(1.0) * fade_out.clamp(0.0, 1.0),
+                color: self.effect_color(ring),
+            });
+        }
+        x
     }
 
     /// The pointer's look.
@@ -546,6 +773,9 @@ impl Machine {
     }
 
     fn set_stopped(&mut self, on: bool, now: Instant) {
+        if on && !self.stopped {
+            self.sound(sound::Event::Stopped);
+        }
         self.stopped = on;
         if on {
             self.set_phase(Phase::Stopped, now);
@@ -562,6 +792,7 @@ impl Machine {
     /// A timer moved the state on (no new activity): a fade-out continues.
     fn advance(&mut self, phase: Phase, now: Instant) {
         if self.phase != phase {
+            self.entered(phase);
             self.phase = phase;
             self.since = now;
         }
@@ -571,10 +802,19 @@ impl Machine {
         }
     }
 
+    /// The sound of a state come to (an error's and a stop's are their own:
+    /// each error sounds).
+    fn entered(&mut self, phase: Phase) {
+        if phase == Phase::Done {
+            self.sound(sound::Event::Done);
+        }
+    }
+
     /// New activity puts the overlay in `phase` (appearing if needed).
     fn set_phase(&mut self, phase: Phase, now: Instant) {
         let appearing = self.phase == Phase::Off && phase != Phase::Off;
         if self.phase != phase {
+            self.entered(phase);
             self.phase = phase;
             self.since = now;
         }
@@ -649,6 +889,7 @@ impl Machine {
                 }
                 self.cfg = *config;
                 self.hotkey = hotkey;
+                self.settings_changed(now);
                 if !self.cfg.enabled {
                     self.set_phase(Phase::Off, now);
                 }
@@ -678,8 +919,11 @@ impl Machine {
                 } else if ok {
                     Phase::Thinking
                 } else {
+                    self.sound(sound::Event::Error);
                     Phase::Error
                 };
+                // A call that ended let go of the button, whatever it said.
+                self.let_go(now);
                 self.set_phase(p, now);
             }
             Cmd::Target { rect } => {
@@ -705,7 +949,12 @@ impl Machine {
                     start,
                     path,
                 });
-                self.click_pending = click && self.cfg.click_effect;
+                self.click_pending =
+                    click && self.cfg.click_effect && self.click_style != ClickStyle::None;
+                self.click_sound = click && self.cfg.sound;
+                if click {
+                    self.beats = std::mem::replace(&mut self.next_clicks, 1).clamp(1, 3);
+                }
                 if id.is_some() {
                     self.arrival = id;
                 }
@@ -731,12 +980,21 @@ impl Machine {
             }
             Cmd::Keys { keys } => {
                 let caps = caps(&keys);
+                if !caps.is_empty() {
+                    self.sound(sound::Event::Key);
+                }
                 self.keys = (!caps.is_empty()).then_some((caps, now));
             }
             Cmd::Typed { text } => {
                 let text: Vec<char> = text.chars().collect();
+                if !text.is_empty() {
+                    self.sound(sound::Event::Key);
+                }
                 self.typed = (!text.is_empty()).then_some(Typed { text, start: now });
             }
+            Cmd::Held { on: true } => self.hold = Some((now, None)),
+            Cmd::Held { on: false } => self.let_go(now),
+            Cmd::Clicks { n } => self.next_clicks = n.clamp(1, 3),
             Cmd::Scroll { dx, dy } => {
                 let sign = |v: i32| v.signum() as i8;
                 self.scroll = (dx != 0 || dy != 0).then_some(((sign(dx), sign(dy)), now));
@@ -754,6 +1012,7 @@ impl Machine {
                     Status::Done => Phase::Done,
                     Status::Error => {
                         self.last_end = Some(now);
+                        self.sound(sound::Event::Error);
                         Phase::Error
                     }
                     Status::Hidden => {
@@ -777,6 +1036,13 @@ impl Machine {
             | Cmd::Unlock { .. }
             | Cmd::Hold
             | Cmd::Send { .. } => {}
+        }
+    }
+
+    /// The button is let go: its effect fades.
+    fn let_go(&mut self, now: Instant) {
+        if let Some((_, t @ None)) = &mut self.hold {
+            *t = Some(now);
         }
     }
 
@@ -815,6 +1081,7 @@ impl Machine {
         if self.leaving && self.fade.done(now) {
             self.advance(Phase::Off, now);
             self.glide = None;
+            self.hold = None;
         }
         // Blend toward the current state's colour.
         let target = self.color();
@@ -833,11 +1100,24 @@ impl Machine {
             self.click_pending = false;
             self.ripple_at = Some(now);
         }
+        if self.click_sound && self.glide_progress(now) >= 1.0 {
+            self.click_sound = false;
+            self.sound(sound::Event::Click);
+        }
+        let ripple = self.click_dur() + BEAT * u32::from(self.beats.max(1) - 1);
         if self
             .ripple_at
-            .is_some_and(|t| now.saturating_duration_since(t) >= RIPPLE)
+            .is_some_and(|t| now.saturating_duration_since(t) >= ripple)
         {
             self.ripple_at = None;
+        }
+        if let Some((_, Some(t))) = self.hold
+            && now.saturating_duration_since(t) >= HOLD_FADE
+        {
+            self.hold = None;
+        }
+        if self.picture.is_none() && self.picture_path.is_some() {
+            self.look_for_picture(now);
         }
         let arrived = self.glide_progress(now) >= 1.0;
         if let Some(d) = &mut self.drag {
@@ -1005,6 +1285,7 @@ impl Machine {
                 || self.keys.is_some()
                 || self.typed.is_some()
                 || self.scroll.is_some()
+                || self.hold.is_some()
                 || !self.fade.done(now)
                 || !self.color_ramp.done(now))
     }
@@ -1077,9 +1358,17 @@ impl Machine {
             return Scene::default();
         }
         let color = self.shown_color(now);
-        let ripple = self.ripple_at.map(|t| {
-            (now.saturating_duration_since(t).as_secs_f32() / RIPPLE.as_secs_f32()).min(0.999)
-        });
+        // Each pointer's own click (the latest beat of it), unless another
+        // effect shows instead.
+        let ripple = match self.click_style {
+            ClickStyle::Ripple => self.ripple_at.map(|t| {
+                let gone = now.saturating_duration_since(t);
+                let beat = (gone.as_secs_f32() / BEAT.as_secs_f32()) as u32;
+                let since = gone.saturating_sub(BEAT * beat.min(u32::from(self.beats.max(1) - 1)));
+                (since.as_secs_f32() / self.click_dur().as_secs_f32()).min(0.999)
+            }),
+            _ => None,
+        };
         Scene {
             opacity: self.fade.value(now).clamp(0.0, 1.0),
             border: self.cfg.show_border.then_some((self.target, color)),
@@ -1093,6 +1382,7 @@ impl Machine {
                     ripple,
                     style: self.style,
                     fx: self.fx(now),
+                    extra: self.extra(now, color),
                 })
             } else {
                 None
@@ -1123,6 +1413,8 @@ pub struct CursorLook {
     pub ripple: Option<f32>,
     pub style: draw::CursorStyle,
     pub fx: draw::CursorFx,
+    /// What the newer settings add (the user's picture, effects).
+    pub extra: draw::Extra,
 }
 
 /// A drag's line on screen (the way it went, screen units), in the
@@ -1169,6 +1461,7 @@ type CursorKey = (
     String,
     u32,
     draw::CursorStyle,
+    u64,
     u64,
 );
 /// What a drag's line was drawn with: its ends, opacity, look, colour and
@@ -1245,6 +1538,7 @@ impl Painter {
                     String::new(),
                     0,
                     draw::CursorStyle::Classic,
+                    u64::MAX,
                     u64::MAX,
                 ));
             }
@@ -1559,6 +1853,7 @@ impl Painter {
                     (cursor_scale * 100.0).round() as u32,
                     c.style,
                     c.fx.key(),
+                    c.extra.key(),
                 );
                 let redraw = self.cursor_img.as_ref() != Some(&key);
                 let art = redraw.then(|| {
@@ -1567,7 +1862,7 @@ impl Painter {
                     for p in &mut fx.trail {
                         *p = (p.0 * ppu, p.1 * ppu);
                     }
-                    draw::cursor(
+                    draw::cursor_with(
                         fonts,
                         tag,
                         cursor_scale,
@@ -1576,6 +1871,7 @@ impl Painter {
                         c.ripple,
                         c.style,
                         &fx,
+                        &c.extra,
                     )
                 });
                 if let Some(a) = &art {
@@ -1691,6 +1987,7 @@ impl Painter {
                 String::new(),
                 0,
                 draw::CursorStyle::Classic,
+                u64::MAX,
                 u64::MAX,
             ));
         }
@@ -1858,13 +2155,20 @@ pub fn run(args: &[String]) -> i32 {
     let mut quitting: Option<Instant> = None;
     let quit_fade = |m: &Machine| Duration::from_millis(m.config().fade_out_ms.min(700));
 
+    // Made when the first sound is asked for (none while sounds are off).
+    let mut player: Option<sound::Player> = None;
+
     loop {
         let now = Instant::now();
-        let wait = if machine.animating(now) || controls.busy() {
+        let mut wait = if machine.animating(now) || controls.busy() {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
         };
+        // An animated picture: woken for its next frame, not sooner.
+        if let Some(next) = machine.next_frame_in(now) {
+            wait = wait.min(next.max(Duration::from_millis(5)));
+        }
         let mut first = if quitting.is_some() {
             std::thread::sleep(Duration::from_millis(16));
             None
@@ -2028,6 +2332,20 @@ pub fn run(args: &[String]) -> i32 {
         }
         let now = Instant::now();
         machine.tick(now);
+        for e in machine.take_sounds() {
+            let p = player.get_or_insert_with(sound::Player::new);
+            p.play(e, machine.config(), now);
+        }
+        let mut warnings = machine.take_warnings();
+        warnings.extend(
+            player
+                .as_mut()
+                .map(|p| p.take_warnings())
+                .unwrap_or_default(),
+        );
+        for text in warnings {
+            reply(&Reply::Warn { text });
+        }
         let scene = machine.scene(now);
         painter.set_buttons(controls.look(0), !mouse, surface.as_mut());
         painter.paint(&scene, machine.config(), &fonts, surface.as_mut());
@@ -3045,5 +3363,380 @@ mod tests {
         ] {
             assert!(s.calls.contains(&want.to_string()), "{want}: {:?}", s.calls);
         }
+    }
+
+    fn to(x: f64, y: f64, click: bool) -> Cmd {
+        Cmd::Pointer {
+            x,
+            y,
+            click,
+            id: None,
+        }
+    }
+
+    fn configured(c: OverlayConfig, t0: Instant) -> Machine {
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(
+            Cmd::Config {
+                config: Box::new(c),
+                hotkey: String::new(),
+                settings_key: String::new(),
+                stopped: false,
+            },
+            t0,
+        );
+        m
+    }
+
+    /// A folder of its own for a test's files.
+    fn folder(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("cu-helper-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_defaults_add_nothing_new() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, false), t0);
+        m.apply(to(110.0, 10.0, true), at(0));
+        m.apply(Cmd::Held { on: true }, at(0));
+        m.apply(
+            Cmd::Keys {
+                keys: "ctrl+s".into(),
+            },
+            at(1),
+        );
+        m.tick(at(120));
+        let c = m.scene(at(300)).cursor.unwrap();
+        // The ripple runs as it did (700 ms), and nothing else is drawn but
+        // the hold's glow, which is new.
+        let r = c.ripple.unwrap();
+        assert!((r - 180.0 / 700.0).abs() < 0.01, "{r}");
+        assert!(c.extra.custom.is_none() && c.extra.click.is_none());
+        assert!(c.extra.ripple_color.is_none());
+        assert_eq!(c.extra.hold.as_ref().unwrap().style, HoldStyle::Glow);
+        // No sound and nothing to say.
+        m.apply(Cmd::End { ok: false }, at(400));
+        m.tick(at(500));
+        assert!(m.take_sounds().is_empty());
+        assert!(m.take_warnings().is_empty());
+        assert_eq!(m.next_frame_in(at(500)), None);
+    }
+
+    #[test]
+    fn a_click_shows_its_chosen_effect_and_a_double_click_two_beats() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = configured(
+            OverlayConfig {
+                click_effect_style: "burst".into(),
+                click_effect_color: "#FF0000".into(),
+                click_effect_ms: 400,
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, false), t0);
+        m.apply(Cmd::Clicks { n: 2 }, at(0));
+        m.apply(to(110.0, 10.0, true), at(0));
+        m.tick(at(120));
+        let c = m.scene(at(170)).cursor.unwrap();
+        // Not the pointer's own click, the burst.
+        assert_eq!(c.ripple, None);
+        let fx = c.extra.click.unwrap();
+        assert_eq!(fx.style, ClickStyle::Burst);
+        assert_eq!(fx.beats.len(), 1);
+        assert_eq!(fx.color.to_color_u8().red(), 255);
+        // The second beat 200 ms after the first.
+        let fx = m.scene(at(380)).cursor.unwrap().extra.click.unwrap();
+        assert_eq!(fx.beats.len(), 2, "{:?}", fx.beats);
+        // Over after the second beat's 400 ms.
+        m.tick(at(120 + 200 + 400));
+        assert!(m.scene(at(721)).cursor.unwrap().extra.click.is_none());
+        // The next click is a single one again.
+        m.apply(to(200.0, 10.0, true), at(800));
+        m.tick(at(950));
+        let fx = m.scene(at(1300)).cursor.unwrap().extra.click;
+        assert_eq!(fx.map(|f| f.beats.len()), Some(1));
+
+        // "none" shows nothing; so does click_effect = false.
+        for c in [
+            OverlayConfig {
+                click_effect_style: "none".into(),
+                ..cfg()
+            },
+            OverlayConfig {
+                click_effect: false,
+                click_effect_style: "pulse".into(),
+                ..cfg()
+            },
+        ] {
+            let mut m = configured(c, t0);
+            m.apply(Cmd::Begin, t0);
+            m.apply(to(10.0, 10.0, true), t0);
+            m.tick(at(150));
+            let c = m.scene(at(160)).cursor.unwrap();
+            assert!(c.ripple.is_none() && c.extra.click.is_none());
+        }
+    }
+
+    #[test]
+    fn a_held_button_glows_until_it_is_let_go_then_fades() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = configured(
+            OverlayConfig {
+                hold_effect: "ring".into(),
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, true), t0);
+        m.apply(Cmd::Held { on: true }, at(10));
+        m.apply(to(300.0, 10.0, false), at(10));
+        m.apply(Cmd::Dragging, at(10));
+        let hold = |m: &Machine, ms| m.scene(at(ms)).cursor.unwrap().extra.hold;
+        assert!(hold(&m, 11).unwrap().alpha < 0.5, "fades in");
+        m.tick(at(1000));
+        let h = hold(&m, 1000).unwrap();
+        assert_eq!((h.style, h.alpha), (HoldStyle::Ring, 1.0));
+        assert!(m.animating(at(1000)), "it pulses while held");
+        m.apply(Cmd::Held { on: false }, at(2000));
+        let h = hold(&m, 2100).unwrap();
+        assert!(h.alpha > 0.0 && h.alpha < 1.0);
+        m.tick(at(2400));
+        assert!(hold(&m, 2400).is_none());
+        // A call that ends lets go of it, whatever it said.
+        m.apply(Cmd::Held { on: true }, at(3000));
+        m.apply(Cmd::End { ok: true }, at(3100));
+        m.tick(at(3500));
+        assert!(hold(&m, 3500).is_none());
+        // "none": nothing.
+        let mut m = configured(
+            OverlayConfig {
+                hold_effect: "none".into(),
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, true), t0);
+        m.apply(Cmd::Held { on: true }, at(10));
+        assert!(hold(&m, 500).is_none());
+    }
+
+    #[test]
+    fn sounds_are_asked_for_only_when_on_and_for_what_happened() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = configured(
+            OverlayConfig {
+                sound: true,
+                ..cfg()
+            },
+            t0,
+        );
+        use sound::Event as E;
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, false), t0);
+        m.apply(to(110.0, 10.0, true), at(0));
+        m.tick(at(50));
+        assert!(
+            m.take_sounds().is_empty(),
+            "the click sounds when it gets there"
+        );
+        m.tick(at(120));
+        assert_eq!(m.take_sounds(), [E::Click]);
+        m.apply(
+            Cmd::Keys {
+                keys: "ctrl+s".into(),
+            },
+            at(130),
+        );
+        m.apply(Cmd::Typed { text: "hi".into() }, at(140));
+        m.apply(Cmd::End { ok: false }, at(150));
+        assert_eq!(m.take_sounds(), [E::Key, E::Key, E::Error]);
+        m.apply(Cmd::Stopped { on: true }, at(200));
+        m.apply(Cmd::Stopped { on: true }, at(210));
+        assert_eq!(m.take_sounds(), [E::Stopped], "once");
+        m.apply(Cmd::Stopped { on: false }, at(300));
+        m.apply(
+            Cmd::Status {
+                state: Status::Done,
+            },
+            at(400),
+        );
+        assert_eq!(m.take_sounds(), [E::Done]);
+        // A click with no effect shown still sounds.
+        let mut quiet = configured(
+            OverlayConfig {
+                sound: true,
+                click_effect: false,
+                ..cfg()
+            },
+            t0,
+        );
+        quiet.apply(Cmd::Begin, t0);
+        quiet.apply(to(10.0, 10.0, true), t0);
+        quiet.tick(at(150));
+        assert_eq!(quiet.take_sounds(), [E::Click]);
+    }
+
+    #[test]
+    fn a_picture_of_the_users_is_the_pointer_and_its_frames_play() {
+        let dir = folder("picture");
+        let gif = dir.join("cat.gif");
+        std::fs::write(&gif, super::super::picture::tests::gif(16, 16, 3, 10)).unwrap();
+        super::super::picture::load_now(&gif).unwrap();
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = configured(
+            OverlayConfig {
+                cursor_style: "custom".into(),
+                cursor_image: gif.display().to_string(),
+                cursor_hotspot_x: 0.5,
+                cursor_image_scale: 2.0,
+                ..cfg()
+            },
+            t0,
+        );
+        assert_eq!(m.style(), draw::CursorStyle::Custom);
+        assert!(!m.style_random());
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(10.0, 10.0, false), t0);
+        let look = |m: &Machine, ms| m.scene(at(ms)).cursor.unwrap().extra.custom.unwrap();
+        let c = look(&m, 0);
+        assert_eq!((c.hotspot, c.size), ((0.5, 0.0), 2.0));
+        // 100 ms a frame, looping.
+        let frames: Vec<usize> = [0, 150, 250, 310]
+            .iter()
+            .map(|ms| look(&m, *ms).frame)
+            .collect();
+        assert_eq!(frames, [0, 1, 2, 0]);
+        // The loop wakes for the next frame, not sooner.
+        assert_eq!(m.next_frame_in(at(150)), Some(Duration::from_millis(50)));
+        // Hidden: no frames to wake for.
+        m.apply(
+            Cmd::Status {
+                state: Status::Hidden,
+            },
+            at(400),
+        );
+        m.tick(at(5000));
+        assert_eq!(m.next_frame_in(at(5000)), None);
+        assert!(m.take_warnings().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_that_cant_be_used_leaves_the_default_pointer_said_once() {
+        let dir = folder("bad-picture");
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let huge = dir.join("huge.png");
+        std::fs::write(&huge, super::super::picture::tests::png(900, 40)).unwrap();
+        let corrupt = dir.join("corrupt.gif");
+        std::fs::write(&corrupt, b"GIF89a\x10\x00\x10\x00garbage").unwrap();
+        let big = dir.join("big.png");
+        std::fs::write(&big, vec![7u8; 5 * 1024 * 1024]).unwrap();
+        let empty = dir.join("empty.gif");
+        std::fs::write(&empty, b"GIF89a\x08\x00\x08\x00\x00\x00\x00\x3b").unwrap();
+        for (file, why) in [
+            (huge, "512"),
+            (corrupt, "can't be read"),
+            (big, "4 MB"),
+            (empty, "can't be read"),
+            (dir.join("missing.png"), "can't read"),
+        ] {
+            super::super::picture::load_now(&file).unwrap_err();
+            let c = OverlayConfig {
+                cursor_style: "custom".into(),
+                cursor_image: file.display().to_string(),
+                ..cfg()
+            };
+            let mut m = configured(c.clone(), t0);
+            assert!(draw::CursorStyle::POINTERS.contains(&m.style()), "{why}");
+            m.apply(Cmd::Begin, t0);
+            m.apply(to(10.0, 10.0, true), t0);
+            // Asked again and again (new settings, ticks): said once.
+            for k in 0..5 {
+                m.apply(
+                    Cmd::Config {
+                        config: Box::new(c.clone()),
+                        hotkey: String::new(),
+                        settings_key: String::new(),
+                        stopped: false,
+                    },
+                    at(k),
+                );
+                m.tick(at(100 + k));
+            }
+            let said = m.take_warnings();
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(
+                said[0].contains(why) && said[0].contains("default pointer"),
+                "{said:?}"
+            );
+            let cur = m.scene(at(200)).cursor.unwrap();
+            assert!(cur.extra.custom.is_none());
+            assert_ne!(cur.style, draw::CursorStyle::Custom);
+        }
+        // Custom with no picture at all.
+        let mut m = configured(
+            OverlayConfig {
+                cursor_style: "custom".into(),
+                ..cfg()
+            },
+            t0,
+        );
+        assert_eq!(m.take_warnings().len(), 1);
+        assert_ne!(m.style(), draw::CursorStyle::Custom);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_animated_pointer_is_drawn_again_only_when_its_frame_changes() {
+        let dir = folder("frames");
+        let gif = dir.join("spin.gif");
+        std::fs::write(&gif, super::super::picture::tests::gif(16, 16, 2, 25)).unwrap();
+        super::super::picture::load_now(&gif).unwrap();
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut m = configured(
+            OverlayConfig {
+                cursor_style: "custom".into(),
+                cursor_image: gif.display().to_string(),
+                cursor_motion: false,
+                ..cfg()
+            },
+            t0,
+        );
+        m.apply(Cmd::Begin, t0);
+        m.apply(to(100.0, 100.0, false), t0);
+        let fonts = Fonts::default();
+        let mut s = Fake::default();
+        let mut p = Painter::default();
+        let mut drawn = 0;
+        // 16 ms frames of the loop for a second: the picture changes every
+        // 250 ms, so it is drawn about four times (plus the fade-in).
+        for k in 0..60u64 {
+            let now = at(300 + k * 16);
+            m.tick(now);
+            let before = s.calls.len();
+            p.paint(&m.scene(now), m.config(), &fonts, &mut s);
+            drawn += s.calls[before..]
+                .iter()
+                .filter(|c| c.starts_with("show Cursor"))
+                .count();
+        }
+        assert!((3..=6).contains(&drawn), "{drawn}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -18,7 +18,7 @@ base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 dirs = "7"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

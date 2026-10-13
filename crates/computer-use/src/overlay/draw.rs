@@ -7,6 +7,10 @@ use tiny_skia::{
     PixmapPaint, Point, RadialGradient, Rect as SkRect, SpreadMode, Stroke, Transform,
 };
 
+use std::sync::Arc;
+
+use super::effects::{self, ClickFx, ClickStyle, HoldFx, HoldStyle};
+use super::picture::Picture;
 use super::pointers;
 use super::text::{self, Fonts};
 
@@ -86,12 +90,14 @@ pub enum CursorStyle {
     Ice,
     Metal,
     Orbit,
+    /// The user's own picture (`overlay.cursor_image`).
+    Custom,
 }
 
 /// What `overlay.cursor_style` takes: "random" (a pointer picked for each
-/// agent) or a style's name.
-pub const CURSOR_STYLES: [&str; 8] = [
-    "random", "classic", "crystal", "paper", "jelly", "ice", "metal", "orbit",
+/// agent), a style's name, or "custom" (the user's own picture).
+pub const CURSOR_STYLES: [&str; 9] = [
+    "random", "classic", "crystal", "paper", "jelly", "ice", "metal", "orbit", "custom",
 ];
 
 impl CursorStyle {
@@ -115,6 +121,7 @@ impl CursorStyle {
             "ice" => Self::Ice,
             "metal" => Self::Metal,
             "orbit" => Self::Orbit,
+            "custom" => Self::Custom,
             _ => return None,
         })
     }
@@ -197,6 +204,73 @@ pub struct CursorArt {
     pub hotspot: (f32, f32),
 }
 
+/// The user's own picture as the pointer: which frame shows, where its tip
+/// is (fractions of its width and height) and its size (a multiple of the
+/// 48 px its longer side is at scale 1).
+#[derive(Clone)]
+pub struct CustomLook {
+    pub picture: Arc<Picture>,
+    pub frame: usize,
+    pub hotspot: (f32, f32),
+    pub size: f32,
+}
+
+impl PartialEq for CustomLook {
+    fn eq(&self, o: &Self) -> bool {
+        Arc::ptr_eq(&self.picture, &o.picture)
+            && (self.frame, self.hotspot, self.size) == (o.frame, o.hotspot, o.size)
+    }
+}
+
+impl std::fmt::Debug for CustomLook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} frame {}", self.picture, self.frame)
+    }
+}
+
+/// Side of a custom picture at scale 1 (its longer side, px).
+pub const CUSTOM_SIDE: f32 = 48.0;
+
+/// What the newer settings add to the pointer: the user's own picture, the
+/// plain arrow's ripple in another colour, a click effect other than the
+/// ripple, a held button. None of it (the default) draws as before.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extra {
+    pub custom: Option<CustomLook>,
+    pub ripple_color: Option<Color>,
+    pub click: Option<ClickFx>,
+    pub hold: Option<HoldFx>,
+}
+
+impl Extra {
+    /// Rounded to what shows (see [`CursorFx::key`]).
+    pub fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        if *self == Extra::default() {
+            return 0;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        effects::key(self.click.as_ref(), self.hold.as_ref()).hash(&mut h);
+        self.custom
+            .as_ref()
+            .map(|c| {
+                (
+                    Arc::as_ptr(&c.picture) as usize,
+                    c.frame,
+                    (c.hotspot.0 * 1000.0) as i32,
+                    (c.hotspot.1 * 1000.0) as i32,
+                    (c.size * 100.0) as i32,
+                )
+            })
+            .hash(&mut h);
+        self.ripple_color
+            .map(|c| c.to_color_u8())
+            .map(|c| [c.red(), c.green(), c.blue(), c.alpha()])
+            .hash(&mut h);
+        h.finish() | 1
+    }
+}
+
 /// Mix `c` toward black by `t` (0–1).
 fn darken(c: Color, t: f32) -> Color {
     let m = |v: f32| v * (1.0 - t);
@@ -241,17 +315,229 @@ pub fn cursor(
     style: CursorStyle,
     fx: &CursorFx,
 ) -> CursorArt {
+    cursor_with(
+        fonts,
+        tag,
+        scale,
+        body,
+        ring,
+        ripple,
+        style,
+        fx,
+        &Extra::default(),
+    )
+}
+
+/// [`cursor`] with what the newer settings add (see [`Extra`]): the user's
+/// picture for [`CursorStyle::Custom`], a click effect, a held button.
+#[allow(clippy::too_many_arguments)]
+pub fn cursor_with(
+    fonts: &Fonts,
+    tag: &str,
+    scale: f32,
+    body: Color,
+    ring: Color,
+    ripple: Option<f32>,
+    style: CursorStyle,
+    fx: &CursorFx,
+    extra: &Extra,
+) -> CursorArt {
     let pose = pointers::Pose {
         tilt: fx.tilt,
         idle: fx.idle,
         calm: fx.calm,
     };
-    let art = if style == CursorStyle::Classic {
-        classic_cursor(fonts, tag, scale, body, ring, ripple)
-    } else {
-        styled_cursor(fonts, tag, scale, body, ring, ripple, style, pose)
+    let ripple_color = extra.ripple_color.unwrap_or(ring);
+    let art = match (style, &extra.custom) {
+        (CursorStyle::Custom, Some(c)) => custom_cursor(
+            fonts,
+            tag,
+            scale,
+            (body, ring, ripple_color),
+            ripple,
+            c,
+            pose,
+        ),
+        (CursorStyle::Classic | CursorStyle::Custom, _) => {
+            classic_cursor(fonts, tag, scale, body, ring, ripple, ripple_color)
+        }
+        _ => styled_cursor(fonts, tag, scale, body, ring, ripple, style, pose),
     };
-    around(art, fonts, scale, (body, ring), style, fx)
+    let art = around(art, fonts, scale, (body, ring), style, fx);
+    with_effects(art, scale, extra)
+}
+
+/// `art` with a held button's glow under it and a click effect over it,
+/// the image grown to hold them (as it was without either).
+fn with_effects(art: CursorArt, scale: f32, extra: &Extra) -> CursorArt {
+    let click = extra
+        .click
+        .as_ref()
+        .filter(|c| c.style != ClickStyle::Ripple && c.style != ClickStyle::None);
+    let hold = extra
+        .hold
+        .as_ref()
+        .filter(|h| h.style != HoldStyle::None && h.alpha > 0.0);
+    if click.is_none() && hold.is_none() {
+        return art;
+    }
+    let s = scale * 1.35;
+    let reach = effects::REACH * s;
+    let (hx, hy) = art.hotspot;
+    let (w, h) = (art.image.width() as f32, art.image.height() as f32);
+    // Everything relative to the tip.
+    let lo = ((-hx).min(-reach), (-hy).min(-reach));
+    let hi = ((w - hx).max(reach), (h - hy).max(reach));
+    let mut pm = canvas(hi.0 - lo.0, hi.1 - lo.1);
+    // The old image at whole pixels, and the tip where it lands.
+    let (ix, iy) = ((-lo.0 - hx).round(), (-lo.1 - hy).round());
+    let tip = (ix + hx, iy + hy);
+    if let Some(f) = hold {
+        effects::draw_hold(&mut pm, tip, s, f);
+    }
+    pm.draw_pixmap(
+        ix as i32,
+        iy as i32,
+        art.image.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    if let Some(f) = click {
+        effects::draw_click(&mut pm, tip, s, f);
+    }
+    CursorArt {
+        image: pm,
+        hotspot: tip,
+    }
+}
+
+/// The user's picture as the pointer (see [`CustomLook`]): its tip on the
+/// hotspot, the state colour glowing behind it, leaning, breathing and
+/// dipping on a click as the drawn pointers do, with the plain arrow's
+/// ripple and name tag.
+fn custom_cursor(
+    fonts: &Fonts,
+    tag: &str,
+    scale: f32,
+    (body, ring, ripple_color): (Color, Color, Color),
+    click: Option<f32>,
+    look: &CustomLook,
+    pose: pointers::Pose,
+) -> CursorArt {
+    let s = scale * 1.35;
+    let pic = &look.picture;
+    let (pw, ph) = (pic.width.max(1) as f32, pic.height.max(1) as f32);
+    let side = CUSTOM_SIDE * scale * look.size.clamp(0.1, 8.0);
+    let per = side / pw.max(ph);
+    let (hx, hy) = (
+        look.hotspot.0.clamp(0.0, 1.0) * pw,
+        look.hotspot.1.clamp(0.0, 1.0) * ph,
+    );
+    // Room for the picture however it leans, and for the ripple.
+    let far = [(0.0, 0.0), (pw, 0.0), (0.0, ph), (pw, ph)]
+        .iter()
+        .map(|(x, y)| (x - hx).hypot(y - hy))
+        .fold(0.0f32, f32::max)
+        * per
+        * 1.08;
+    let pad = (far + 4.0 * s).max(CURSOR_BOX / 2.0 * s);
+    let tag_text = (!tag.trim().is_empty()).then(|| text::layout(fonts, tag.trim(), 10.5 * s));
+    let tag_text = tag_text.filter(|t| t.width > 0.0);
+    // Under the picture, from its left edge.
+    let (tag_x, tag_y) = (
+        (-hx * per + 4.0 * s).max(-pad + 2.0 * s),
+        ((ph - hy) * per + 4.0 * s).max(16.0 * s),
+    );
+    let (tag_w, tag_h) = tag_text.as_ref().map_or((0.0, 0.0), |t| {
+        (t.width + 12.0 * s, (t.height + 3.0 * s).max(16.0 * s))
+    });
+    let w = pad + pad.max(tag_x + tag_w + 4.0 * s);
+    let h = pad + pad.max(tag_y + tag_h + 4.0 * s);
+    let mut pm = canvas(w, h);
+    let (c, id) = (pad, Transform::identity());
+
+    // The state colour, glowing behind the picture.
+    let (gx, gy) = (c + (pw / 2.0 - hx) * per, c + (ph / 2.0 - hy) * per);
+    let glow_r = side * 0.62 + 6.0 * s;
+    if let (Some(p), Some(shader)) = (
+        PathBuilder::from_circle(gx, gy, glow_r),
+        RadialGradient::new(
+            Point::from_xy(gx, gy),
+            Point::from_xy(gx, gy),
+            glow_r,
+            vec![
+                GradientStop::new(0.0, with_alpha(ring, 0.5)),
+                GradientStop::new(0.55, with_alpha(ring, 0.2)),
+                GradientStop::new(1.0, with_alpha(ring, 0.0)),
+            ],
+            SpreadMode::Pad,
+            id,
+        ),
+    ) {
+        let glow = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        pm.fill_path(&p, &glow, FillRule::Winding, id, None);
+    }
+
+    let click = click.filter(|t| (0.0..1.0).contains(t));
+    // The plain arrow's ripple at the tip.
+    if let Some(t) = click {
+        let r = (5.0 + 22.0 * t) * s;
+        if let Some(p) = PathBuilder::from_circle(c, c, r) {
+            pm.stroke_path(
+                &p,
+                &paint(with_alpha(ripple_color, 1.0 - t)),
+                &stroke(3.0 * s * (1.0 - 0.5 * t)),
+                id,
+                None,
+            );
+        }
+    }
+
+    // The picture: about its tip it leans, breathes, and dips on a click.
+    let wave = pose.idle.map_or(0.0, |p| (p * std::f32::consts::TAU).sin())
+        * (1.0 - pose.calm.clamp(0.0, 1.0));
+    let dip = click.map_or(0.0, |k| {
+        0.14 * (std::f32::consts::PI * (k * 2.2).min(1.0)).sin()
+    });
+    let k = per * (1.0 + 0.02 * wave - dip);
+    let (level, unit) = pic.level(look.frame, k);
+    let t = Transform::from_translate(c, c)
+        .pre_rotate(pose.tilt)
+        .pre_scale(k, k)
+        .pre_translate(-hx, -hy)
+        .pre_scale(unit, unit);
+    pm.draw_pixmap(
+        0,
+        0,
+        level.as_ref(),
+        &PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bicubic,
+            ..PixmapPaint::default()
+        },
+        t,
+        None,
+    );
+
+    if let Some(t) = &tag_text {
+        name_tag(
+            &mut pm,
+            t,
+            (c + tag_x, c + tag_y),
+            (tag_w, tag_h),
+            s,
+            (body, ring),
+            CursorStyle::Custom,
+        );
+    }
+    CursorArt {
+        image: pm,
+        hotspot: (c, c),
+    }
 }
 
 /// The plain arrow (see [`cursor`]).
@@ -262,6 +548,7 @@ fn classic_cursor(
     body: Color,
     ring: Color,
     ripple: Option<f32>,
+    ripple_color: Color,
 ) -> CursorArt {
     // About the size of a system pointer, so it is easy to follow.
     let s = scale * 1.35;
@@ -309,7 +596,7 @@ fn classic_cursor(
         if let Some(p) = PathBuilder::from_circle(c, c, r) {
             pm.stroke_path(
                 &p,
-                &paint(with_alpha(ring, 1.0 - t)),
+                &paint(with_alpha(ripple_color, 1.0 - t)),
                 &stroke(3.0 * s * (1.0 - 0.5 * t)),
                 id,
                 None,
@@ -318,7 +605,7 @@ fn classic_cursor(
         if let Some(p) = PathBuilder::from_circle(c, c, 4.0 * s * (1.0 - t)) {
             pm.fill_path(
                 &p,
-                &paint(with_alpha(ring, 0.8 * (1.0 - t))),
+                &paint(with_alpha(ripple_color, 0.8 * (1.0 - t))),
                 FillRule::Winding,
                 id,
                 None,
@@ -513,7 +800,7 @@ fn themed_box(
     let Some(shape) = rounded_rect(x, y, w, h, radius) else {
         return Color::WHITE;
     };
-    if style == CursorStyle::Classic {
+    if matches!(style, CursorStyle::Classic | CursorStyle::Custom) {
         pm.fill_path(&shape, &paint(body), FillRule::Winding, id, None);
         pm.stroke_path(&shape, &paint(ring), &stroke(1.5 * s), id, None);
         Color::WHITE
@@ -652,7 +939,7 @@ fn around(
         hi = (hi.0.max(x), hi.1.max(y));
     };
     // The trail follows the body, a little below and right of the tip.
-    let body = if style == CursorStyle::Classic {
+    let body = if matches!(style, CursorStyle::Classic | CursorStyle::Custom) {
         (10.0 * s, 11.0 * s)
     } else {
         (13.0 * s, 15.0 * s)
@@ -678,7 +965,7 @@ fn around(
         );
     }
     // Under the name tag.
-    let bubble_at = if style == CursorStyle::Classic {
+    let bubble_at = if matches!(style, CursorStyle::Classic | CursorStyle::Custom) {
         (20.0 * s, 36.0 * s)
     } else {
         (STYLED_TAG.0 * s, (STYLED_TAG.1 + 21.0) * s)
@@ -709,7 +996,7 @@ fn around(
     let place = |(x, y): (f32, f32)| (x + ox, y + oy);
     if trail {
         let pts: Vec<(f32, f32)> = trail_at.iter().map(|p| place(*p)).collect();
-        pointers::trail(&mut pm, style, &pts, s);
+        pointers::trail(&mut pm, style, &pts, s, colors.1);
     }
     let blit = |pm: &mut Pixmap, img: &Pixmap, (x, y): (f32, f32), opacity: f32| {
         pm.draw_pixmap(
@@ -1396,6 +1683,293 @@ mod tests {
         }
         // Past six, any pointer.
         assert!(CursorStyle::POINTERS.contains(&CursorStyle::random(&taken)));
+    }
+
+    /// What every built-in pointer looks like (with no font: the same on
+    /// every machine), as a number.
+    fn pinned_looks() -> u64 {
+        let body = parse_color("#9C27B0").unwrap();
+        let ring = parse_color("#1E88E5").unwrap();
+        let fonts = Fonts::default();
+        let fxs = [
+            CursorFx::default(),
+            CursorFx {
+                tilt: 8.0,
+                trail: vec![(-20.0, 4.0), (-40.0, 8.0), (-60.0, 12.0)],
+                idle: None,
+                calm: 0.0,
+                keys: None,
+                typed: None,
+                scroll: Some(((0, 1), 0.4)),
+            },
+            CursorFx {
+                idle: Some(0.3),
+                ..CursorFx::default()
+            },
+        ];
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        };
+        for style in std::iter::once(CursorStyle::Classic).chain(CursorStyle::POINTERS) {
+            for ripple in [None, Some(0.0), Some(0.3), Some(0.8)] {
+                for fx in &fxs {
+                    for scale in [1.0, 2.0] {
+                        let art = cursor(&fonts, "", scale, body, ring, ripple, style, fx);
+                        // The newer settings left as they are draw the same.
+                        let with = cursor_with(
+                            &fonts,
+                            "",
+                            scale,
+                            body,
+                            ring,
+                            ripple,
+                            style,
+                            fx,
+                            &Extra::default(),
+                        );
+                        assert_eq!(art.image, with.image);
+                        eat(art.image.data());
+                        eat(&art.image.width().to_le_bytes());
+                        eat(&art.hotspot.0.to_le_bytes());
+                        eat(&art.hotspot.1.to_le_bytes());
+                    }
+                }
+            }
+            let (line, at) = drag_line(&[(10.0, 10.0), (90.0, 40.0)], 1.0, style, ring, 0.8);
+            eat(line.data());
+            eat(&at.0.to_le_bytes());
+        }
+        h
+    }
+
+    #[test]
+    fn the_built_in_pointers_and_their_clicks_look_as_in_5_5_0() {
+        let h = pinned_looks();
+        // Made by 5.5.0's code on this kind of machine (another CPU may
+        // round a pixel differently: there, only the above is checked).
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        assert_eq!(h, 0x95a5_5dc7_3407_0f25, "the built-in pointers changed");
+        let _ = h;
+    }
+
+    /// A picture: a red square at its top left, the rest blue, opaque.
+    fn marked_picture(w: u32, h: u32) -> Arc<Picture> {
+        let mut pm = Pixmap::new(w, h).unwrap();
+        pm.fill(Color::from_rgba8(20, 60, 230, 255));
+        let red = PathBuilder::from_rect(SkRect::from_xywh(0.0, 0.0, 4.0, 4.0).unwrap());
+        pm.fill_path(
+            &red,
+            &paint(Color::from_rgba8(230, 20, 20, 255)),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+        Arc::new(super::super::picture::decode(&pm.encode_png().unwrap()).unwrap())
+    }
+
+    #[test]
+    fn a_picture_of_the_users_is_drawn_with_its_tip_on_the_hotspot() {
+        let body = parse_color("#8E24AA").unwrap();
+        let ring = parse_color("#1E88E5").unwrap();
+        let fonts = Fonts::load("");
+        let pic = marked_picture(64, 64);
+        let look = |hotspot: (f32, f32), size: f32| Extra {
+            custom: Some(CustomLook {
+                picture: pic.clone(),
+                frame: 0,
+                hotspot,
+                size,
+            }),
+            ..Extra::default()
+        };
+        let at = |art: &CursorArt, dx: f32, dy: f32| {
+            let px = art
+                .image
+                .pixel((art.hotspot.0 + dx) as u32, (art.hotspot.1 + dy) as u32)
+                .unwrap()
+                .demultiply();
+            (px.red(), px.blue(), px.alpha())
+        };
+        let fx = CursorFx::default();
+        let busy = CursorFx {
+            tilt: 12.0,
+            trail: vec![(-20.0, 4.0), (-40.0, 8.0)],
+            idle: Some(0.25),
+            ..CursorFx::default()
+        };
+        for (fx, ripple) in [(&fx, None), (&busy, None), (&fx, Some(0.4))] {
+            // The top left corner is the tip: red just inside it.
+            let art = cursor_with(
+                &fonts,
+                "Zero",
+                1.0,
+                body,
+                ring,
+                ripple,
+                CursorStyle::Custom,
+                fx,
+                &look((0.0, 0.0), 1.0),
+            );
+            let (r, b, a) = at(&art, 1.0, 1.0);
+            assert!(r > 150 && b < 100 && a > 200, "{r} {b} {a}");
+            // The middle as the tip: blue there.
+            let mid = cursor_with(
+                &fonts,
+                "",
+                1.0,
+                body,
+                ring,
+                ripple,
+                CursorStyle::Custom,
+                fx,
+                &look((0.5, 0.5), 1.0),
+            );
+            let (r, b, _) = at(&mid, 0.0, 0.0);
+            assert!(b > 150 && r < 100, "{r} {b}");
+        }
+        // Twice the size: twice as far to its other corner.
+        let small = cursor_with(
+            &fonts,
+            "",
+            1.0,
+            body,
+            ring,
+            None,
+            CursorStyle::Custom,
+            &fx,
+            &look((0.0, 0.0), 1.0),
+        );
+        let big = cursor_with(
+            &fonts,
+            "",
+            1.0,
+            body,
+            ring,
+            None,
+            CursorStyle::Custom,
+            &fx,
+            &look((0.0, 0.0), 2.0),
+        );
+        assert_eq!(at(&small, 46.0, 46.0).2, 255);
+        assert!(at(&small, 52.0, 52.0).1 < 150, "past the picture");
+        assert_eq!(at(&big, 94.0, 94.0).1, 230);
+        // Without its picture (not read yet), it is drawn as an arrow.
+        let none = cursor_with(
+            &fonts,
+            "",
+            1.0,
+            body,
+            ring,
+            None,
+            CursorStyle::Custom,
+            &fx,
+            &Extra::default(),
+        );
+        assert!(none.image.width() > 10);
+    }
+
+    #[test]
+    fn click_and_hold_effects_grow_the_image_and_keep_the_tip() {
+        let body = parse_color("#8E24AA").unwrap();
+        let ring = parse_color("#1E88E5").unwrap();
+        let fonts = Fonts::default();
+        let none = CursorFx::default();
+        for style in std::iter::once(CursorStyle::Classic).chain(CursorStyle::POINTERS) {
+            let plain = cursor(&fonts, "", 1.0, body, ring, None, style, &none);
+            for click in [ClickStyle::Pulse, ClickStyle::Burst, ClickStyle::Sparkle] {
+                let x = Extra {
+                    click: Some(ClickFx {
+                        style: click,
+                        beats: vec![0.5, 0.1],
+                        color: ring,
+                    }),
+                    hold: Some(HoldFx {
+                        style: HoldStyle::Glow,
+                        phase: 0.2,
+                        alpha: 1.0,
+                        color: ring,
+                    }),
+                    ..Extra::default()
+                };
+                let art = cursor_with(&fonts, "", 1.0, body, ring, None, style, &none, &x);
+                assert!(art.image.width() >= plain.image.width(), "{style:?}");
+                // The pointer itself is where it was, around the tip.
+                let (hx, hy) = (art.hotspot.0 as u32, art.hotspot.1 as u32);
+                let (px, py) = (plain.hotspot.0 as u32, plain.hotspot.1 as u32);
+                assert_eq!(
+                    art.image.pixel(hx + 3, hy + 6).unwrap().alpha() > 0,
+                    plain.image.pixel(px + 3, py + 6).unwrap().alpha() > 0,
+                    "{style:?} {click:?}"
+                );
+            }
+        }
+        // A ripple, or nothing: the pointer as it was.
+        for click in [ClickStyle::Ripple, ClickStyle::None] {
+            let x = Extra {
+                click: Some(ClickFx {
+                    style: click,
+                    beats: vec![0.5],
+                    color: ring,
+                }),
+                ..Extra::default()
+            };
+            let a = cursor_with(
+                &fonts,
+                "",
+                1.0,
+                body,
+                ring,
+                Some(0.5),
+                CursorStyle::Classic,
+                &none,
+                &x,
+            );
+            let b = cursor(
+                &fonts,
+                "",
+                1.0,
+                body,
+                ring,
+                Some(0.5),
+                CursorStyle::Classic,
+                &none,
+            );
+            assert_eq!(a.image, b.image);
+        }
+        // The plain arrow's ripple in a colour of its own.
+        let red = parse_color("#FF0000").unwrap();
+        let x = Extra {
+            ripple_color: Some(red),
+            ..Extra::default()
+        };
+        let a = cursor_with(
+            &fonts,
+            "",
+            1.0,
+            body,
+            ring,
+            Some(0.5),
+            CursorStyle::Classic,
+            &none,
+            &x,
+        );
+        let b = cursor(
+            &fonts,
+            "",
+            1.0,
+            body,
+            ring,
+            Some(0.5),
+            CursorStyle::Classic,
+            &none,
+        );
+        assert_ne!(a.image, b.image);
+        assert_ne!(x.key(), Extra::default().key());
+        assert_eq!(Extra::default().key(), 0);
     }
 
     /// `OVERLAY_PREVIEW_DIR=/tmp/x cargo test -p computer-use preview -- --ignored`

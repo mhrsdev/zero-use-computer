@@ -42,6 +42,7 @@ impl<B: Backend> Engine<B> {
         let point = self.anchor_point(&app, &anchor).ok();
 
         // The agent cursor goes there first, so the user sees what is next.
+        self.overlay_clicks(u32::from(count));
         self.overlay_anchor(&app, &anchor, true);
 
         // A single left click on an element with a press action goes through
@@ -348,10 +349,14 @@ impl<B: Backend> Engine<B> {
         let before = self.tree_fingerprint(app.pid);
         // At the start before the button goes down, then along with the drag.
         self.overlay_point(p0, true);
+        self.overlay_held(true);
         self.overlay_glide(p1);
         self.overlay_dragging();
-        let target = self.mouse_target(&app)?;
-        self.backend.drag(&target, p0, p1)?;
+        let dragged = self
+            .mouse_target(&app)
+            .and_then(|target| self.backend.drag(&target, p0, p1));
+        self.overlay_held(false);
+        dragged?;
         self.settle_on(&app);
         let mut msg = format!(
             "Dragged from ({:.0}, {:.0}) to ({:.0}, {:.0}).{snapped}",

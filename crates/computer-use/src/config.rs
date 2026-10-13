@@ -538,6 +538,34 @@ pub struct OverlayConfig {
     pub show_buttons: bool,
     /// A ripple where the agent clicks.
     pub click_effect: bool,
+    /// What a click shows (`click_effect` on): "ripple" (each pointer its
+    /// own way, the arrow a ring), "pulse", "burst", "sparkle" or "none".
+    pub click_effect_style: String,
+    /// The click's colour (#RRGGBB); "" = the pointer's own.
+    pub click_effect_color: String,
+    /// How long a click shows.
+    pub click_effect_ms: u64,
+    /// While the agent holds the mouse button down (a drag, a drawing):
+    /// "glow" (a soft ring that pulses), "ring" or "none".
+    pub hold_effect: String,
+    /// Sounds for what the agent does (played by the overlay's helper with
+    /// the system's player; off by default).
+    pub sound: bool,
+    /// 0 to 100.
+    pub sound_volume: u32,
+    /// Each sound on or off, and an own WAV file instead of the built-in
+    /// one ("" = built in): a click, keys and typing, the work done, an
+    /// error, and the agent stopped (the stop key or button).
+    pub sound_click: bool,
+    pub sound_click_file: String,
+    pub sound_key: bool,
+    pub sound_key_file: String,
+    pub sound_done: bool,
+    pub sound_done_file: String,
+    pub sound_error: bool,
+    pub sound_error_file: String,
+    pub sound_stopped: bool,
+    pub sound_stopped_file: String,
     /// Where the border glows: around the whole `screen` or the `window`
     /// being worked on.
     pub border_target: BorderTarget,
@@ -568,12 +596,26 @@ pub struct OverlayConfig {
     /// Name tag shown beside the agent cursor ("" = none).
     pub cursor_tag: String,
     /// The agent cursor's look: "random" (one of the pointers, another for
-    /// each agent working at once), "classic" (the plain arrow), or one:
-    /// crystal, paper, jelly, ice, metal, orbit.
+    /// each agent working at once), "classic" (the plain arrow), one of
+    /// crystal, paper, jelly, ice, metal, orbit, or "custom" (the picture in
+    /// `cursor_image`).
     pub cursor_style: String,
+    /// The user's own picture for "custom": a PNG (with transparency) or a
+    /// GIF or APNG, still or animated (see `overlay::picture` for its
+    /// limits). `~` is the home folder; a relative path is in the server's
+    /// folder. A picture that can't be read leaves the default pointer.
+    pub cursor_image: String,
+    /// How big the picture is drawn, on top of `scale` (its longer side is
+    /// 48 px at 1).
+    pub cursor_image_scale: f64,
+    /// Where in the picture the tip is (what it points with), as fractions
+    /// of its width and height: 0, 0 is its top left corner.
+    pub cursor_hotspot_x: f64,
+    pub cursor_hotspot_y: f64,
     /// A pointer for an agent by its name: the MCP client's ("claude-code",
-    /// "codex") or its `cursor_tag`, e.g. { codex = "metal" }. Matched
-    /// without regard to case, before `cursor_style`.
+    /// "codex") or its `cursor_tag`, e.g. { codex = "metal" }; a value may
+    /// be a picture's path (.png, .gif or .apng) for an agent's own
+    /// picture. Matched without regard to case, before `cursor_style`.
     pub agent_cursors: std::collections::BTreeMap<String, String>,
     /// The pointer leans into its moves and leaves a trail of its own
     /// material, breathes while it waits, draws a line where it drags and
@@ -630,6 +672,22 @@ impl Default for OverlayConfig {
             show_label: true,
             show_buttons: true,
             click_effect: true,
+            click_effect_style: "ripple".into(),
+            click_effect_color: String::new(),
+            click_effect_ms: 700,
+            hold_effect: "glow".into(),
+            sound: false,
+            sound_volume: 60,
+            sound_click: true,
+            sound_click_file: String::new(),
+            sound_key: true,
+            sound_key_file: String::new(),
+            sound_done: true,
+            sound_done_file: String::new(),
+            sound_error: true,
+            sound_error_file: String::new(),
+            sound_stopped: true,
+            sound_stopped_file: String::new(),
             border_target: BorderTarget::Screen,
             border_width: 3,
             glow_size: 36,
@@ -649,6 +707,10 @@ impl Default for OverlayConfig {
             cursor_color: "#9C27B0".into(),
             cursor_tag: "Zero".into(),
             cursor_style: "random".into(),
+            cursor_image: String::new(),
+            cursor_image_scale: 1.0,
+            cursor_hotspot_x: 0.0,
+            cursor_hotspot_y: 0.0,
             agent_cursors: Default::default(),
             cursor_motion: true,
             trail: true,
@@ -688,11 +750,33 @@ impl OverlayConfig {
                 .flatten()
         });
         if let Some((_, style)) = picked {
-            cfg.cursor_style = style.clone();
+            if is_picture_path(style) {
+                cfg.cursor_style = "custom".into();
+                cfg.cursor_image = style.trim().to_string();
+            } else {
+                cfg.cursor_style = style.clone();
+            }
         }
         cfg
     }
+
+    /// The custom pointer's picture as a full path (None: none set).
+    pub fn cursor_image_path(&self) -> Option<PathBuf> {
+        settings_path(Path::new(self.cursor_image.trim()))
+    }
 }
+
+/// Whether an `agent_cursors` value names a picture (by its extension)
+/// rather than a pointer.
+pub fn is_picture_path(value: &str) -> bool {
+    let v = value.trim().to_ascii_lowercase();
+    [".png", ".gif", ".apng"].iter().any(|e| v.ends_with(e)) && v.len() > 4
+}
+
+/// What `overlay.click_effect_style` takes.
+pub const CLICK_EFFECTS: [&str; 5] = ["ripple", "pulse", "burst", "sparkle", "none"];
+/// What `overlay.hold_effect` takes.
+pub const HOLD_EFFECTS: [&str; 3] = ["glow", "ring", "none"];
 
 /// Reading desktop notifications. Off by default: notifications carry other
 /// apps' content (messages, codes).
@@ -1468,13 +1552,77 @@ impl Config {
             }
         }
         for (agent, style) in &o.agent_cursors {
+            if is_picture_path(style) {
+                continue;
+            }
             let style = style.trim().to_ascii_lowercase();
             if !crate::overlay::draw::CURSOR_STYLES.contains(&style.as_str()) {
                 return Err(format!(
-                    "overlay.agent_cursors.{agent} must be one of {} (got \"{style}\")",
+                    "overlay.agent_cursors.{agent} must be one of {} or a picture's path ending in .png, .gif or .apng (got \"{style}\")",
                     crate::overlay::draw::CURSOR_STYLES.join(", ")
                 ));
             }
+        }
+        for (key, value, choices) in [
+            (
+                "overlay.click_effect_style",
+                &o.click_effect_style,
+                &CLICK_EFFECTS[..],
+            ),
+            ("overlay.hold_effect", &o.hold_effect, &HOLD_EFFECTS[..]),
+        ] {
+            if !choices.contains(&value.trim().to_ascii_lowercase().as_str()) {
+                return Err(format!(
+                    "{key} must be one of {} (got \"{value}\")",
+                    choices.join(", ")
+                ));
+            }
+        }
+        let color = o.click_effect_color.trim();
+        if !color.is_empty() && crate::overlay::draw::parse_color(color).is_none() {
+            return Err(format!(
+                "overlay.click_effect_color must be a colour like \"#1E88E5\", or empty (got \"{color}\")"
+            ));
+        }
+        for (key, value) in [
+            ("overlay.cursor_image", &o.cursor_image),
+            ("overlay.sound_click_file", &o.sound_click_file),
+            ("overlay.sound_key_file", &o.sound_key_file),
+            ("overlay.sound_done_file", &o.sound_done_file),
+            ("overlay.sound_error_file", &o.sound_error_file),
+            ("overlay.sound_stopped_file", &o.sound_stopped_file),
+        ] {
+            if value.chars().any(char::is_control) {
+                return Err(format!("{key} must be one line of text"));
+            }
+        }
+        for (key, value, min, max) in [
+            (
+                "overlay.cursor_image_scale",
+                o.cursor_image_scale,
+                0.25,
+                4.0,
+            ),
+            ("overlay.cursor_hotspot_x", o.cursor_hotspot_x, 0.0, 1.0),
+            ("overlay.cursor_hotspot_y", o.cursor_hotspot_y, 0.0, 1.0),
+        ] {
+            if !(min..=max).contains(&value) {
+                return Err(format!(
+                    "{key} must be between {min} and {max} (got {value})"
+                ));
+            }
+        }
+        if !(100..=3000).contains(&o.click_effect_ms) {
+            return Err(format!(
+                "overlay.click_effect_ms must be between 100 and 3000 (got {})",
+                o.click_effect_ms
+            ));
+        }
+        if o.sound_volume > 100 {
+            return Err(format!(
+                "overlay.sound_volume must be between 0 and 100 (got {})",
+                o.sound_volume
+            ));
         }
         if !(0.0..=1.0).contains(&self.ocr.min_confidence) {
             return Err(format!(
@@ -2094,6 +2242,17 @@ mod tests {
         assert_eq!(o.for_agent(&["codex", "Zero"]).cursor_style, "metal");
         assert_eq!(o.for_agent(&["claude-code", "zero"]).cursor_style, "ice");
         assert_eq!(o.for_agent(&["claude-code", "Ada"]).cursor_style, "random");
+        // A picture of its own, by its path.
+        o.agent_cursors
+            .insert("Ada".into(), "~/pics/cat.gif".into());
+        let ada = o.for_agent(&["claude-code", "ada"]);
+        assert_eq!(
+            (ada.cursor_style.as_str(), ada.cursor_image.as_str()),
+            ("custom", "~/pics/cat.gif")
+        );
+        let mut c = Config::default();
+        c.overlay.agent_cursors = o.agent_cursors.clone();
+        assert!(c.validate().is_ok());
         let mut c = Config::default();
         c.overlay
             .agent_cursors
