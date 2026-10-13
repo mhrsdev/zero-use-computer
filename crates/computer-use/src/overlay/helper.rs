@@ -3413,13 +3413,13 @@ mod tests {
         );
         m.tick(at(120));
         let c = m.scene(at(300)).cursor.unwrap();
-        // The ripple runs as it did (700 ms), and nothing else is drawn but
-        // the hold's glow, which is new.
+        // The ripple runs as it did (700 ms), and nothing else is drawn: the
+        // hold's effect is off until it is chosen.
         let r = c.ripple.unwrap();
         assert!((r - 180.0 / 700.0).abs() < 0.01, "{r}");
         assert!(c.extra.custom.is_none() && c.extra.click.is_none());
         assert!(c.extra.ripple_color.is_none());
-        assert_eq!(c.extra.hold.as_ref().unwrap().style, HoldStyle::Glow);
+        assert!(c.extra.hold.is_none());
         // No sound and nothing to say.
         m.apply(Cmd::End { ok: false }, at(400));
         m.tick(at(500));

@@ -211,8 +211,8 @@ click_effect_style = "ripple" # what a click shows: "ripple" (each pointer its o
                              # "burst", "sparkle" or "none"
 click_effect_color = ""      # its colour (#RRGGBB); "" = the pointer's own
 click_effect_ms = 700        # how long a click shows (100 to 3000)
-hold_effect = "glow"         # while the agent holds the button down (a drag, a drawing):
-                             # "glow" (a soft ring that pulses), "ring" or "none"
+hold_effect = "none"         # while the agent holds the button down (a drag, a drawing):
+                             # "none", "glow" (a soft ring that pulses) or "ring"
 border_target = "screen"     # glow around the whole "screen" or the "window" worked on
 border_width = 3             # bright core line
 glow_size = 36               # how far the glow fades out (0 = a plain line)

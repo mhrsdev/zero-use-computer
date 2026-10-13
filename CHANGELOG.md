@@ -16,7 +16,7 @@
   a `pulse`, a `burst` or `sparkle` instead of the ripple
   (`click_effect_style`, `click_effect_color`, `click_effect_ms`; a double
   click shows two beats), and while the agent holds the button down (a
-  drag, a drawing) the pointer glows (`hold_effect`: glow, ring or none).
+  drag, a drawing) the pointer can glow (`hold_effect`: none, the default, glow or ring).
   Sounds, off by default (`overlay.sound`): a click, keys, done, an error and
   a stop, made by the program or from WAV files of yours, played by the
   system's player (`pw-play`/`paplay`/`aplay`, `afplay`, `PlaySound`) without

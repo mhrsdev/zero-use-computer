@@ -516,8 +516,8 @@ their mouse:
   `pulse` (an expanding ring), `burst` (particles), `sparkle` or `none`, in
   `click_effect_color` ("" = the pointer's own) for `click_effect_ms`; a
   double click shows two beats. While the agent holds the button down (a
-  `drag`, a `draw` stroke) the pointer shows `hold_effect`: a soft `glow`
-  that pulses (the default), a `ring`, or `none`; it fades when the button
+  `drag`, a `draw` stroke) the pointer shows `hold_effect`: `none`
+  (the default), a soft `glow` that pulses, or a `ring`; it fades when the button
   is let go. `click_effect = false` still turns every click effect off.
 - **Sounds** (`overlay.sound`, off by default): a click, keys and typing, the
   work done, an error, the agent stopped (the stop key or button), each with

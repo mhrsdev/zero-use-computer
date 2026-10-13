@@ -546,7 +546,7 @@ pub struct OverlayConfig {
     /// How long a click shows.
     pub click_effect_ms: u64,
     /// While the agent holds the mouse button down (a drag, a drawing):
-    /// "glow" (a soft ring that pulses), "ring" or "none".
+    /// "none" (the default), "glow" (a soft ring that pulses) or "ring".
     pub hold_effect: String,
     /// Sounds for what the agent does (played by the overlay's helper with
     /// the system's player; off by default).
@@ -675,7 +675,7 @@ impl Default for OverlayConfig {
             click_effect_style: "ripple".into(),
             click_effect_color: String::new(),
             click_effect_ms: 700,
-            hold_effect: "glow".into(),
+            hold_effect: "none".into(),
             sound: false,
             sound_volume: 60,
             sound_click: true,
