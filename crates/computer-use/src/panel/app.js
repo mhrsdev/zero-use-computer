@@ -405,7 +405,7 @@ function effectsPreview() {
   const click = val("overlay.click_effect") ? val("overlay.click_effect_style") : "none", hold = val("overlay.hold_effect");
   const own = val("overlay.click_effect_color"), colour = /^#[0-9a-f]{6}$/i.test(own) ? own : val("overlay.color_working");
   const body = val("overlay.cursor_color"), ms = Math.max(100, val("overlay.click_effect_ms"));
-  const canvas = h("canvas", { width: 960, height: 400, role: "img", "aria-label": t("A click and a held button, as the overlay shows them") });
+  const canvas = h("canvas", { width: 960, height: 480, role: "img", "aria-label": t("A click and a held button, as the overlay shows them") });
   const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const ctx = canvas.getContext("2d"), k = 2.4, TAU = Math.PI * 2;
   const rgba = (a) => { const n = parseInt(colour.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`; };
@@ -454,16 +454,16 @@ function effectsPreview() {
     const cs = getComputedStyle(document.documentElement);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = cs.getPropertyValue("--on-surface-variant"); ctx.font = `${13 * 2}px ${cs.getPropertyValue("--font")}`; ctx.textAlign = "center";
-    ctx.fillText(t("Click"), 240, 370); ctx.fillText(t("Hold"), 720, 370);
+    ctx.fillText(t("Click"), 240, 430); ctx.fillText(t("Hold"), 720, 430);
     // A click every so often (two beats now and then: a double click).
-    const cycle = ms + 200 + 900, n = Math.floor(now / cycle), c = now % cycle;
-    clickAt(240, 170, c / ms); if (n % 3 === 2) clickAt(240, 170, (c - 200) / ms);
-    arrow(240, 170);
+    const cycle = ms + 200 + 300, n = Math.floor(now / cycle), c = now % cycle;
+    clickAt(240, 210, c / ms); if (n % 3 === 2) clickAt(240, 210, (c - 200) / ms);
+    arrow(240, 210);
     // Held for 2.4 s, let go (it fades), and again.
     const hc = now % 3300, a = hc < 2400 ? Math.min(1, hc / 120) : Math.max(0, 1 - (hc - 2400) / 260);
     const x = 640 + 160 * Math.min(1, hc / 2400);
-    if (hc < 2400) { ctx.strokeStyle = rgba(.5); ctx.lineWidth = 3 * k; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(640, 170); ctx.lineTo(x, 170); ctx.stroke(); }
-    holdAt(x, 170, a, (hc / 1200) % 1); arrow(x, 170);
+    if (hc < 2400) { ctx.strokeStyle = rgba(.5); ctx.lineWidth = 3 * k; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(640, 210); ctx.lineTo(x, 210); ctx.stroke(); }
+    holdAt(x, 210, a, (hc / 1200) % 1); arrow(x, 210);
     // On while it is on the page (it is made before it is put there); a
     // page shown instead ends it.
     if (canvas.isConnected) seen = true;
