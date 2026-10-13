@@ -183,6 +183,27 @@
   .pick:hover { border-color: var(--primary); }
   .pick .glyph { font-size: 28px; line-height: 56px; height: 56px; }
 
+  /* your own picture: on a checkerboard (it shows what is clear), its tip
+     marked; a click on it moves the tip. Laid out left to right like the
+     picture itself, whatever the language. */
+  .custom { display: flex; gap: 20px; padding: 12px 24px 8px; align-items: flex-start; flex-wrap: wrap; }
+  .custom .frame {
+    width: 168px; height: 168px; flex: none; display: flex; align-items: center; justify-content: center;
+    border-radius: 12px; border: 1px solid var(--outline-variant);
+    background: repeating-conic-gradient(var(--surface-3) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
+  }
+  .custom .pic { position: relative; display: inline-block; line-height: 0; }
+  .custom .pic img { max-width: 136px; max-height: 136px; min-width: 48px; image-rendering: auto; cursor: crosshair; }
+  .custom .pic .tip {
+    position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; pointer-events: none;
+    border: 2px solid var(--error); box-shadow: 0 0 0 2px var(--surface);
+  }
+  .custom .nopic { color: var(--on-surface-variant); font-size: 12px; text-align: center; padding: 8px; }
+  .custom .side { flex: 1; min-width: 240px; }
+  .custom .side p { margin: 0 0 8px; }
+  .custom .field { margin: 8px 0; }
+  .ctl.inline { justify-content: flex-start; max-width: none; }
+
   /* decision form */
   .kinds { display: grid; gap: 8px; margin: 8px 0 16px; }
   .kind { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--outline-variant); border-radius: 12px; padding: 12px 16px; cursor: pointer; }

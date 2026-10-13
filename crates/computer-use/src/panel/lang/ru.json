@@ -21,6 +21,7 @@
   "{name} applied.": "Профиль «{name}» применён.",
   "{name} picker": "{name}: выбор цвета",
   "{name} slider": "{name}: ползунок",
+  "{path} can't play sounds: {error}": "{path} не может воспроизводить звуки: {error}",
   "{px} px → about {tokens} tokens": "{px} px → около {tokens} токенов",
   "{v} is back.": "Версия {v} возвращена.",
   "{v} is downloaded and checked.": "Версия {v} скачана и проверена.",
@@ -28,6 +29,8 @@
   "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "версия {v} больше не подходит под настройки (пропущена, закреплена другая версия или это пре-релиз на стабильном канале), поэтому она забыта",
   "{v} is the latest under these settings.": "{v} — новейшая версия при этих настройках.",
   "{v} will not be taken again.": "Версия {v} больше не будет установлена.",
+  "{w}×{h} px, {n} frames that play for {s} s and loop.": "{w}×{h} пкс, кадров: {n}; играет {s} с и повторяется по кругу.",
+  "{w}×{h} px, a still picture.": "{w}×{h} пкс, неподвижная картинка.",
   "{x} ago": "{x} назад",
   "{x} allowed by the settings.": "Настройки разрешают {x}.",
   "{x} in it": "в профиле {x}",
@@ -42,6 +45,7 @@
   "5 min": "5 мин",
   "a change has no key": "у изменения нет ключа",
   "a change needs a value": "для изменения нужно значение",
+  "A click and a held button, as the overlay shows them": "Щелчок и удержание кнопки так, как их показывает оверлей",
   "A different one each session, and for each agent at once": "Новый в каждом сеансе и свой у каждого из одновременно работающих агентов",
   "A fast model that answers small questions about what is on screen.": "Быстрая модель, которая отвечает на небольшие вопросы о том, что на экране.",
   "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "Быстрая модель, которой агент задаёт вопросы «да или нет», вопросы с выбором и вопросы на оценку о том, что на экране, чтобы меньше читать и быстрее решать. Ваш ключ хранится на этом компьютере и никогда не проходит через чат.",
@@ -93,8 +97,12 @@
   "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "Крупные изображения, окна целиком, более длинные деревья без сокращения. Больше всего токенов; для трудночитаемых приложений.",
   "Can go back to": "Откат возможен на",
   "Can't change safely": "Нельзя изменить безопасно",
+  "can't keep the picture in {path}: {error}": "не удаётся сохранить картинку в {path}: {error}",
   "can't make the profiles folder": "не удаётся создать папку профилей",
+  "can't read it now": "сейчас её не прочитать",
+  "can't read it: {error}": "не удаётся прочитать: {error}",
   "can't take it": "недопустимо",
+  "can't write the sounds to {path}: {error}": "не удаётся записать звуки в {path}: {error}",
   "Cancel": "Отмена",
   "cells": "ячеек",
   "Change": "Изменить",
@@ -105,10 +113,19 @@
   "Check": "Проверить",
   "Check now": "Проверить сейчас",
   "Checking actions": "Проверка действий",
+  "Checking the picture…": "Проверяю картинку…",
+  "Choose a file": "Выбрать файл",
   "choose a kind of model": "выберите тип модели",
   "Choose a kind of model first.": "Сначала выберите тип модели.",
+  "choose a picture": "выберите картинку",
+  "Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.": "Выберите PNG с прозрачным фоном или анимированный GIF или APNG. Его левый верхний угол — кончик указателя, если вы не щёлкнете по другому месту картинки.",
   "Choose a pointer": "Выберите указатель",
   "choose an agent": "выберите агента",
+  "Choose another file": "Выбрать другой файл",
+  "Click": "Щелчок",
+  "Click effects are off (click effect).": "Эффекты щелчка выключены (эффект щелчка).",
+  "Click where its tip should be": "Щёлкните там, где должен быть кончик",
+  "Clicks and holds": "Щелчки и удержание",
   "Comes with the program": "Встроенные",
   "Connect an agent": "Подключить агента",
   "Copied.": "Скопировано.",
@@ -139,6 +156,7 @@
   "Fix it in a text editor: {path}": "Исправьте его в текстовом редакторе: {path}",
   "for example ctrl+alt+escape": "например, ctrl+alt+escape",
   "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "Для записи демо: указатель и рамка крупнее, перемещения дольше, нажатые клавиши и текст видны, а итоговое состояние держится на экране чуть дольше.",
+  "frame {n} can't be read ({error}); the {m} before it loop": "кадр {n} не читается ({error}); по кругу идут кадры до него ({m})",
   "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "В терминале то же самое делает `computer-use-mcp install` (все найденные здесь агенты), `--client NAME` — для одного, `--list` — посмотреть, `--remove` — удалить.",
   "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "В терминале: computer-use-mcp shortcut (рабочий стол), --menu, --both, --remove, --list. Удаляются только ярлыки, созданные этой программой.",
   "General": "Общие",
@@ -149,6 +167,7 @@
   "Go back to {v}": "Откат на {v}",
   "Go back to version {v}?": "Откатиться на версию {v}?",
   "Guide": "Руководство",
+  "Hold": "Удержание",
   "Home": "Главная",
   "hours": "часов",
   "How much of the app's tree the model reads, and how it is shortened.": "Какую часть дерева приложения читает модель и как дерево сокращается.",
@@ -166,10 +185,15 @@
   "Import the {n} it can take": "Импортировать подходящие ({n})",
   "Imported {x}; left out {n} this version can't take.": "Импортировано: {x}; пропущено {n} — эта версия их не поддерживает.",
   "Imported {x}.": "Импортировано: {x}.",
+  "it can't be read as a picture ({error})": "не читается как картинка ({error})",
   "It goes in {when}.": "Установка произойдёт {when}.",
   "It is changed on its own page, not by an import": "Меняется на отдельной странице, а не импортом",
+  "it is not a file": "это не файл",
+  "it is not a PNG or GIF picture": "это не картинка PNG или GIF",
+  "It is ready, but another pointer is chosen: pick custom above to use it.": "Картинка готова, но выбран другой указатель: выберите custom выше, чтобы её использовать.",
   "It looks every {x}.": "Проверка раз в {x}.",
   "It starts {program} settings, which opens the panel in your browser.": "Он запускает {program} settings, и панель открывается в браузере.",
+  "it took too long to read": "чтение заняло слишком много времени",
   "It will not look for updates.": "Обновления проверяться не будут.",
   "items": "пунктов",
   "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
@@ -179,6 +203,7 @@
   "Keep the current settings as a profile": "Сохранить текущие настройки как профиль",
   "Kept {x}.": "Сохранено: {x}.",
   "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "Сохранено: {x}. Пропущено {n}, которых не может быть в профиле (секреты, защищённые настройки, порты).",
+  "Keys": "Клавиши",
   "Language": "Язык",
   "last {when}": "последняя проверка {when}",
   "Leave empty for {url}.": "Оставьте пустым, чтобы использовать {url}.",
@@ -219,6 +244,8 @@
   "no import has been made yet, so there is nothing to go back to": "импорта ещё не было, поэтому возвращаться не к чему",
   "No key for this panel": "Нет клавиши для этой панели",
   "No log yet: turn it on above.": "Журнала пока нет: включите его выше.",
+  "No picture yet": "Картинки пока нет",
+  "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent": "не найден проигрыватель звука (pw-play, paplay или aplay в Linux; afplay в macOS), поэтому оверлей молчит",
   "no update is waiting": "ожидающих обновлений нет",
   "none": "нет",
   "None set up.": "Ничего не настроено.",
@@ -250,6 +277,7 @@
   "of {n}": "из {n}",
   "off": "выкл.",
   "Off: the agent works from the tree alone.": "Выключено: агент работает только по дереву.",
+  "Off: turn on Sound below to hear them while the agent works. A test plays one now either way.": "Выключено: включите «Звук» ниже, чтобы слышать их, пока агент работает. Проверка в любом случае проигрывает звук сразу.",
   "Off.": "Выключено.",
   "Off. It never updates by itself.": "Выключено. Программа никогда не обновляется сама.",
   "Off. Nothing is looked for or downloaded.": "Выключено. Ничего не проверяется и не скачивается.",
@@ -257,6 +285,7 @@
   "On, last looked {when}.": "Включено, последняя проверка {when}.",
   "On; it has not looked yet.": "Включено; проверок ещё не было.",
   "On; no hub is running right now.": "Включено; хаб сейчас не запущен.",
+  "On: the overlay plays these while the agent works, at most a few a second.": "Включено: оверлей проигрывает их, пока агент работает, не больше нескольких в секунду.",
   "On.": "Включено.",
   "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "В tools.enabled перечислены только некоторые инструменты ({n}), поэтому остальные скрыты, как бы ни стояли переключатели.",
   "OpenAI-compatible chat model": "Чат-модель, совместимая с OpenAI",
@@ -272,6 +301,8 @@
   "Pictures": "Изображения",
   "Pictures sent": "Изображения",
   "Platform": "Платформа",
+  "Played with {player}.": "Проиграно через {player}.",
+  "PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.": "PNG, GIF или APNG, не больше {mb} МБ и {side} пкс по стороне; анимация играет первые кадры (до {frames}), до {secs} с, и повторяется. Картинка остаётся на этом компьютере, в папке программы. Задаёте её только вы, здесь: агент не может.",
   "Pointer": "Указатель",
   "Pointer style": "Стиль указателя",
   "Pointers and the mouse": "Указатели и мышь",
@@ -305,6 +336,7 @@
   "Reset": "Сбросить",
   "Revert": "Вернуть",
   "Right now": "Текущее состояние",
+  "Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings.": "Ripple — собственный щелчок каждого указателя; остальные рисуются у кончика вашим цветом или цветом указателя. Удерживаемая кнопка светится при перетаскивании и рисовании.",
   "s": "с",
   "same": "без изменений",
   "Save": "Сохранить",
@@ -318,6 +350,7 @@
   "say install or remove": "укажите install или remove",
   "say which settings to change": "укажите, какие настройки изменить",
   "say which settings to reset": "укажите, какие настройки сбросить",
+  "say which sound": "укажите, какой звук",
   "Screen memory": "Память экранов",
   "screens": "экранов",
   "Screenshots": "Снимки экрана",
@@ -339,6 +372,7 @@
   "Showcase": "Демонстрация",
   "Small programs the agent writes and the server runs.": "Небольшие программы, которые пишет агент, а выполняет сервер.",
   "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "Изображения меньше, деревья короче. Полный снимок экрана стоит примерно на треть меньше; очень мелкий текст может читаться хуже.",
+  "Sounds": "Звуки",
   "spaces": "пробелов",
   "Spending fewer tokens": "Как тратить меньше токенов",
   "Start your MCP client again to use it.": "Перезапустите клиент MCP, чтобы начать её использовать.",
@@ -352,8 +386,12 @@
   "Switches that apply to the whole program.": "Переключатели для всей программы.",
   "Take the panel's shortcut away from {path}?": "Убрать ярлык панели из {path}?",
   "Test": "Проверить",
+  "Test a sound": "Проверить звук",
   "Text on screen (OCR)": "Текст на экране (OCR)",
   "Text read off screen": "Текст с экрана",
+  "That file can't be read.": "Этот файл не читается.",
+  "That file is over 4 MB: a pointer's picture may be 4 MB at most.": "Файл больше 4 МБ: картинка указателя может быть не больше 4 МБ.",
+  "that is not a picture": "это не картинка",
   "that is not a setting": "это не настройка",
   "that is not one of your profiles": "это не ваш профиль",
   "that is too long to be a list of settings": "это слишком длинно для списка настроек",
@@ -364,13 +402,16 @@
   "the address must start with https:// (or http:// for a server on this computer)": "адрес должен начинаться с https:// (или http:// для сервера на этом компьютере)",
   "The agent can use it now.": "Агент уже может этим пользоваться.",
   "The agent has no decision model now.": "Теперь у агента нет модели решений.",
+  "the animation is longer than this keeps: its first {n} frames ({s} s) loop": "анимация длиннее, чем хранится: по кругу идут её первые кадры ({n}, {s} с)",
   "The border, label and colours shown while the agent works.": "Рамка, надпись и цвета, которые видны, пока агент работает.",
   "the computer to restart": "перезагрузки компьютера",
   "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "Пунктир — это прыжок: настоящая мышь сразу переносится на 70–140 px от цели, проходит только этот последний отрезок, а затем возвращается туда, где вы её оставили. Указатель в оверлее скользит весь путь.",
   "The decision model": "Модель решений",
   "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "Аварийная остановка и пауза, пока вы пользуетесь компьютером. Изменения требуют подтверждения.",
   "The file as saved has a mistake in it; mend it here.": "В сохранённом файле ошибка; исправьте её здесь.",
+  "the file is {mb} MB; a pointer's picture may be 4 MB at most": "файл весит {mb} МБ; картинка указателя может быть не больше 4 МБ",
   "The file is empty.": "Файл пуст.",
+  "the file is over 4 MB": "файл больше 4 МБ",
   "the file is too long to be a settings file": "файл слишком длинный для файла настроек",
   "The last {n} lines": "Последние строки: {n}",
   "The newest stable release.": "Новейший стабильный релиз.",
@@ -379,6 +420,9 @@
   "the next time the server starts": "при следующем запуске сервера",
   "The ones you had are kept in {path}.": "Прежние сохранены в {path}.",
   "The ones you have now are kept, so this can be undone too.": "Текущие сохраняются, так что и это можно отменить.",
+  "the picture has no frames": "в картинке нет кадров",
+  "the picture is {w}×{h} px; it may be {max} px a side at most": "картинка {w}×{h} пкс; по стороне можно не больше {max} пкс",
+  "the picture is empty": "картинка пустая",
   "The plain arrow": "Обычная стрелка",
   "The plain arrow.": "Обычная стрелка.",
   "The program's own defaults for every setting the other profiles touch.": "Собственные значения программы по умолчанию для всех настроек, которые меняют другие профили.",
@@ -392,6 +436,9 @@
   "The settings that differ from the defaults. No secrets: {x} left out.": "Настройки, отличающиеся от значений по умолчанию. Секреты не включаются: пропущено {x}.",
   "The settings that differ from the defaults. No secrets: none were set.": "Настройки, отличающиеся от значений по умолчанию. Секреты не включаются: ни один не задан.",
   "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "Вместе с ней вернутся настройки, которые были до того обновления; текущие сохраняются рядом с файлом.",
+  "the sound can't be played: {error}": "звук не проигрывается: {error}",
+  "The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own.": "Звуки создаёт сама программа; для каждого можно указать свой WAV-файл (расширенные настройки ниже). Их проигрывает системный проигрыватель: pw-play, paplay или aplay в Linux, afplay в macOS, встроенный в Windows.",
+  "The tip is there now.": "Кончик теперь там.",
   "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "Список инструментов отправляется с каждым запросом, поэтому включённые инструменты стоят около {tokens} токенов каждый раз{manager}. Стоимость считается по текущим описаниям ({descriptions}), из расчёта четыре символа на токен.",
   "The version you have now is not taken again unless you clear update.skip_version.": "Текущая версия не будет установлена снова, пока вы не очистите update.skip_version.",
   "Theme": "Тема",
@@ -407,6 +454,7 @@
   "this needs the user's confirmation first": "это сначала требует подтверждения пользователя",
   "This page.": "Эта страница.",
   "This panel:": "Эта панель:",
+  "This picture can't be used: {error}. The default pointer shows instead.": "Эту картинку нельзя использовать: {error}. Вместо неё показывается указатель по умолчанию.",
   "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "Эта программа запущена из {from} — места, которое очищается или перемещается. Копия хранится в {to}, и именно её получают агенты.",
   "this server keeps its settings in memory": "этот сервер хранит настройки в памяти",
   "This server keeps its settings in memory, so nothing can be saved here.": "Этот сервер хранит настройки в памяти, поэтому здесь ничего нельзя сохранить.",
@@ -419,6 +467,8 @@
   "Three sample paths of the {style} style": "Три примера траекторий в стиле {style}",
   "Timing": "Тайминги",
   "tokens": "токенов",
+  "too many sounds at once": "слишком много звуков сразу",
+  "too soon after the last one": "слишком скоро после предыдущего",
   "Tool list": "Список инструментов",
   "Tools": "Инструменты",
   "Tools and tokens": "Инструменты и токены",
@@ -446,6 +496,7 @@
   "Where to start": "С чего начать",
   "Which": "Какая версия",
   "Which tools the model sees. The tool list is sent with every request.": "Какие инструменты видит модель. Список инструментов отправляется с каждым запросом.",
+  "Windows didn't play {path}": "Windows не проиграла {path}",
   "with `computer-use-mcp update --install`": "командой `computer-use-mcp update --install`",
   "Working": "Работает",
   "Write the audit log": "Вести журнал аудита",
@@ -453,7 +504,12 @@
   "you to run `computer-use-mcp update --install`": "запуска `computer-use-mcp update --install`",
   "Your control": "Ваш контроль",
   "Your MCP clients use it the next time they start.": "Клиенты MCP начнут использовать это при следующем запуске.",
+  "Your own picture": "Своя картинка",
+  "Your own picture.": "Своя картинка.",
   "Your own: a snapshot of settings you changed.": "Ваш собственный: снимок изменённых вами настроек.",
+  "Your picture is no longer the pointer.": "Ваша картинка больше не указатель.",
+  "Your picture is the pointer now.": "Теперь указатель — ваша картинка.",
+  "Your pointer's picture": "Картинка вашего указателя",
   "Your settings": "Ваши настройки",
   "Yours": "Ваши"
  },
@@ -542,7 +598,23 @@
   ],
   "overlay.cursor_style": [
    "Стиль указателя",
-   "Указатель агента. Random даёт каждому сеансу свой и разный каждому из одновременно работающих агентов."
+   "Указатель агента. Random даёт каждому сеансу свой и разный каждому из одновременно работающих агентов. Custom — ваша собственная картинка."
+  ],
+  "overlay.cursor_image": [
+   "Картинка указателя",
+   "Своя картинка для указателя custom: PNG или анимированный GIF или APNG. Не больше 4 МБ и 512 пкс по стороне. Пусто: нет."
+  ],
+  "overlay.cursor_image_scale": [
+   "Масштаб картинки указателя",
+   "Насколько крупно рисуется ваша картинка поверх размера оверлея. При 1 её длинная сторона — 48 пкс."
+  ],
+  "overlay.cursor_hotspot_x": [
+   "Кончик указателя по x",
+   "Где в картинке кончик по горизонтали: 0 — левый край, 1 — правый."
+  ],
+  "overlay.cursor_hotspot_y": [
+   "Кончик указателя по y",
+   "Где в картинке кончик по вертикали: 0 — верхний край, 1 — нижний."
   ],
   "overlay.cursor_color": [
    "Цвет указателя",
@@ -611,6 +683,74 @@
   "overlay.show_label": [
    "Показывать надпись",
    "Надпись с состоянием."
+  ],
+  "overlay.show_buttons": [
+   "Показывать кнопки",
+   "Кнопки остановки и настроек рядом с меткой: остановить всех агентов или одного из списка либо открыть эту панель."
+  ],
+  "overlay.click_effect_style": [
+   "Стиль эффекта щелчка",
+   "Что показывает щелчок: ripple (каждый указатель по-своему), импульс, всплеск, искры или ничего."
+  ],
+  "overlay.click_effect_color": [
+   "Цвет эффекта щелчка",
+   "Цвет эффектов щелчка и удержания. Пусто: цвет самого указателя."
+  ],
+  "overlay.click_effect_ms": [
+   "Длительность эффекта щелчка",
+   "Сколько показывается щелчок."
+  ],
+  "overlay.hold_effect": [
+   "Эффект удержания",
+   "Пока агент удерживает кнопку (перетаскивание, рисование): мягкое пульсирующее свечение, кольцо или ничего."
+  ],
+  "overlay.sound": [
+   "Звук",
+   "Звуки действий агента: щелчок, клавиши, работа готова, ошибка, остановка. Проигрываются системным проигрывателем."
+  ],
+  "overlay.sound_volume": [
+   "Громкость",
+   "Насколько громкие звуки."
+  ],
+  "overlay.sound_click": [
+   "Звук щелчка",
+   "Звук, когда агент щёлкает."
+  ],
+  "overlay.sound_click_file": [
+   "Файл звука щелчка",
+   "Свой WAV-файл для щелчка. Пусто: встроенный звук."
+  ],
+  "overlay.sound_key": [
+   "Звук клавиш",
+   "Тихий щелчок, когда агент нажимает клавиши или печатает, не больше нескольких в секунду."
+  ],
+  "overlay.sound_key_file": [
+   "Файл звука клавиш",
+   "Свой WAV-файл для клавиш. Пусто: встроенный звук."
+  ],
+  "overlay.sound_done": [
+   "Звук готовности",
+   "Перезвон, когда работа готова."
+  ],
+  "overlay.sound_done_file": [
+   "Файл звука готовности",
+   "Свой WAV-файл для готовности. Пусто: встроенный звук."
+  ],
+  "overlay.sound_error": [
+   "Звук ошибки",
+   "Звук, когда действие не удалось."
+  ],
+  "overlay.sound_error_file": [
+   "Файл звука ошибки",
+   "Свой WAV-файл для ошибки. Пусто: встроенный звук."
+  ],
+  "overlay.sound_stopped": [
+   "Звук остановки",
+   "Звук, когда вы останавливаете агента клавишей или кнопкой остановки."
+  ],
+  "overlay.sound_stopped_file": [
+   "Файл звука остановки",
+   "Свой WAV-файл для остановки. Пусто: встроенный звук."
   ],
   "overlay.border_target": [
    "Область рамки",
@@ -1231,10 +1371,6 @@
   "panel.idle_minutes": [
    "Простой, мин",
    "Панель закрывается после стольких минут без запросов."
-  ],
-  "overlay.show_buttons": [
-   "Показывать кнопки",
-   "Кнопки остановки и настроек рядом с меткой: остановить всех агентов или одного из списка либо открыть эту панель."
   ]
  }
 }

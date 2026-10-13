@@ -274,13 +274,75 @@ function row(e) {
 /* ---------- previews ---------- */
 const POINTER_NAMES = ["crystal", "paper", "jelly", "ice", "metal", "orbit"];
 
-function pointerPicker() {
+function pointerPicker(ci) {
   const e = E["overlay.cursor_style"], v = val(e.key);
   const cell = (name, glyph, text) => h("button", { class: "pick", "aria-pressed": String(v === name), title: text ? t(text) : name, onclick: () => v !== name && change([[e.key, name]]) },
     glyph ? h("span", { class: "glyph", "aria-hidden": "true" }, glyph) : h("img", { src: "cursor/" + name + ".png", alt: "" }), h("span", {}, name));
+  // Your own picture: chosen here once it is there, else the file chooser.
+  const usable = ci && ci.set && ci.usable;
+  const own = h("button", { class: "pick", "aria-pressed": String(v === "custom"), title: t("Your own picture"), onclick: () => (usable ? v !== "custom" && change([[e.key, "custom"]]) : chooseCursorFile()) },
+    usable ? h("img", { src: "cursor/custom?v=" + cursorVersion, alt: "" }) : h("span", { class: "glyph", "aria-hidden": "true" }, "+"), h("span", {}, "custom"));
   return h("div", { class: "card" }, h("h3", {}, t("Pointer style")),
     h("div", { class: "picker", role: "group", "aria-label": t("Pointer style") },
-      cell("random", "?", "A different one each session, and for each agent at once"), cell("classic", "➤", "The plain arrow"), POINTER_NAMES.map((n) => cell(n))));
+      cell("random", "?", "A different one each session, and for each agent at once"), cell("classic", "➤", "The plain arrow"), POINTER_NAMES.map((n) => cell(n)), own));
+}
+
+/* Your own picture as the pointer: shown as it plays, chosen from a file
+   (checked by the server with the overlay's own limits, and kept in the
+   program's folder), its tip set by a click on it, its size, taken away. */
+let cursorVersion = Date.now();
+function chooseCursorFile() {
+  const input = h("input", { type: "file", accept: "image/png,image/gif,image/apng,.png,.gif,.apng", style: "display:none" });
+  input.onchange = () => {
+    const f = input.files && input.files[0]; input.remove();
+    if (!f) return;
+    if (f.size > 4 * 1024 * 1024) return snack("That file is over 4 MB: a pointer's picture may be 4 MB at most.", true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      snack("Checking the picture…");
+      const r = await post("cursor_upload", { name: f.name, data: reader.result });
+      if (!r.ok) return snack(r.error, true);
+      take(r); cursorVersion = Date.now();
+      snack(r.note ? t("Your picture is the pointer now.") + " " + t(r.note) : "Your picture is the pointer now."); render();
+    };
+    reader.onerror = () => snack("That file can't be read.", true);
+    reader.readAsDataURL(f);
+  };
+  document.body.append(input); input.click();
+}
+function customCard(ci) {
+  const hx = val("overlay.cursor_hotspot_x"), hy = val("overlay.cursor_hotspot_y");
+  const usable = ci.set && ci.usable, lim = ci.limits;
+  let pic;
+  if (usable) {
+    const img = h("img", { src: "cursor/custom?v=" + cursorVersion, alt: t("Your pointer's picture"), title: t("Click where its tip should be") });
+    img.onclick = (ev) => {
+      const r = img.getBoundingClientRect(), round = (x) => Math.round(Math.min(1, Math.max(0, x)) * 100) / 100;
+      change([["overlay.cursor_hotspot_x", round((ev.clientX - r.left) / r.width)], ["overlay.cursor_hotspot_y", round((ev.clientY - r.top) / r.height)]], t("The tip is there now."));
+    };
+    pic = h("span", { class: "pic" }, img, h("i", { class: "tip", style: `left:${hx * 100}%;top:${hy * 100}%` }));
+  } else pic = h("div", { class: "nopic" }, t("No picture yet"));
+  const about = !ci.set ? t("Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.")
+    : !ci.usable ? t("This picture can't be used: {error}. The default pointer shows instead.", { error: t(ci.error || "") })
+    : ci.frames > 1 ? t("{w}×{h} px, {n} frames that play for {s} s and loop.", { w: ci.width, h: ci.height, n: ci.frames, s: (ci.ms / 1000).toFixed(1) }) : t("{w}×{h} px, a still picture.", { w: ci.width, h: ci.height });
+  const style = val("overlay.cursor_style");
+  return h("div", { class: "card" }, h("h3", {}, t("Your own picture")),
+    h("div", { class: "custom" },
+      h("div", { class: "frame ltr" }, pic),
+      h("div", { class: "side" },
+        h("p", { class: "help" + (ci.set && !ci.usable ? " msg bad" : "") }, about),
+        ci.note && h("p", { class: "hint" }, t(ci.note)),
+        ci.path && h("p", { class: "hint" }, t("File:") + " ", h("span", { class: "ltr" }, ci.path)),
+        usable && style !== "custom" && h("p", { class: "hint" }, t("It is ready, but another pointer is chosen: pick custom above to use it.")),
+        usable && h("div", { class: "field" }, h("label", { for: "c_overlay_cursor_image_scale" }, labelOf(E["overlay.cursor_image_scale"])), h("div", { class: "ctl inline" }, control(E["overlay.cursor_image_scale"]))),
+        h("div", { class: "actions" },
+          h("button", { class: "btn filled", onclick: chooseCursorFile }, ci.set ? t("Choose another file") : t("Choose a file")),
+          ci.set && h("button", { class: "btn danger", onclick: async () => {
+            const r = await post("cursor_remove");
+            if (!r.ok) return snack(r.error, true);
+            take(r); snack("Your picture is no longer the pointer."); render();
+          } }, t("Remove"))))),
+    h("div", { class: "note" }, t("PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.", { mb: lim.file_mb, side: lim.side, frames: lim.frames, secs: lim.seconds })));
 }
 
 const STYLES = ["mixed", "hand", "sine", "arc", "spring", "spiral"];
@@ -323,6 +385,7 @@ function overlayPreview() {
   const colour = val("overlay.color_" + overlayState), width = val("overlay.border_width"), glow = val("overlay.glow_size");
   const label = String(val("overlay.label_" + overlayState)).replace("{hotkey}", (overview && overview.stop_key) || "the stop key");
   const style = val("overlay.cursor_style"), shown = POINTER_NAMES.includes(style) ? style : "crystal";
+  const ptrSrc = style === "custom" && val("overlay.cursor_image") ? "cursor/custom?v=" + cursorVersion : "cursor/" + shown + ".png";
   const whole = val("overlay.border_target") === "screen";
   const scale = 0.4, g = Math.round(glow * scale), w = Math.max(1, Math.round(width * scale));
   const ring = h("div", { class: "ring", style: `${whole ? "inset:0" : "left:14%;top:18%;width:62%;height:62%"};border:${w}px solid ${colour};box-shadow:0 0 ${g}px ${Math.round(g / 3)}px ${colour},inset 0 0 ${g}px ${colour};border-radius:${whole ? 10 : 6}px;opacity:${val("overlay.show_border") ? 1 : 0}` });
@@ -331,8 +394,106 @@ function overlayPreview() {
       h("div", { class: "chips2", role: "group", "aria-label": t("State") }, STATES.map(([s, text]) => h("button", { class: "chip", "aria-pressed": String(overlayState === s), onclick: () => { overlayState = s; render(); } }, t(text)))),
       h("div", { class: "mock" }, h("div", { class: "win" }, h("i"), h("i"), h("i")), ring,
         val("overlay.show_label") && h("div", { class: "pill" }, h("b", { style: "background:" + colour }), label),
-        val("overlay.show_cursor") && h("div", { class: "ptr" }, h("img", { src: "cursor/" + shown + ".png", alt: "" }), val("overlay.cursor_tag") && h("span", { style: "background:" + val("overlay.cursor_color") }, val("overlay.cursor_tag")))),
+        val("overlay.show_cursor") && h("div", { class: "ptr" }, h("img", { src: ptrSrc, alt: "" }), val("overlay.cursor_tag") && h("span", { style: "background:" + val("overlay.cursor_color") }, val("overlay.cursor_tag")))),
       h("div", { class: "note pad0" }, t("Drawn from your settings, to show how they fit together. The real overlay is click-through and left out of the agent's screenshots."))));
+}
+
+/* A click and a held button as the overlay draws them (the same shapes,
+   drawn again here), over and over while the page shows them. */
+const CLICKS = ["ripple", "pulse", "burst", "sparkle", "none"], HOLDS = ["glow", "ring", "none"];
+function effectsPreview() {
+  const click = val("overlay.click_effect") ? val("overlay.click_effect_style") : "none", hold = val("overlay.hold_effect");
+  const own = val("overlay.click_effect_color"), colour = /^#[0-9a-f]{6}$/i.test(own) ? own : val("overlay.color_working");
+  const body = val("overlay.cursor_color"), ms = Math.max(100, val("overlay.click_effect_ms"));
+  const canvas = h("canvas", { width: 960, height: 400, role: "img", "aria-label": t("A click and a held button, as the overlay shows them") });
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ctx = canvas.getContext("2d"), k = 2.4, TAU = Math.PI * 2;
+  const rgba = (a) => { const n = parseInt(colour.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`; };
+  const light = (a) => { const n = parseInt(colour.slice(1), 16), m = (v) => Math.round(v + (255 - v) * .5); return `rgba(${m(n >> 16)},${m((n >> 8) & 255)},${m(n & 255)},${Math.max(0, a)})`; };
+  const ring = (x, y, r, w, c) => { ctx.strokeStyle = c; ctx.lineWidth = Math.max(.3, w); ctx.beginPath(); ctx.arc(x, y, Math.max(.5, r), 0, TAU); ctx.stroke(); };
+  const disc = (x, y, r, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, Math.max(.3, r), 0, TAU); ctx.fill(); };
+  const noise = (i) => Math.abs((Math.sin(i * 12.9898) * 43758.547) % 1);
+  const arrow = (x, y) => {
+    const p = [[0, 0], [5.4, 18.6], [8.6, 10.9], [18, 7.9]].map(([a, b]) => [x + a * k, y + b * k]);
+    ctx.beginPath(); p.forEach(([a, b], i) => (i ? ctx.lineTo(a, b) : ctx.moveTo(a, b))); ctx.closePath();
+    ctx.lineJoin = "round"; ctx.lineWidth = 5 * k; ctx.strokeStyle = val("overlay.color_working"); ctx.stroke();
+    ctx.lineWidth = 2.6 * k; ctx.strokeStyle = "#fff"; ctx.stroke(); ctx.fillStyle = body; ctx.fill();
+  };
+  const clickAt = (x, y, tt) => {
+    if (tt < 0 || tt >= 1) return;
+    const out = 1 - Math.pow(1 - tt, 3), fade = 1 - tt;
+    if (click === "ripple") { ring(x, y, (5 + 22 * tt) * k, 3 * k * (1 - .5 * tt), rgba(fade)); disc(x, y, 4 * k * fade, rgba(.8 * fade)); }
+    if (click === "pulse") {
+      ring(x, y, (4 + 30 * out) * k, (3.4 * fade + .8) * k, rgba(fade));
+      const t2 = tt - .2; if (t2 > 0) ring(x, y, (3 + 20 * (1 - Math.pow(1 - t2 / .8, 3))) * k, 1.6 * k, light(.7 * (1 - t2 / .8)));
+    }
+    if (click === "burst") for (let i = 0; i < 12; i++) {
+      const a = i * TAU / 12 + .35 * Math.sin(i * 2.1), d = (5 + 30 * (.7 + .6 * noise(i)) * out) * k;
+      disc(x + Math.cos(a) * d, y + Math.sin(a) * d, (2.8 * fade + .6) * k, i % 3 ? rgba(fade) : light(fade));
+    }
+    if (click === "sparkle") for (let i = 0; i < 7; i++) {
+      const a = i * TAU / 7 + tt * 1.3, d = (7 + 22 * out * (.8 + .4 * noise(i + 3))) * k, r = (2.5 + 4 * noise(i + 7)) * k * Math.min(1, tt * 5) * (1 - .5 * tt * tt);
+      const cx = x + Math.cos(a) * d, cy = y + Math.sin(a) * d; ctx.fillStyle = i % 2 ? rgba(fade) : light(fade); ctx.beginPath();
+      for (let j = 0; j < 8; j++) { const b = a + tt * 2 + j * TAU / 8, q = j % 2 ? r * .3 : r; j ? ctx.lineTo(cx + q * Math.cos(b), cy + q * Math.sin(b)) : ctx.moveTo(cx + q * Math.cos(b), cy + q * Math.sin(b)); }
+      ctx.fill();
+    }
+  };
+  const holdAt = (x, y, alpha, phase) => {
+    if (hold === "none" || alpha <= 0) return;
+    const beat = .5 + .5 * Math.sin(phase * TAU);
+    if (hold === "glow") {
+      const r = (17 + 3 * beat) * k, g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, rgba(.1 * alpha)); g.addColorStop(.5, rgba((.3 + .12 * beat) * alpha)); g.addColorStop(.74, rgba((.55 + .15 * beat) * alpha)); g.addColorStop(1, rgba(0));
+      disc(x, y, r, g); ring(x, y, r * .74, 1.4 * k, light(.7 * alpha));
+    } else {
+      ring(x, y, 12 * k, (2.2 + .6 * beat) * k, rgba(.9 * alpha));
+      const r = 17 * k, dash = TAU * r / 12; ctx.setLineDash([dash * .55, dash * .45]); ctx.lineDashOffset = -phase * dash * 2; ring(x, y, r, 1.8 * k, light(.8 * alpha)); ctx.setLineDash([]);
+    }
+  };
+  const draw = (now) => {
+    const cs = getComputedStyle(document.documentElement);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = cs.getPropertyValue("--on-surface-variant"); ctx.font = `${13 * 2}px ${cs.getPropertyValue("--font")}`; ctx.textAlign = "center";
+    ctx.fillText(t("Click"), 240, 370); ctx.fillText(t("Hold"), 720, 370);
+    // A click every so often (two beats now and then: a double click).
+    const cycle = ms + 200 + 900, n = Math.floor(now / cycle), c = now % cycle;
+    clickAt(240, 170, c / ms); if (n % 3 === 2) clickAt(240, 170, (c - 200) / ms);
+    arrow(240, 170);
+    // Held for 2.4 s, let go (it fades), and again.
+    const hc = now % 3300, a = hc < 2400 ? Math.min(1, hc / 120) : Math.max(0, 1 - (hc - 2400) / 260);
+    const x = 640 + 160 * Math.min(1, hc / 2400);
+    if (hc < 2400) { ctx.strokeStyle = rgba(.5); ctx.lineWidth = 3 * k; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(640, 170); ctx.lineTo(x, 170); ctx.stroke(); }
+    holdAt(x, 170, a, (hc / 1200) % 1); arrow(x, 170);
+    // On while it is on the page (it is made before it is put there); a
+    // page shown instead ends it.
+    if (canvas.isConnected) seen = true;
+    if (!still && (canvas.isConnected || (!seen && now - born < 10000))) requestAnimationFrame(draw);
+  };
+  let seen = false; const born = performance.now();
+  if (still) draw(ms * .4); else requestAnimationFrame(draw);
+  const chips = (key, list) => h("div", { class: "chips2", role: "group", "aria-label": labelOf(E[key]) },
+    list.map((s) => h("button", { class: "chip", "aria-pressed": String(val(key) === s), onclick: () => val(key) !== s && change([[key, s]]) }, s)));
+  return h("div", { class: "card" }, h("h3", {}, t("Clicks and holds")),
+    h("div", { class: "preview" },
+      h("div", { class: "help" }, labelOf(E["overlay.click_effect_style"])), chips("overlay.click_effect_style", CLICKS),
+      h("div", { class: "help" }, labelOf(E["overlay.hold_effect"])), chips("overlay.hold_effect", HOLDS),
+      canvas,
+      h("div", { class: "note pad0" }, !val("overlay.click_effect") ? t("Click effects are off (click effect).") : t("Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings."))));
+}
+
+const SOUNDS = [["click", "Click"], ["key", "Keys"], ["done", "Done"], ["error", "Error"], ["stopped", "Stopped"]];
+function soundCard() {
+  const on = val("overlay.sound");
+  const play = (event) => async () => {
+    const r = await post("sound_test", { event });
+    if (!r.ok) return snack(r.error, true);
+    snack(t("Played with {player}.", { player: r.player || "Windows" }));
+  };
+  return h("div", { class: "card" }, h("h3", {}, t("Sounds")),
+    h("div", { class: "preview" },
+      h("div", { class: "help" }, on ? t("On: the overlay plays these while the agent works, at most a few a second.") : t("Off: turn on Sound below to hear them while the agent works. A test plays one now either way.")),
+      h("div", { class: "chips2", role: "group", "aria-label": t("Test a sound") }, SOUNDS.map(([e, text]) => h("button", { class: "chip", onclick: play(e) }, "▶ " + t(text)))),
+      h("div", { class: "note pad0" }, t("The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own."))));
 }
 
 function tokenCard() {
@@ -427,7 +588,7 @@ async function overviewPage(main) {
       h("div", { class: "tile" }, h("div", { class: "small" }, t("Settings changed")), h("div", { class: "big" }, String(nChanged)), h("div", { class: "small" }, t("of {n}", { n: schema.entries.length })))),
     h("div", { class: "card" }, h("h3", {}, t("Right now")),
       h("ul", { class: "facts" },
-        h("li", {}, h("span", { class: "k" }, t("Pointer")), h("span", { class: "v" }, style === "random" ? t("A random one each session, and a different one for each agent at once.") : style === "classic" ? t("The plain arrow.") : t("Always {style}.", { style }))),
+        h("li", {}, h("span", { class: "k" }, t("Pointer")), h("span", { class: "v" }, style === "random" ? t("A random one each session, and a different one for each agent at once.") : style === "classic" ? t("The plain arrow.") : style === "custom" ? t("Your own picture.") : t("Always {style}.", { style }))),
         h("li", {}, h("span", { class: "k" }, t("Pictures")), h("span", { class: "v" }, o.screenshots ? t("At most {px} px on the long side (about {tokens} tokens for a whole 16:9 screen), {attach} attached.", { px: mx, tokens: Math.ceil(mx * Math.round(mx * 9 / 16) / 750).toLocaleString("en"), attach: val("screenshot.attach") }) : t("Off: the agent works from the tree alone."))),
         h("li", {}, h("span", { class: "k" }, t("Several agents")), h("span", { class: "v" }, o.hub.enabled ? on(o.hub.running, t("A hub is running on port {port}.", { port: o.hub.port }), t("On; no hub is running right now.")) : on(false, "", t("Off.")))),
         h("li", {}, h("span", { class: "k" }, t("Decision model")), h("span", { class: "v" }, o.decision || t("None set up."))),
@@ -727,9 +888,14 @@ function groupPage(g) {
     const rows = schema.entries.filter((e) => e.group === g && e.type !== "custom" && visible(e));
     const lead = main.querySelector(".lead");
     if (g === "Decision model") main.append(decisionCard());
-    if (g === "Pointer") { main.append(pointerPicker()); main.append(pathPreview("overlay.cursor_path", "How the pointer glides")); }
+    if (g === "Pointer") {
+      const ci = await post("cursor_info");
+      main.append(pointerPicker(ci));
+      if (ci.ok) main.append(customCard(ci));
+      main.append(pathPreview("overlay.cursor_path", "How the pointer glides"));
+    }
     if (g === "Real mouse") main.append(pathPreview("mouse_path", "How the real mouse goes"));
-    if (g === "Overlay") main.append(overlayPreview());
+    if (g === "Overlay") main.append(overlayPreview(), effectsPreview(), soundCard());
     if (g === "Updates") main.append(await updatesCard());
     if (g === "Screenshots") main.append(tokenCard());
     if (rows.length) main.append(h("div", { class: "card" }, rows.map(row)));

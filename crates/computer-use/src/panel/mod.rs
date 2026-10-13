@@ -17,6 +17,7 @@
 //! the engine refuses to act on (see [`is_panel_window`]).
 
 mod connecting;
+mod cursor;
 mod help;
 mod importing;
 mod lang;
@@ -452,7 +453,9 @@ impl Page {
     fn handle(&self, mut stream: TcpStream) -> Option<bool> {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-        let req = match read_request(&stream) {
+        // Only the picture upload, at the page's own address, may be big.
+        let upload = format!("/{}/cursor_upload", self.token);
+        let req = match read_request(&stream, &upload) {
             Ok(r) => r,
             Err(code) => {
                 respond(&mut stream, code, "text/plain", b"bad request");
@@ -520,6 +523,11 @@ impl Page {
                     }
                 }
                 "font/vazirmatn.woff2" => respond(&mut stream, 200, "font/woff2", lang::font()),
+                // The custom pointer's picture, as the settings name it.
+                "cursor/custom" => match self.config().ok().as_ref().and_then(cursor::image) {
+                    Some((bytes, kind)) => respond(&mut stream, 200, kind, &bytes),
+                    None => respond(&mut stream, 404, "text/plain", b"not found"),
+                },
                 r => match r
                     .strip_prefix("cursor/")
                     .and_then(|n| n.strip_suffix(".png"))
@@ -714,6 +722,14 @@ impl Page {
                     yes,
                 )
             }
+            "cursor_info" => self.with_config(|c| cursor::info(c, &self.home)),
+            "cursor_upload" => {
+                self.with_path(|p| self.with_config(|c| cursor::upload(p, &self.home, c, body)))
+            }
+            "cursor_remove" => {
+                self.with_path(|p| self.with_config(|c| cursor::remove(p, &self.home, c)))
+            }
+            "sound_test" => self.with_config(|c| cursor::test_sound(c, body)),
             "test" => self.test(body),
             "save" => self.save(body),
             "remove" => self.remove(),
@@ -1031,7 +1047,9 @@ fn export(cfg: &Config) -> Value {
     })
 }
 
-fn read_request(stream: &TcpStream) -> std::result::Result<Request, u16> {
+/// One request: at most `MAX_REQUEST` of body, or `cursor::MAX_UPLOAD`
+/// for a POST to `upload` (the picture upload, token and all).
+fn read_request(stream: &TcpStream, upload: &str) -> std::result::Result<Request, u16> {
     let mut r = BufReader::new(stream.take(MAX_REQUEST as u64 + 8192));
     let mut line = String::new();
     r.read_line(&mut line).map_err(|_| 400u16)?;
@@ -1059,8 +1077,13 @@ fn read_request(stream: &TcpStream) -> std::result::Result<Request, u16> {
         }
         headers.push((k, v));
     }
-    if len > MAX_REQUEST {
+    let big = method == "POST" && path == upload;
+    if len > if big { cursor::MAX_UPLOAD } else { MAX_REQUEST } {
         return Err(413);
+    }
+    if big {
+        // The headers were read within the usual limit; this body may be more.
+        r.get_mut().set_limit(len as u64);
     }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).map_err(|_| 400u16)?;

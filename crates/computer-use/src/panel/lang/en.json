@@ -21,6 +21,7 @@
   "{name} applied.": "{name} applied.",
   "{name} picker": "{name} picker",
   "{name} slider": "{name} slider",
+  "{path} can't play sounds: {error}": "{path} can't play sounds: {error}",
   "{px} px → about {tokens} tokens": "{px} px → about {tokens} tokens",
   "{v} is back.": "{v} is back.",
   "{v} is downloaded and checked.": "{v} is downloaded and checked.",
@@ -28,6 +29,8 @@
   "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten",
   "{v} is the latest under these settings.": "{v} is the latest under these settings.",
   "{v} will not be taken again.": "{v} will not be taken again.",
+  "{w}×{h} px, {n} frames that play for {s} s and loop.": "{w}×{h} px, {n} frames that play for {s} s and loop.",
+  "{w}×{h} px, a still picture.": "{w}×{h} px, a still picture.",
   "{x} ago": "{x} ago",
   "{x} allowed by the settings.": "{x} allowed by the settings.",
   "{x} in it": "{x} in it",
@@ -42,6 +45,7 @@
   "5 min": "5 min",
   "a change has no key": "a change has no key",
   "a change needs a value": "a change needs a value",
+  "A click and a held button, as the overlay shows them": "A click and a held button, as the overlay shows them",
   "A different one each session, and for each agent at once": "A different one each session, and for each agent at once",
   "A fast model that answers small questions about what is on screen.": "A fast model that answers small questions about what is on screen.",
   "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.",
@@ -93,8 +97,12 @@
   "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.",
   "Can go back to": "Can go back to",
   "Can't change safely": "Can't change safely",
+  "can't keep the picture in {path}: {error}": "can't keep the picture in {path}: {error}",
   "can't make the profiles folder": "can't make the profiles folder",
+  "can't read it now": "can't read it now",
+  "can't read it: {error}": "can't read it: {error}",
   "can't take it": "can't take it",
+  "can't write the sounds to {path}: {error}": "can't write the sounds to {path}: {error}",
   "Cancel": "Cancel",
   "cells": "cells",
   "Change": "Change",
@@ -105,10 +113,19 @@
   "Check": "Check",
   "Check now": "Check now",
   "Checking actions": "Checking actions",
+  "Checking the picture…": "Checking the picture…",
+  "Choose a file": "Choose a file",
   "choose a kind of model": "choose a kind of model",
   "Choose a kind of model first.": "Choose a kind of model first.",
+  "choose a picture": "choose a picture",
+  "Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.": "Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.",
   "Choose a pointer": "Choose a pointer",
   "choose an agent": "choose an agent",
+  "Choose another file": "Choose another file",
+  "Click": "Click",
+  "Click effects are off (click effect).": "Click effects are off (click effect).",
+  "Click where its tip should be": "Click where its tip should be",
+  "Clicks and holds": "Clicks and holds",
   "Comes with the program": "Comes with the program",
   "Connect an agent": "Connect an agent",
   "Copied.": "Copied.",
@@ -139,6 +156,7 @@
   "Fix it in a text editor: {path}": "Fix it in a text editor: {path}",
   "for example ctrl+alt+escape": "for example ctrl+alt+escape",
   "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.",
+  "frame {n} can't be read ({error}); the {m} before it loop": "frame {n} can't be read ({error}); the {m} before it loop",
   "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.",
   "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.",
   "General": "General",
@@ -149,6 +167,7 @@
   "Go back to {v}": "Go back to {v}",
   "Go back to version {v}?": "Go back to version {v}?",
   "Guide": "Guide",
+  "Hold": "Hold",
   "Home": "Home",
   "hours": "hours",
   "How much of the app's tree the model reads, and how it is shortened.": "How much of the app's tree the model reads, and how it is shortened.",
@@ -166,10 +185,15 @@
   "Import the {n} it can take": "Import the {n} it can take",
   "Imported {x}; left out {n} this version can't take.": "Imported {x}; left out {n} this version can't take.",
   "Imported {x}.": "Imported {x}.",
+  "it can't be read as a picture ({error})": "it can't be read as a picture ({error})",
   "It goes in {when}.": "It goes in {when}.",
   "It is changed on its own page, not by an import": "It is changed on its own page, not by an import",
+  "it is not a file": "it is not a file",
+  "it is not a PNG or GIF picture": "it is not a PNG or GIF picture",
+  "It is ready, but another pointer is chosen: pick custom above to use it.": "It is ready, but another pointer is chosen: pick custom above to use it.",
   "It looks every {x}.": "It looks every {x}.",
   "It starts {program} settings, which opens the panel in your browser.": "It starts {program} settings, which opens the panel in your browser.",
+  "it took too long to read": "it took too long to read",
   "It will not look for updates.": "It will not look for updates.",
   "items": "items",
   "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
@@ -179,6 +203,7 @@
   "Keep the current settings as a profile": "Keep the current settings as a profile",
   "Kept {x}.": "Kept {x}.",
   "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).",
+  "Keys": "Keys",
   "Language": "Language",
   "last {when}": "last {when}",
   "Leave empty for {url}.": "Leave empty for {url}.",
@@ -219,6 +244,8 @@
   "no import has been made yet, so there is nothing to go back to": "no import has been made yet, so there is nothing to go back to",
   "No key for this panel": "No key for this panel",
   "No log yet: turn it on above.": "No log yet: turn it on above.",
+  "No picture yet": "No picture yet",
+  "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent": "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent",
   "no update is waiting": "no update is waiting",
   "none": "none",
   "None set up.": "None set up.",
@@ -250,6 +277,7 @@
   "of {n}": "of {n}",
   "off": "off",
   "Off: the agent works from the tree alone.": "Off: the agent works from the tree alone.",
+  "Off: turn on Sound below to hear them while the agent works. A test plays one now either way.": "Off: turn on Sound below to hear them while the agent works. A test plays one now either way.",
   "Off.": "Off.",
   "Off. It never updates by itself.": "Off. It never updates by itself.",
   "Off. Nothing is looked for or downloaded.": "Off. Nothing is looked for or downloaded.",
@@ -257,6 +285,7 @@
   "On, last looked {when}.": "On, last looked {when}.",
   "On; it has not looked yet.": "On; it has not looked yet.",
   "On; no hub is running right now.": "On; no hub is running right now.",
+  "On: the overlay plays these while the agent works, at most a few a second.": "On: the overlay plays these while the agent works, at most a few a second.",
   "On.": "On.",
   "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.",
   "OpenAI-compatible chat model": "OpenAI-compatible chat model",
@@ -272,6 +301,8 @@
   "Pictures": "Pictures",
   "Pictures sent": "Pictures sent",
   "Platform": "Platform",
+  "Played with {player}.": "Played with {player}.",
+  "PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.": "PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.",
   "Pointer": "Pointer",
   "Pointer style": "Pointer style",
   "Pointers and the mouse": "Pointers and the mouse",
@@ -305,6 +336,7 @@
   "Reset": "Reset",
   "Revert": "Revert",
   "Right now": "Right now",
+  "Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings.": "Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings.",
   "s": "s",
   "same": "same",
   "Save": "Save",
@@ -318,6 +350,7 @@
   "say install or remove": "say install or remove",
   "say which settings to change": "say which settings to change",
   "say which settings to reset": "say which settings to reset",
+  "say which sound": "say which sound",
   "Screen memory": "Screen memory",
   "screens": "screens",
   "Screenshots": "Screenshots",
@@ -339,6 +372,7 @@
   "Showcase": "Showcase",
   "Small programs the agent writes and the server runs.": "Small programs the agent writes and the server runs.",
   "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.",
+  "Sounds": "Sounds",
   "spaces": "spaces",
   "Spending fewer tokens": "Spending fewer tokens",
   "Start your MCP client again to use it.": "Start your MCP client again to use it.",
@@ -352,8 +386,12 @@
   "Switches that apply to the whole program.": "Switches that apply to the whole program.",
   "Take the panel's shortcut away from {path}?": "Take the panel's shortcut away from {path}?",
   "Test": "Test",
+  "Test a sound": "Test a sound",
   "Text on screen (OCR)": "Text on screen (OCR)",
   "Text read off screen": "Text read off screen",
+  "That file can't be read.": "That file can't be read.",
+  "That file is over 4 MB: a pointer's picture may be 4 MB at most.": "That file is over 4 MB: a pointer's picture may be 4 MB at most.",
+  "that is not a picture": "that is not a picture",
   "that is not a setting": "that is not a setting",
   "that is not one of your profiles": "that is not one of your profiles",
   "that is too long to be a list of settings": "that is too long to be a list of settings",
@@ -364,13 +402,16 @@
   "the address must start with https:// (or http:// for a server on this computer)": "the address must start with https:// (or http:// for a server on this computer)",
   "The agent can use it now.": "The agent can use it now.",
   "The agent has no decision model now.": "The agent has no decision model now.",
+  "the animation is longer than this keeps: its first {n} frames ({s} s) loop": "the animation is longer than this keeps: its first {n} frames ({s} s) loop",
   "The border, label and colours shown while the agent works.": "The border, label and colours shown while the agent works.",
   "the computer to restart": "the computer to restart",
   "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.",
   "The decision model": "The decision model",
   "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "The emergency stop and the pause while you use the computer. Changes ask you to confirm.",
   "The file as saved has a mistake in it; mend it here.": "The file as saved has a mistake in it; mend it here.",
+  "the file is {mb} MB; a pointer's picture may be 4 MB at most": "the file is {mb} MB; a pointer's picture may be 4 MB at most",
   "The file is empty.": "The file is empty.",
+  "the file is over 4 MB": "the file is over 4 MB",
   "the file is too long to be a settings file": "the file is too long to be a settings file",
   "The last {n} lines": "The last {n} lines",
   "The newest stable release.": "The newest stable release.",
@@ -379,6 +420,9 @@
   "the next time the server starts": "the next time the server starts",
   "The ones you had are kept in {path}.": "The ones you had are kept in {path}.",
   "The ones you have now are kept, so this can be undone too.": "The ones you have now are kept, so this can be undone too.",
+  "the picture has no frames": "the picture has no frames",
+  "the picture is {w}×{h} px; it may be {max} px a side at most": "the picture is {w}×{h} px; it may be {max} px a side at most",
+  "the picture is empty": "the picture is empty",
   "The plain arrow": "The plain arrow",
   "The plain arrow.": "The plain arrow.",
   "The program's own defaults for every setting the other profiles touch.": "The program's own defaults for every setting the other profiles touch.",
@@ -392,6 +436,9 @@
   "The settings that differ from the defaults. No secrets: {x} left out.": "The settings that differ from the defaults. No secrets: {x} left out.",
   "The settings that differ from the defaults. No secrets: none were set.": "The settings that differ from the defaults. No secrets: none were set.",
   "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "The settings you had before that update come back with it; the ones you have now are kept beside the file.",
+  "the sound can't be played: {error}": "the sound can't be played: {error}",
+  "The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own.": "The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own.",
+  "The tip is there now.": "The tip is there now.",
   "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.",
   "The version you have now is not taken again unless you clear update.skip_version.": "The version you have now is not taken again unless you clear update.skip_version.",
   "Theme": "Theme",
@@ -407,6 +454,7 @@
   "this needs the user's confirmation first": "this needs the user's confirmation first",
   "This page.": "This page.",
   "This panel:": "This panel:",
+  "This picture can't be used: {error}. The default pointer shows instead.": "This picture can't be used: {error}. The default pointer shows instead.",
   "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.",
   "this server keeps its settings in memory": "this server keeps its settings in memory",
   "This server keeps its settings in memory, so nothing can be saved here.": "This server keeps its settings in memory, so nothing can be saved here.",
@@ -419,6 +467,8 @@
   "Three sample paths of the {style} style": "Three sample paths of the {style} style",
   "Timing": "Timing",
   "tokens": "tokens",
+  "too many sounds at once": "too many sounds at once",
+  "too soon after the last one": "too soon after the last one",
   "Tool list": "Tool list",
   "Tools": "Tools",
   "Tools and tokens": "Tools and tokens",
@@ -446,6 +496,7 @@
   "Where to start": "Where to start",
   "Which": "Which",
   "Which tools the model sees. The tool list is sent with every request.": "Which tools the model sees. The tool list is sent with every request.",
+  "Windows didn't play {path}": "Windows didn't play {path}",
   "with `computer-use-mcp update --install`": "with `computer-use-mcp update --install`",
   "Working": "Working",
   "Write the audit log": "Write the audit log",
@@ -453,7 +504,12 @@
   "you to run `computer-use-mcp update --install`": "you to run `computer-use-mcp update --install`",
   "Your control": "Your control",
   "Your MCP clients use it the next time they start.": "Your MCP clients use it the next time they start.",
+  "Your own picture": "Your own picture",
+  "Your own picture.": "Your own picture.",
   "Your own: a snapshot of settings you changed.": "Your own: a snapshot of settings you changed.",
+  "Your picture is no longer the pointer.": "Your picture is no longer the pointer.",
+  "Your picture is the pointer now.": "Your picture is the pointer now.",
+  "Your pointer's picture": "Your pointer's picture",
   "Your settings": "Your settings",
   "Yours": "Yours"
  },
@@ -530,7 +586,23 @@
   ],
   "overlay.cursor_style": [
    "Cursor style",
-   "The agent's pointer. Random gives each session one, and a different one to each agent at once."
+   "The agent's pointer. Random gives each session one, and a different one to each agent at once. Custom is your own picture."
+  ],
+  "overlay.cursor_image": [
+   "Cursor image",
+   "Your own picture for the custom pointer: a PNG, or a GIF or APNG that plays. At most 4 MB and 512 px a side. Empty: none."
+  ],
+  "overlay.cursor_image_scale": [
+   "Cursor image scale",
+   "How big your picture is drawn, on top of the overlay's size. At 1 its longer side is 48 px."
+  ],
+  "overlay.cursor_hotspot_x": [
+   "Cursor hotspot x",
+   "Where in your picture the tip is, across: 0 is its left edge, 1 its right edge."
+  ],
+  "overlay.cursor_hotspot_y": [
+   "Cursor hotspot y",
+   "Where in your picture the tip is, down: 0 is its top edge, 1 its bottom edge."
   ],
   "overlay.cursor_color": [
    "Cursor color",
@@ -603,6 +675,70 @@
   "overlay.show_buttons": [
    "Show buttons",
    "Stop and settings buttons beside the label: stop every agent or one from the list, or open this panel."
+  ],
+  "overlay.click_effect_style": [
+   "Click effect style",
+   "What a click shows: ripple (each pointer its own way), a pulse, a burst, sparkles, or nothing."
+  ],
+  "overlay.click_effect_color": [
+   "Click effect color",
+   "The colour of the click and hold effects. Empty: the pointer's own."
+  ],
+  "overlay.click_effect_ms": [
+   "Click effect ms",
+   "How long a click shows."
+  ],
+  "overlay.hold_effect": [
+   "Hold effect",
+   "While the agent holds the button down (a drag, a drawing): a soft glow that pulses, a ring, or nothing."
+  ],
+  "overlay.sound": [
+   "Sound",
+   "Sounds for what the agent does: a click, keys, the work done, an error, a stop. Played with your system's player."
+  ],
+  "overlay.sound_volume": [
+   "Sound volume",
+   "How loud the sounds are."
+  ],
+  "overlay.sound_click": [
+   "Sound click",
+   "A sound when the agent clicks."
+  ],
+  "overlay.sound_click_file": [
+   "Sound click file",
+   "Your own WAV file for a click. Empty: the built-in sound."
+  ],
+  "overlay.sound_key": [
+   "Sound key",
+   "A soft tick when the agent presses keys or types, at most a few a second."
+  ],
+  "overlay.sound_key_file": [
+   "Sound key file",
+   "Your own WAV file for keys. Empty: the built-in sound."
+  ],
+  "overlay.sound_done": [
+   "Sound done",
+   "A chime when the work is done."
+  ],
+  "overlay.sound_done_file": [
+   "Sound done file",
+   "Your own WAV file for done. Empty: the built-in sound."
+  ],
+  "overlay.sound_error": [
+   "Sound error",
+   "A sound when an action fails."
+  ],
+  "overlay.sound_error_file": [
+   "Sound error file",
+   "Your own WAV file for an error. Empty: the built-in sound."
+  ],
+  "overlay.sound_stopped": [
+   "Sound stopped",
+   "A sound when you stop the agent with the stop key or button."
+  ],
+  "overlay.sound_stopped_file": [
+   "Sound stopped file",
+   "Your own WAV file for a stop. Empty: the built-in sound."
   ],
   "overlay.border_target": [
    "Border target",

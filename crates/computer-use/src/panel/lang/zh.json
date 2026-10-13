@@ -21,6 +21,7 @@
   "{name} applied.": "已应用 {name}。",
   "{name} picker": "{name} 取色器",
   "{name} slider": "{name} 滑块",
+  "{path} can't play sounds: {error}": "{path} 无法播放声音：{error}",
   "{px} px → about {tokens} tokens": "{px} px → 约 {tokens} 个 token",
   "{v} is back.": "已回退到 {v}。",
   "{v} is downloaded and checked.": "{v} 已下载并通过校验。",
@@ -28,6 +29,8 @@
   "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "当前设置已不再需要 {v}（已跳过、固定了其他版本，或是稳定通道上的预发布版），因此已将其忽略",
   "{v} is the latest under these settings.": "按当前设置，{v} 已是最新版本。",
   "{v} will not be taken again.": "不会再安装 {v}。",
+  "{w}×{h} px, {n} frames that play for {s} s and loop.": "{w}×{h} 像素，{n} 帧，播放 {s} 秒后循环。",
+  "{w}×{h} px, a still picture.": "{w}×{h} 像素，静态图片。",
   "{x} ago": "{x}前",
   "{x} allowed by the settings.": "设置允许 {x}。",
   "{x} in it": "含 {x}",
@@ -42,6 +45,7 @@
   "5 min": "5 分钟",
   "a change has no key": "某项更改缺少键名",
   "a change needs a value": "更改需要提供值",
+  "A click and a held button, as the overlay shows them": "叠加层显示的点击与按住效果",
   "A different one each session, and for each agent at once": "每个会话不同，同时工作的各个智能体也各不相同",
   "A fast model that answers small questions about what is on screen.": "一个快速模型，回答关于屏幕内容的小问题。",
   "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "智能体可以向这个快速模型询问关于屏幕内容的是非题、选择题和评分题，从而少读内容、更快决策。你的密钥保存在本机，绝不会经过对话。",
@@ -93,8 +97,12 @@
   "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "大图片、整个窗口、更长的树，且不做缩减。token 用量最多；适用于难以读取的应用。",
   "Can go back to": "可回退到",
   "Can't change safely": "无法安全更改",
+  "can't keep the picture in {path}: {error}": "无法将图片保存在 {path}：{error}",
   "can't make the profiles folder": "无法创建配置方案文件夹",
+  "can't read it now": "现在无法读取",
+  "can't read it: {error}": "无法读取：{error}",
   "can't take it": "无法接受",
+  "can't write the sounds to {path}: {error}": "无法将声音写入 {path}：{error}",
   "Cancel": "取消",
   "cells": "格",
   "Change": "更改",
@@ -105,10 +113,19 @@
   "Check": "检查",
   "Check now": "立即检查",
   "Checking actions": "动作校验",
+  "Checking the picture…": "正在检查图片…",
+  "Choose a file": "选择文件",
   "choose a kind of model": "请选择模型类型",
   "Choose a kind of model first.": "请先选择模型类型。",
+  "choose a picture": "请选择一张图片",
+  "Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.": "选择背景透明的 PNG，或会动的 GIF、APNG。除非你在图上点击其他位置，否则左上角就是指针尖端。",
   "Choose a pointer": "选择指针",
   "choose an agent": "请选择智能体",
+  "Choose another file": "选择其他文件",
+  "Click": "点击",
+  "Click effects are off (click effect).": "点击效果已关闭（点击效果）。",
+  "Click where its tip should be": "点击指针尖端应在的位置",
+  "Clicks and holds": "点击与按住",
   "Comes with the program": "程序自带",
   "Connect an agent": "连接智能体",
   "Copied.": "已复制。",
@@ -139,6 +156,7 @@
   "Fix it in a text editor: {path}": "请在文本编辑器中修改：{path}",
   "for example ctrl+alt+escape": "例如 ctrl+alt+escape",
   "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "用于录制演示：更大的指针和边框、更长的滑动、显示按键和文字，完成状态也会在屏幕上多停留一会儿。",
+  "frame {n} can't be read ({error}); the {m} before it loop": "第 {n} 帧无法读取（{error}）；循环播放之前的 {m} 帧",
   "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "在终端中可用 `computer-use-mcp install` 完成同样的操作（添加到本机找到的所有智能体），`--client NAME` 只添加一个，`--list` 查看，`--remove` 移除。",
   "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "终端命令：computer-use-mcp shortcut（桌面），--menu、--both、--remove、--list。只会移除本程序创建的快捷方式。",
   "General": "常规",
@@ -149,6 +167,7 @@
   "Go back to {v}": "回退到 {v}",
   "Go back to version {v}?": "回退到版本 {v}？",
   "Guide": "指南",
+  "Hold": "按住",
   "Home": "首页",
   "hours": "小时",
   "How much of the app's tree the model reads, and how it is shortened.": "模型读取应用无障碍树的多少内容，以及如何缩减。",
@@ -166,10 +185,15 @@
   "Import the {n} it can take": "导入可接受的 {n} 项",
   "Imported {x}; left out {n} this version can't take.": "已导入 {x}；略去了此版本无法接受的 {n} 项。",
   "Imported {x}.": "已导入 {x}。",
+  "it can't be read as a picture ({error})": "无法作为图片读取（{error}）",
   "It goes in {when}.": "安装时机：{when}。",
   "It is changed on its own page, not by an import": "此项需在其专属页面更改，不能通过导入更改",
+  "it is not a file": "这不是文件",
+  "it is not a PNG or GIF picture": "这不是 PNG 或 GIF 图片",
+  "It is ready, but another pointer is chosen: pick custom above to use it.": "图片已就绪，但当前选的是其他指针：在上方选择 custom 即可使用。",
   "It looks every {x}.": "每 {x}检查一次。",
   "It starts {program} settings, which opens the panel in your browser.": "它会运行 {program} settings，在浏览器中打开面板。",
+  "it took too long to read": "读取时间过长",
   "It will not look for updates.": "不会检查更新。",
   "items": "项",
   "Jev (TypeSafe System One)": "Jev（TypeSafe System One）",
@@ -179,6 +203,7 @@
   "Keep the current settings as a profile": "将当前设置保存为配置方案",
   "Kept {x}.": "已保存 {x}。",
   "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "已保存 {x}。略去了 {n} 项配置方案不能包含的设置（机密信息、受保护的设置、端口）。",
+  "Keys": "按键",
   "Language": "语言",
   "last {when}": "上次：{when}",
   "Leave empty for {url}.": "留空则使用 {url}。",
@@ -219,6 +244,8 @@
   "no import has been made yet, so there is nothing to go back to": "尚未进行过导入，没有可回退的内容",
   "No key for this panel": "此面板无快捷键",
   "No log yet: turn it on above.": "暂无日志：请在上方开启。",
+  "No picture yet": "尚无图片",
+  "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent": "未找到声音播放器（Linux 上为 pw-play、paplay 或 aplay；macOS 上为 afplay），因此叠加层不会发声",
   "no update is waiting": "没有待安装的更新",
   "none": "无",
   "None set up.": "未设置。",
@@ -250,6 +277,7 @@
   "of {n}": "共 {n} 项",
   "off": "关",
   "Off: the agent works from the tree alone.": "关闭：智能体仅依靠无障碍树工作。",
+  "Off: turn on Sound below to hear them while the agent works. A test plays one now either way.": "已关闭：在下方打开“声音”，即可在智能体工作时听到。无论开关如何，试听都会立即播放一次。",
   "Off.": "已关闭。",
   "Off. It never updates by itself.": "已关闭。不会自行更新。",
   "Off. Nothing is looked for or downloaded.": "已关闭。不检查也不下载任何内容。",
@@ -257,6 +285,7 @@
   "On, last looked {when}.": "已开启，上次检查：{when}。",
   "On; it has not looked yet.": "已开启；尚未检查。",
   "On; no hub is running right now.": "已开启；目前没有中枢在运行。",
+  "On: the overlay plays these while the agent works, at most a few a second.": "已开启：智能体工作时叠加层会播放这些声音，每秒最多几次。",
   "On.": "已开启。",
   "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "tools.enabled 中只列出了 {n} 个工具，因此无论开关如何设置，其他工具都保持隐藏。",
   "OpenAI-compatible chat model": "OpenAI 兼容的聊天模型",
@@ -272,6 +301,8 @@
   "Pictures": "图片",
   "Pictures sent": "已发送图片",
   "Platform": "平台",
+  "Played with {player}.": "已用 {player} 播放。",
+  "PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.": "PNG、GIF 或 APNG，最大 {mb} MB，每边最多 {side} 像素；动画播放前 {frames} 帧，最长 {secs} 秒，并循环。图片保存在本机的程序文件夹中。只有你能在这里设置：智能体不能。",
   "Pointer": "指针",
   "Pointer style": "指针样式",
   "Pointers and the mouse": "指针与鼠标",
@@ -305,6 +336,7 @@
   "Reset": "重置",
   "Revert": "还原",
   "Right now": "当前状态",
+  "Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings.": "ripple 是每种指针自己的点击方式；其他效果以你设定的颜色（或指针本身的颜色）绘制在指针尖端。拖动和绘画时，按住的按钮会发光。",
   "s": "秒",
   "same": "相同",
   "Save": "保存",
@@ -318,6 +350,7 @@
   "say install or remove": "请指定 install 或 remove",
   "say which settings to change": "请指定要更改的设置",
   "say which settings to reset": "请指定要重置的设置",
+  "say which sound": "请说明是哪个声音",
   "Screen memory": "屏幕记忆",
   "screens": "个屏幕",
   "Screenshots": "截图",
@@ -339,6 +372,7 @@
   "Showcase": "演示",
   "Small programs the agent writes and the server runs.": "由智能体编写、服务器运行的小程序。",
   "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "更小的图片和更短的树。一张整屏截图约省三分之一；很小的文字可能更难辨认。",
+  "Sounds": "声音",
   "spaces": "个空格",
   "Spending fewer tokens": "节省 token",
   "Start your MCP client again to use it.": "重新启动 MCP 客户端即可使用。",
@@ -352,8 +386,12 @@
   "Switches that apply to the whole program.": "作用于整个程序的开关。",
   "Take the panel's shortcut away from {path}?": "从 {path} 移除面板的快捷方式？",
   "Test": "测试",
+  "Test a sound": "试听声音",
   "Text on screen (OCR)": "屏幕文字（OCR）",
   "Text read off screen": "屏幕识别文字",
+  "That file can't be read.": "无法读取该文件。",
+  "That file is over 4 MB: a pointer's picture may be 4 MB at most.": "该文件超过 4 MB：指针图片最大为 4 MB。",
+  "that is not a picture": "这不是图片",
   "that is not a setting": "这不是设置项",
   "that is not one of your profiles": "这不是你的配置方案",
   "that is too long to be a list of settings": "内容过长，不可能是设置列表",
@@ -364,13 +402,16 @@
   "the address must start with https:// (or http:// for a server on this computer)": "地址必须以 https:// 开头（本机上的服务器可用 http://）",
   "The agent can use it now.": "智能体现在可以使用它了。",
   "The agent has no decision model now.": "智能体现在没有决策模型。",
+  "the animation is longer than this keeps: its first {n} frames ({s} s) loop": "动画超出了保留的长度：循环播放其前 {n} 帧（{s} 秒）",
   "The border, label and colours shown while the agent works.": "智能体工作时显示的边框、标签和颜色。",
   "the computer to restart": "电脑重启",
   "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "虚线表示跳跃：真实鼠标会立即跳到距目标 70 到 140 px 处，只走完最后这一段，然后回到你原来放的位置。叠加层中的指针则全程滑动。",
   "The decision model": "决策模型",
   "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "紧急停止，以及你使用电脑时的暂停。更改需确认。",
   "The file as saved has a mistake in it; mend it here.": "已保存的文件有错误；请在这里修正。",
+  "the file is {mb} MB; a pointer's picture may be 4 MB at most": "文件大小为 {mb} MB；指针图片最大为 4 MB",
   "The file is empty.": "文件为空。",
+  "the file is over 4 MB": "文件超过 4 MB",
   "the file is too long to be a settings file": "文件过长，不可能是设置文件",
   "The last {n} lines": "最后 {n} 行",
   "The newest stable release.": "最新的稳定版。",
@@ -379,6 +420,9 @@
   "the next time the server starts": "服务器下次启动时",
   "The ones you had are kept in {path}.": "原来的设置保存在 {path}。",
   "The ones you have now are kept, so this can be undone too.": "当前设置会被保存，因此此操作也可撤销。",
+  "the picture has no frames": "图片没有任何帧",
+  "the picture is {w}×{h} px; it may be {max} px a side at most": "图片为 {w}×{h} 像素；每边最多 {max} 像素",
+  "the picture is empty": "图片是空的",
   "The plain arrow": "普通箭头",
   "The plain arrow.": "普通箭头。",
   "The program's own defaults for every setting the other profiles touch.": "其他配置方案涉及的每项设置都使用程序自身的默认值。",
@@ -392,6 +436,9 @@
   "The settings that differ from the defaults. No secrets: {x} left out.": "与默认值不同的设置。不含机密信息：已略去 {x}。",
   "The settings that differ from the defaults. No secrets: none were set.": "与默认值不同的设置。不含机密信息：未设置任何机密信息。",
   "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "该次更新之前的设置会一并恢复；当前设置保存在设置文件旁。",
+  "the sound can't be played: {error}": "无法播放声音：{error}",
+  "The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own.": "声音由程序生成；你可以为每个声音指定自己的 WAV 文件（见下方高级设置）。它们用系统的播放器播放：Linux 上为 pw-play、paplay 或 aplay，macOS 上为 afplay，Windows 上为系统自带。",
+  "The tip is there now.": "指针尖端已设在该处。",
   "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "工具列表随每次请求发送，因此已开启的工具每次约花费 {tokens} 个 token{manager}。开销按当前使用的描述（{descriptions}）计算，每四个字符算一个 token。",
   "The version you have now is not taken again unless you clear update.skip_version.": "除非清除 update.skip_version，否则不会再安装当前版本。",
   "Theme": "主题",
@@ -407,6 +454,7 @@
   "this needs the user's confirmation first": "此项需先经用户确认",
   "This page.": "本页。",
   "This panel:": "此面板：",
+  "This picture can't be used: {error}. The default pointer shows instead.": "无法使用这张图片：{error}。将改为显示默认指针。",
   "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "本程序从 {from} 运行，该位置可能会被清理或移动。因此在 {to} 保留了一份副本，提供给智能体的就是这份副本。",
   "this server keeps its settings in memory": "此服务器将设置保存在内存中",
   "This server keeps its settings in memory, so nothing can be saved here.": "此服务器将设置保存在内存中，因此无法在这里保存。",
@@ -419,6 +467,8 @@
   "Three sample paths of the {style} style": "{style} 样式的三条示例路径",
   "Timing": "时序",
   "tokens": "token",
+  "too many sounds at once": "同时播放的声音太多",
+  "too soon after the last one": "距离上一次太近",
   "Tool list": "工具列表",
   "Tools": "工具",
   "Tools and tokens": "工具与 token",
@@ -446,6 +496,7 @@
   "Where to start": "从哪里开始",
   "Which": "目标版本",
   "Which tools the model sees. The tool list is sent with every request.": "模型能看到哪些工具。工具列表随每次请求发送。",
+  "Windows didn't play {path}": "Windows 未能播放 {path}",
   "with `computer-use-mcp update --install`": "运行 `computer-use-mcp update --install` 时",
   "Working": "工作中",
   "Write the audit log": "写入审计日志",
@@ -453,7 +504,12 @@
   "you to run `computer-use-mcp update --install`": "你运行 `computer-use-mcp update --install`",
   "Your control": "由你掌控",
   "Your MCP clients use it the next time they start.": "MCP 客户端下次启动时就会使用它。",
+  "Your own picture": "你自己的图片",
+  "Your own picture.": "你自己的图片。",
   "Your own: a snapshot of settings you changed.": "你自己的：已更改设置的快照。",
+  "Your picture is no longer the pointer.": "你的图片不再用作指针。",
+  "Your picture is the pointer now.": "你的图片现在就是指针。",
+  "Your pointer's picture": "你的指针图片",
   "Your settings": "你的设置",
   "Yours": "你的"
  },
@@ -524,7 +580,23 @@
   ],
   "overlay.cursor_style": [
    "指针样式",
-   "智能体的指针。random 为每个会话分配一个，同时工作的各个智能体各不相同。"
+   "智能体的指针。random 为每个会话分配一个，同时工作的各个智能体各不相同。custom 为你自己的图片。"
+  ],
+  "overlay.cursor_image": [
+   "指针图片",
+   "自定义指针所用的你自己的图片：PNG，或会动的 GIF、APNG。最大 4 MB，每边最多 512 像素。留空：无。"
+  ],
+  "overlay.cursor_image_scale": [
+   "指针图片缩放",
+   "你的图片绘制的大小，在叠加层尺寸之上再乘以此值。为 1 时，长边为 48 像素。"
+  ],
+  "overlay.cursor_hotspot_x": [
+   "指针尖端 x",
+   "尖端在图片中的水平位置：0 为左边缘，1 为右边缘。"
+  ],
+  "overlay.cursor_hotspot_y": [
+   "指针尖端 y",
+   "尖端在图片中的垂直位置：0 为上边缘，1 为下边缘。"
   ],
   "overlay.cursor_color": [
    "指针颜色",
@@ -593,6 +665,74 @@
   "overlay.show_label": [
    "显示标签",
    "状态标签。"
+  ],
+  "overlay.show_buttons": [
+   "显示按钮",
+   "标签旁的停止和设置按钮：停止所有智能体或从列表中停止其中一个，或打开此面板。"
+  ],
+  "overlay.click_effect_style": [
+   "点击效果样式",
+   "点击时显示什么：ripple（每种指针自己的方式）、脉冲、迸发、闪光，或什么都不显示。"
+  ],
+  "overlay.click_effect_color": [
+   "点击效果颜色",
+   "点击与按住效果的颜色。留空：使用指针自身的颜色。"
+  ],
+  "overlay.click_effect_ms": [
+   "点击效果时长",
+   "一次点击显示多久。"
+  ],
+  "overlay.hold_effect": [
+   "按住效果",
+   "智能体按住按钮时（拖动、绘画）：一圈柔和跳动的光、一个圆环，或什么都不显示。"
+  ],
+  "overlay.sound": [
+   "声音",
+   "为智能体的动作配上声音：点击、按键、完成、出错、停止。用系统的播放器播放。"
+  ],
+  "overlay.sound_volume": [
+   "音量",
+   "声音有多响。"
+  ],
+  "overlay.sound_click": [
+   "点击声",
+   "智能体点击时发出声音。"
+  ],
+  "overlay.sound_click_file": [
+   "点击声文件",
+   "点击时使用你自己的 WAV 文件。留空：内置声音。"
+  ],
+  "overlay.sound_key": [
+   "按键声",
+   "智能体按键或打字时轻轻一响，每秒最多几次。"
+  ],
+  "overlay.sound_key_file": [
+   "按键声文件",
+   "按键时使用你自己的 WAV 文件。留空：内置声音。"
+  ],
+  "overlay.sound_done": [
+   "完成提示音",
+   "工作完成时的提示音。"
+  ],
+  "overlay.sound_done_file": [
+   "完成提示音文件",
+   "完成时使用你自己的 WAV 文件。留空：内置声音。"
+  ],
+  "overlay.sound_error": [
+   "出错声",
+   "操作失败时发出声音。"
+  ],
+  "overlay.sound_error_file": [
+   "出错声文件",
+   "出错时使用你自己的 WAV 文件。留空：内置声音。"
+  ],
+  "overlay.sound_stopped": [
+   "停止声",
+   "你用停止键或停止按钮停下智能体时发出声音。"
+  ],
+  "overlay.sound_stopped_file": [
+   "停止声文件",
+   "停止时使用你自己的 WAV 文件。留空：内置声音。"
   ],
   "overlay.border_target": [
    "边框范围",
@@ -1213,10 +1353,6 @@
   "panel.idle_minutes": [
    "空闲关闭（分钟）",
    "无请求超过这段时间后面板关闭。"
-  ],
-  "overlay.show_buttons": [
-   "显示按钮",
-   "标签旁的停止和设置按钮：停止所有智能体或从列表中停止其中一个，或打开此面板。"
   ]
  }
 }

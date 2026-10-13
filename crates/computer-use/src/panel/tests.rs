@@ -1792,3 +1792,172 @@ fn a_program_that_took_the_port_never_sees_the_token_and_isnt_believed() {
     assert_ne!(persistent_token(&dir, port), token);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A POST of `body`: the raw reply (the server may answer, and close,
+/// before all of it is sent).
+fn post_raw(host: &str, token: &str, route: &str, body: &[u8]) -> String {
+    let mut s = TcpStream::connect(host).unwrap();
+    let head = format!(
+        "POST /{token}/{route} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    let _ = s.write_all(body);
+    let mut out = Vec::new();
+    let _ = s.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn only_the_picture_upload_takes_a_big_request() {
+    let dir = temp("big");
+    let path = config_with_port(&dir, "");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    // 100 KB: too much for any other route, as before.
+    let filler = format!(r#"{{"changes":[],"pad":"{}"}}"#, "x".repeat(100 * 1024));
+    for route in [
+        "set",
+        "state",
+        "cursor_remove",
+        "sound_test",
+        "import_preview",
+    ] {
+        let r = post_raw(host, token, route, filler.as_bytes());
+        assert!(r.starts_with("HTTP/1.1 413"), "{route}: {r}");
+    }
+    // The upload reads it (and finds no picture in it).
+    let r = post_raw(host, token, "cursor_upload", filler.as_bytes());
+    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    assert_eq!(json_of(&r)["ok"], false);
+    // Not past 6 MB, and not at another address (another token, a
+    // longer route).
+    let r = request(
+        host,
+        &format!(
+            "POST /{token}/cursor_upload HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: 6291457\r\n\r\n"
+        ),
+    );
+    assert!(r.starts_with("HTTP/1.1 413"), "{r}");
+    let other = "0123456789abcdef0123456789abcdef";
+    let r = post_raw(host, other, "cursor_upload", filler.as_bytes());
+    assert!(r.starts_with("HTTP/1.1 413"), "{r}");
+    let r = post_raw(host, token, "cursor_upload/x", filler.as_bytes());
+    assert!(r.starts_with("HTTP/1.1 413"), "{r}");
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_picture_is_checked_kept_shown_and_taken_away_from_the_page() {
+    use crate::overlay::picture::tests::{gif, png};
+    use base64::Engine as _;
+    let dir = temp("cursor");
+    let path = config_with_port(&dir, "[overlay]\ncursor_style = \"jelly\"\n");
+    let up = start(Some(path.clone()), &dir);
+    let (host, token) = (&up.host, &up.token);
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let upload = |bytes: &[u8]| {
+        let body = json!({"name": "x", "data": format!("data:image/png;base64,{}", b64(bytes))});
+        json_of(&post_raw(
+            host,
+            token,
+            "cursor_upload",
+            body.to_string().as_bytes(),
+        ))
+    };
+    let load = || ConfigStore::load(Some(&path)).unwrap().config;
+    // Nothing set: nothing to show.
+    let info = json_of(&post(host, token, "cursor_info", "{}"));
+    assert_eq!((&info["ok"], &info["set"]), (&json!(true), &json!(false)));
+    assert!(get(host, token, "cursor/custom").starts_with("HTTP/1.1 404"));
+
+    // What the overlay can't use is refused, and nothing changes.
+    for (bad, why) in [
+        (png(700, 20), "512"),
+        (b"not a picture at all".to_vec(), "not a PNG or GIF"),
+        (b"GIF89a\x10\x00\x10\x00broken".to_vec(), "can't be read"),
+    ] {
+        let r = upload(&bad);
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{r}");
+    }
+    let r = json_of(&post(host, token, "cursor_upload", r#"{"data":"%%%"}"#));
+    assert_eq!(r["ok"], false);
+    assert_eq!(load().overlay.cursor_style, "jelly");
+    assert!(!dir.join("cursors").exists());
+
+    // A GIF: kept, set, shown, described.
+    let anim = gif(24, 24, 3, 10);
+    let r = upload(&anim);
+    assert_eq!(r["ok"], true, "{r}");
+    let kept = dir.join("cursors").join("custom.gif");
+    assert_eq!(std::fs::read(&kept).unwrap(), anim);
+    let c = load();
+    assert_eq!(c.overlay.cursor_style, "custom");
+    assert_eq!(c.overlay.cursor_image, kept.display().to_string());
+    let shown = get(host, token, "cursor/custom");
+    assert!(
+        shown.starts_with("HTTP/1.1 200") && shown.contains("image/gif"),
+        "{shown}"
+    );
+    let info = json_of(&post(host, token, "cursor_info", "{}"));
+    assert_eq!(info["usable"], true, "{info}");
+    assert_eq!((&info["frames"], &info["ms"]), (&json!(3), &json!(300)));
+    assert_eq!(info["kept"], true);
+    // A PNG in its place: the GIF goes.
+    let r = upload(&png(32, 32));
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(!kept.exists());
+    assert!(dir.join("cursors").join("custom.png").exists());
+
+    // Taken away: the pointer before it comes back, the file goes.
+    let r = json_of(&post(host, token, "cursor_remove", "{}"));
+    assert_eq!(r["ok"], true, "{r}");
+    let c = load();
+    assert_eq!(
+        (
+            c.overlay.cursor_style.as_str(),
+            c.overlay.cursor_image.as_str()
+        ),
+        ("jelly", "")
+    );
+    assert!(!dir.join("cursors").join("custom.png").exists());
+
+    // A picture of the user's own elsewhere is shown, never deleted.
+    let own = dir.join("mine.png");
+    std::fs::write(&own, png(16, 16)).unwrap();
+    let set = json!({"changes": [
+        {"key": "overlay.cursor_image", "value": own.display().to_string()},
+        {"key": "overlay.cursor_style", "value": "custom"},
+    ]})
+    .to_string();
+    assert_eq!(json_of(&post(host, token, "set", &set))["ok"], true);
+    assert!(get(host, token, "cursor/custom").starts_with("HTTP/1.1 200"));
+    let info = json_of(&post(host, token, "cursor_info", "{}"));
+    assert_eq!(
+        (&info["usable"], &info["kept"]),
+        (&json!(true), &json!(false))
+    );
+    assert_eq!(
+        json_of(&post(host, token, "cursor_remove", "{}"))["ok"],
+        true
+    );
+    assert!(own.exists());
+    assert_eq!(load().overlay.cursor_style, "random");
+    // A broken one is described, not shown.
+    std::fs::write(&own, b"oops").unwrap();
+    assert_eq!(json_of(&post(host, token, "set", &set))["ok"], true);
+    let info = json_of(&post(host, token, "cursor_info", "{}"));
+    assert_eq!(info["usable"], false);
+    assert!(
+        info["error"].as_str().unwrap().contains("not a PNG"),
+        "{info}"
+    );
+    assert!(get(host, token, "cursor/custom").starts_with("HTTP/1.1 404"));
+    // The sound test names a sound.
+    let r = json_of(&post(host, token, "sound_test", r#"{"event":"boom"}"#));
+    assert_eq!(r["ok"], false);
+    up.alive.store(false, Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+}

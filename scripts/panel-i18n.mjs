@@ -39,7 +39,7 @@ const IN_VARIABLES = [
   "when the server starts after the computer restarts", "the next time the server starts", "with `computer-use-mcp update --install`",
   // previews and cards
   "A different one each session, and for each agent at once", "The plain arrow", "How the pointer glides", "How the real mouse goes",
-  "Thinking", "Working", "Done", "Error", "Paused", "Stopped",
+  "Thinking", "Working", "Done", "Error", "Paused", "Stopped", "Click", "Keys",
   "Jev (TypeSafe System One)", "Made for decisions: answers in well under a second, with probabilities. Also any server that speaks the same API.",
   "OpenAI-compatible chat model", "OpenAI, Groq, Cerebras, OpenRouter, Ollama, LM Studio… A small, fast model works best.",
   "App", "Looks", "Little in the tree", "Text read off screen", "Pictures sent", "Left out",
@@ -96,6 +96,15 @@ const FROM_THE_SERVER = [
   "must be one line of text", "must be text", "must be on or off", "must be a number", "must be a list", "a list holds text",
   "must be a whole number, not negative", "a saved secret is replaced, not reset, here",
   "must be one of {choices}", "must be between {min} and {max}",
+  // the pointer's own picture and the sounds
+  "choose a picture", "that is not a picture", "can't keep the picture in {path}: {error}", "say which sound",
+  "can't read it: {error}", "it is not a file", "the file is {mb} MB; a pointer's picture may be 4 MB at most", "the file is over 4 MB",
+  "the picture is empty", "the picture is {w}×{h} px; it may be {max} px a side at most", "it can't be read as a picture ({error})",
+  "it is not a PNG or GIF picture", "the picture has no frames", "it took too long to read", "can't read it now",
+  "the animation is longer than this keeps: its first {n} frames ({s} s) loop", "frame {n} can't be read ({error}); the {m} before it loop",
+  "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent",
+  "too soon after the last one", "too many sounds at once", "{path} can't play sounds: {error}", "can't write the sounds to {path}: {error}",
+  "the sound can't be played: {error}", "Windows didn't play {path}",
 ];
 
 // Short names of things, in the forms a number needs.

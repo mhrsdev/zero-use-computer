@@ -21,6 +21,7 @@
   "{name} applied.": "{name} اعمال شد.",
   "{name} picker": "انتخابگر {name}",
   "{name} slider": "اسلایدر {name}",
+  "{path} can't play sounds: {error}": "{path} نمی‌تواند صدا پخش کند: {error}",
   "{px} px → about {tokens} tokens": "{px} px ← حدود {tokens} توکن",
   "{v} is back.": "نسخه‌ی {v} بازگردانده شد.",
   "{v} is downloaded and checked.": "نسخه‌ی {v} دانلود و بررسی شد.",
@@ -28,6 +29,8 @@
   "{v} is no longer wanted by the settings (skipped, another version pinned, or a pre-release on the stable channel), so it was forgotten": "تنظیمات دیگر نسخه‌ی {v} را نمی‌خواهند (رد شده، نسخه‌ی دیگری ثابت شده، یا پیش‌انتشاری در کانال پایدار است)، پس کنار گذاشته شد",
   "{v} is the latest under these settings.": "با این تنظیمات، {v} تازه‌ترین نسخه است.",
   "{v} will not be taken again.": "نسخه‌ی {v} دیگر دریافت نمی‌شود.",
+  "{w}×{h} px, {n} frames that play for {s} s and loop.": "{w}×{h} پیکسل، {n} فریم که {s} ثانیه پخش می‌شوند و از نو تکرار می‌شوند.",
+  "{w}×{h} px, a still picture.": "{w}×{h} پیکسل، تصویر ثابت.",
   "{x} ago": "{x} پیش",
   "{x} allowed by the settings.": "{x} با تنظیمات مجاز است.",
   "{x} in it": "شامل {x}",
@@ -42,6 +45,7 @@
   "5 min": "5 دقیقه",
   "a change has no key": "یکی از تغییرها کلید ندارد",
   "a change needs a value": "هر تغییر به یک مقدار نیاز دارد",
+  "A click and a held button, as the overlay shows them": "یک کلیک و یک دکمه‌ی نگه‌داشته، همان‌طور که پوشش روی صفحه نشانشان می‌دهد",
   "A different one each session, and for each agent at once": "در هر نشست یکی متفاوت، و برای ایجنت‌های هم‌زمان هر کدام یکی جدا",
   "A fast model that answers small questions about what is on screen.": "مدلی سریع که به پرسش‌های کوچک درباره‌ی آنچه روی صفحه است پاسخ می‌دهد.",
   "A fast model the agent asks yes/no, choice and score questions about what is on screen, so it reads less and decides sooner. Your key is saved on this computer and never goes through the chat.": "مدلی سریع که ایجنت پرسش‌های بله/خیر، چندگزینه‌ای و امتیازی درباره‌ی آنچه روی صفحه است را از آن می‌پرسد تا کمتر بخواند و زودتر تصمیم بگیرد. کلید شما روی همین رایانه ذخیره می‌شود و هرگز از گفتگو عبور نمی‌کند.",
@@ -93,8 +97,12 @@
   "Big pictures, whole windows, longer trees and no shortening. The most tokens; for hard-to-read apps.": "تصویرهای بزرگ، پنجره‌های کامل، درخت‌های بلندتر و بدون کوتاه‌سازی. بیشترین توکن؛ برای برنامه‌هایی که سخت خوانده می‌شوند.",
   "Can go back to": "امکان بازگشت به",
   "Can't change safely": "تغییر امن ممکن نیست",
+  "can't keep the picture in {path}: {error}": "نمی‌توان تصویر را در {path} نگه داشت: {error}",
   "can't make the profiles folder": "پوشه‌ی پروفایل‌ها ساخته نشد",
+  "can't read it now": "اکنون نمی‌توان آن را خواند",
+  "can't read it: {error}": "نمی‌توان آن را خواند: {error}",
   "can't take it": "پذیرفته نمی‌شود",
+  "can't write the sounds to {path}: {error}": "نمی‌توان صداها را در {path} نوشت: {error}",
   "Cancel": "انصراف",
   "cells": "خانه",
   "Change": "تغییر",
@@ -105,10 +113,19 @@
   "Check": "بررسی",
   "Check now": "بررسی اکنون",
   "Checking actions": "بررسی کنش‌ها",
+  "Checking the picture…": "در حال بررسی تصویر…",
+  "Choose a file": "انتخاب فایل",
   "choose a kind of model": "نوع مدل را انتخاب کنید",
   "Choose a kind of model first.": "ابتدا نوع مدل را انتخاب کنید.",
+  "choose a picture": "یک تصویر انتخاب کنید",
+  "Choose a PNG with a clear background, or a GIF or APNG that plays. Its top left corner is the tip unless you click elsewhere on it.": "یک PNG با پس‌زمینه‌ی شفاف، یا یک GIF یا APNG متحرک انتخاب کنید. گوشه‌ی بالا چپ آن نوک نشانگر است، مگر اینکه جای دیگری از آن را کلیک کنید.",
   "Choose a pointer": "انتخاب نشانگر",
   "choose an agent": "یک ایجنت انتخاب کنید",
+  "Choose another file": "انتخاب فایلی دیگر",
+  "Click": "کلیک",
+  "Click effects are off (click effect).": "جلوه‌های کلیک خاموش‌اند (جلوه‌ی کلیک).",
+  "Click where its tip should be": "جایی را که نوک نشانگر باید باشد کلیک کنید",
+  "Clicks and holds": "کلیک و نگه داشتن",
   "Comes with the program": "همراه برنامه",
   "Connect an agent": "اتصال ایجنت",
   "Copied.": "کپی شد.",
@@ -139,6 +156,7 @@
   "Fix it in a text editor: {path}": "آن را در یک ویرایشگر متن اصلاح کنید: {path}",
   "for example ctrl+alt+escape": "مثلاً ctrl+alt+escape",
   "For recording a demo: a bigger pointer and border, longer glides, keys and text shown, and the finished state kept on screen a little longer.": "برای ضبط دمو: نشانگر و حاشیه‌ی بزرگ‌تر، حرکت‌های نرم طولانی‌تر، نمایش کلیدها و متن، و ماندن حالت پایان کمی بیشتر روی صفحه.",
+  "frame {n} can't be read ({error}); the {m} before it loop": "فریم {n} خوانده نمی‌شود ({error})؛ {m} فریم پیش از آن تکرار می‌شوند",
   "From a terminal the same thing is `computer-use-mcp install` (every agent found here), `--client NAME` for one, `--list` to look and `--remove` to take it out.": "در ترمینال همین کار با `computer-use-mcp install` (همه‌ی ایجنت‌های یافت‌شده در اینجا) انجام می‌شود؛ `--client NAME` برای یکی، `--list` برای دیدن و `--remove` برای برداشتن.",
   "From a terminal: computer-use-mcp shortcut (the desktop), --menu, --both, --remove, --list. Only shortcuts this program made are ever removed.": "در ترمینال: computer-use-mcp shortcut (دسکتاپ)، --menu، --both، --remove، --list. فقط میان‌برهایی حذف می‌شوند که خود این برنامه ساخته است.",
   "General": "عمومی",
@@ -149,6 +167,7 @@
   "Go back to {v}": "بازگشت به {v}",
   "Go back to version {v}?": "بازگشت به نسخه‌ی {v}؟",
   "Guide": "راهنما",
+  "Hold": "نگه داشتن",
   "Home": "خانه",
   "hours": "ساعت",
   "How much of the app's tree the model reads, and how it is shortened.": "مدل چه مقدار از درخت برنامه را می‌خواند و درخت چگونه کوتاه می‌شود.",
@@ -166,10 +185,15 @@
   "Import the {n} it can take": "درون‌ریزی {n} مورد قابل پذیرش",
   "Imported {x}; left out {n} this version can't take.": "{x} درون‌ریزی شد؛ {n} موردی که این نسخه نمی‌پذیرد کنار گذاشته شد.",
   "Imported {x}.": "{x} درون‌ریزی شد.",
+  "it can't be read as a picture ({error})": "به‌عنوان تصویر خوانده نمی‌شود ({error})",
   "It goes in {when}.": "{when} نصب می‌شود.",
   "It is changed on its own page, not by an import": "در صفحه‌ی خودش تغییر می‌کند، نه با درون‌ریزی",
+  "it is not a file": "فایل نیست",
+  "it is not a PNG or GIF picture": "تصویر PNG یا GIF نیست",
+  "It is ready, but another pointer is chosen: pick custom above to use it.": "آماده است، اما نشانگر دیگری انتخاب شده: برای استفاده از آن، custom را در بالا برگزینید.",
   "It looks every {x}.": "بازه‌ی بررسی: {x}.",
   "It starts {program} settings, which opens the panel in your browser.": "با اجرای {program} settings، پنل را در مرورگر شما باز می‌کند.",
+  "it took too long to read": "خواندنش بیش از حد طول کشید",
   "It will not look for updates.": "دنبال به‌روزرسانی نمی‌گردد.",
   "items": "مورد",
   "Jev (TypeSafe System One)": "Jev (TypeSafe System One)",
@@ -179,6 +203,7 @@
   "Keep the current settings as a profile": "نگه‌داشتن تنظیمات کنونی به‌عنوان پروفایل",
   "Kept {x}.": "{x} نگه داشته شد.",
   "Kept {x}. Left out {n} that a profile may not hold (secrets, protected settings, ports).": "{x} نگه داشته شد. {n} مورد که پروفایل نمی‌تواند داشته باشد (اطلاعات محرمانه، تنظیم‌های محافظت‌شده، پورت‌ها) کنار گذاشته شد.",
+  "Keys": "کلیدها",
   "Language": "زبان",
   "last {when}": "آخرین بار {when}",
   "Leave empty for {url}.": "برای {url} خالی بگذارید.",
@@ -219,6 +244,8 @@
   "no import has been made yet, so there is nothing to go back to": "هنوز درون‌ریزی‌ای انجام نشده، پس چیزی برای بازگشت نیست",
   "No key for this panel": "کلیدی برای این پنل نیست",
   "No log yet: turn it on above.": "هنوز گزارشی نیست: آن را در بالا روشن کنید.",
+  "No picture yet": "هنوز تصویری نیست",
+  "no sound player found (pw-play, paplay or aplay on Linux; afplay on macOS), so the overlay's sounds are silent": "هیچ پخش‌کننده‌ی صدایی پیدا نشد (pw-play، paplay یا aplay در لینوکس؛ afplay در macOS)، پس صداهای پوشش روی صفحه پخش نمی‌شوند",
   "no update is waiting": "هیچ به‌روزرسانی‌ای در انتظار نیست",
   "none": "هیچ",
   "None set up.": "هیچ کدام راه‌اندازی نشده.",
@@ -250,6 +277,7 @@
   "of {n}": "از {n}",
   "off": "خاموش",
   "Off: the agent works from the tree alone.": "خاموش: ایجنت فقط با درخت کار می‌کند.",
+  "Off: turn on Sound below to hear them while the agent works. A test plays one now either way.": "خاموش: برای شنیدن آن‌ها هنگام کار ایجنت، «صدا» را در پایین روشن کنید. آزمایش در هر حال همین حالا یکی را پخش می‌کند.",
   "Off.": "خاموش.",
   "Off. It never updates by itself.": "خاموش. هرگز خودبه‌خود به‌روز نمی‌شود.",
   "Off. Nothing is looked for or downloaded.": "خاموش. چیزی جستجو یا دانلود نمی‌شود.",
@@ -257,6 +285,7 @@
   "On, last looked {when}.": "روشن، آخرین بررسی {when}.",
   "On; it has not looked yet.": "روشن؛ هنوز بررسی نکرده.",
   "On; no hub is running right now.": "روشن؛ اکنون هابی در حال اجرا نیست.",
+  "On: the overlay plays these while the agent works, at most a few a second.": "روشن: پوشش روی صفحه هنگام کار ایجنت این‌ها را پخش می‌کند، حداکثر چند بار در ثانیه.",
   "On.": "روشن.",
   "Only {n} tools are listed in tools.enabled, so the others stay hidden whatever the switches say.": "فقط {n} ابزار در tools.enabled فهرست شده‌اند، پس بقیه هر چه کلیدها نشان دهند پنهان می‌مانند.",
   "OpenAI-compatible chat model": "مدل گفتگوی سازگار با OpenAI",
@@ -272,6 +301,8 @@
   "Pictures": "تصویرها",
   "Pictures sent": "تصویرهای فرستاده‌شده",
   "Platform": "پلتفرم",
+  "Played with {player}.": "با {player} پخش شد.",
+  "PNG, GIF or APNG, at most {mb} MB and {side} px a side; an animation plays its first {frames} frames, up to {secs} s, and loops. It stays on this computer, in the program's folder. Only you set it here: the agent can't.": "PNG، GIF یا APNG، حداکثر {mb} مگابایت و {side} پیکسل در هر ضلع؛ یک انیمیشن تا {frames} فریم اولش، حداکثر {secs} ثانیه، پخش و تکرار می‌شود. تصویر روی همین رایانه، در پوشه‌ی برنامه، می‌ماند. فقط شما آن را اینجا تنظیم می‌کنید: ایجنت نمی‌تواند.",
   "Pointer": "نشانگر",
   "Pointer style": "سبک نشانگر",
   "Pointers and the mouse": "نشانگرها و ماوس",
@@ -305,6 +336,7 @@
   "Reset": "بازنشانی",
   "Revert": "برگرداندن",
   "Right now": "هم‌اکنون",
+  "Ripple is each pointer's own click; the others are drawn at the tip in the colour you set, or the pointer's own. A held button glows during drags and drawings.": "ripple همان کلیک مخصوص هر نشانگر است؛ بقیه در نوک نشانگر با رنگی که تعیین کرده‌اید، یا رنگ خود نشانگر، رسم می‌شوند. دکمه‌ی نگه‌داشته هنگام کشیدن و نقاشی می‌درخشد.",
   "s": "ثانیه",
   "same": "یکسان",
   "Save": "ذخیره",
@@ -318,6 +350,7 @@
   "say install or remove": "install یا remove را مشخص کنید",
   "say which settings to change": "مشخص کنید کدام تنظیم‌ها تغییر کنند",
   "say which settings to reset": "مشخص کنید کدام تنظیم‌ها بازنشانی شوند",
+  "say which sound": "بگویید کدام صدا",
   "Screen memory": "حافظه‌ی صفحه",
   "screens": "صفحه",
   "Screenshots": "اسکرین‌شات‌ها",
@@ -339,6 +372,7 @@
   "Showcase": "نمایشی",
   "Small programs the agent writes and the server runs.": "برنامه‌های کوچکی که ایجنت می‌نویسد و سرور اجرا می‌کند.",
   "Smaller pictures and shorter trees. A full screenshot costs about a third less; very small text may be harder to read.": "تصویرهای کوچک‌تر و درخت‌های کوتاه‌تر. یک اسکرین‌شات کامل حدود یک‌سوم ارزان‌تر است؛ خواندن متن خیلی ریز ممکن است سخت‌تر شود.",
+  "Sounds": "صداها",
   "spaces": "فاصله",
   "Spending fewer tokens": "مصرف توکن کمتر",
   "Start your MCP client again to use it.": "برای استفاده، کلاینت MCP خود را دوباره راه‌اندازی کنید.",
@@ -352,8 +386,12 @@
   "Switches that apply to the whole program.": "کلیدهایی که روی کل برنامه اثر دارند.",
   "Take the panel's shortcut away from {path}?": "میان‌بر پنل از {path} برداشته شود؟",
   "Test": "آزمایش",
+  "Test a sound": "آزمایش یک صدا",
   "Text on screen (OCR)": "متن روی صفحه (OCR)",
   "Text read off screen": "متن خوانده‌شده از صفحه",
+  "That file can't be read.": "این فایل خوانده نمی‌شود.",
+  "That file is over 4 MB: a pointer's picture may be 4 MB at most.": "این فایل بیش از 4 مگابایت است: تصویر نشانگر حداکثر می‌تواند 4 مگابایت باشد.",
+  "that is not a picture": "این تصویر نیست",
   "that is not a setting": "این یک تنظیم نیست",
   "that is not one of your profiles": "این از پروفایل‌های شما نیست",
   "that is too long to be a list of settings": "برای فهرست تنظیمات بیش از حد طولانی است",
@@ -364,13 +402,16 @@
   "the address must start with https:// (or http:// for a server on this computer)": "نشانی باید با https:// شروع شود (یا http:// برای سروری روی همین رایانه)",
   "The agent can use it now.": "ایجنت اکنون می‌تواند از آن استفاده کند.",
   "The agent has no decision model now.": "ایجنت اکنون مدل تصمیم‌گیری ندارد.",
+  "the animation is longer than this keeps: its first {n} frames ({s} s) loop": "انیمیشن طولانی‌تر از حدی است که نگه داشته می‌شود: {n} فریم اولش ({s} ثانیه) تکرار می‌شود",
   "The border, label and colours shown while the agent works.": "حاشیه، برچسب و رنگ‌هایی که هنگام کار ایجنت نمایش داده می‌شوند.",
   "the computer to restart": "راه‌اندازی دوباره‌ی رایانه",
   "The dashed line is a jump: the real mouse goes at once to 70 to 140 px from the target, travels only that last stretch, then goes back to where you left it. The pointer in the overlay glides the whole way.": "خط‌چین یک پرش است: ماوس واقعی بی‌درنگ به فاصله‌ی 70 تا 140 px از هدف می‌رود، فقط همان تکه‌ی آخر را می‌پیماید و سپس به جایی که آن را گذاشته بودید برمی‌گردد. نشانگرِ پوشش روی صفحه تمام راه را نرم حرکت می‌کند.",
   "The decision model": "مدل تصمیم‌گیری",
   "The emergency stop and the pause while you use the computer. Changes ask you to confirm.": "توقف اضطراری و مکث هنگامی که با رایانه کار می‌کنید. تغییرها نیاز به تأیید دارند.",
   "The file as saved has a mistake in it; mend it here.": "فایل ذخیره‌شده اشکالی دارد؛ اینجا اصلاحش کنید.",
+  "the file is {mb} MB; a pointer's picture may be 4 MB at most": "فایل {mb} مگابایت است؛ تصویر نشانگر حداکثر می‌تواند 4 مگابایت باشد",
   "The file is empty.": "فایل خالی است.",
+  "the file is over 4 MB": "فایل بیش از 4 مگابایت است",
   "the file is too long to be a settings file": "این فایل برای فایل تنظیمات بیش از حد طولانی است",
   "The last {n} lines": "{n} خط آخر",
   "The newest stable release.": "تازه‌ترین نسخه‌ی پایدار.",
@@ -379,6 +420,9 @@
   "the next time the server starts": "در راه‌اندازی بعدی سرور",
   "The ones you had are kept in {path}.": "تنظیمات قبلی شما در {path} نگه داشته شده‌اند.",
   "The ones you have now are kept, so this can be undone too.": "تنظیمات کنونی نگه داشته می‌شوند، پس این کار هم قابل برگشت است.",
+  "the picture has no frames": "تصویر هیچ فریمی ندارد",
+  "the picture is {w}×{h} px; it may be {max} px a side at most": "تصویر {w}×{h} پیکسل است؛ هر ضلع حداکثر می‌تواند {max} پیکسل باشد",
+  "the picture is empty": "تصویر خالی است",
   "The plain arrow": "پیکان ساده",
   "The plain arrow.": "پیکان ساده.",
   "The program's own defaults for every setting the other profiles touch.": "پیش‌فرض‌های خود برنامه برای هر تنظیمی که پروفایل‌های دیگر تغییر می‌دهند.",
@@ -392,6 +436,9 @@
   "The settings that differ from the defaults. No secrets: {x} left out.": "تنظیم‌هایی که با پیش‌فرض فرق دارند. بدون اطلاعات محرمانه: {x} کنار گذاشته شد.",
   "The settings that differ from the defaults. No secrets: none were set.": "تنظیم‌هایی که با پیش‌فرض فرق دارند. بدون اطلاعات محرمانه: هیچ‌کدام تنظیم نشده بود.",
   "The settings you had before that update come back with it; the ones you have now are kept beside the file.": "تنظیمات پیش از آن به‌روزرسانی هم همراهش برمی‌گردند؛ تنظیمات کنونی کنار فایل نگه داشته می‌شوند.",
+  "the sound can't be played: {error}": "صدا پخش نمی‌شود: {error}",
+  "The sounds are made by the program; you can give a WAV file of your own for each (the advanced settings below). They play with your system's player: pw-play, paplay or aplay on Linux, afplay on macOS, Windows' own.": "صداها را خود برنامه می‌سازد؛ می‌توانید برای هر کدام یک فایل WAV از خودتان بدهید (تنظیمات پیشرفته در پایین). با پخش‌کننده‌ی سیستم شما پخش می‌شوند: pw-play، paplay یا aplay در لینوکس، afplay در macOS، و پخش‌کننده‌ی خود ویندوز.",
+  "The tip is there now.": "نوک نشانگر اکنون آنجاست.",
   "The tool list is sent with every request, so what is on costs about {tokens} tokens each time{manager}. Costs are the descriptions in use ({descriptions}), counted as four characters a token.": "فهرست ابزارها با هر درخواست فرستاده می‌شود، پس ابزارهای روشن هر بار حدود {tokens} توکن هزینه دارند{manager}. هزینه‌ها بر پایه‌ی توضیحات در حال استفاده ({descriptions}) است، هر چهار نویسه یک توکن.",
   "The version you have now is not taken again unless you clear update.skip_version.": "نسخه‌ی کنونی دوباره دریافت نمی‌شود، مگر آنکه update.skip_version را پاک کنید.",
   "Theme": "پوسته",
@@ -407,6 +454,7 @@
   "this needs the user's confirmation first": "این کار ابتدا به تأیید کاربر نیاز دارد",
   "This page.": "همین صفحه.",
   "This panel:": "این پنل:",
+  "This picture can't be used: {error}. The default pointer shows instead.": "این تصویر قابل استفاده نیست: {error}. به‌جای آن نشانگر پیش‌فرض نمایش داده می‌شود.",
   "This program runs from {from}, a place that gets cleaned out or moved. A copy is kept at {to} and that is what the agents are given.": "این برنامه از {from} اجرا می‌شود، جایی که ممکن است پاک یا جابه‌جا شود. یک نسخه در {to} نگه داشته می‌شود و همان به ایجنت‌ها داده می‌شود.",
   "this server keeps its settings in memory": "این سرور تنظیماتش را در حافظه نگه می‌دارد",
   "This server keeps its settings in memory, so nothing can be saved here.": "این سرور تنظیماتش را در حافظه نگه می‌دارد، پس اینجا چیزی ذخیره نمی‌شود.",
@@ -419,6 +467,8 @@
   "Three sample paths of the {style} style": "سه مسیر نمونه از سبک {style}",
   "Timing": "زمان‌بندی",
   "tokens": "توکن",
+  "too many sounds at once": "صداهای هم‌زمان بیش از حد",
+  "too soon after the last one": "خیلی زود پس از قبلی",
   "Tool list": "فهرست ابزارها",
   "Tools": "ابزارها",
   "Tools and tokens": "ابزارها و توکن‌ها",
@@ -446,6 +496,7 @@
   "Where to start": "از کجا شروع کنیم",
   "Which": "کدام",
   "Which tools the model sees. The tool list is sent with every request.": "مدل کدام ابزارها را می‌بیند. فهرست ابزارها با هر درخواست فرستاده می‌شود.",
+  "Windows didn't play {path}": "ویندوز {path} را پخش نکرد",
   "with `computer-use-mcp update --install`": "با `computer-use-mcp update --install`",
   "Working": "در حال کار",
   "Write the audit log": "نوشتن گزارش ممیزی",
@@ -453,7 +504,12 @@
   "you to run `computer-use-mcp update --install`": "اجرای `computer-use-mcp update --install` توسط شما",
   "Your control": "کنترل شما",
   "Your MCP clients use it the next time they start.": "کلاینت‌های MCP شما دفعه‌ی بعد که راه‌اندازی شوند از آن استفاده می‌کنند.",
+  "Your own picture": "تصویر خودتان",
+  "Your own picture.": "تصویر خودتان.",
   "Your own: a snapshot of settings you changed.": "مال خودتان: برداشتی لحظه‌ای از تنظیم‌هایی که تغییر داده‌اید.",
+  "Your picture is no longer the pointer.": "تصویر شما دیگر نشانگر نیست.",
+  "Your picture is the pointer now.": "اکنون تصویر شما نشانگر است.",
+  "Your pointer's picture": "تصویر نشانگر شما",
   "Your settings": "تنظیمات شما",
   "Yours": "پروفایل‌های شما"
  },
@@ -530,7 +586,23 @@
   ],
   "overlay.cursor_style": [
    "سبک نشانگر",
-   "نشانگر ایجنت. random در هر نشست یکی می‌دهد، و به ایجنت‌های هم‌زمان هر کدام یکی متفاوت."
+   "نشانگر ایجنت. random در هر نشست یکی می‌دهد، و به ایجنت‌های هم‌زمان هر کدام یکی متفاوت. custom تصویر خودتان است."
+  ],
+  "overlay.cursor_image": [
+   "تصویر نشانگر",
+   "تصویر خودتان برای نشانگر custom: یک PNG، یا یک GIF یا APNG متحرک. حداکثر 4 مگابایت و 512 پیکسل در هر ضلع. خالی: هیچ."
+  ],
+  "overlay.cursor_image_scale": [
+   "اندازه‌ی تصویر نشانگر",
+   "اندازه‌ی رسم تصویر شما، افزون بر اندازه‌ی پوشش روی صفحه. در 1، ضلع بلندترش 48 پیکسل است."
+  ],
+  "overlay.cursor_hotspot_x": [
+   "نوک نشانگر (افقی)",
+   "نوک نشانگر در کجای تصویر شماست، در عرض: 0 لبه‌ی چپ، 1 لبه‌ی راست."
+  ],
+  "overlay.cursor_hotspot_y": [
+   "نوک نشانگر (عمودی)",
+   "نوک نشانگر در کجای تصویر شماست، در ارتفاع: 0 لبه‌ی بالا، 1 لبه‌ی پایین."
   ],
   "overlay.cursor_color": [
    "رنگ نشانگر",
@@ -599,6 +671,74 @@
   "overlay.show_label": [
    "نمایش برچسب",
    "یک برچسب وضعیت."
+  ],
+  "overlay.show_buttons": [
+   "نمایش دکمه‌ها",
+   "دکمه‌های توقف و تنظیمات کنار برچسب: توقف همه‌ی ایجنت‌ها یا یکی از لیست، یا باز کردن این پنل."
+  ],
+  "overlay.click_effect_style": [
+   "سبک جلوه‌ی کلیک",
+   "آنچه کلیک نشان می‌دهد: ripple (هر نشانگر به شیوه‌ی خودش)، پالس، انفجار ذرات، درخشش، یا هیچ."
+  ],
+  "overlay.click_effect_color": [
+   "رنگ جلوه‌ی کلیک",
+   "رنگ جلوه‌های کلیک و نگه داشتن. خالی: رنگ خود نشانگر."
+  ],
+  "overlay.click_effect_ms": [
+   "مدت جلوه‌ی کلیک",
+   "مدت نمایش یک کلیک."
+  ],
+  "overlay.hold_effect": [
+   "جلوه‌ی نگه داشتن",
+   "وقتی ایجنت دکمه را نگه می‌دارد (کشیدن، نقاشی): درخششی نرم که می‌تپد، یک حلقه، یا هیچ."
+  ],
+  "overlay.sound": [
+   "صدا",
+   "صدا برای کارهای ایجنت: کلیک، کلیدها، پایان کار، خطا، توقف. با پخش‌کننده‌ی سیستم شما پخش می‌شود."
+  ],
+  "overlay.sound_volume": [
+   "بلندی صدا",
+   "صداها چقدر بلند باشند."
+  ],
+  "overlay.sound_click": [
+   "صدای کلیک",
+   "صدایی هنگام کلیک ایجنت."
+  ],
+  "overlay.sound_click_file": [
+   "فایل صدای کلیک",
+   "فایل WAV خودتان برای کلیک. خالی: صدای داخلی."
+  ],
+  "overlay.sound_key": [
+   "صدای کلید",
+   "تیکی آرام وقتی ایجنت کلید می‌زند یا تایپ می‌کند، حداکثر چند بار در ثانیه."
+  ],
+  "overlay.sound_key_file": [
+   "فایل صدای کلید",
+   "فایل WAV خودتان برای کلیدها. خالی: صدای داخلی."
+  ],
+  "overlay.sound_done": [
+   "صدای پایان",
+   "زنگی ملایم وقتی کار تمام می‌شود."
+  ],
+  "overlay.sound_done_file": [
+   "فایل صدای پایان",
+   "فایل WAV خودتان برای پایان کار. خالی: صدای داخلی."
+  ],
+  "overlay.sound_error": [
+   "صدای خطا",
+   "صدایی وقتی کاری شکست می‌خورد."
+  ],
+  "overlay.sound_error_file": [
+   "فایل صدای خطا",
+   "فایل WAV خودتان برای خطا. خالی: صدای داخلی."
+  ],
+  "overlay.sound_stopped": [
+   "صدای توقف",
+   "صدایی وقتی ایجنت را با کلید یا دکمه‌ی توقف متوقف می‌کنید."
+  ],
+  "overlay.sound_stopped_file": [
+   "فایل صدای توقف",
+   "فایل WAV خودتان برای توقف. خالی: صدای داخلی."
   ],
   "overlay.border_target": [
    "محدوده‌ی حاشیه",
@@ -1219,10 +1359,6 @@
   "panel.idle_minutes": [
    "دقیقه‌های بی‌کاری",
    "پنل پس از این مدت بدون درخواست بسته می‌شود."
-  ],
-  "overlay.show_buttons": [
-   "نمایش دکمه‌ها",
-   "دکمه‌های توقف و تنظیمات کنار برچسب: توقف همه‌ی ایجنت‌ها یا یکی از لیست، یا باز کردن این پنل."
   ]
  }
 }
