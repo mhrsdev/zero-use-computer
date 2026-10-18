@@ -535,7 +535,7 @@ impl<B: Backend> Engine<B> {
     pub fn new(mut backend: B, store: ConfigStore) -> Self {
         backend.configure(&store.config);
         crate::motion::configure(&store.config);
-        let config_mtime = store.path.as_deref().and_then(file_mtime);
+        let config_mtime = store.stamp();
         let scripts = crate::script::Library::new(store.config.script.library());
         Self {
             ctx: CallState::default(),
@@ -615,7 +615,7 @@ impl<B: Backend> Engine<B> {
         let Some(path) = self.store.path.clone() else {
             return;
         };
-        let mtime = file_mtime(&path);
+        let mtime = self.store.stamp();
         let changed = mtime != self.config_mtime;
         if !changed && !self.config_retry {
             return;
@@ -628,7 +628,7 @@ impl<B: Backend> Engine<B> {
             self.config_retry = true;
             return;
         }
-        match ConfigStore::load(Some(&path)) {
+        match self.store.reload() {
             Ok(mut store) => {
                 if let Some(f) = &self.overrides {
                     f(&mut store.config);
@@ -2328,10 +2328,6 @@ impl Promptness {
             Duration::from_millis(500)
         }
     }
-}
-
-fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn window_list(windows: &[WindowInfo]) -> String {

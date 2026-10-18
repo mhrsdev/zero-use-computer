@@ -45,6 +45,8 @@ pub(crate) struct Core<B: Backend> {
     /// The version `initialize` agreed on.
     protocol: Option<&'static str>,
     shutdown: bool,
+    /// The host's settings API, when a host started this server (`--host`).
+    host: Option<computer_use::panel::Host>,
 }
 
 impl<B: Backend> Core<B> {
@@ -55,7 +57,14 @@ impl<B: Backend> Core<B> {
             tools_sig: None,
             protocol: None,
             shutdown: false,
+            host: None,
         }
+    }
+
+    /// Answer the host's settings requests (`computer_use/settings/*`).
+    pub fn with_host(mut self, host: computer_use::panel::Host) -> Self {
+        self.host = Some(host);
+        self
     }
 
     pub fn engine(&self) -> &Engine<B> {
@@ -174,11 +183,21 @@ impl<B: Backend> Core<B> {
                 self.shutdown = true;
                 Response::ok(id, Value::Null)
             }
-            other => match crate::catalog::handle(other, &params) {
-                Some(Ok(result)) => Response::ok(id, result),
-                Some(Err((code, message))) => Response::err(id, code, message),
-                None => Response::err(id, METHOD_NOT_FOUND, format!("method not found: {other}")),
-            },
+            other => {
+                if let Some(answer) = self.host.as_ref().and_then(|h| h.handle(other, &params)) {
+                    return match answer {
+                        Ok(result) => Response::ok(id, result),
+                        Err(e) => Response::err_data(id, HOST_REFUSED, e.code, e.data()),
+                    };
+                }
+                match crate::catalog::handle(other, &params) {
+                    Some(Ok(result)) => Response::ok(id, result),
+                    Some(Err((code, message))) => Response::err(id, code, message),
+                    None => {
+                        Response::err(id, METHOD_NOT_FOUND, format!("method not found: {other}"))
+                    }
+                }
+            }
         }
     }
 

@@ -1824,7 +1824,7 @@ pub const TEMPLATE: &str = include_str!("config_template.toml");
 /// config (optional values that default to unset).
 const OPTIONAL_KEYS: &[&str] = &["audit.path", "script.dir"];
 
-fn collect_keys(prefix: &str, table: &toml::Table, out: &mut Vec<String>) {
+pub(crate) fn collect_keys(prefix: &str, table: &toml::Table, out: &mut Vec<String>) {
     for (k, v) in table {
         let key = if prefix.is_empty() {
             k.clone()
@@ -2198,11 +2198,136 @@ pub struct ConfigStore {
     pub config: Config,
     /// `None` keeps everything in memory (tests, embedders).
     pub path: Option<PathBuf>,
+    /// The host's layer (`managed.toml`), laid over the user's file `path`:
+    /// what the host sets wins, and the user's file never changes it. Only a
+    /// host (`--host`) has one.
+    pub managed: Option<PathBuf>,
+}
+
+/// The table of the managed layer that is the host's own business, not a
+/// setting: it names the settings the user may change. It is taken out
+/// before the layers are read as settings.
+pub const HOST_TABLE: &str = "host";
+
+/// `over` laid over `base`, table by table: a value in `over` replaces the
+/// one in `base`, a table is merged.
+fn overlay(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => overlay(b, o),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
+/// Takes out of `table` every setting not in `allowed`; gives the keys taken out.
+fn retain_keys(table: &mut toml::Table, prefix: &str, allowed: &[String]) -> Vec<String> {
+    let mut removed = Vec::new();
+    let names: Vec<String> = table.keys().cloned().collect();
+    for name in names {
+        let key = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if let Some(toml::Value::Table(inner)) = table.get_mut(&name) {
+            removed.extend(retain_keys(inner, &key, allowed));
+            if inner.is_empty() {
+                table.remove(&name);
+            }
+        } else if !allowed.contains(&key) {
+            table.remove(&name);
+            removed.push(key);
+        }
+    }
+    removed
+}
+
+fn read_table(path: &Path) -> Result<toml::Table> {
+    match read_text(path) {
+        Ok(text) => text
+            .parse::<toml::Table>()
+            .map_err(|e| Error::Config(format!("{}: {}", path.display(), e.message()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
+        Err(e) => Err(Error::Config(format!("{}: {e}", path.display()))),
+    }
+}
+
+/// The settings the host's layer names as the user's to change (`host.user_keys`);
+/// none when the layer is missing or does not name any: a host that did not
+/// say which settings are the user's has made none of them the user's.
+pub fn host_user_keys(managed: &Path) -> Vec<String> {
+    read_table(managed)
+        .ok()
+        .and_then(|t| t.get(HOST_TABLE)?.get("user_keys")?.as_array().cloned())
+        .map(|keys| {
+            keys.iter()
+                .filter_map(|k| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl ConfigStore {
     pub fn in_memory(config: Config) -> Self {
-        Self { config, path: None }
+        Self {
+            config,
+            path: None,
+            managed: None,
+        }
+    }
+
+    /// The user's file with the host's layer over it (either may be missing:
+    /// the defaults are under both).
+    pub fn load_layers(user: &Path, managed: &Path) -> Result<Self> {
+        let mut table = read_table(user)?;
+        let mut over = read_table(managed)?;
+        // What the host did not name as the user's is not read from the user's
+        // file, whoever wrote it there.
+        let allowed = host_user_keys(managed);
+        for key in retain_keys(&mut table, "", &allowed) {
+            log::warn!(
+                "{}: `{key}` is the host's to set, not the user's (ignored)",
+                user.display()
+            );
+        }
+        over.remove(HOST_TABLE);
+        overlay(&mut table, over);
+        let text = toml::to_string(&table).map_err(|e| Error::Config(e.to_string()))?;
+        for key in unknown_keys(&text) {
+            log::warn!("{}: unknown setting `{key}` (ignored)", user.display());
+        }
+        let config: Config = toml::from_str(&text)
+            .map_err(|e| Error::Config(format!("{}: {}", user.display(), e.message())))?;
+        config
+            .validate()
+            .map_err(|e| Error::Config(format!("{}: {e}", user.display())))?;
+        Ok(Self {
+            config,
+            path: Some(user.to_path_buf()),
+            managed: Some(managed.to_path_buf()),
+        })
+    }
+
+    /// Read again what this store was read from, layers included.
+    pub fn reload(&self) -> Result<Self> {
+        match (&self.path, &self.managed) {
+            (Some(user), Some(managed)) => Self::load_layers(user, managed),
+            (Some(path), None) => Self::load(Some(path)),
+            (None, _) => Ok(self.clone()),
+        }
+    }
+
+    /// When the files this store is read from last changed (the newest of
+    /// the layers), to see that one did.
+    pub fn stamp(&self) -> Option<std::time::SystemTime> {
+        [self.path.as_deref(), self.managed.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+            .max()
     }
 
     /// Load the user config (missing file = defaults).
@@ -2228,6 +2353,7 @@ impl ConfigStore {
         Ok(Self {
             config,
             path: Some(path),
+            managed: None,
         })
     }
 }

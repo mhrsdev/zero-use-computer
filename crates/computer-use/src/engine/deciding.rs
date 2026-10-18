@@ -151,7 +151,7 @@ impl<B: Backend> Engine<B> {
     fn changed_without_hot_reload(&self) -> Option<std::path::PathBuf> {
         let path = self.store.path.as_deref()?;
         (!self.store.config.hot_reload
-            && file_mtime(path) != self.config_mtime
+            && self.store.stamp() != self.config_mtime
             && std::fs::metadata(path).is_ok_and(|m| m.len() > 0))
         .then(|| path.to_path_buf())
     }
@@ -161,7 +161,7 @@ impl<B: Backend> Engine<B> {
     /// from it.
     pub(super) fn decision_settings(&self) -> crate::config::DecisionConfig {
         self.changed_without_hot_reload()
-            .and_then(|p| ConfigStore::load(Some(&p)).ok())
+            .and_then(|_| self.store.reload().ok())
             .map(|s| s.config.decision)
             .unwrap_or_else(|| self.store.config.decision.clone())
     }
@@ -170,11 +170,11 @@ impl<B: Backend> Engine<B> {
     /// (only the file's `[decision]` settings), so the tool list,
     /// `decision.auto` and the model's record follow it. Before each call.
     pub(super) fn sync_decision_settings(&mut self) {
-        let Some(path) = self.changed_without_hot_reload() else {
+        if self.changed_without_hot_reload().is_none() {
             return;
-        };
-        self.config_mtime = file_mtime(&path);
-        let Ok(store) = ConfigStore::load(Some(&path)) else {
+        }
+        self.config_mtime = self.store.stamp();
+        let Ok(store) = self.store.reload() else {
             return;
         };
         if store.config.decision != self.store.config.decision {
@@ -917,13 +917,13 @@ impl<B: Backend> Engine<B> {
     /// Read the settings file again now (after the decision model's
     /// settings were written).
     fn reload_now(&mut self) {
-        let Some(path) = self.store.path.clone() else {
+        if self.store.path.is_none() {
             return;
-        };
-        match ConfigStore::load(Some(&path)) {
+        }
+        match self.store.reload() {
             Ok(store) => {
                 self.set_config(store);
-                self.config_mtime = file_mtime(&path);
+                self.config_mtime = self.store.stamp();
             }
             Err(e) => log::warn!("couldn't read the settings again: {e}"),
         }

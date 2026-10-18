@@ -126,7 +126,7 @@ pub fn plan(cfg: &Config, text: &str) -> Result<Plan, String> {
                 match coerce(e, &value) {
                     Err(why) => {
                         row.status = Status::Invalid;
-                        row.note = Some(why);
+                        row.note = Some(why.to_string());
                     }
                     Ok(None) => row.status = Status::Same,
                     Ok(Some(_)) => {

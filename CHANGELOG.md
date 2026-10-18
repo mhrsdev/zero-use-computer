@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A host can read and change the settings over stdio (`--host zero`).** A
+  program that starts this one (Zero Desktop) asks for the description of
+  every setting (`computer_use/settings/schema`), the values that differ from
+  the defaults (`values`), the labels and help in a language (`texts`) and
+  changes one setting at a time (`set`, `reset`), all on the server's own
+  stdio: no page, no port, no token. The settings are two files in the
+  server's folder: `user.toml`, which only `set` and `reset` write, and
+  `managed.toml`, which only the host writes and which wins; the host names
+  the settings that are the user's in `[host] user_keys`, and a request to
+  change any other is refused. A refusal is a fixed code in the error's data
+  (`managedByHost`, `outOfRange`, `notAChoice`, `unknownKey`,
+  `needsConfirmation`, ...), not an English sentence. This mode does not
+  look for updates. `--backend mock` (a build with the `mock-backend`
+  feature, for tests only) serves the in-memory desktop, so a host is tested
+  over the real stdio with nothing on the computer touched.
 - **`set_value` no longer leaves the old text in front of the new.** In a
   browser field the accessibility "select all" may land a moment after it
   says yes, and the text typed meanwhile went after the old one ("Old

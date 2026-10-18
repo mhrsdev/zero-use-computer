@@ -106,6 +106,21 @@ fn entry_json(e: &Entry) -> Value {
     j
 }
 
+/// The description of every setting, one JSON object each (the schema's `entries`).
+pub fn entries_json() -> Vec<Value> {
+    ENTRIES.iter().map(entry_json).collect()
+}
+
+/// The label the panel gives a setting in English: the last part of its key in words.
+pub fn english_label(key: &str) -> String {
+    let word = key.rsplit('.').next().unwrap_or(key).replace('_', " ");
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
 /// What the page needs to know about every setting. It never changes while
 /// the program runs, so it is made once and sent as it is.
 pub fn schema_json() -> &'static str {
@@ -154,34 +169,88 @@ pub fn values_of(cfg: &Config, keys: &[&str]) -> Value {
     Value::Object(out)
 }
 
+/// Why a value is not accepted for a setting. `Display` is the sentence the
+/// panel shows; a host that has a language of its own takes the [`code`].
+///
+/// [`code`]: Rejection::code
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rejection {
+    /// A saved secret is replaced, never reset.
+    SecretReset,
+    NotOneLine,
+    NotText,
+    NotAChoice(Vec<&'static str>),
+    NotOnOff,
+    NotAWholeNumber,
+    NotANumber,
+    OutOfRange { min: f64, max: f64 },
+    NotAList,
+    ListNotText,
+}
+
+impl Rejection {
+    /// A fixed word for the reason: what a host acts on.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::SecretReset => "secretReset",
+            Self::NotOneLine => "notOneLine",
+            Self::NotText => "notText",
+            Self::NotAChoice(_) => "notAChoice",
+            Self::NotOnOff => "notOnOff",
+            Self::NotAWholeNumber => "notAWholeNumber",
+            Self::NotANumber => "notANumber",
+            Self::OutOfRange { .. } => "outOfRange",
+            Self::NotAList => "notAList",
+            Self::ListNotText => "listNotText",
+        }
+    }
+}
+
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SecretReset => f.write_str("a saved secret is replaced, not reset, here"),
+            Self::NotOneLine => f.write_str("must be one line of text"),
+            Self::NotText => f.write_str("must be text"),
+            Self::NotAChoice(choices) => write!(f, "must be one of {}", choices.join(", ")),
+            Self::NotOnOff => f.write_str("must be on or off"),
+            Self::NotAWholeNumber => f.write_str("must be a whole number, not negative"),
+            Self::NotANumber => f.write_str("must be a number"),
+            Self::OutOfRange { min, max } => write!(f, "must be between {min} and {max}"),
+            Self::NotAList => f.write_str("must be a list"),
+            Self::ListNotText => f.write_str("a list holds text"),
+        }
+    }
+}
+
 /// A value from the page as an edit of the settings file, checked against
 /// the setting's type: `None` for nothing to change (an empty secret).
 /// `null` puts the setting back to its default.
-pub fn coerce(e: &Entry, v: &Value) -> std::result::Result<Option<Edit>, String> {
+pub fn coerce(e: &Entry, v: &Value) -> std::result::Result<Option<Edit>, Rejection> {
     let def = lookup(defaults(), e.key);
     if v.is_null() {
         return match e.kind {
-            Kind::Secret => Err("a saved secret is replaced, not reset, here".into()),
+            Kind::Secret => Err(Rejection::SecretReset),
             _ => Ok(Some(Edit::Unset)),
         };
     }
-    let line = |s: &str| -> std::result::Result<String, String> {
+    let line = |s: &str| -> std::result::Result<String, Rejection> {
         if s.chars().any(char::is_control) {
-            return Err("must be one line of text".into());
+            return Err(Rejection::NotOneLine);
         }
         Ok(s.to_string())
     };
     if let Kind::Secret = e.kind {
-        let s = v.as_str().ok_or("must be text")?;
+        let s = v.as_str().ok_or(Rejection::NotText)?;
         if s.is_empty() {
             return Ok(None);
         }
         return Ok(Some(Edit::SetText(line(s)?)));
     }
     if let Kind::Choice(c) = e.kind {
-        let s = v.as_str().ok_or("must be text")?;
+        let s = v.as_str().ok_or(Rejection::NotText)?;
         if !c.contains(&s) {
-            return Err(format!("must be one of {}", c.join(", ")));
+            return Err(Rejection::NotAChoice(c.to_vec()));
         }
         return Ok(Some(Edit::SetText(s.to_string())));
     }
@@ -189,11 +258,11 @@ pub fn coerce(e: &Entry, v: &Value) -> std::result::Result<Option<Edit>, String>
         Some(toml::Value::Boolean(_)) => v
             .as_bool()
             .map(|b| Some(Edit::Set(b.to_string())))
-            .ok_or_else(|| "must be on or off".into()),
+            .ok_or(Rejection::NotOnOff),
         Some(toml::Value::Integer(_)) => {
             let n = number(v)?;
             if n.fract() != 0.0 || !(0.0..=9.0e15).contains(&n) {
-                return Err("must be a whole number, not negative".into());
+                return Err(Rejection::NotAWholeNumber);
             }
             range_check(e, n)?;
             Ok(Some(Edit::Set(format!("{}", n as i64))))
@@ -204,17 +273,17 @@ pub fn coerce(e: &Entry, v: &Value) -> std::result::Result<Option<Edit>, String>
             Ok(Some(Edit::Set(format!("{n:?}"))))
         }
         Some(toml::Value::Array(_)) => {
-            let items = v.as_array().ok_or("must be a list")?;
+            let items = v.as_array().ok_or(Rejection::NotAList)?;
             let mut out = Vec::new();
             for i in items {
-                let s = i.as_str().ok_or("a list holds text")?;
+                let s = i.as_str().ok_or(Rejection::ListNotText)?;
                 out.push(toml::Value::String(line(s.trim())?).to_string());
             }
             Ok(Some(Edit::Set(format!("[{}]", out.join(", ")))))
         }
         // Text, and settings that are unset by default (a path).
         _ => {
-            let s = v.as_str().ok_or("must be text")?;
+            let s = v.as_str().ok_or(Rejection::NotText)?;
             let s = line(s.trim())?;
             if s.is_empty() && def.is_none() {
                 return Ok(Some(Edit::Unset));
@@ -224,17 +293,17 @@ pub fn coerce(e: &Entry, v: &Value) -> std::result::Result<Option<Edit>, String>
     }
 }
 
-fn number(v: &Value) -> std::result::Result<f64, String> {
+fn number(v: &Value) -> std::result::Result<f64, Rejection> {
     v.as_f64()
         .filter(|n| n.is_finite())
-        .ok_or_else(|| "must be a number".into())
+        .ok_or(Rejection::NotANumber)
 }
 
-fn range_check(e: &Entry, n: f64) -> std::result::Result<(), String> {
+fn range_check(e: &Entry, n: f64) -> std::result::Result<(), Rejection> {
     if let Kind::Range { min, max, .. } = e.kind
         && !(min..=max).contains(&n)
     {
-        return Err(format!("must be between {min} and {max}"));
+        return Err(Rejection::OutOfRange { min, max });
     }
     Ok(())
 }

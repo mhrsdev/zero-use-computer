@@ -19,6 +19,7 @@
 mod connecting;
 mod cursor;
 mod help;
+mod host;
 mod importing;
 mod lang;
 mod profiles;
@@ -38,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+pub use self::host::{Host, HostError, METHOD_PREFIX, SCHEMA_VERSION};
 use self::schema::Kind;
 use self::settings::{apply, fail};
 use crate::config::{self, Config, ConfigStore, DecisionConfig};
@@ -1120,3 +1122,5 @@ const APP: &str = include_str!("app.js");
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod host_tests;

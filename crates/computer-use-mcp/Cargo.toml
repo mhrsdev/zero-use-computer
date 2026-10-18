@@ -16,6 +16,10 @@ path = "src/main.rs"
 [features]
 # Optional remote transport: MCP over HTTP (JSON-RPC POST).
 http = ["dep:tiny_http"]
+# For tests of a host only, never in a release: `--backend mock` serves an
+# in-memory desktop (the engine and the MCP server are the real ones), so a
+# host can be tested over stdio on a computer with no screen.
+mock-backend = []
 
 [dependencies]
 computer-use.workspace = true
@@ -28,3 +32,8 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tiny_http = { version = "0.12", optional = true }
+
+# A host's settings over the real program's stdio, on the scripted desktop.
+[[test]]
+name = "host_stdio"
+required-features = ["mock-backend"]

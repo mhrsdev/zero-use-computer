@@ -65,6 +65,40 @@ struct Common {
     /// skills, which say the rest) or off.
     #[arg(long, global = true, value_parser = ["full", "short", "off"])]
     instructions: Option<String>,
+
+    /// Serve for a host that starts and supervises this program (`zero`).
+    /// The settings are two files in the server's folder, `user.toml` (the
+    /// user's, written by `computer_use/settings/set` only) and `managed.toml`
+    /// (the host's, which wins); the host reads and changes the user's
+    /// settings by requests on this same stdio, and nothing listens on a
+    /// port. This program does not look for updates or change its own
+    /// settings file in this mode.
+    #[arg(long, global = true, value_parser = ["zero"])]
+    host: Option<String>,
+
+    /// Serve a scripted in-memory desktop, not this computer's (for tests of
+    /// a host: nothing on this computer is looked at or touched). Only in a
+    /// build made with the `mock-backend` feature.
+    #[cfg(feature = "mock-backend")]
+    #[arg(long, global = true, value_parser = ["mock"], hide = true)]
+    backend: Option<String>,
+}
+
+impl Common {
+    /// This is the in-memory desktop.
+    fn is_mock(&self) -> bool {
+        #[cfg(feature = "mock-backend")]
+        return self.backend.as_deref() == Some("mock");
+        #[cfg(not(feature = "mock-backend"))]
+        false
+    }
+
+    /// The settings layers of the host, when a host started this program.
+    fn host_layers(&self) -> Option<computer_use::panel::Host> {
+        self.host
+            .is_some()
+            .then(|| computer_use::panel::Host::in_home(&config::home_dir()))
+    }
 }
 
 #[derive(Subcommand)]
@@ -272,8 +306,11 @@ fn served_tools(common: &Common, store: &ConfigStore) -> Vec<tools::ToolDefiniti
 }
 
 fn load_store(common: &Common) -> Result<ConfigStore> {
-    let path = config_path(common);
-    let mut store = ConfigStore::load(Some(&path)).with_context(|| "loading configuration")?;
+    let mut store = match common.host_layers() {
+        Some(host) => host.load(),
+        None => ConfigStore::load(Some(&config_path(common))),
+    }
+    .with_context(|| "loading configuration")?;
     apply_overrides(common)(&mut store.config);
     Ok(store)
 }
@@ -282,6 +319,11 @@ fn load_store(common: &Common) -> Result<ConfigStore> {
 const APPS_LOG: &str = "apps.json";
 
 fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Backend>>> {
+    #[cfg(feature = "mock-backend")]
+    if common.is_mock() {
+        let backend: Box<dyn Backend> = Box::new(computer_use::mock::MockBackend::new());
+        return Ok(Engine::new(backend, store).with_overrides(apply_overrides(common)));
+    }
     let backend = computer_use::platform_backend().with_context(|| {
         format!(
             "initializing the {} computer-use backend",
@@ -370,7 +412,14 @@ fn run() -> Result<()> {
         Err(e) if matches!(command, Command::Serve) => {
             let mut store = ConfigStore {
                 config: Default::default(),
-                path: Some(config_path(&cli.common)),
+                path: Some(match cli.common.host_layers() {
+                    Some(host) => host.user_path().to_path_buf(),
+                    None => config_path(&cli.common),
+                }),
+                managed: cli
+                    .common
+                    .host_layers()
+                    .map(|h| h.managed_path().to_path_buf()),
             };
             apply_overrides(&cli.common)(&mut store.config);
             (store, Some(format!("{e:#}")))
@@ -381,9 +430,12 @@ fn run() -> Result<()> {
     if let Some(p) = &problem {
         log::error!("{p}; serving with the default settings");
     }
-    warn_unknown_keys(&config_path(&cli.common));
+    if cli.common.host.is_none() {
+        warn_unknown_keys(&config_path(&cli.common));
+    }
 
-    if matches!(command, Command::Serve) {
+    // A host decides what version runs and when: no update is looked for.
+    if matches!(command, Command::Serve) && cli.common.host.is_none() {
         install_waiting_update(&store.config, store.path.as_deref());
         // Look for updates a while from now, then now and then, with the
         // settings of the moment (none when the file can't be read).
@@ -402,10 +454,10 @@ fn run() -> Result<()> {
     // The commands that work like a server may switch the desktop's
     // accessibility on, and the last of them to end switches it off again;
     // `doctor` only reports.
-    let _accessibility = matches!(
+    let _accessibility = (matches!(
         command,
         Command::Serve | Command::Apps | Command::State { .. } | Command::Call { .. }
-    )
+    ) && !cli.common.is_mock())
     .then(|| {
         computer_use::may_switch_accessibility_on();
         PutAccessibilityBack
@@ -888,13 +940,18 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     let server_cfg = store.config.server.clone();
     // Before anything is started: no child may hold the client's pipes.
     computer_use::backend::keep_stdio_private();
-    let mut engine =
-        with_overlay(build_engine(common, store)?).with_apps_log(config::home_dir().join(APPS_LOG));
+    let mut engine = build_engine(common, store)?;
+    // The scripted desktop has no screen: no overlay, no stop key, no record of apps.
+    if !common.is_mock() {
+        engine = with_overlay(engine).with_apps_log(config::home_dir().join(APPS_LOG));
+    }
     if let Some(p) = problem {
         engine = engine.with_settings_problem(p);
     }
     // Listen for the stop key from the start, not only from the first call.
-    engine.arm();
+    if !common.is_mock() {
+        engine.arm();
+    }
 
     if !server_cfg.http_addr.is_empty() {
         // --http-token first, then the environment, then the settings file.
@@ -925,6 +982,9 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     // The server writes whole lines under a lock of its own (answers,
     // pings and a call's progress come from different threads).
     let mut server = Server::new(engine, stdin, std::io::stdout()).stop_when_input_ends();
+    if let Some(host) = common.host_layers() {
+        server = server.with_host(host);
+    }
     server.run().context("serving MCP over stdio")
 }
 

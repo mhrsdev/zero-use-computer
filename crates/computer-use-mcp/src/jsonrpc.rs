@@ -61,6 +61,14 @@ impl Response {
             }),
         }
     }
+    /// An error that carries data (a fixed code the caller acts on).
+    pub fn err_data(id: Value, code: i64, message: impl Into<String>, data: Value) -> Self {
+        let mut response = Self::err(id, code, message);
+        if let Some(error) = response.error.as_mut() {
+            error.data = Some(data);
+        }
+        response
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +214,8 @@ pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
+/// A request of the host API (settings) that was refused; `data.code` says why.
+pub const HOST_REFUSED: i64 = -32010;
 
 #[cfg(test)]
 mod tests {

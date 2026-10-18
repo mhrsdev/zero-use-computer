@@ -63,6 +63,12 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
         }
     }
 
+    /// Answer a host's settings requests too (`--host`).
+    pub fn with_host(mut self, host: computer_use::panel::Host) -> Self {
+        self.core = self.core.with_host(host);
+        self
+    }
+
     /// When the input ends, the client has gone (MCP's way of shutting a
     /// stdio server down): stop the call that is running, as the stop key
     /// would, and run none of those still waiting, rather than act on the
