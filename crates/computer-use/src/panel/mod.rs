@@ -67,6 +67,25 @@ struct Running {
     alive: Arc<AtomicBool>,
 }
 
+/// A host asked for the settings over stdio (`--host`): no page is served by
+/// this process, whatever asks for one (the settings key, the overlay's
+/// button, a tool), because the host draws the settings itself.
+static DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// This process serves no panel from now on.
+pub fn disable() {
+    DISABLED.store(true, Ordering::SeqCst);
+}
+
+fn refuse_if_disabled() -> Result<()> {
+    if DISABLED.load(Ordering::SeqCst) {
+        return Err(Error::Platform(
+            "the settings panel is not served here: the host shows the settings".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// The panel being served by this process, if any (one at a time).
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
@@ -77,6 +96,7 @@ static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 /// opened on it. `path` is the settings file it saves to (`None`:
 /// settings kept in memory, which the panel can only show).
 pub fn open(path: Option<PathBuf>, tab: &str) -> Result<(String, std::result::Result<(), String>)> {
+    refuse_if_disabled()?;
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = running.as_ref()
         && r.alive.load(Ordering::SeqCst)
@@ -114,6 +134,7 @@ pub fn open(path: Option<PathBuf>, tab: &str) -> Result<(String, std::result::Re
 /// `ready` with its address first (`computer-use-mcp settings`). When
 /// another process already serves it, that one is shown instead.
 pub fn serve(path: Option<PathBuf>, browser: bool, ready: impl FnOnce(&str)) -> Result<()> {
+    refuse_if_disabled()?;
     match Server::bind(path, &config::home_dir())? {
         Bound::Mine(server) => {
             ready(&server.url);

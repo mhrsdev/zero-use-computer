@@ -404,6 +404,9 @@ fn run() -> Result<()> {
     }
 
     let command = cli.command.unwrap_or(Command::Serve);
+    if cli.common.host.is_some() {
+        computer_use::panel::disable();
+    }
     // Serving with a broken settings file starts with the defaults and
     // says why (the client would only see "server failed to start");
     // the other commands stop on it.
