@@ -183,7 +183,10 @@ pub enum Rejection {
     NotOnOff,
     NotAWholeNumber,
     NotANumber,
-    OutOfRange { min: f64, max: f64 },
+    OutOfRange {
+        min: f64,
+        max: f64,
+    },
     NotAList,
     ListNotText,
 }
