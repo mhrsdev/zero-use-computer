@@ -122,6 +122,8 @@ impl Host {
             "set" => self.set(params, false),
             "reset" => self.set(params, true),
             "texts" => texts(params),
+            "path" => self.path(params),
+            "tools" => self.tools(),
             _ => return None,
         })
     }
@@ -135,6 +137,39 @@ impl Host {
             "entries": settings::entries_json(),
             "languages": languages(),
         })
+    }
+
+    /// Sample routes of the pointer in a path style (`style`, one of the choices of
+    /// `overlay.cursor_path`; `real`: the real mouse's, with the pace and the tremor of the
+    /// settings now). The routes are the program's own path maker's, so a host that draws them
+    /// shows what the program does. Nothing moves and nothing is looked at.
+    fn path(&self, params: &Value) -> Result<Value, HostError> {
+        let style = params
+            .get("style")
+            .and_then(Value::as_str)
+            .unwrap_or("mixed");
+        if style != "mixed" && crate::motion::Style::named(style).is_none() {
+            return Err(HostError::new("badParams"));
+        }
+        let real = params.get("real").and_then(Value::as_bool) == Some(true);
+        let store = self
+            .load()
+            .map_err(|_| HostError::new("settingsUnreadable"))?;
+        let feel = if real {
+            crate::motion::Feel::from_config(&store.config)
+        } else {
+            Default::default()
+        };
+        Ok(super::status::path_preview(style, feel, real))
+    }
+
+    /// Every tool, whether it is offered with the settings now, and about what it costs on every
+    /// request (the program's own estimate).
+    fn tools(&self) -> Result<Value, HostError> {
+        let store = self
+            .load()
+            .map_err(|_| HostError::new("settingsUnreadable"))?;
+        Ok(super::status::tool_list(&store.config))
     }
 
     fn values(&self) -> Result<Value, HostError> {

@@ -16,7 +16,11 @@
   `needsConfirmation`, ...), not an English sentence. This mode does not
   look for updates. `--backend mock` (a build with the `mock-backend`
   feature, for tests only) serves the in-memory desktop, so a host is tested
-  over the real stdio with nothing on the computer touched.
+  over the real stdio with nothing on the computer touched. A host can also
+  ask for sample routes of the pointer (`path`, in a style, for the pointer or
+  the real mouse) and for the tool list with what each costs (`tools`); both
+  come from the program's own path maker and tool definitions, and nothing
+  moves.
 - **`set_value` no longer leaves the old text in front of the new.** In a
   browser field the accessibility "select all" may land a moment after it
   says yes, and the text typed meanwhile went after the old one ("Old

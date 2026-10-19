@@ -296,3 +296,47 @@ fn a_request_that_is_not_of_this_api_is_not_answered_by_it() {
             .is_none()
     );
 }
+
+#[test]
+fn the_path_request_gives_the_routes_of_the_programs_own_path_maker() {
+    let (host, _dir) = host_with("path", &[], "");
+    for style in ["hand", "sine", "arc", "spring", "spiral", "mixed"] {
+        let v = ask(&host, "path", json!({ "style": style })).unwrap();
+        let paths = v["paths"].as_array().expect("routes");
+        assert_eq!(paths.len(), 3, "{style}");
+        for path in paths {
+            let points = path["points"].as_array().unwrap();
+            assert!(points.len() >= 2, "{style}: a route has a start and an end");
+            assert!(path["ms"].as_f64().unwrap() > 0.0);
+        }
+        assert_eq!(v["jumps"], json!(false));
+    }
+    // The real mouse's glide is the one the settings describe, and says it jumps.
+    let real = ask(&host, "path", json!({ "style": "hand", "real": true })).unwrap();
+    assert_eq!(real["jumps"], json!(true));
+    // A style that is not one is refused with a code, and the default is "mixed".
+    assert_eq!(
+        code(&host, "path", json!({ "style": "zigzag" })),
+        "badParams"
+    );
+    assert!(ask(&host, "path", json!({})).is_ok());
+}
+
+#[test]
+fn the_tools_request_lists_every_tool_with_whether_it_is_offered_and_its_cost() {
+    let (host, _dir) = host_with("tools", &[], "[tools]\nenabled = [\"screenshot\"]\n");
+    let v = ask(&host, "tools", json!({})).unwrap();
+    let tools = v["tools"].as_array().expect("tools");
+    assert!(tools.len() > 5);
+    assert!(tools.iter().all(|t| t["tokens"].as_u64().unwrap() > 0));
+    let offered: Vec<&str> = tools
+        .iter()
+        .filter(|t| t["offered"] == json!(true))
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        offered,
+        ["screenshot"],
+        "only what the host's layer allows is offered"
+    );
+}
