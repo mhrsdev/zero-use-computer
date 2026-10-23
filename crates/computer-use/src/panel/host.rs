@@ -14,14 +14,19 @@
 //! Every refusal is a fixed word (`code`), never an English sentence: the
 //! host has its own words and acts on the code.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::lang;
 use super::schema::{self, GROUPS, Kind};
 use super::settings::{self, Rejection};
+use super::{cursor, profiles};
 use crate::config::{self, ConfigStore, Edit};
+use crate::overlay::{picture, sound};
 
 /// The shape of what `schema` answers. A change that a host reading the old
 /// shape would misread is a new number.
@@ -29,6 +34,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 /// Every request of this API starts with this.
 pub const METHOD_PREFIX: &str = "computer_use/settings/";
+
+/// The least time between two plays of the same sound from the host's test button.
+const SOUND_GAP: Duration = Duration::from_secs(1);
 
 /// A request that was refused: a fixed word, the setting it is about (when
 /// there is one) and what the host may need to act on it.
@@ -79,6 +87,8 @@ impl HostError {
 pub struct Host {
     user: PathBuf,
     managed: PathBuf,
+    /// When each sound was last played by a test (shared by every copy of the host).
+    tested: Arc<Mutex<HashMap<sound::Event, Instant>>>,
 }
 
 impl Host {
@@ -87,6 +97,7 @@ impl Host {
         Self {
             user: home.join("user.toml"),
             managed: home.join("managed.toml"),
+            tested: Arc::default(),
         }
     }
 
@@ -124,6 +135,13 @@ impl Host {
             "texts" => texts(params),
             "path" => self.path(params),
             "tools" => self.tools(),
+            "cursor" => self.cursor(),
+            "cursor_set" => self.cursor_set(params),
+            "cursor_clear" => self.cursor_clear(),
+            "sound_test" => self.sound_test(params),
+            "profiles" => self.profiles(),
+            "profile_save" => self.profile_save(params),
+            "profile_delete" => self.profile_delete(params),
             _ => return None,
         })
     }
@@ -170,6 +188,202 @@ impl Host {
             .load()
             .map_err(|_| HostError::new("settingsUnreadable"))?;
         Ok(super::status::tool_list(&store.config))
+    }
+
+    /// The folder the two layers are in.
+    fn home(&self) -> &Path {
+        self.user.parent().unwrap_or(Path::new("."))
+    }
+
+    fn settings(&self) -> Result<ConfigStore, HostError> {
+        self.load()
+            .map_err(|_| HostError::new("settingsUnreadable"))
+    }
+
+    /// The program's words for the host, with the folders of this computer left out: no path
+    /// of the user's computer reaches the host.
+    fn scrub(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for dir in [
+            self.home().to_path_buf(),
+            sound::sound_dir(),
+            config::home_dir(),
+        ] {
+            let dir = dir.display().to_string();
+            if dir.len() > 1 {
+                out = out.replace(&dir, "...");
+            }
+        }
+        out.chars().take(300).collect()
+    }
+
+    fn refused(&self, code: &'static str, why: &str) -> HostError {
+        HostError::new(code).with(json!({ "reason": self.scrub(why) }))
+    }
+
+    /// The pointer's picture is two settings of the user's; a host that did not make them the
+    /// user's has not given the picture away.
+    fn picture_is_users(&self) -> Result<(), HostError> {
+        let writable = self.writable();
+        for key in ["overlay.cursor_image", "overlay.cursor_style"] {
+            if !writable.iter().any(|k| k == key) {
+                return Err(HostError::on("managedByHost", key));
+            }
+        }
+        Ok(())
+    }
+
+    /// `cursor`: the pointer's picture as the program reads it, with the limits of a picture.
+    /// No path is given: the host never needs one.
+    fn cursor(&self) -> Result<Value, HostError> {
+        let info = cursor::info(&self.settings()?.config, self.home());
+        let field = |name: &str| info.get(name).cloned().unwrap_or(Value::Null);
+        let note = info
+            .get("note")
+            .or_else(|| info.get("error"))
+            .and_then(Value::as_str)
+            .map_or(Value::Null, |note| json!(self.scrub(note)));
+        Ok(json!({
+            "set": info["set"],
+            "kept": info["kept"],
+            "usable": field("usable"),
+            "format": field("format"),
+            "width": field("width"),
+            "height": field("height"),
+            "frames": field("frames"),
+            "note": note,
+            "limits": {
+                "fileMb": picture::MAX_FILE / (1024 * 1024),
+                "side": picture::MAX_SIDE,
+                "frames": picture::MAX_FRAMES,
+                "seconds": picture::MAX_LOOP_MS / 1000,
+            },
+        }))
+    }
+
+    /// `cursor_set {data}`: the picture (base64) is read as the overlay reads it, kept, and made
+    /// the pointer. Only `{ok}` comes back: the settings' answer holds the kept file's path.
+    fn cursor_set(&self, params: &Value) -> Result<Value, HostError> {
+        self.picture_is_users()?;
+        let cfg = self.settings()?.config;
+        match cursor::keep(&self.user, self.home(), &cfg, params) {
+            Ok(_) => Ok(json!({ "ok": true })),
+            Err(cursor::Refusal::NoPicture) => Err(HostError::new("badParams")),
+            Err(cursor::Refusal::NotAPicture(why)) => Err(self.refused("notAPicture", &why)),
+            Err(cursor::Refusal::NotKept(why)) => Err(self.refused("refused", &why)),
+        }
+    }
+
+    /// `cursor_clear`: the picture goes and the pointer it replaced comes back.
+    fn cursor_clear(&self) -> Result<Value, HostError> {
+        self.picture_is_users()?;
+        let reply = cursor::remove(&self.user, self.home(), &self.settings()?.config);
+        if reply["ok"] == json!(true) {
+            return Ok(json!({ "ok": true }));
+        }
+        Err(self.refused("refused", reply["error"].as_str().unwrap_or_default()))
+    }
+
+    /// `sound_test {event, dryRun?}`: one sound of the overlay. With `dryRun` nothing plays and
+    /// nothing starts: the answer says whether it could, and with which player. Without it one
+    /// sound plays, and only when the host asks: no tool of the agent leads here, and the same
+    /// sound is not played again within [`SOUND_GAP`].
+    fn sound_test(&self, params: &Value) -> Result<Value, HostError> {
+        let event = params
+            .get("event")
+            .and_then(Value::as_str)
+            .and_then(sound::Event::named)
+            .ok_or_else(|| HostError::new("badParams"))?;
+        // A `dryRun` that is not a yes or a no is not taken for "play".
+        let dry = match params.get("dryRun") {
+            None => false,
+            Some(v) => v.as_bool().ok_or_else(|| HostError::new("badParams"))?,
+        };
+        let player = sound::Program::find(std::env::var_os("PATH").as_deref())
+            .ok_or_else(|| HostError::new("noPlayer"))?;
+        if dry {
+            return Ok(json!({ "ready": true, "player": player.name() }));
+        }
+        let now = Instant::now();
+        {
+            let mut tested = self.tested.lock().unwrap_or_else(|e| e.into_inner());
+            if tested
+                .get(&event)
+                .is_some_and(|t| now.saturating_duration_since(*t) < SOUND_GAP)
+            {
+                return Err(HostError::new("tooSoon"));
+            }
+            tested.insert(event, now);
+        }
+        let cfg = self.settings()?.config;
+        sound::Player::new()
+            .test(event, &cfg.overlay)
+            .map(|_| json!({ "played": true, "player": player.name() }))
+            .map_err(|why| {
+                // (The words name the player's and the sounds' folders: they stay in the log.)
+                log::warn!("sound test: {why}");
+                HostError::new("playFailed")
+                    .with(json!({ "reason": "the sound player could not play it" }))
+            })
+    }
+
+    /// `profiles`: every profile with the values it sets. The host applies them itself, setting
+    /// by setting, so what it decides stays its own: a profile holds no secret, no protected
+    /// setting and no place on this computer.
+    fn profiles(&self) -> Result<Value, HostError> {
+        let list = profiles::list(self.home(), &self.settings()?.config);
+        let rows = list["profiles"].as_array().cloned().unwrap_or_default();
+        let out: Vec<Value> = rows
+            .iter()
+            .filter_map(|row| {
+                let id = row["id"].as_str()?;
+                let changes = profiles::changes_for(self.home(), id)?;
+                Some(json!({
+                    "id": id, "label": row["label"], "blurb": row["blurb"],
+                    "builtin": row["builtin"],
+                    "changes": changes.into_iter()
+                        .map(|(key, value)| json!({ "key": key, "value": value }))
+                        .collect::<Vec<_>>(),
+                }))
+            })
+            .collect();
+        Ok(json!({ "profiles": out }))
+    }
+
+    /// `profile_save {label}`: keeps the settings the user may change, and has changed, under a
+    /// name.
+    fn profile_save(&self, params: &Value) -> Result<Value, HostError> {
+        let label = params
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && l.chars().count() <= 60)
+            .ok_or_else(|| HostError::new("badName"))?;
+        let id = profiles::slug(label);
+        if id.is_empty() || profiles::is_builtin(&id) {
+            return Err(HostError::new("badName"));
+        }
+        let writable = self.writable();
+        let reply = profiles::save_of(self.home(), &self.settings()?.config, label, |key| {
+            writable.iter().any(|k| k == key)
+        });
+        if reply["ok"] == json!(true) {
+            return Ok(json!({ "id": reply["id"] }));
+        }
+        Err(self.refused("saveFailed", reply["error"].as_str().unwrap_or_default()))
+    }
+
+    /// `profile_delete {id}`: only a profile the user kept.
+    fn profile_delete(&self, params: &Value) -> Result<Value, HostError> {
+        let id = params
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HostError::new("badParams"))?;
+        let reply = profiles::delete(self.home(), id);
+        if reply["ok"] == json!(true) {
+            return Ok(json!({}));
+        }
+        Err(HostError::new("notAllowed"))
     }
 
     fn values(&self) -> Result<Value, HostError> {

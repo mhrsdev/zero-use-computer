@@ -7,25 +7,25 @@ use serde_json::{Value, json};
 
 use super::host::{Host, METHOD_PREFIX, SCHEMA_VERSION};
 
-fn folder(name: &str) -> PathBuf {
+pub(super) fn folder(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("cu-host-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn ask(host: &Host, name: &str, params: Value) -> Result<Value, (String, Value)> {
+pub(super) fn ask(host: &Host, name: &str, params: Value) -> Result<Value, (String, Value)> {
     host.handle(&format!("{METHOD_PREFIX}{name}"), &params)
         .expect("a request of this API")
         .map_err(|e| (e.code.to_string(), e.data()))
 }
 
-fn code(host: &Host, name: &str, params: Value) -> String {
+pub(super) fn code(host: &Host, name: &str, params: Value) -> String {
     ask(host, name, params).expect_err("refused").0
 }
 
 /// A host that named these settings as the user's.
-fn host_with(name: &str, user_keys: &[&str], managed_rest: &str) -> (Host, PathBuf) {
+pub(super) fn host_with(name: &str, user_keys: &[&str], managed_rest: &str) -> (Host, PathBuf) {
     let dir = folder(name);
     let keys: Vec<String> = user_keys.iter().map(|k| format!("\"{k}\"")).collect();
     std::fs::write(

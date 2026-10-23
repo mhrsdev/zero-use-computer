@@ -1142,6 +1142,8 @@ const PAGE: &str = include_str!("index.html");
 const APP: &str = include_str!("app.js");
 
 #[cfg(test)]
+mod host_extras_tests;
+#[cfg(test)]
 mod host_tests;
 #[cfg(test)]
 mod tests;
