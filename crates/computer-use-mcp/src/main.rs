@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use computer_use::config::{self, Config, ConfigStore, Edit};
 use computer_use::engine::Engine;
+use computer_use::hold::Hold;
 use computer_use::{Backend, tools};
 use serde_json::{Value, json};
 
@@ -317,6 +318,9 @@ fn load_store(common: &Common) -> Result<ConfigStore> {
 
 /// How often each app needed pixels, in the server's folder.
 const APPS_LOG: &str = "apps.json";
+
+/// Present while the user's stop is held, in a program a host supervises.
+const STOP_HELD: &str = "stop-held";
 
 fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Backend>>> {
     #[cfg(feature = "mock-backend")]
@@ -951,10 +955,22 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     if let Some(p) = problem {
         engine = engine.with_settings_problem(p);
     }
+    // A program a host supervises keeps the user's stop over a restart: it
+    // starts stopped when the last run ended so, and only the user lets it go.
+    let hold_file = common
+        .host
+        .is_some()
+        .then(|| config::home_dir().join(STOP_HELD));
+    let held = hold_file.as_deref().is_some_and(Hold::was_held);
+    if held {
+        log::warn!("the user's stop from the last run was not let go: starting stopped");
+        engine.set_stopped(true);
+    }
     // Listen for the stop key from the start, not only from the first call.
     if !common.is_mock() {
         engine.arm();
     }
+    let hold = hold_file.map(|file| Hold::follow(file, engine.stop_handle(), held));
 
     if !server_cfg.http_addr.is_empty() {
         // --http-token first, then the environment, then the settings file.
@@ -988,7 +1004,11 @@ fn serve(common: &Common, store: ConfigStore, problem: Option<String>) -> Result
     if let Some(host) = common.host_layers() {
         server = server.with_host(host);
     }
-    server.run().context("serving MCP over stdio")
+    let served = server.run().context("serving MCP over stdio");
+    if let Some(hold) = hold {
+        hold.sync();
+    }
+    served
 }
 
 #[cfg(feature = "http")]

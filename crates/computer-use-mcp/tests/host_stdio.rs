@@ -168,6 +168,19 @@ fn the_settings_requests_are_unknown_without_a_host() {
     let _ = child.wait();
 }
 
+/// The marker a host-started program keeps while the user's stop is held.
+const STOP_HELD: &str = "stop-held";
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("never happened: {what}");
+}
+
 /// The raw conversation of the request document (section 10.2), without Zero.
 #[test]
 fn the_state_and_resume_answer_the_shapes_a_host_waits_for() {
@@ -188,8 +201,76 @@ fn the_state_and_resume_answer_the_shapes_a_host_waits_for() {
         s.call("computer_use/resume", json!({}))["result"],
         json!({"stopped": false})
     );
+    // Asking changed nothing, and wrote nothing.
     assert_eq!(
         s.call("computer_use/state", json!({}))["result"]["stopped"],
         false
     );
+    assert!(!dir.join(STOP_HELD).exists());
+}
+
+#[test]
+fn a_stop_that_was_held_is_kept_over_a_restart_and_only_resume_lets_it_go() {
+    let dir = home("held", "");
+    std::fs::write(dir.join(STOP_HELD), "the user stopped the agent\n").unwrap();
+    // Started again and again: still held, nothing let it go.
+    for _ in 0..2 {
+        let mut s = Session::start(&dir);
+        assert_eq!(
+            s.call("computer_use/state", json!({}))["result"]["stopped"],
+            true
+        );
+    }
+    assert!(dir.join(STOP_HELD).exists());
+
+    let mut s = Session::start(&dir);
+    // The agent can neither act nor look.
+    for (tool, arguments) in [
+        ("click", json!({"app": "TextEdit", "element_index": 1})),
+        ("list_apps", json!({})),
+    ] {
+        let refused = s.call("tools/call", json!({"name": tool, "arguments": arguments}));
+        assert_eq!(refused["result"]["isError"], true, "{tool}: {refused}");
+        let text = refused["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.to_lowercase().contains("stop"), "{tool}: {text}");
+    }
+    // Only the host's Resume (the user's click) lets it go.
+    assert_eq!(
+        s.call("computer_use/resume", json!({}))["result"],
+        json!({"stopped": false})
+    );
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
+    wait_until("the marker is gone", || !dir.join(STOP_HELD).exists());
+    let looked = s.call("tools/call", json!({"name": "list_apps", "arguments": {}}));
+    assert!(looked["result"]["isError"] != true, "{looked}");
+    // Letting go twice is nothing.
+    assert_eq!(
+        s.call("computer_use/resume", json!({}))["result"],
+        json!({"stopped": false})
+    );
+    drop(s);
+    // After a Resume a restart is not held.
+    let mut s = Session::start(&dir);
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
+}
+
+#[test]
+fn without_a_host_the_state_is_answered_resume_is_not_and_an_old_marker_is_not_looked_at() {
+    let dir = home("no-host", "");
+    std::fs::write(dir.join(STOP_HELD), "x").unwrap();
+    let mut s = Session::start_with(&dir, &[]);
+    let state = s.call("computer_use/state", json!({}));
+    assert_eq!(state["result"]["stopped"], false);
+    let resume = s.call("computer_use/resume", json!({}));
+    assert_eq!(resume["error"]["code"], -32601, "{resume}");
+    // Nothing of this program's own, outside a host, is kept or let go.
+    assert!(dir.join(STOP_HELD).exists());
 }

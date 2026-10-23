@@ -61,6 +61,7 @@ pub mod design;
 pub mod draw;
 pub mod engine;
 pub mod error;
+pub mod hold;
 pub mod imaging;
 pub mod keys;
 pub mod launch;
