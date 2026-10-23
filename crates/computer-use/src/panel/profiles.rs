@@ -1,7 +1,8 @@
 //! Profiles: a named set of settings applied together. Four come with the
 //! program; the user can keep their own (a snapshot of what they changed),
 //! as small files in the server's folder. A profile never holds a secret,
-//! and never a setting that limits the agent or the updates.
+//! never a setting that limits the agent or the updates, and never a place
+//! on this computer (a file, a folder or a program).
 
 use std::path::{Path, PathBuf};
 
@@ -65,6 +66,25 @@ const BUILTIN: &[Builtin] = &[
     },
 ];
 
+/// The most profiles of the user's own: with the ones that come with the program, a host's list
+/// stays within the 50 it reads.
+pub const MAX_KEPT: usize = 40;
+
+/// Settings that name a place on this computer. A profile is a snapshot that can be carried to
+/// another computer or applied long after the file went; it must not point the program at a file
+/// or at a program.
+const PLACES: &[&str] = &[
+    "overlay.cursor_image",
+    "overlay.sound_click_file",
+    "overlay.sound_key_file",
+    "overlay.sound_done_file",
+    "overlay.sound_error_file",
+    "overlay.sound_stopped_file",
+    "overlay.font",
+    "ocr.tesseract_path",
+    "script.dir",
+];
+
 const BALANCED: (&str, &str, &str) = (
     "balanced",
     "Balanced",
@@ -80,6 +100,11 @@ fn touched() -> Vec<&'static str> {
     keys.sort_unstable();
     keys.dedup();
     keys
+}
+
+/// Whether `id` is a profile that comes with the program.
+pub fn is_builtin(id: &str) -> bool {
+    id == BALANCED.0 || BUILTIN.iter().any(|b| b.id == id)
 }
 
 pub fn builtin_list() -> Value {
@@ -210,7 +235,7 @@ pub fn list(home: &Path, cfg: &Config) -> Value {
     }
     let mut mine = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir(home)) {
-        for entry in rd.flatten().take(60) {
+        for entry in rd.flatten().take(MAX_KEPT) {
             let p = entry.path();
             let (Some(stem), Some("json")) = (
                 p.file_stem().and_then(|s| s.to_str()),
@@ -233,10 +258,11 @@ pub fn list(home: &Path, cfg: &Config) -> Value {
 }
 
 /// Whether a profile may set `key`: never a secret, a protected setting, a
-/// port or the panel's own look.
+/// port, a place on this computer or the panel's own look.
 fn may_hold(key: &str) -> bool {
     schema::entry(key).is_some_and(|e| {
-        !e.confirm
+        !PLACES.contains(&e.key)
+            && !e.confirm
             && !e.restart
             && !matches!(e.kind, Kind::Secret | Kind::Custom)
             && !e.key.starts_with("panel.")
@@ -245,8 +271,13 @@ fn may_hold(key: &str) -> bool {
 
 /// Keep the settings that differ from the defaults as a profile of the
 /// user's own. What a profile may not hold (secrets, protected settings,
-/// ports, the panel's own look) is left out; how many that was comes back.
+/// ports, places, the panel's own look) is left out; how many that was comes back.
 pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
+    save_of(home, cfg, label, |_| true)
+}
+
+/// [`save`] of the settings `wanted` names only (a host keeps the ones the user may change).
+pub fn save_of(home: &Path, cfg: &Config, label: &str, wanted: impl Fn(&str) -> bool) -> Value {
     let label: String = label
         .trim()
         .chars()
@@ -257,7 +288,7 @@ pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
     if id.is_empty() {
         return super::settings::fail("give the profile a name");
     }
-    if id == BALANCED.0 || BUILTIN.iter().any(|b| b.id == id) {
+    if is_builtin(&id) {
         return super::settings::fail("that name belongs to a profile that comes with the program");
     }
     let now = as_toml(cfg);
@@ -271,7 +302,7 @@ pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
         if v == d {
             continue;
         }
-        if may_hold(e.key) {
+        if may_hold(e.key) && wanted(e.key) {
             values.insert(e.key.into(), v);
         } else {
             left_out += 1;
@@ -285,6 +316,10 @@ pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
     let Some(path) = custom_path(home, &id) else {
         return super::settings::fail("that name can't be kept");
     };
+    // (Keeping one again under its name only replaces it.)
+    if !path.exists() && kept_count(home) >= MAX_KEPT {
+        return super::settings::fail("there are too many profiles of your own; delete one first");
+    }
     if std::fs::create_dir_all(dir(home)).is_err() {
         return super::settings::fail("can't make the profiles folder");
     }
@@ -294,6 +329,14 @@ pub fn save(home: &Path, cfg: &Config, label: &str) -> Value {
         Ok(()) => json!({"ok": true, "id": id, "settings": n, "left_out": left_out}),
         Err(e) => super::settings::fail(&format!("{}: {e}", path.display())),
     }
+}
+
+fn kept_count(home: &Path) -> usize {
+    std::fs::read_dir(dir(home)).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .count()
+    })
 }
 
 pub fn delete(home: &Path, id: &str) -> Value {
@@ -337,6 +380,23 @@ mod tests {
             }
             let c: Config = cfg.try_into().unwrap_or_else(|e| panic!("{}: {e}", b.id));
             c.validate().unwrap_or_else(|e| panic!("{}: {e}", b.id));
+        }
+    }
+
+    #[test]
+    fn a_setting_that_names_a_place_is_never_held_by_a_profile() {
+        for e in schema::ENTRIES {
+            let names_a_place = e.key.ends_with("_file")
+                || e.key.ends_with("_image")
+                || e.key.ends_with("_path") && !matches!(e.kind, Kind::Choice(_))
+                || [".font", ".dir"].iter().any(|s| e.key.ends_with(s));
+            assert!(!names_a_place || !may_hold(e.key), "{}", e.key);
+        }
+        for key in PLACES {
+            assert!(
+                schema::entry(key).is_some(),
+                "{key}: not a setting any more"
+            );
         }
     }
 

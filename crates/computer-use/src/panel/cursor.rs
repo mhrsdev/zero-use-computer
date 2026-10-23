@@ -91,22 +91,44 @@ pub fn image(cfg: &Config) -> Option<(Vec<u8>, &'static str)> {
     Some((bytes, kind))
 }
 
+/// Why a picture was not kept.
+#[derive(Debug)]
+pub enum Refusal {
+    /// The request holds no picture.
+    NoPicture,
+    /// What it holds does not read as a picture (said as the overlay says it).
+    NotAPicture(String),
+    /// It reads, but could not be kept or made the pointer. The words may name a folder.
+    NotKept(String),
+}
+
+impl Refusal {
+    fn words(&self) -> &str {
+        match self {
+            Refusal::NoPicture => "choose a picture",
+            Refusal::NotAPicture(why) | Refusal::NotKept(why) => why,
+        }
+    }
+}
+
 /// A picture from the page (`{name, data}`: base64): checked as the
 /// overlay reads it, kept, and set as the pointer.
 pub fn upload(path: &Path, home: &Path, cfg: &Config, body: &Value) -> Value {
+    keep(path, home, cfg, body).unwrap_or_else(|why| fail(why.words()))
+}
+
+/// [`upload`], with the reason for a refusal told apart (a host answers with a code).
+pub fn keep(path: &Path, home: &Path, cfg: &Config, body: &Value) -> Result<Value, Refusal> {
     let Some(data) = body.get("data").and_then(Value::as_str) else {
-        return fail("choose a picture");
+        return Err(Refusal::NoPicture);
     };
     // "data:image/png;base64,…" as a browser reads a file, or bare.
     let data = data.split_once(',').map_or(data, |(_, d)| d);
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.trim()) else {
-        return fail("that is not a picture");
+        return Err(Refusal::NotAPicture("that is not a picture".into()));
     };
-    let pic = match picture::decode(&bytes) {
-        Ok(p) => p,
-        // (Said as the overlay says it, so the page can put it in words.)
-        Err(e) => return fail(&e),
-    };
+    // (Said as the overlay says it, so the page can put it in words.)
+    let pic = picture::decode(&bytes).map_err(Refusal::NotAPicture)?;
     let ext = if pic.format == "gif" { "gif" } else { "png" };
     let dir = folder(home);
     let file = dir.join(format!("custom.{ext}"));
@@ -116,7 +138,10 @@ pub fn upload(path: &Path, home: &Path, cfg: &Config, body: &Value) -> Value {
         .and_then(|_| std::fs::rename(&part, &file));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&part);
-        return fail(&format!("can't keep the picture in {}: {e}", dir.display()));
+        return Err(Refusal::NotKept(format!(
+            "can't keep the picture in {}: {e}",
+            dir.display()
+        )));
     }
     // One kept picture at a time.
     for other in ["png", "gif"].iter().filter(|e| **e != ext) {
@@ -137,13 +162,19 @@ pub fn upload(path: &Path, home: &Path, cfg: &Config, body: &Value) -> Value {
         ],
         false,
     );
-    if reply["ok"] == json!(true) {
-        reply["frames"] = json!(pic.frames.len());
-        if let Some(n) = &pic.note {
-            reply["note"] = json!(n);
-        }
+    if reply["ok"] != json!(true) {
+        return Err(Refusal::NotKept(
+            reply["error"]
+                .as_str()
+                .unwrap_or("it could not be set")
+                .into(),
+        ));
     }
-    reply
+    reply["frames"] = json!(pic.frames.len());
+    if let Some(n) = &pic.note {
+        reply["note"] = json!(n);
+    }
+    Ok(reply)
 }
 
 /// Take the picture away: the pointer before it comes back, and the kept
