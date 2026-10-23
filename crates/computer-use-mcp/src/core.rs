@@ -22,6 +22,15 @@ const SERVER_NAME: &str = "computer-use";
 /// Host → server: what the agent is doing, for the on-screen overlay.
 pub(crate) const STATUS_METHOD: &str = "computer_use/status";
 
+/// Host → server: is the user's stop held, does its key work, which app is
+/// being acted on. Read-only and instant; the stdio reader answers it while a
+/// call runs.
+pub(crate) const STATE_METHOD: &str = "computer_use/state";
+
+/// Host → server: the user pressed Resume, so the stop is let go. Only for a
+/// host that started this server (`--host`), never offered as a tool.
+pub(crate) const RESUME_METHOD: &str = "computer_use/resume";
+
 /// The version to answer `initialize` with: the client's when this server
 /// speaks it, else the newest one (the client then decides).
 pub(crate) fn negotiate_protocol(requested: Option<&str>) -> &'static str {
@@ -179,6 +188,17 @@ impl<B: Backend> Core<B> {
                 Ok(()) => Response::ok(id, json!({})),
                 Err(e) => Response::err(id, INVALID_PARAMS, e),
             },
+            STATE_METHOD => Response::ok(
+                id,
+                self.engine
+                    .live()
+                    .answer(self.engine.is_stopped(), std::time::Instant::now()),
+            ),
+            // Not offered without a host: there is nobody whose Resume it would be.
+            RESUME_METHOD if self.host.is_some() => {
+                self.engine.set_stopped(false);
+                Response::ok(id, json!({ "stopped": false }))
+            }
             "shutdown" => {
                 self.shutdown = true;
                 Response::ok(id, Value::Null)

@@ -3,8 +3,16 @@
 use super::*;
 
 impl<B: Backend> Engine<B> {
+    /// [`Self::resolve_app`] for a call that acts on the app: a host that asks
+    /// `computer_use/state` sees which one, as `list_apps` names it.
+    fn resolve_app_to_act_on(&mut self, query: &str) -> Result<AppInfo> {
+        let app = self.resolve_app(query)?;
+        self.live.begin(&app.id, &app.name, (self.clock)());
+        Ok(app)
+    }
+
     pub(super) fn click(&mut self, args: ClickArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let count = args.click_count.clamp(1, 3);
         let (x, y, snapped) = match &args.snap {
@@ -125,7 +133,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn perform_secondary(&mut self, args: SecondaryActionArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
@@ -163,7 +171,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn set_value(&mut self, args: SetValueArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
@@ -256,7 +264,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn select_text(&mut self, args: SelectTextArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let handle = self.element_by_index(&app, args.element_index)?;
         let node = self.node_by_index(&app, args.element_index)?.clone();
@@ -276,7 +284,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn scroll(&mut self, args: ScrollArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         // A wheel turn per line: an amount in the millions would keep the
         // backend busy for hours.
@@ -341,7 +349,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn drag(&mut self, args: DragArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let (mut fx, mut fy, mut tx, mut ty) = (args.from_x, args.from_y, args.to_x, args.to_y);
         let mut snapped = String::new();
@@ -432,7 +440,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn press_key(&mut self, args: PressKeyArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         let combos = keys::parse_sequence(&args.key)?;
         if combos.len() > MAX_KEY_PRESSES {
@@ -459,7 +467,7 @@ impl<B: Backend> Engine<B> {
     }
 
     pub(super) fn type_text(&mut self, args: TypeTextArgs) -> Result<ToolOutput> {
-        let app = self.resolve_app(&args.app)?;
+        let app = self.resolve_app_to_act_on(&args.app)?;
         self.check_window(&app, args.window.as_deref())?;
         if args.text.is_empty() {
             return Err(Error::InvalidArgs("`text` must not be empty".into()));

@@ -464,6 +464,35 @@ pub struct Overlay {
     hub: Option<Arc<HubLink>>,
 }
 
+/// See [`Overlay::stop_key_probe`].
+#[derive(Clone)]
+pub struct StopKeyProbe {
+    alive: Arc<AtomicBool>,
+    hotkey: Arc<Mutex<Option<(String, bool)>>>,
+}
+
+impl StopKeyProbe {
+    /// What the helper last said about `key` (`None` until it has, or if it
+    /// last reported on another key).
+    fn reported(&self, key: &str) -> Option<bool> {
+        let h = self.hotkey.lock().ok()?;
+        h.as_ref()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
+            .map(|(_, ok)| *ok)
+    }
+
+    /// The system accepted `key` and the helper that listens for it runs now.
+    /// Not known, refused and a helper that has gone are all `false`.
+    pub fn works(&self, key: &str) -> bool {
+        self.alive.load(Ordering::Relaxed) && self.reported(key) == Some(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(alive: Arc<AtomicBool>, hotkey: Arc<Mutex<Option<(String, bool)>>>) -> Self {
+        Self { alive, hotkey }
+    }
+}
+
 /// What the hub has told this engine: its number, the other agents, its
 /// part of the screen, their messages. Kept up to date by the reader thread.
 #[derive(Default)]
@@ -785,10 +814,17 @@ impl Overlay {
     /// Whether the system accepted the stop key `key` (`None` until the
     /// helper has said, or if it last reported on another key).
     pub fn hotkey_ok(&self, key: &str) -> Option<bool> {
-        let h = self.hotkey.lock().ok()?;
-        h.as_ref()
-            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key.trim()))
-            .map(|(_, ok)| *ok)
+        self.stop_key_probe().reported(key)
+    }
+
+    /// A handle that tells at any time, from any thread, whether the stop key
+    /// `key` is accepted by the system and the helper that listens for it is
+    /// still running (what a host may read while the engine is busy).
+    pub fn stop_key_probe(&self) -> StopKeyProbe {
+        StopKeyProbe {
+            alive: self.alive.clone(),
+            hotkey: self.hotkey.clone(),
+        }
     }
 
     /// The same for the settings key.

@@ -13,11 +13,13 @@ impl<B: Backend> Engine<B> {
         // hub, which also gives the turns.
         if !cfg.enabled && keys == crate::overlay::Keys::default() && !self.store.config.hub.enabled
         {
-            self.overlay = None;
+            self.set_overlay(None);
             return None;
         }
         if let Some(o) = self.overlay.as_ref().filter(|o| !o.alive()) {
             let was_hub = o.hub().is_some();
+            // (`cfg` is still in use: not through `set_overlay`.)
+            self.live.set_probe(None);
             self.overlay = None;
             // A connection that held a while: not one of a row of losses
             // (a long session would otherwise use them all up).
@@ -113,7 +115,7 @@ impl<B: Backend> Engine<B> {
             };
             match started {
                 Ok(o) => {
-                    self.overlay = Some(o);
+                    self.set_overlay(Some(o));
                     self.overlay_error = None;
                 }
                 Err(e) => {
@@ -125,6 +127,21 @@ impl<B: Backend> Engine<B> {
             }
         }
         self.overlay.as_mut()
+    }
+
+    /// Keep (or drop) the overlay helper, and let a host reading
+    /// `computer_use/state` see whether its stop key works from now on.
+    fn set_overlay(&mut self, overlay: Option<Overlay>) {
+        self.live
+            .set_probe(overlay.as_ref().map(Overlay::stop_key_probe));
+        self.overlay = overlay;
+    }
+
+    /// Drop the overlay helper; whether there was one.
+    pub(super) fn drop_overlay(&mut self) -> bool {
+        let had = self.overlay.is_some();
+        self.set_overlay(None);
+        had
     }
 
     /// The primary screen's work area (without task bars and docks).
@@ -157,7 +174,7 @@ impl<B: Backend> Engine<B> {
         // would give up this agent's turn and number).
         if !cfg.enabled && keys == crate::overlay::Keys::default() && !self.store.config.hub.enabled
         {
-            self.overlay = None;
+            self.set_overlay(None);
         } else if let Some(o) = &self.overlay {
             o.configure(&cfg, &keys);
         } else if keys != crate::overlay::Keys::default() {
@@ -169,6 +186,8 @@ impl<B: Backend> Engine<B> {
     /// The global keys the helper listens for.
     fn global_keys(&self) -> crate::overlay::Keys {
         let c = &self.store.config.control;
+        // Every place that applies the keys asks here, so a host sees the one in use.
+        self.live.set_key(&c.stop_hotkey);
         crate::overlay::Keys {
             stop: c.stop_hotkey.trim().to_string(),
             settings: c.settings_hotkey.trim().to_string(),

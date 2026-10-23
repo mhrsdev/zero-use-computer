@@ -64,6 +64,7 @@ pub mod error;
 pub mod imaging;
 pub mod keys;
 pub mod launch;
+pub mod live;
 pub mod mock;
 pub mod motion;
 pub mod ocr;

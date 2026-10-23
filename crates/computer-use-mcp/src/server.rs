@@ -6,6 +6,7 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use computer_use::Backend;
 use computer_use::engine::Engine;
@@ -87,6 +88,9 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
             return Ok(());
         };
         let engine_cancel = self.core.engine().cancel_handle();
+        let live = self.core.engine().live();
+        let stop = self.core.engine().stop_handle();
+        let state = move || live.answer(stop.load(Ordering::SeqCst), Instant::now());
         let cancels = Arc::new(Cancels::default());
         // Unbounded: a reader that waited for room would stop reading the
         // cancels for the call that is running.
@@ -99,7 +103,7 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
             std::thread::Builder::new()
                 .name("mcp-reader".into())
                 .spawn(move || {
-                    read_loop(reader, &tx, &out, &cancels, &engine_cancel);
+                    read_loop(reader, &tx, &out, &cancels, &engine_cancel, &state);
                     if let Some(closed) = closed {
                         log::info!("the client closed the input: stopping");
                         closed.store(true, Ordering::SeqCst);
@@ -177,6 +181,7 @@ fn read_loop<R: BufRead, W: Write>(
     out: &Out<W>,
     cancels: &Cancels,
     engine_cancel: &AtomicBool,
+    state: &dyn Fn() -> Value,
 ) {
     let reply = |r: &Response| {
         log::warn!("dropping a bad message: {:?}", r.error);
@@ -224,6 +229,16 @@ fn read_loop<R: BufRead, W: Write>(
                             && let Some(id) = msg.id.clone()
                         {
                             if out.send(&Response::ok(id, serde_json::json!({}))).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        // So is the state a host reads (the stop, its key, the
+                        // app being acted on): it must not wait for a call.
+                        if msg.method.as_deref() == Some(crate::core::STATE_METHOD)
+                            && let Some(id) = msg.id.clone()
+                        {
+                            if out.send(&Response::ok(id, state())).is_err() {
                                 return;
                             }
                             continue;
@@ -832,6 +847,128 @@ mod tests {
         }
         assert!(client.join().unwrap(), "the ping waited for the call");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The state a host reads is answered at once, including the stop, while a
+    /// long call runs and after the stop key was pressed.
+    #[test]
+    fn the_state_is_answered_during_a_long_call_and_follows_the_stop() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let dir = std::env::temp_dir().join(format!("cu-state-{}", std::process::id()));
+        let engine = engine_with_scripts(&dir);
+        let stop = engine.stop_handle();
+        let out = Buf::default();
+        let seen = out.clone();
+        let client = std::thread::spawn(move || {
+            let answer_to = |id: u64| {
+                let start = std::time::Instant::now();
+                loop {
+                    let text = String::from_utf8_lossy(&seen.0.lock().unwrap()).to_string();
+                    let found = text
+                        .lines()
+                        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                        .find(|m| m["id"] == id);
+                    if found.is_some() || start.elapsed() > std::time::Duration::from_secs(10) {
+                        return found;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            };
+            let call = line(
+                "tools/call",
+                1,
+                json!({"name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"}}),
+            );
+            writer.write_all(call.as_bytes()).unwrap();
+            writer
+                .write_all(line("computer_use/state", 2, json!({})).as_bytes())
+                .unwrap();
+            let before = answer_to(2);
+            // The user presses the stop key while the call runs.
+            stop.store(true, Ordering::SeqCst);
+            writer
+                .write_all(line("computer_use/state", 3, json!({})).as_bytes())
+                .unwrap();
+            let after = answer_to(3);
+            let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}});
+            writer.write_all(format!("{cancel}\n").as_bytes()).unwrap();
+            (before, after)
+        });
+        {
+            let mut server = Server::new(engine, std::io::BufReader::new(reader), out.clone());
+            server.run().unwrap();
+        }
+        let (before, after) = client.join().unwrap();
+        let before = before.expect("the state waited for the call");
+        assert_eq!(before["result"]["stopped"], false);
+        assert_eq!(before["result"]["protocol"], 1);
+        let after = after.expect("the state waited for the call");
+        assert_eq!(after["result"]["stopped"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_state_needs_no_host_and_resume_is_a_hosts_request_that_lets_the_stop_go() {
+        let both = format!(
+            "{}{}",
+            line("computer_use/state", 1, json!({})),
+            line("computer_use/resume", 2, json!({}))
+        );
+        // Without a host: the state is answered, resume is not offered.
+        let out = converse(&both);
+        let state = out.iter().find(|m| m["id"] == 1).expect("answered");
+        assert_eq!(state["result"]["stopped"], false);
+        assert_eq!(state["result"]["hotkey"]["registered"], false);
+        assert!(state["result"]["controlling"].is_null());
+        let resume = out.iter().find(|m| m["id"] == 2).expect("answered");
+        assert_eq!(resume["error"]["code"], METHOD_NOT_FOUND);
+
+        // With a host, and the user's stop held: the agent is refused until Resume.
+        let dir = std::env::temp_dir().join(format!("cu-resume-{}", std::process::id()));
+        let mut e = engine();
+        e.set_stopped(true);
+        let stop = e.stop_handle();
+        let out = Buf::default();
+        {
+            let host = computer_use::panel::Host::in_home(&dir);
+            let click = line(
+                "tools/call",
+                3,
+                json!({"name":"click","arguments":{"app":"TextEdit","element_index":3}}),
+            );
+            let input = format!("{}{click}", line("computer_use/state", 1, json!({})));
+            let mut server = Server::new(e, Cursor::new(input), out.clone()).with_host(host);
+            server.run().unwrap();
+        }
+        let lines: Vec<Value> = String::from_utf8(out.take())
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let state = lines.iter().find(|m| m["id"] == 1).unwrap();
+        assert_eq!(state["result"]["stopped"], true);
+        let click = lines.iter().find(|m| m["id"] == 3).unwrap();
+        assert_eq!(click["result"]["isError"], true, "{click}");
+        assert!(stop.load(Ordering::SeqCst), "nothing but Resume lets it go");
+
+        let mut e = engine();
+        e.set_stopped(true);
+        let stop = e.stop_handle();
+        let out = Buf::default();
+        {
+            let host = computer_use::panel::Host::in_home(&dir);
+            let mut server = Server::new(
+                e,
+                Cursor::new(line("computer_use/resume", 4, json!({}))),
+                out.clone(),
+            )
+            .with_host(host);
+            server.run().unwrap();
+        }
+        let answer: Value =
+            serde_json::from_str(String::from_utf8(out.take()).unwrap().trim()).unwrap();
+        assert_eq!(answer["result"], json!({"stopped": false}));
+        assert!(!stop.load(Ordering::SeqCst));
     }
 
     #[test]

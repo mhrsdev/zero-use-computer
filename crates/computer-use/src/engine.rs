@@ -336,6 +336,9 @@ pub struct Engine<B: Backend> {
     overlay_error: Option<String>,
     /// The user was told the stop key doesn't work (told once).
     stop_note_shown: bool,
+    /// What a host reads at any time, even while a call runs
+    /// (`computer_use/state`).
+    live: Arc<crate::live::Live>,
     /// What is wrong with the settings file, while it can't be used; told
     /// to the agent once.
     settings_problem: Option<String>,
@@ -536,6 +539,7 @@ impl<B: Backend> Engine<B> {
         backend.configure(&store.config);
         crate::motion::configure(&store.config);
         let config_mtime = store.stamp();
+        let live = Arc::new(crate::live::Live::new(&store.config.control.stop_hotkey));
         let scripts = crate::script::Library::new(store.config.script.library());
         Self {
             ctx: CallState::default(),
@@ -547,6 +551,7 @@ impl<B: Backend> Engine<B> {
             window_cache: HashMap::new(),
             epoch: 0,
             overlay: None,
+            live,
             overlay_launcher: None,
             overlay_failures: 0,
             overlay_retry_at: None,
@@ -645,7 +650,7 @@ impl<B: Backend> Engine<B> {
                     let (old, new) = (&self.store.config.hub, &store.config.hub);
                     old.enabled != new.enabled || old.port != new.port
                 };
-                if hub_changed && self.overlay.take().is_some() {
+                if hub_changed && self.drop_overlay() {
                     self.hub_losses = 0;
                     self.agents_told = 0;
                 }
@@ -688,6 +693,7 @@ impl<B: Backend> Engine<B> {
         f: impl Fn(&mut crate::config::Config) + Send + 'static,
     ) -> Self {
         f(&mut self.store.config);
+        self.live.set_key(&self.store.config.control.stop_hotkey);
         self.backend.configure(&self.store.config);
         crate::motion::configure(&self.store.config);
         self.overrides = Some(Box::new(f));
@@ -711,7 +717,7 @@ impl<B: Backend> Engine<B> {
             let (old, new) = (&self.store.config.hub, &store.config.hub);
             old.enabled != new.enabled || old.port != new.port
         };
-        if hub_changed && self.overlay.take().is_some() {
+        if hub_changed && self.drop_overlay() {
             self.hub_losses = 0;
             self.agents_told = 0;
         }
@@ -764,6 +770,12 @@ impl<B: Backend> Engine<B> {
     /// (e.g. its own Stop button). While set, every tool call is refused.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         self.stop.clone()
+    }
+
+    /// What a host may read while a call runs: whether the stop key works,
+    /// and the app being acted on.
+    pub fn live(&self) -> Arc<crate::live::Live> {
+        self.live.clone()
     }
 
     /// Whether the user stopped the agent.
@@ -1875,6 +1887,7 @@ impl<B: Backend> Engine<B> {
         if !out.is_error {
             self.note_result();
         }
+        self.live.end((self.clock)());
         self.audit(name, app.as_deref(), &out);
         out
     }

@@ -17,8 +17,14 @@ struct Session {
 
 impl Session {
     fn start(home: &std::path::Path) -> Self {
+        Self::start_with(home, &["--host", "zero"])
+    }
+
+    /// The program as `args` start it (a host's `--host zero`, or none), on the scripted desktop.
+    fn start_with(home: &std::path::Path, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_computer-use-mcp"))
-            .args(["--host", "zero", "--backend", "mock", "serve"])
+            .args(args)
+            .args(["--backend", "mock", "serve"])
             .env("COMPUTER_USE_HOME", home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -160,4 +166,30 @@ fn the_settings_requests_are_unknown_without_a_host() {
     assert_eq!(answer["error"]["code"], -32601);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The raw conversation of the request document (section 10.2), without Zero.
+#[test]
+fn the_state_and_resume_answer_the_shapes_a_host_waits_for() {
+    let dir = home("raw-state", "");
+    let mut s = Session::start(&dir);
+    let state = s.call("computer_use/state", json!({}));
+    let state = &state["result"];
+    assert_eq!(state["protocol"], 1);
+    assert_eq!(state["stopped"], false);
+    // The scripted desktop has no helper that listens for keys: the key is not
+    // registered, and the answer says so instead of leaving it out.
+    assert_eq!(state["hotkey"]["registered"], false);
+    assert_eq!(state["hotkey"]["key"], "ctrl+alt+escape");
+    // The component says what it controls: nothing, here.
+    assert!(state.as_object().unwrap().contains_key("controlling"));
+    assert!(state["controlling"].is_null());
+    assert_eq!(
+        s.call("computer_use/resume", json!({}))["result"],
+        json!({"stopped": false})
+    );
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
 }

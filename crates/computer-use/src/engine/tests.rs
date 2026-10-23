@@ -2823,6 +2823,108 @@ fn the_stop_key_in_the_helper_stops_the_engine() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// What a host reading `computer_use/state` sees now.
+fn live_state(e: &Engine<MockBackend>) -> serde_json::Value {
+    e.live().answer(e.is_stopped(), Instant::now())
+}
+
+#[test]
+fn a_host_sees_the_app_acted_on_as_list_apps_names_it_and_not_one_only_looked_at() {
+    let mut e = engine();
+    assert!(live_state(&e)["controlling"].is_null());
+    // Looking at an app, or naming one that is not there, acts on nothing.
+    assert!(
+        !e.call_tool("get_app_state", serde_json::json!({"app": "textedit"}))
+            .is_error
+    );
+    assert!(
+        e.call_tool(
+            "click",
+            serde_json::json!({"app": "NoSuchApp", "element_index": 1})
+        )
+        .is_error
+    );
+    assert!(live_state(&e)["controlling"].is_null());
+    // The name asked for in lower case stands for the app that was found.
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "textedit", "element_index": 3}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let app = &live_state(&e)["controlling"]["app"];
+    assert_eq!(app["name"], "TextEdit");
+    assert_eq!(app["id"], "com.apple.TextEdit");
+}
+
+#[test]
+fn a_step_of_a_batch_is_acted_on_too() {
+    let mut e = engine();
+    let out = e.call_tool(
+        "batch",
+        serde_json::json!({"app": "TextEdit", "steps": [{"tool": "get_app_state"}, {"tool": "click", "arguments": {"element_index": 3}}]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(live_state(&e)["controlling"]["app"]["name"], "TextEdit");
+}
+
+#[test]
+fn a_call_refused_for_the_stop_acts_on_no_app() {
+    let mut e = engine();
+    e.set_stopped(true);
+    let out = e.call_tool(
+        "click",
+        serde_json::json!({"app": "TextEdit", "element_index": 3}),
+    );
+    assert!(out.is_error);
+    let live = live_state(&e);
+    assert_eq!(live["stopped"], true);
+    assert!(live["controlling"].is_null());
+}
+
+/// An engine whose overlay helper is `script`, a stand-in that says what the system did with the key.
+#[cfg(unix)]
+fn engine_with_key_helper(script: &str) -> Engine<MockBackend> {
+    engine().with_overlay(Launcher {
+        program: "sh".into(),
+        args: vec!["-c".into(), script.into()],
+    })
+}
+
+#[cfg(unix)]
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..250 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("never happened: {what}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_is_told_the_stop_key_works_only_while_the_helper_that_listens_for_it_runs() {
+    let key_works = |e: &Engine<MockBackend>| live_state(e)["hotkey"]["registered"] == true;
+    // Accepted by the system, then the helper goes away: seen without any call.
+    let mut e = engine_with_key_helper(
+        r#"echo '{"t":"hotkey","key":"ctrl+alt+escape","ok":true}'; sleep 1"#,
+    );
+    assert!(!key_works(&e), "before the helper has said anything");
+    e.arm();
+    wait_until("the key is registered", || key_works(&e));
+    assert_eq!(live_state(&e)["hotkey"]["key"], "ctrl+alt+escape");
+    wait_until("the helper has gone", || !key_works(&e));
+
+    // Refused by the system.
+    let mut e = engine_with_key_helper(
+        r#"echo '{"t":"hotkey","key":"ctrl+alt+escape","ok":false}'; sleep 3"#,
+    );
+    e.arm();
+    wait_until("the refusal is known", || e.stop_key_problem().is_some());
+    assert!(!key_works(&e));
+    assert_eq!(live_state(&e)["hotkey"]["registered"], false);
+}
+
 // -- smart waiting and verification -------------------------------------
 
 fn index_of_name(out: &str, needle: &str) -> u32 {
