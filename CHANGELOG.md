@@ -21,6 +21,25 @@
   the real mouse) and for the tool list with what each costs (`tools`); both
   come from the program's own path maker and tool definitions, and nothing
   moves.
+- **A host can show the pointer's picture, test a sound and keep profiles
+  (`--host zero`).** `computer_use/settings/cursor` says how the pointer's
+  picture reads (set, kept by the program, usable, format, size, frames) with
+  the limits of the overlay's reader; `cursor_set {data}` (base64 PNG or GIF)
+  checks it as the overlay does, keeps a copy and makes it the pointer;
+  `cursor_clear` takes it away and the pointer it replaced comes back. Both
+  need `overlay.cursor_image` and `overlay.cursor_style` in `[host]
+  user_keys`. `sound_test {event, dryRun?}` with `dryRun: true` only says
+  whether a sound could play and with which player (nothing starts); without
+  it one sound plays, never the same one twice within a second, and a
+  `dryRun` that is not a yes or a no is refused. `profiles` lists the
+  profiles with the values each sets (`null`: back to the default);
+  `profile_save {label}` keeps what the user changed (and may change) under
+  a name, `profile_delete {id}` removes one of the user's own. The program
+  applies no profile: the host sets each value itself. A profile never holds
+  a secret, a protected setting or a place on this computer (a file, a folder
+  or a program), and no answer names a folder of this computer. These are
+  requests of a host only: no tool of the agent leads to them. See
+  `docs/zero-requests-r4-r6.md`.
 - **`set_value` no longer leaves the old text in front of the new.** In a
   browser field the accessibility "select all" may land a moment after it
   says yes, and the text typed meanwhile went after the old one ("Old
