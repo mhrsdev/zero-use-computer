@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A host can ask whether the user's Stop works, and let it go
+  (`computer_use/state`, `computer_use/resume`).** `computer_use/state` answers
+  at once, even while a call runs, with `stopped` (the user pressed the stop
+  key or the Stop button and has not let go), `hotkey.registered` (true only
+  while the system has accepted the stop key and the helper that listens for it
+  is running; unknown, refused, no key and a helper that has gone are all
+  `false`), `hotkey.key`, and `controlling` (the app a click, typing, key,
+  value, selection, scroll or drag is acting on, as `list_apps` names it, for
+  four seconds after the last step; `null` otherwise). `computer_use/resume`
+  (only with `--host`) lets the stop go, as pressing the key again does. A
+  program a host started keeps the user's stop over a restart: it writes
+  `stop-held` in its folder while the stop is held, starts stopped when it
+  finds it, and only Resume or the stop key removes it. See
+  `docs/zero-requests.md`.
 - **A host can read and change the settings over stdio (`--host zero`).** A
   program that starts this one (Zero Desktop) asks for the description of
   every setting (`computer_use/settings/schema`), the values that differ from

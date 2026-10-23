@@ -149,6 +149,8 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
+    // A path under a file: Windows says "not there" for it, not "can't tell".
+    #[cfg(unix)]
     #[test]
     fn a_marker_that_cannot_be_looked_at_counts_as_set() {
         // A path under a file is neither there nor missing: it can't be told.
