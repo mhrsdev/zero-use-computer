@@ -662,8 +662,10 @@ own, as before.
   from any app. The agent stops at once: every tool call is refused with a
   message telling the model that the user stopped it and to ask how to
   proceed; a batch, a wait or an on-screen question in progress ends too.
-  The label turns orange ("Zero stopped. Press Ctrl+Alt+Esc to let it
-  continue"; "Control+Option+Esc" on a Mac). Press the key again to let it continue. The overlay helper
+  The label turns orange ("Zero stopped. Ctrl+Alt+Esc only stops; continue
+  from the Stop button"; "Control+Option+Esc" on a Mac). Pressing the key
+  again keeps everything stopped: the key only ever stops. To go on, click
+  Continue in the Stop button's list (or the host's Resume). The overlay helper
   registers exactly that one combination with the OS (`RegisterHotKey` on
   Windows, a passive key grab on X11, `RegisterEventHotKey` on macOS), so it
   receives that key and nothing else. If another program already owns the

@@ -697,7 +697,8 @@ impl Default for OverlayConfig {
             label_error: "Zero hit an error".into(),
             label_done: "Zero is done".into(),
             label_paused: "Paused while you use the computer".into(),
-            label_stopped: "Zero stopped. Press {hotkey} to let it continue".into(),
+            label_stopped: "Zero stopped. {hotkey} only stops; continue from the Stop button"
+                .into(),
             color_thinking: "#D4A017".into(),
             color_working: "#1E88E5".into(),
             color_error: "#E53935".into(),

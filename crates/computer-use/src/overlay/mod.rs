@@ -323,6 +323,18 @@ pub struct Message {
 /// (the member draws its own overlay instead).
 pub const HUB_PROTO: u32 = 2;
 
+/// Who stopped an agent or let it go: the stop key (it only stops, and
+/// stops everyone), the overlay's button for every agent, or its button for
+/// this one agent (a row of the stop button's list, or the one agent's own
+/// Stop/Continue).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    Key,
+    All,
+    One,
+}
+
 /// Helper → engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -335,10 +347,14 @@ pub enum Reply {
         id: u64,
         shown: bool,
     },
-    /// The user pressed the stop key: the agent is now stopped (on) or may
-    /// continue (off).
+    /// The agent is now stopped (on) or may continue (off), and by what:
+    /// the stop key only ever stops; letting go is a click on the overlay
+    /// (or the host's Resume).
     Stop {
         on: bool,
+        /// Who did it (`None`: a helper or hub from before this was said).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<By>,
     },
     /// Whether the system accepted the stop key (another program may own it).
     Hotkey {
@@ -721,7 +737,7 @@ impl Overlay {
                     match r {
                         // Acted on here, so it works even while the engine
                         // is busy (waiting for an app, a long batch…).
-                        Reply::Stop { on } => {
+                        Reply::Stop { on, .. } => {
                             flag.store(on, Ordering::SeqCst);
                             if on {
                                 log::warn!("stopped by the user (stop key or stop button)");

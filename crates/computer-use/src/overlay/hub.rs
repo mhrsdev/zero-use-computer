@@ -29,7 +29,7 @@ use super::controls::{Action, Controls, Row, Texts};
 use super::draw::MenuRow;
 use super::helper::{Hotkey, Machine, Painter, Surface, SurfaceEvent};
 use super::text::Fonts;
-use super::{AreaWant, Cmd, HUB_PROTO, Launcher, Message, Peer, Reply};
+use super::{AreaWant, By, Cmd, HUB_PROTO, Launcher, Message, Peer, Reply};
 use crate::config::OverlayConfig;
 use crate::types::Rect;
 
@@ -1386,7 +1386,7 @@ impl Hub {
                 );
                 self.own_pointer(agent);
                 if self.stopped {
-                    self.reply(agent, &Reply::Stop { on: true });
+                    self.reply(agent, &Reply::Stop { on: true, by: None });
                 }
                 self.agents_changed();
             }
@@ -1573,7 +1573,7 @@ impl Hub {
                 // (Not one stopped alone: it stops only itself.)
                 let alone = self.alone.contains(&agent);
                 if stopped && !self.stopped && !alone {
-                    self.stop(true);
+                    self.stop(true, None);
                 }
                 if self.font_path.as_deref() != Some(&config.font) {
                     self.font_path = Some(config.font.clone());
@@ -1614,15 +1614,14 @@ impl Hub {
             }
             // An agent stopped by itself (a call made while stopped shows
             // it again) when the others go on: the stop key is everyone's,
-            // so all stop, and its next press lets them all continue (it
-            // used to stop them, as the hub didn't know). One that goes on
-            // by itself leaves the others stopped. Right after the stop key
-            // let everyone continue, it was sent before the agent heard
-            // (it used to stop everyone again): it is left out.
+            // so all stop. One that goes on by itself leaves the others
+            // stopped. Right after everyone was let continue, it was sent
+            // before the agent heard (it used to stop everyone again): it
+            // is left out.
             // One stopped alone shows it again, and stops no one else.
             Cmd::Stopped { on: true } if self.just_let_go(agent, now) => {}
             Cmd::Stopped { on: true } if !self.stopped && !self.alone.contains(&agent) => {
-                self.stop(true)
+                self.stop(true, None)
             }
             other => {
                 if other == (Cmd::Stopped { on: false }) {
@@ -1688,8 +1687,9 @@ impl Hub {
         )
     }
 
-    /// The stop key: every agent stops (or may go on).
-    fn stop(&mut self, on: bool) {
+    /// Every agent stops (or may go on): the stop key (it only stops) or
+    /// the stop button for all, `by` saying which.
+    fn stop(&mut self, on: bool, by: Option<By>) {
         self.stopped = on;
         let now = Instant::now();
         if !on {
@@ -1700,10 +1700,10 @@ impl Hub {
         for look in self.looks.values_mut() {
             look.machine.apply(Cmd::Stopped { on }, now);
         }
-        self.broadcast(&Reply::Stop { on }, None);
+        self.broadcast(&Reply::Stop { on, by }, None);
     }
 
-    /// Whether the stop key let everyone continue a moment ago.
+    /// Whether everyone was let continue a moment ago.
     fn just_continued(&self, now: Instant) -> bool {
         !self.stopped
             && self
@@ -1711,14 +1711,15 @@ impl Hub {
                 .is_some_and(|t| now.saturating_duration_since(t) < CONTINUE_ECHO)
     }
 
-    /// The stop key pressed: with any agent stopped (all, or one from the
-    /// stop button's list), every one continues; else every one stops.
+    /// The stop key pressed: every agent stops, whoever was stopped before.
+    /// It never lets anyone continue (it used to, when pressed again, so a
+    /// second "stop everything" undid the first): that is a click on
+    /// Continue, or the host's Resume.
     fn stop_key(&mut self) {
-        let any = self.stopped || !self.alone.is_empty();
-        self.stop(!any);
+        self.stop(true, Some(By::Key));
     }
 
-    /// Whether `agent` was let go on a moment ago: by the stop key, or by
+    /// Whether `agent` was let go on a moment ago: everyone together, or by
     /// its row in the stop button's list (what it says it is now, it said
     /// before it heard).
     fn just_let_go(&self, agent: u32, now: Instant) -> bool {
@@ -1757,7 +1758,13 @@ impl Hub {
         if let Some(look) = self.looks.get_mut(&agent) {
             look.machine.apply(Cmd::Stopped { on }, now);
         }
-        self.reply(agent, &Reply::Stop { on });
+        self.reply(
+            agent,
+            &Reply::Stop {
+                on,
+                by: Some(By::One),
+            },
+        );
     }
 
     /// Open the settings panel, as the settings key does: one page, opened
@@ -1771,8 +1778,8 @@ impl Hub {
     /// What a click on the label's buttons asked for.
     fn act(&mut self, action: Action) {
         match action {
-            Action::StopAll => self.stop(true),
-            Action::ContinueAll => self.stop(false),
+            Action::StopAll => self.stop(true, Some(By::All)),
+            Action::ContinueAll => self.stop(false, Some(By::All)),
             Action::Stop(agent) => self.stop_one(agent, true),
             Action::Continue(agent) => self.stop_one(agent, false),
             Action::Settings => self.open_settings(),
@@ -2422,6 +2429,14 @@ mod tests {
             .collect()
     }
 
+    /// Whether the agent heard it is stopped (`on`) or let go, by anyone
+    /// (what was sent since the last look).
+    fn stops(rx: &mpsc::Receiver<String>, on: bool) -> bool {
+        replies(rx)
+            .iter()
+            .any(|r| matches!(r, Reply::Stop { on: o, .. } if *o == on))
+    }
+
     #[test]
     fn an_agent_whose_stop_key_was_replaced_is_told_it_no_longer_works() {
         let display = Display {
@@ -2508,7 +2523,7 @@ mod tests {
         let _second = joined(&mut hub, 2);
         hub.command(1, config("ctrl+alt+escape"));
         hub.command(2, config("ctrl+alt+f12"));
-        hub.stop(true);
+        hub.stop(true, Some(By::All));
         let now = Instant::now();
         let label = |hub: &Hub, agent: u32| {
             hub.looks[&agent]
@@ -2544,8 +2559,8 @@ mod tests {
         let mut hub = Hub::new(None);
         let first = joined(&mut hub, 1);
         let _second = joined(&mut hub, 2);
-        hub.stop(true);
-        hub.stop(false);
+        hub.stop(true, Some(By::All));
+        hub.stop(false, Some(By::All));
         let _ = replies(&first);
         hub.command(2, Cmd::Stopped { on: true });
         hub.command(
@@ -2561,7 +2576,7 @@ mod tests {
         assert!(
             !replies(&first)
                 .iter()
-                .any(|r| matches!(r, Reply::Stop { on: true }))
+                .any(|r| matches!(r, Reply::Stop { on: true, .. }))
         );
         hub.continued = Some(Instant::now() - CONTINUE_ECHO);
         hub.command(2, Cmd::Stopped { on: true });
@@ -2615,7 +2630,7 @@ mod tests {
         assert!(
             replies(&first)
                 .iter()
-                .any(|r| matches!(r, Reply::Stop { on: true }))
+                .any(|r| matches!(r, Reply::Stop { on: true, .. }))
         );
         // One going on by itself leaves the others stopped.
         hub.command(2, Cmd::Stopped { on: false });
@@ -2623,7 +2638,7 @@ mod tests {
         assert!(
             !replies(&first)
                 .iter()
-                .any(|r| matches!(r, Reply::Stop { on: false }))
+                .any(|r| matches!(r, Reply::Stop { on: false, .. }))
         );
     }
 
@@ -2636,7 +2651,7 @@ mod tests {
         let first = joined(&mut hub, 1);
         let second = joined(&mut hub, 2);
         hub.act(Action::Stop(2));
-        assert!(replies(&second).contains(&Reply::Stop { on: true }));
+        assert!(stops(&second, true));
         assert!(
             !replies(&first)
                 .iter()
@@ -2667,14 +2682,41 @@ mod tests {
             rows.iter().map(|r| r.look.stopped).collect::<Vec<_>>(),
             [false, false, true]
         );
-        // The stop key: with one stopped, everyone continues.
+        // The stop key: with one stopped, everyone stops (it used to let
+        // everyone continue), and no one is let go.
         hub.stop_key();
-        assert!(replies(&second).contains(&Reply::Stop { on: false }));
-        assert!(hub.alone.is_empty() && !hub.stopped);
-        // And pressed again, everyone stops.
+        assert!(hub.alone.is_empty() && hub.stopped);
+        assert!(stops(&first, true));
+        assert!(!stops(&second, false));
+    }
+
+    /// The stop key pressed again lets no one continue: the second "stop
+    /// everything" used to undo the first. Only Continue does.
+    #[test]
+    fn the_stop_key_pressed_again_lets_no_one_continue() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
         hub.stop_key();
         assert!(hub.stopped);
-        assert!(replies(&first).contains(&Reply::Stop { on: true }));
+        let heard = replies(&first);
+        assert!(heard.contains(&Reply::Stop {
+            on: true,
+            by: Some(By::Key)
+        }));
+        let _ = replies(&second);
+        hub.continued = None;
+        for _ in 0..3 {
+            hub.stop_key();
+            assert!(hub.stopped);
+            for agent in [&first, &second] {
+                assert!(!stops(agent, false), "a press let an agent continue");
+            }
+        }
+        // Continue lets everyone go on.
+        hub.act(Action::ContinueAll);
+        assert!(!hub.stopped);
+        assert!(stops(&first, false) && stops(&second, false));
     }
 
     /// All stopped, one row lets that agent continue and leaves the others
@@ -2689,7 +2731,7 @@ mod tests {
         assert!(hub.stopped);
         let _ = (replies(&first), replies(&second));
         hub.act(Action::Continue(1));
-        assert!(replies(&first).contains(&Reply::Stop { on: false }));
+        assert!(stops(&first, false));
         assert!(replies(&second).is_empty(), "the others stay as they were");
         assert!(!hub.stopped);
         assert_eq!(hub.alone, BTreeSet::from([2, 3]));
@@ -2701,7 +2743,7 @@ mod tests {
         assert!(all.agent.is_none() && !all.look.stopped);
         hub.act(Action::StopAll);
         assert!(hub.stopped && hub.alone.is_empty());
-        assert!(replies(&first).contains(&Reply::Stop { on: true }));
+        assert!(stops(&first, true));
         // An agent stopped alone that goes on by itself (its host let it).
         hub.act(Action::ContinueAll);
         hub.act(Action::Stop(3));

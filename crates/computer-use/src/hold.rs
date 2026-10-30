@@ -4,8 +4,9 @@
 //! again (a host restarts it, or it crashes) would come back not stopped and
 //! let the agent act with nobody having pressed Resume. A host-started program
 //! therefore keeps a marker file for as long as the flag is set, and starts
-//! stopped when it finds one. Only the user's own act clears it: the stop key
-//! pressed again, or the host's Resume (`computer_use/resume`).
+//! stopped when it finds one. Only the user's own act clears it: Continue on
+//! the overlay, or the host's Resume (`computer_use/resume`). The stop key
+//! only ever stops.
 
 use std::io;
 use std::path::PathBuf;

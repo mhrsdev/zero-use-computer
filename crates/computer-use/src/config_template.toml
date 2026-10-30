@@ -223,7 +223,7 @@ label_thinking = "Zero is thinking…"
 label_error = "Zero hit an error"
 label_done = "Zero is done"
 label_paused = "Paused while you use the computer"
-label_stopped = "Zero stopped. Press {hotkey} to let it continue"
+label_stopped = "Zero stopped. {hotkey} only stops; continue from the Stop button"
 # Colours per state (#RRGGBB or #RRGGBBAA).
 color_thinking = "#D4A017"   # gold: the model is thinking
 color_working = "#1E88E5"    # blue: acting on the computer

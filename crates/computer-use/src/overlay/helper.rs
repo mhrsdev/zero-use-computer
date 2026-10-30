@@ -14,7 +14,7 @@ use super::effects::{ClickFx, ClickStyle, HoldFx, HoldStyle};
 use super::picture::{self, Picture};
 use super::sound;
 use super::text::Fonts;
-use super::{Cmd, Reply, Status};
+use super::{By, Cmd, Reply, Status};
 use crate::config::OverlayConfig;
 use crate::motion;
 use crate::types::Rect;
@@ -767,7 +767,8 @@ impl Machine {
         self.style = draw::CursorStyle::random(taken);
     }
 
-    /// Whether the agent is stopped (the stop key toggles this).
+    /// Whether the agent is stopped (the stop key sets this; only a click
+    /// or the host clears it).
     pub fn stopped(&self) -> bool {
         self.stopped
     }
@@ -1999,6 +2000,20 @@ impl Painter {
     }
 }
 
+/// The stop key was pressed: the agent stops, shown at once whatever the
+/// engine is doing. It never lets the agent go on, however often it is
+/// pressed; it says so each time, so an engine that was let go meanwhile
+/// stops again too.
+fn stop_key_pressed(machine: &mut Machine, now: Instant) -> Reply {
+    if !machine.stopped() {
+        machine.apply(Cmd::Stopped { on: true }, now);
+    }
+    Reply::Stop {
+        on: true,
+        by: Some(By::Key),
+    }
+}
+
 enum Input {
     Cmd(Cmd),
     Eof,
@@ -2284,15 +2299,11 @@ pub fn run(args: &[String]) -> i32 {
                 }
                 SurfaceEvent::Hotkey(Hotkey::Stop) => {
                     // Presses in quick succession are key repeat, not a
-                    // second press. Every press restarts the quiet time, so
-                    // holding the key down can't toggle stop off again.
+                    // second press (each restarts the quiet time).
                     let repeat = last_hotkey.is_some_and(|t| t.elapsed() < HOTKEY_QUIET);
                     last_hotkey = Some(Instant::now());
                     if quitting.is_none() && !repeat {
-                        // Shown at once, whatever the engine is doing.
-                        let on = !machine.stopped();
-                        machine.apply(Cmd::Stopped { on }, Instant::now());
-                        reply(&Reply::Stop { on });
+                        reply(&stop_key_pressed(&mut machine, Instant::now()));
                     }
                 }
                 SurfaceEvent::Pointer(p) => {
@@ -2303,19 +2314,21 @@ pub fn run(args: &[String]) -> i32 {
                     if quitting.is_some() {
                         continue;
                     }
-                    // One agent: the stop key's stop (a click never lets
-                    // it go on, the list's row does), or the settings key's.
-                    let on = match action {
+                    // One agent: the stop button (a click never lets it
+                    // go on, the list's row does), or the settings button.
+                    let (on, by) = match action {
                         Action::Settings => {
                             reply(&Reply::Settings);
                             continue;
                         }
-                        Action::StopAll | Action::Stop(_) => true,
-                        Action::ContinueAll | Action::Continue(_) => false,
+                        Action::StopAll => (true, By::All),
+                        Action::ContinueAll => (false, By::All),
+                        Action::Stop(_) => (true, By::One),
+                        Action::Continue(_) => (false, By::One),
                     };
                     if on != machine.stopped() {
                         machine.apply(Cmd::Stopped { on }, Instant::now());
-                        reply(&Reply::Stop { on });
+                        reply(&Reply::Stop { on, by: Some(by) });
                     }
                 }
             }
@@ -2614,6 +2627,28 @@ mod tests {
             pretty_key_for("ctrl+shift+f12", KeyNames::Linux),
             "Ctrl+Shift+F12"
         );
+    }
+
+    /// The stop key used to let the agent go on when pressed again: the
+    /// second press of "stop everything" undid the first.
+    #[test]
+    fn the_stop_key_pressed_again_keeps_the_agent_stopped() {
+        let t0 = Instant::now();
+        let mut m = Machine::new(cfg(), t0);
+        m.apply(Cmd::Begin, t0);
+        for press in 1..=3 {
+            let at = t0 + Duration::from_secs(press);
+            assert_eq!(
+                stop_key_pressed(&mut m, at),
+                Reply::Stop {
+                    on: true,
+                    by: Some(By::Key)
+                },
+                "press {press}"
+            );
+            assert!(m.stopped(), "press {press}");
+            assert_eq!(m.phase, Phase::Stopped, "press {press}");
+        }
     }
 
     #[test]
