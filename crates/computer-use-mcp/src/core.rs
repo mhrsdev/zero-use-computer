@@ -31,6 +31,12 @@ pub(crate) const STATE_METHOD: &str = "computer_use/state";
 /// host that started this server (`--host`), never offered as a tool.
 pub(crate) const RESUME_METHOD: &str = "computer_use/resume";
 
+/// Host → server: stop this agent now (the host's own Stop, or its Stop all
+/// asked of every server it started). Only with `--host`. The stdio reader
+/// answers it at once, so it works while a call runs; it stops this agent
+/// alone, never the others in a hub.
+pub(crate) const STOP_METHOD: &str = "computer_use/stop";
+
 /// The version to answer `initialize` with: the client's when this server
 /// speaks it, else the newest one (the client then decides).
 pub(crate) fn negotiate_protocol(requested: Option<&str>) -> &'static str {
@@ -74,6 +80,11 @@ impl<B: Backend> Core<B> {
     pub fn with_host(mut self, host: computer_use::panel::Host) -> Self {
         self.host = Some(host);
         self
+    }
+
+    /// A host started this server (`--host`).
+    pub fn has_host(&self) -> bool {
+        self.host.is_some()
     }
 
     pub fn engine(&self) -> &Engine<B> {
@@ -153,6 +164,11 @@ impl<B: Backend> Core<B> {
             "notifications/initialized" | "initialized" => {}
             // Cancels are applied where messages are read, while a call runs.
             "notifications/cancelled" => {}
+            // A host's stop, already held and answered where it was read:
+            // shown on the overlay (and told to a hub) now.
+            STOP_METHOD if self.host.is_some() => {
+                self.engine.set_stopped(true);
+            }
             STATUS_METHOD | "notifications/computer_use/status" => {
                 let _ = self.set_status(params.as_ref());
             }
@@ -198,6 +214,10 @@ impl<B: Backend> Core<B> {
             RESUME_METHOD if self.host.is_some() => {
                 self.engine.set_stopped(false);
                 Response::ok(id, json!({ "stopped": false }))
+            }
+            STOP_METHOD if self.host.is_some() => {
+                let was = self.engine.set_stopped(true);
+                Response::ok(id, json!({ "stopped": true, "wasStopped": was }))
             }
             "shutdown" => {
                 self.shutdown = true;

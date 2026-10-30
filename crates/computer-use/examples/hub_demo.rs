@@ -2,8 +2,6 @@
 //! overlay looks: `cargo run --example hub_demo -- <computer-use-mcp> [N]`.
 //! Each agent glides to the middle of its part of the screen and clicks.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use computer_use::config::OverlayConfig;
@@ -41,7 +39,7 @@ fn main() {
             &opts,
             &cfg,
             &keys,
-            Arc::new(AtomicBool::new(false)),
+            computer_use::overlay::StopFlag::default(),
             None,
         )
         .expect("join the hub");

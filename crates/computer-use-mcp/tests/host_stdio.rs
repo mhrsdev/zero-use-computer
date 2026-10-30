@@ -48,11 +48,22 @@ impl Session {
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send(method, params);
+        self.answer(id)
+    }
+
+    /// Sends a request without waiting for its answer; its id.
+    fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next;
         self.next += 1;
         let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         writeln!(self.input, "{line}").unwrap();
         self.input.flush().unwrap();
+        id
+    }
+
+    /// The answer to request `id`, skipping every other message.
+    fn answer(&mut self, id: u64) -> Value {
         loop {
             let mut text = String::new();
             assert!(
@@ -273,4 +284,51 @@ fn without_a_host_the_state_is_answered_resume_is_not_and_an_old_marker_is_not_l
     assert_eq!(resume["error"]["code"], -32601, "{resume}");
     // Nothing of this program's own, outside a host, is kept or let go.
     assert!(dir.join(STOP_HELD).exists());
+}
+
+/// A host's stop holds in a program that never joined a hub (the scripted
+/// desktop has none): the agent is refused, the stop is kept over a
+/// restart, and only Resume lets it go. (While a call runs: the server's
+/// own tests.)
+#[test]
+fn the_hosts_stop_holds_and_needs_no_hub() {
+    let dir = home("host-stop", "");
+    let mut s = Session::start(&dir);
+    let stop = s.call("computer_use/stop", json!({}));
+    assert_eq!(
+        stop["result"],
+        json!({"stopped": true, "wasStopped": false}),
+        "{stop}"
+    );
+    let refused = s.call("tools/call", json!({"name": "list_apps", "arguments": {}}));
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    // Asked again: it says it was stopped already.
+    assert_eq!(
+        s.call("computer_use/stop", json!({}))["result"],
+        json!({"stopped": true, "wasStopped": true})
+    );
+    wait_until("the stop is kept", || dir.join(STOP_HELD).exists());
+    drop(s);
+    let mut s = Session::start(&dir);
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        true
+    );
+    s.call("computer_use/resume", json!({}));
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
+}
+
+#[test]
+fn stop_is_a_hosts_request() {
+    let dir = home("no-host-stop", "");
+    let mut s = Session::start_with(&dir, &[]);
+    let stop = s.call("computer_use/stop", json!({}));
+    assert_eq!(stop["error"]["code"], -32601, "{stop}");
+    assert_eq!(
+        s.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
 }

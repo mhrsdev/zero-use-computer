@@ -350,6 +350,9 @@ pub struct Engine<B: Backend> {
     /// Set by the user's stop key (through the overlay helper) or the host;
     /// while set, every tool call is refused.
     stop: Arc<AtomicBool>,
+    /// The stop is this agent's alone (its host's), not everyone's: a hub
+    /// is told so (see [`crate::overlay::StopFlag`]).
+    stop_alone: Arc<AtomicBool>,
     /// Set when the client cancels the call in progress: it ends as the stop
     /// key would end it, and is cleared when the call ends. (A client that
     /// goes away closes the server's input; MCP then ends the server.)
@@ -562,6 +565,7 @@ impl<B: Backend> Engine<B> {
             hints: Hints::default(),
             apps_log: crate::apps_log::AppsLog::default(),
             stop: Arc::new(AtomicBool::new(false)),
+            stop_alone: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             last_input: None,
             inputs: 0,
@@ -772,6 +776,14 @@ impl<B: Backend> Engine<B> {
         self.stop.clone()
     }
 
+    /// The stop as the overlay helper and a host's reader thread share it.
+    pub fn stop_flag(&self) -> crate::overlay::StopFlag {
+        crate::overlay::StopFlag {
+            on: self.stop.clone(),
+            alone: self.stop_alone.clone(),
+        }
+    }
+
     /// What a host may read while a call runs: whether the stop key works,
     /// and the app being acted on.
     pub fn live(&self) -> Arc<crate::live::Live> {
@@ -802,12 +814,20 @@ impl<B: Backend> Engine<B> {
         self.ctx.turn && self.hub_link().is_some_and(|l| l.revoked())
     }
 
-    /// Stop the agent (or let it continue), as the stop key does.
-    pub fn set_stopped(&mut self, on: bool) {
-        self.stop.store(on, Ordering::SeqCst);
+    /// The host stops this agent (or lets it go on): this agent alone. A
+    /// hub hears it as the host's, so the other agents go on as they are.
+    /// Whether it was stopped before.
+    pub fn set_stopped(&mut self, on: bool) -> bool {
+        let was = self.stop_flag().set_by_host(on);
         if self.overlay.is_some() {
-            self.overlay_send(OverlayCmd::Stopped { on });
+            let in_hub = self.hub_link().is_some();
+            self.overlay_send(if in_hub {
+                OverlayCmd::HostStopped { on }
+            } else {
+                OverlayCmd::Stopped { on }
+            });
         }
+        was
     }
 
     fn stopped_error(&self) -> Error {

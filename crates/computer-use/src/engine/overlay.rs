@@ -90,7 +90,7 @@ impl<B: Backend> Engine<B> {
                     &opts,
                     cfg,
                     &keys,
-                    self.stop.clone(),
+                    self.stop_flag(),
                     Some(on_settings.clone()),
                 ) {
                     Ok(o) => {
@@ -111,7 +111,7 @@ impl<B: Backend> Engine<B> {
             let cfg = &self.store.config.overlay;
             let started = match joined {
                 Some(o) => Ok(o),
-                None => Overlay::spawn(&launcher, cfg, &keys, self.stop.clone(), Some(on_settings)),
+                None => Overlay::spawn(&launcher, cfg, &keys, self.stop_flag(), Some(on_settings)),
             };
             match started {
                 Ok(o) => {

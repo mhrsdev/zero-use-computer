@@ -91,6 +91,8 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
         let live = self.core.engine().live();
         let stop = self.core.engine().stop_handle();
         let state = move || live.answer(stop.load(Ordering::SeqCst), Instant::now());
+        // A host's stop is held where it is read, not behind a call.
+        let host_stop = self.core.has_host().then(|| self.core.engine().stop_flag());
         let cancels = Arc::new(Cancels::default());
         // Unbounded: a reader that waited for room would stop reading the
         // cancels for the call that is running.
@@ -103,7 +105,15 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
             std::thread::Builder::new()
                 .name("mcp-reader".into())
                 .spawn(move || {
-                    read_loop(reader, &tx, &out, &cancels, &engine_cancel, &state);
+                    read_loop(
+                        reader,
+                        &tx,
+                        &out,
+                        &cancels,
+                        &engine_cancel,
+                        &state,
+                        host_stop.as_ref(),
+                    );
                     if let Some(closed) = closed {
                         log::info!("the client closed the input: stopping");
                         closed.store(true, Ordering::SeqCst);
@@ -174,7 +184,8 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
 /// Read messages and pass them on until the input ends. A line that is too
 /// long, not UTF-8 or not a JSON-RPC message is answered with an error and
 /// skipped: one bad line never ends the session. Cancels are applied and
-/// pings answered here, while the server may be busy with a call.
+/// pings answered here, while the server may be busy with a call; so is a
+/// host's stop (`host_stop`, only when a host started this server).
 fn read_loop<R: BufRead, W: Write>(
     mut reader: R,
     tx: &Sender<std::io::Result<Input>>,
@@ -182,6 +193,7 @@ fn read_loop<R: BufRead, W: Write>(
     cancels: &Cancels,
     engine_cancel: &AtomicBool,
     state: &dyn Fn() -> Value,
+    host_stop: Option<&computer_use::overlay::StopFlag>,
 ) {
     let reply = |r: &Response| {
         log::warn!("dropping a bad message: {:?}", r.error);
@@ -243,7 +255,21 @@ fn read_loop<R: BufRead, W: Write>(
                             }
                             continue;
                         }
-                        Input::One(msg)
+                        // A host's stop holds at once: a call that runs ends
+                        // at its next step, as with the stop key. The rest
+                        // (the overlay, a hub) follows on the server's turn.
+                        if msg.method.as_deref() == Some(crate::core::STOP_METHOD)
+                            && let (Some(flag), Some(id)) = (host_stop, msg.id.clone())
+                        {
+                            let was = flag.hold_alone();
+                            let answer = serde_json::json!({"stopped": true, "wasStopped": was});
+                            if out.send(&Response::ok(id, answer)).is_err() {
+                                return;
+                            }
+                            Input::One(Incoming { id: None, ..msg })
+                        } else {
+                            Input::One(msg)
+                        }
                     }
                     Ok(Payload::Batch(items)) => {
                         for msg in items.iter().flatten() {
@@ -904,6 +930,64 @@ mod tests {
         assert_eq!(before["result"]["protocol"], 1);
         let after = after.expect("the state waited for the call");
         assert_eq!(after["result"]["stopped"], true);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A host's stop is answered at once while a long call runs, and ends
+    /// that call (no cancel needed), as the stop key would.
+    #[test]
+    fn a_hosts_stop_is_answered_during_a_long_call_and_ends_it() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let dir = std::env::temp_dir().join(format!("cu-host-stop-{}", std::process::id()));
+        let engine = engine_with_scripts(&dir);
+        let stop = engine.stop_handle();
+        let out = Buf::default();
+        let seen = out.clone();
+        let client = std::thread::spawn(move || {
+            let answer_to = |id: u64| {
+                let start = std::time::Instant::now();
+                loop {
+                    let text = String::from_utf8_lossy(&seen.0.lock().unwrap()).to_string();
+                    let found = text
+                        .lines()
+                        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                        .find(|m| m["id"] == id);
+                    if found.is_some() || start.elapsed() > std::time::Duration::from_secs(10) {
+                        return found;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            };
+            let call = line(
+                "tools/call",
+                1,
+                json!({"name":"script","arguments":{"code":"let n = 0; loop { n += 1; }"}}),
+            );
+            writer.write_all(call.as_bytes()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            writer
+                .write_all(line("computer_use/stop", 2, json!({})).as_bytes())
+                .unwrap();
+            let stopped = answer_to(2);
+            let ended = answer_to(1);
+            drop(writer);
+            (stopped, ended)
+        });
+        {
+            let host = computer_use::panel::Host::in_home(&dir);
+            let mut server =
+                Server::new(engine, std::io::BufReader::new(reader), out.clone()).with_host(host);
+            server.run().unwrap();
+        }
+        let (stopped, ended) = client.join().unwrap();
+        let stopped = stopped.expect("the stop waited for the call");
+        assert_eq!(
+            stopped["result"],
+            json!({"stopped": true, "wasStopped": false})
+        );
+        let ended = ended.expect("the call ran on after the stop");
+        assert_eq!(ended["result"]["isError"], true, "{ended}");
+        assert!(stop.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(dir);
     }
 

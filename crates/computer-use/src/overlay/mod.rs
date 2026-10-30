@@ -104,6 +104,12 @@ pub enum Cmd {
     Stopped {
         on: bool,
     },
+    /// Its host stopped this agent alone (on), or let it go (off): to a hub,
+    /// unlike [`Cmd::Stopped`], this is never everyone's stop, so the others
+    /// go on as they are. A helper shows it as `Stopped`.
+    HostStopped {
+        on: bool,
+    },
     /// A tool call started.
     Begin,
     /// The tool call finished.
@@ -438,6 +444,35 @@ impl Launcher {
     }
 }
 
+/// The engine's stop, shared with the helper's reader thread.
+#[derive(Clone, Default)]
+pub struct StopFlag {
+    /// Set: the agent is stopped (the stop key, the overlay, or its host).
+    pub on: Arc<AtomicBool>,
+    /// The stop is this agent's alone (its host stopped it, it came back
+    /// held, or a row of the stop button's list stopped it): a hub must not
+    /// take it for everyone's.
+    pub alone: Arc<AtomicBool>,
+}
+
+impl StopFlag {
+    /// The host stops this agent alone; whether it was stopped already.
+    pub fn hold_alone(&self) -> bool {
+        self.alone.store(true, Ordering::SeqCst);
+        self.on.swap(true, Ordering::SeqCst)
+    }
+
+    /// The host stops this agent alone (`on`) or lets it go; what it was.
+    pub fn set_by_host(&self, on: bool) -> bool {
+        self.alone.store(on, Ordering::SeqCst);
+        self.on.swap(on, Ordering::SeqCst)
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.on.load(Ordering::SeqCst)
+    }
+}
+
 /// What to do when the user presses the settings key (called on the
 /// helper's reader thread, so it runs even while the engine is busy).
 pub type OnSettings = Arc<dyn Fn() + Send + Sync>;
@@ -460,7 +495,7 @@ pub struct Overlay {
     backlog: Vec<Reply>,
     alive: Arc<AtomicBool>,
     /// Set by the stop key (shared with the engine).
-    stop: Arc<AtomicBool>,
+    stop: StopFlag,
     /// The stop key the helper last reported on, and whether the system
     /// accepted it (`None` until the helper says).
     hotkey: Arc<Mutex<Option<(String, bool)>>>,
@@ -619,7 +654,7 @@ impl Overlay {
         launcher: &Launcher,
         config: &OverlayConfig,
         keys: &Keys,
-        stop: Arc<AtomicBool>,
+        stop: StopFlag,
         on_settings: Option<OnSettings>,
     ) -> std::io::Result<Self> {
         let mut cmd = Command::new(&launcher.program);
@@ -660,7 +695,7 @@ impl Overlay {
         opts: &hub::JoinOptions,
         config: &OverlayConfig,
         keys: &Keys,
-        stop: Arc<AtomicBool>,
+        stop: StopFlag,
         on_settings: Option<OnSettings>,
     ) -> std::io::Result<Self> {
         let (stream, reader, agent) = hub::connect(launcher, opts)?;
@@ -693,7 +728,7 @@ impl Overlay {
         reader: Box<dyn BufRead + Send>,
         config: &OverlayConfig,
         keys: &Keys,
-        stop: Arc<AtomicBool>,
+        stop: StopFlag,
         on_settings: Option<OnSettings>,
         hub: Option<Arc<HubLink>>,
     ) -> std::io::Result<Self> {
@@ -737,8 +772,12 @@ impl Overlay {
                     match r {
                         // Acted on here, so it works even while the engine
                         // is busy (waiting for an app, a long batch…).
-                        Reply::Stop { on, .. } => {
-                            flag.store(on, Ordering::SeqCst);
+                        Reply::Stop { on, by } => {
+                            // Stopped alone only by a row of the list (or
+                            // its host, which said so when it stopped it).
+                            flag.alone
+                                .store(on && by == Some(By::One), Ordering::SeqCst);
+                            flag.on.store(on, Ordering::SeqCst);
                             if on {
                                 log::warn!("stopped by the user (stop key or stop button)");
                             } else {
@@ -813,14 +852,21 @@ impl Overlay {
         Ok(o)
     }
 
-    /// Send (new) settings.
+    /// Send (new) settings. A stop of this agent's alone is told to a hub
+    /// as the host's ([`Cmd::HostStopped`]), not in the settings, which a
+    /// hub takes for everyone's stop.
     pub fn configure(&self, config: &OverlayConfig, keys: &Keys) {
+        let stopped = self.stop.is_on();
+        let alone = self.hub.is_some() && stopped && self.stop.alone.load(Ordering::SeqCst);
         self.send(&Cmd::Config {
             config: Box::new(config.clone()),
             hotkey: keys.stop.clone(),
             settings_key: keys.settings.clone(),
-            stopped: self.stop.load(Ordering::SeqCst),
+            stopped: stopped && !alone,
         });
+        if alone {
+            self.send(&Cmd::HostStopped { on: true });
+        }
     }
 
     pub fn alive(&self) -> bool {
@@ -1297,7 +1343,7 @@ mod tests {
     #[test]
     fn a_missing_helper_is_harmless() {
         let l = Launcher::helper("/nonexistent/computer-use-mcp");
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = StopFlag::default();
         assert!(
             Overlay::spawn(&l, &OverlayConfig::default(), &Keys::default(), stop, None).is_err()
         );

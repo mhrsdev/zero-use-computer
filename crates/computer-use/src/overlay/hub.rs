@@ -1619,6 +1619,8 @@ impl Hub {
             // before the agent heard (it used to stop everyone again): it
             // is left out.
             // One stopped alone shows it again, and stops no one else.
+            // Its host stopped it alone, or let it go: only it.
+            Cmd::HostStopped { on } => self.stop_one(agent, on),
             Cmd::Stopped { on: true } if self.just_let_go(agent, now) => {}
             Cmd::Stopped { on: true } if !self.stopped && !self.alone.contains(&agent) => {
                 self.stop(true, None)
@@ -2583,6 +2585,33 @@ mod tests {
         assert!(hub.stopped);
     }
 
+    /// A host stops its agent alone: the others go on (an agent's own
+    /// "stopped" is everyone's stop, a host's is not); with everyone
+    /// stopped, a host's Resume lets only its agent go on.
+    #[test]
+    fn a_host_stop_stops_that_agent_alone() {
+        let mut hub = Hub::new(None);
+        let first = joined(&mut hub, 1);
+        let second = joined(&mut hub, 2);
+        hub.command(2, Cmd::HostStopped { on: true });
+        assert!(!hub.stopped);
+        assert_eq!(hub.alone, BTreeSet::from([2]));
+        assert!(stops(&second, true));
+        assert!(!stops(&first, true));
+        // Its next call shows it stopped: still only it.
+        hub.command(2, Cmd::Stopped { on: true });
+        assert!(!hub.stopped && !stops(&first, true));
+        hub.command(2, Cmd::HostStopped { on: false });
+        assert!(hub.alone.is_empty() && stops(&second, false));
+
+        hub.stop_key();
+        let _ = (replies(&first), replies(&second));
+        hub.command(1, Cmd::HostStopped { on: false });
+        assert!(stops(&first, false));
+        assert!(replies(&second).is_empty(), "the others stay stopped");
+        assert_eq!(hub.alone, BTreeSet::from([2]));
+    }
+
     /// Agents working at once each get their own pointer, and keep it as
     /// their settings come and go; one that names a style gets that one.
     #[test]
@@ -2837,7 +2866,7 @@ mod tests {
             &opts,
             &OverlayConfig::default(),
             &super::super::Keys::default(),
-            Arc::new(AtomicBool::new(false)),
+            super::super::StopFlag::default(),
             None,
         )
         .unwrap()
@@ -2944,7 +2973,7 @@ mod tests {
                             &opts,
                             &OverlayConfig::default(),
                             &super::super::Keys::default(),
-                            Arc::new(AtomicBool::new(false)),
+                            super::super::StopFlag::default(),
                             None,
                         )
                         .unwrap_or_else(|e| panic!("worker {i} round {round}: {e}"));

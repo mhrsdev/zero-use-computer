@@ -905,7 +905,7 @@ impl Machine {
                     self.set_phase(p, now);
                 }
             }
-            Cmd::Stopped { on } => self.set_stopped(on, now),
+            Cmd::Stopped { on } | Cmd::HostStopped { on } => self.set_stopped(on, now),
             Cmd::Begin => {
                 self.busy = true;
                 let p = self.active_phase();
