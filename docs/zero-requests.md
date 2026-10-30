@@ -1,5 +1,10 @@
 # What a host may ask: Stop state, Resume, the app being controlled
 
+> Since protocol 2 (`computer_use/stop`, events, `--hub-home`,
+> `--settings-home`, a stop key that only stops), the full list of what
+> Zero Desktop relies on is `docs/zero-host-contract.md`. Below: R1 to R3
+> as first built; `protocol` is now `2` and the state also says `agent`.
+
 Requests R1 to R3 of the Zero Desktop request document, as built here. They
 are JSON-RPC on the server's own stdio. Nothing is a tool, so the agent never
 reaches them.
@@ -34,8 +39,9 @@ drawing tools: while only those run it says `null`.
 
 ## `computer_use/resume` (R2)
 
-Only with `--host`; without it `-32601`. Lets the stop go, exactly as pressing
-the stop key again does, and answers `{"stopped": false}`. Idempotent. A host
+Only with `--host`; without it `-32601`. Lets the stop go (as Continue on
+the overlay does; the stop key only ever stops), and answers
+`{"stopped": false}`. Idempotent. A host
 should ask `computer_use/state` afterwards and believe that, not this answer.
 
 ## Where this differs from the request document

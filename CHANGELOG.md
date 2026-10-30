@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The stop key only stops.** Pressed again it used to let every agent
+  continue, so a second "stop everything" undid the first; now it keeps
+  everyone stopped, and only Continue on the overlay (or a host's Resume)
+  lets them go on. The stopped label says so.
+- **A host can stop its agent (`computer_use/stop`)** at once, even during a
+  call, and only that agent: a hub no longer takes a host's stop (or an
+  agent that starts held) for everyone's.
+- **`--hub-home` and `--settings-home`:** programs a host started for
+  several agents share one hub and one set of settings while each keeps its
+  own folder, so one agent's stop is never another's.
+- **A host is told what happens** (`notifications/computer_use/event`:
+  stopped, resumed, hotkeyLost, message), and `computer_use/state` says
+  `protocol: 2` and the agent's hub number. See `docs/zero-host-contract.md`.
+
 - **A host can ask whether the user's Stop works, and let it go
   (`computer_use/state`, `computer_use/resume`).** `computer_use/state` answers
   at once, even while a call runs, with `stopped` (the user pressed the stop
