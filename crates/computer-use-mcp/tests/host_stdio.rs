@@ -332,3 +332,94 @@ fn stop_is_a_hosts_request() {
         false
     );
 }
+
+/// Programs a host started for two agents: each with its own folder, both
+/// with one hub folder and one settings folder.
+fn pair(name: &str) -> [std::path::PathBuf; 4] {
+    let shared = home(name, "[host]\nuser_keys = [\"tools.preset\"]\n");
+    let [a, b, hub] = ["a", "b", "hub"].map(|d| {
+        let dir = shared.join(d);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    });
+    [a, b, hub, shared]
+}
+
+fn start_in(own: &std::path::Path, hub: &std::path::Path, settings: &std::path::Path) -> Session {
+    let (hub, settings) = (hub.display().to_string(), settings.display().to_string());
+    Session::start_with(
+        own,
+        &[
+            "--host",
+            "zero",
+            "--hub-home",
+            &hub,
+            "--settings-home",
+            &settings,
+        ],
+    )
+}
+
+/// Sharing a hub used to mean sharing the server's folder, and with it the
+/// user's stop: one agent's stop then held the other after a restart, and
+/// one's Resume let the other's go.
+#[test]
+fn two_sessions_with_their_own_homes_and_one_hub_home_never_share_a_stop() {
+    let [a, b, hub, settings] = pair("two");
+    let mut one = start_in(&a, &hub, &settings);
+    let mut two = start_in(&b, &hub, &settings);
+    assert_eq!(
+        one.call("computer_use/stop", json!({}))["result"]["stopped"],
+        true
+    );
+    wait_until("the stop is kept", || a.join(STOP_HELD).exists());
+    for elsewhere in [&b, &hub, &settings] {
+        assert!(
+            !elsewhere.join(STOP_HELD).exists(),
+            "{}",
+            elsewhere.display()
+        );
+    }
+    assert_eq!(
+        two.call("computer_use/state", json!({}))["result"]["stopped"],
+        false
+    );
+    drop(two);
+    let mut two = start_in(&b, &hub, &settings);
+    assert_eq!(
+        two.call("computer_use/state", json!({}))["result"]["stopped"],
+        false,
+        "the other's stop came back with a restart"
+    );
+    drop(one);
+    let mut one = start_in(&a, &hub, &settings);
+    assert_eq!(
+        one.call("computer_use/state", json!({}))["result"]["stopped"],
+        true
+    );
+}
+
+/// The user's settings are one for all the agents: a change made through
+/// one program is in the shared file and reaches the other, running.
+#[test]
+fn the_settings_are_read_from_the_settings_home() {
+    let [a, b, hub, settings] = pair("settings");
+    let mut one = start_in(&a, &hub, &settings);
+    let mut two = start_in(&b, &hub, &settings);
+    let count = |v: &Value| v["result"]["tools"].as_array().unwrap().len();
+    let before = count(&two.call("tools/list", json!({})));
+    let set = one.call(
+        "computer_use/settings/set",
+        json!({"key": "tools.preset", "value": "small"}),
+    );
+    assert!(set.get("result").is_some(), "{set}");
+    assert!(
+        std::fs::read_to_string(settings.join("user.toml"))
+            .unwrap()
+            .contains("small")
+    );
+    assert!(!a.join("user.toml").exists() && !b.join("user.toml").exists());
+    wait_until("the other follows the change", || {
+        count(&two.call("tools/list", json!({}))) != before
+    });
+}

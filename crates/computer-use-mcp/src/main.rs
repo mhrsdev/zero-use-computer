@@ -77,6 +77,20 @@ struct Common {
     #[arg(long, global = true, value_parser = ["zero"])]
     host: Option<String>,
 
+    /// The folder of the hub's token and port file, shared by every server
+    /// that should be in the same hub (default: this server's folder,
+    /// `$COMPUTER_USE_HOME`). The server's own files (the user's stop
+    /// `stop-held`, logs, `apps.json`) stay in its own folder.
+    #[arg(long, global = true, value_name = "DIR")]
+    hub_home: Option<PathBuf>,
+
+    /// With `--host`: the folder of the two settings files (`user.toml`,
+    /// `managed.toml`), shared by every server a host started, which all
+    /// follow a change to them (`hot_reload`). Default: this server's own
+    /// folder. The server's own files stay in its own folder.
+    #[arg(long, global = true, value_name = "DIR")]
+    settings_home: Option<PathBuf>,
+
     /// Serve a scripted in-memory desktop, not this computer's (for tests of
     /// a host: nothing on this computer is looked at or touched). Only in a
     /// build made with the `mock-backend` feature.
@@ -94,11 +108,14 @@ impl Common {
         false
     }
 
-    /// The settings layers of the host, when a host started this program.
+    /// The settings layers of the host, when a host started this program:
+    /// in `--settings-home`, else in this server's folder.
     fn host_layers(&self) -> Option<computer_use::panel::Host> {
-        self.host
-            .is_some()
-            .then(|| computer_use::panel::Host::in_home(&config::home_dir()))
+        self.host.is_some().then(|| {
+            computer_use::panel::Host::in_home(
+                &self.settings_home.clone().unwrap_or_else(config::home_dir),
+            )
+        })
     }
 }
 
@@ -323,10 +340,16 @@ const APPS_LOG: &str = "apps.json";
 const STOP_HELD: &str = "stop-held";
 
 fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Backend>>> {
+    let engine = |backend: Box<dyn Backend>| {
+        let engine = Engine::new(backend, store).with_overrides(apply_overrides(common));
+        match &common.hub_home {
+            Some(dir) => engine.with_hub_home(dir.clone()),
+            None => engine,
+        }
+    };
     #[cfg(feature = "mock-backend")]
     if common.is_mock() {
-        let backend: Box<dyn Backend> = Box::new(computer_use::mock::MockBackend::new());
-        return Ok(Engine::new(backend, store).with_overrides(apply_overrides(common)));
+        return Ok(engine(Box::new(computer_use::mock::MockBackend::new())));
     }
     let backend = computer_use::platform_backend().with_context(|| {
         format!(
@@ -334,7 +357,7 @@ fn build_engine(common: &Common, store: ConfigStore) -> Result<Engine<Box<dyn Ba
             computer_use::PLATFORM
         )
     })?;
-    Ok(Engine::new(backend, store).with_overrides(apply_overrides(common)))
+    Ok(engine(backend))
 }
 
 /// Log at `level` (`server.log`), or at what `$COMPUTER_USE_LOG` says.
