@@ -127,6 +127,10 @@ impl<R: BufRead + Send + 'static, W: Write + Send + 'static, B: Backend> Server<
         let notify: Notifier = Arc::new(move |v| {
             let _ = out.send(&v);
         });
+        // A host is told what happens (the stop, the stop key, messages).
+        if self.core.has_host() {
+            self.core.engine().live().set_sink(Some(notify.clone()));
+        }
         let closed = || {
             self.closed
                 .as_ref()
@@ -927,7 +931,7 @@ mod tests {
         let (before, after) = client.join().unwrap();
         let before = before.expect("the state waited for the call");
         assert_eq!(before["result"]["stopped"], false);
-        assert_eq!(before["result"]["protocol"], 1);
+        assert_eq!(before["result"]["protocol"], 2);
         let after = after.expect("the state waited for the call");
         assert_eq!(after["result"]["stopped"], true);
         let _ = std::fs::remove_dir_all(dir);
@@ -1049,9 +1053,18 @@ mod tests {
             .with_host(host);
             server.run().unwrap();
         }
-        let answer: Value =
-            serde_json::from_str(String::from_utf8(out.take()).unwrap().trim()).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out.take())
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let answer = lines.iter().find(|m| m["id"] == 4).expect("answered");
         assert_eq!(answer["result"], json!({"stopped": false}));
+        // The host is told, before the answer.
+        assert_eq!(
+            lines[0]["params"],
+            json!({"type": "resumed", "source": "host", "all": false})
+        );
         assert!(!stop.load(Ordering::SeqCst));
     }
 

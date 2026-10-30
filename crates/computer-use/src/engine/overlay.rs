@@ -20,6 +20,7 @@ impl<B: Backend> Engine<B> {
             let was_hub = o.hub().is_some();
             // (`cfg` is still in use: not through `set_overlay`.)
             self.live.set_probe(None);
+            self.live.set_agent(None);
             self.overlay = None;
             // A connection that held a while: not one of a row of losses
             // (a long session would otherwise use them all up).
@@ -134,6 +135,8 @@ impl<B: Backend> Engine<B> {
     fn set_overlay(&mut self, overlay: Option<Overlay>) {
         self.live
             .set_probe(overlay.as_ref().map(Overlay::stop_key_probe));
+        self.live
+            .set_agent(overlay.as_ref().and_then(|o| o.hub()).map(|h| h.agent()));
         self.overlay = overlay;
     }
 

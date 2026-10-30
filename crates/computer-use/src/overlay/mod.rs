@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::config::OverlayConfig;
+use crate::live::{HostEvent, StopBy};
 
 /// What the agent is doing, as shown by the overlay colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,25 +454,49 @@ pub struct StopFlag {
     /// held, or a row of the stop button's list stopped it): a hub must not
     /// take it for everyone's.
     pub alone: Arc<AtomicBool>,
+    /// Told when the stop is held or let go, and when the stop key is lost.
+    pub events: Option<OnEvent>,
 }
 
 impl StopFlag {
     /// The host stops this agent alone; whether it was stopped already.
     pub fn hold_alone(&self) -> bool {
-        self.alone.store(true, Ordering::SeqCst);
-        self.on.swap(true, Ordering::SeqCst)
+        self.set_by_host(true)
     }
 
     /// The host stops this agent alone (`on`) or lets it go; what it was.
     pub fn set_by_host(&self, on: bool) -> bool {
         self.alone.store(on, Ordering::SeqCst);
-        self.on.swap(on, Ordering::SeqCst)
+        self.set(on, crate::live::StopBy::Host)
+    }
+
+    /// Hold the stop (`on`) or let it go, `by` someone; what it was. A
+    /// change is told.
+    fn set(&self, on: bool, by: crate::live::StopBy) -> bool {
+        let was = self.on.swap(on, Ordering::SeqCst);
+        if was != on {
+            self.tell(if on {
+                HostEvent::Stopped { by }
+            } else {
+                HostEvent::Resumed { by }
+            });
+        }
+        was
+    }
+
+    fn tell(&self, event: HostEvent) {
+        if let Some(f) = &self.events {
+            f(event);
+        }
     }
 
     pub fn is_on(&self) -> bool {
         self.on.load(Ordering::SeqCst)
     }
 }
+
+/// What happened, for a host (called on the helper's reader thread).
+pub type OnEvent = Arc<dyn Fn(HostEvent) + Send + Sync>;
 
 /// What to do when the user presses the settings key (called on the
 /// helper's reader thread, so it runs even while the engine is busy).
@@ -777,7 +802,14 @@ impl Overlay {
                             // its host, which said so when it stopped it).
                             flag.alone
                                 .store(on && by == Some(By::One), Ordering::SeqCst);
-                            flag.on.store(on, Ordering::SeqCst);
+                            flag.set(
+                                on,
+                                match by {
+                                    Some(By::Key) => StopBy::Key,
+                                    Some(By::All) => StopBy::All,
+                                    Some(By::One) | None => StopBy::One,
+                                },
+                            );
                             if on {
                                 log::warn!("stopped by the user (stop key or stop button)");
                             } else {
@@ -791,6 +823,9 @@ impl Overlay {
                                 );
                             }
                             if let Ok(mut h) = hk.lock() {
+                                if !ok && h.as_ref().is_some_and(|(_, was)| *was) {
+                                    flag.tell(HostEvent::HotkeyLost);
+                                }
                                 *h = Some((key, ok));
                             }
                         }
@@ -830,6 +865,10 @@ impl Overlay {
                     }
                 }
                 a.store(false, Ordering::Relaxed);
+                // The helper (or the hub) is gone, and its stop key with it.
+                if hk.lock().is_ok_and(|h| h.as_ref().is_some_and(|(_, ok)| *ok)) {
+                    flag.tell(HostEvent::HotkeyLost);
+                }
             })?;
 
         let o = Self {
@@ -1338,6 +1377,76 @@ mod tests {
         }
         assert_eq!("idle".parse::<Status>().unwrap(), Status::Done);
         assert!("dancing".parse::<Status>().is_err());
+    }
+
+    /// The engine hears from its helper (or the hub) who stopped it or let
+    /// it go, and tells it on once per change; a stop key that stops
+    /// working, or a helper that goes away with it, is told too.
+    #[test]
+    fn the_engine_hears_who_stopped_it_once_per_change() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let into = told.clone();
+        let stop = StopFlag {
+            events: Some(Arc::new(move |e| into.lock().unwrap().push(e))),
+            ..StopFlag::default()
+        };
+        let o = Overlay::start(
+            None,
+            Box::new(std::io::sink()),
+            Box::new(BufReader::new(reader)),
+            &OverlayConfig::default(),
+            &Keys::default(),
+            stop.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        for reply in [
+            Reply::Hotkey {
+                key: "ctrl+alt+escape".into(),
+                ok: true,
+            },
+            Reply::Stop {
+                on: true,
+                by: Some(By::Key),
+            },
+            Reply::Stop {
+                on: true,
+                by: Some(By::Key),
+            },
+            Reply::Stop {
+                on: false,
+                by: Some(By::One),
+            },
+            Reply::Hotkey {
+                key: "ctrl+alt+escape".into(),
+                ok: false,
+            },
+            Reply::Hotkey {
+                key: "ctrl+alt+escape".into(),
+                ok: true,
+            },
+        ] {
+            writeln!(writer, "{}", serde_json::to_string(&reply).unwrap()).unwrap();
+        }
+        drop(writer);
+        let until = Instant::now() + Duration::from_secs(5);
+        while o.alive() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            *told.lock().unwrap(),
+            [
+                HostEvent::Stopped { by: StopBy::Key },
+                HostEvent::Resumed { by: StopBy::One },
+                HostEvent::HotkeyLost,
+                // The stream ended with the key working: it is gone with it.
+                HostEvent::HotkeyLost,
+            ]
+        );
+        assert!(!stop.is_on());
     }
 
     #[test]

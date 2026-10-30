@@ -3,7 +3,9 @@
 //! app the agent is working on. The stop flag itself is the engine's
 //! ([`crate::engine::Engine::stop_handle`]); this holds what the engine learns
 //! while it works and the server's reader thread must read without waiting
-//! for the engine.
+//! for the engine. It also tells a host what happened as it happens
+//! (`notifications/computer_use/event`): the stop held or let go, the stop
+//! key lost, a message sent to the other agents.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -11,6 +13,48 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::overlay::StopKeyProbe;
+
+/// The version of what a host may ask and is told: 2 is a stop key that
+/// only stops, `computer_use/stop`, and the events.
+pub const PROTOCOL: u32 = 2;
+
+/// The notification a host is told what happened with.
+pub const EVENT_METHOD: &str = "notifications/computer_use/event";
+
+/// Who held the stop or let it go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopBy {
+    /// The stop key: it only stops, and stops every agent.
+    Key,
+    /// The overlay's button for every agent (Stop all, Continue all).
+    All,
+    /// The overlay's button for this one agent (or an older helper or hub,
+    /// which does not say).
+    One,
+    /// The host (`computer_use/stop`, `computer_use/resume`).
+    Host,
+}
+
+/// What a host is told as it happens. Only a change is told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostEvent {
+    Stopped {
+        by: StopBy,
+    },
+    Resumed {
+        by: StopBy,
+    },
+    /// The stop key had been registered and no longer is.
+    HotkeyLost,
+    /// This agent sent a message to the others (`to`: one of them, or all).
+    Message {
+        to: Option<u32>,
+        text: String,
+    },
+}
+
+/// Where the events go: the host's output.
+pub type EventSink = std::sync::Arc<dyn Fn(Value) + Send + Sync>;
 
 /// How long an app still counts as the one being worked on after the last
 /// step on it, so a host that asks every second or two sees the agent at work
@@ -34,6 +78,10 @@ pub struct Live {
     /// not at the end of the next call.
     probe: Mutex<Option<StopKeyProbe>>,
     working: Mutex<Option<Working>>,
+    /// The host the events go to (none: no host started this server).
+    sink: Mutex<Option<EventSink>>,
+    /// This engine's number in the hub, while it is in one.
+    agent: Mutex<Option<u32>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -54,6 +102,50 @@ impl Live {
     /// The helper that listens for the stop key (`None`: there is none).
     pub fn set_probe(&self, probe: Option<StopKeyProbe>) {
         *lock(&self.probe) = probe;
+    }
+
+    /// Tell `sink` what happens from now on (`None`: no one).
+    pub fn set_sink(&self, sink: Option<EventSink>) {
+        *lock(&self.sink) = sink;
+    }
+
+    /// This engine's number in the hub (`None`: it is in none).
+    pub fn set_agent(&self, agent: Option<u32>) {
+        *lock(&self.agent) = agent;
+    }
+
+    /// Tell the host, if there is one, what just happened.
+    pub fn emit(&self, event: HostEvent) {
+        let Some(sink) = lock(&self.sink).clone() else {
+            return;
+        };
+        let source = |by: StopBy| match by {
+            StopBy::Key => "hotkey",
+            StopBy::All | StopBy::One => "overlayButton",
+            StopBy::Host => "host",
+        };
+        let mut params = match event {
+            HostEvent::Stopped { by } => json!({
+                "type": "stopped",
+                "source": source(by),
+                "all": matches!(by, StopBy::Key | StopBy::All),
+            }),
+            HostEvent::Resumed { by } => json!({
+                "type": "resumed",
+                "source": source(by),
+                "all": by == StopBy::All,
+            }),
+            HostEvent::HotkeyLost => json!({ "type": "hotkeyLost" }),
+            HostEvent::Message { to, text } => json!({
+                "type": "message",
+                "to": to,
+                "text": text,
+            }),
+        };
+        if let Some(agent) = *lock(&self.agent) {
+            params["agent"] = json!(agent);
+        }
+        sink(json!({ "jsonrpc": "2.0", "method": EVENT_METHOD, "params": params }));
     }
 
     /// An action starts on an app.
@@ -90,10 +182,11 @@ impl Live {
             hotkey["key"] = json!(key);
         }
         json!({
-            "protocol": 1,
+            "protocol": PROTOCOL,
             "stopped": stopped,
             "hotkey": hotkey,
             "controlling": controlling,
+            "agent": *lock(&self.agent),
         })
     }
 }
@@ -145,11 +238,47 @@ mod tests {
     fn the_answer_carries_the_hold_the_protocol_and_the_key_as_set() {
         let live = Live::new(" ctrl+alt+escape ");
         let answer = live.answer(true, Instant::now());
-        assert_eq!(answer["protocol"], 1);
+        assert_eq!(answer["protocol"], 2);
+        assert!(answer["agent"].is_null());
         assert_eq!(answer["stopped"], true);
         assert_eq!(answer["hotkey"]["key"], "ctrl+alt+escape");
         assert!(answer["controlling"].is_null());
         assert_eq!(live.answer(false, Instant::now())["stopped"], false);
+    }
+
+    /// What a host is told: only with a host, in the contract's words, and
+    /// naming the agent only while it is in a hub.
+    #[test]
+    fn an_event_names_the_agent_only_in_a_hub() {
+        let live = Live::default();
+        // No host: nothing to tell, nothing breaks.
+        live.emit(HostEvent::HotkeyLost);
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let into = told.clone();
+        live.set_sink(Some(Arc::new(move |v| into.lock().unwrap().push(v))));
+        live.emit(HostEvent::Stopped { by: StopBy::Key });
+        live.set_agent(Some(3));
+        live.emit(HostEvent::Resumed { by: StopBy::Host });
+        live.emit(HostEvent::Message {
+            to: None,
+            text: "done with the sheet".into(),
+        });
+        let told = told.lock().unwrap();
+        assert!(told.iter().all(|m| m["method"] == EVENT_METHOD));
+        let params: Vec<&Value> = told.iter().map(|m| &m["params"]).collect();
+        assert_eq!(
+            *params[0],
+            json!({"type": "stopped", "source": "hotkey", "all": true})
+        );
+        assert_eq!(
+            *params[1],
+            json!({"type": "resumed", "source": "host", "all": false, "agent": 3})
+        );
+        assert_eq!(
+            *params[2],
+            json!({"type": "message", "to": null, "text": "done with the sheet", "agent": 3})
+        );
+        assert_eq!(live.answer(false, Instant::now())["agent"], 3);
     }
 
     #[test]

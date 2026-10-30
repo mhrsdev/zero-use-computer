@@ -776,11 +776,14 @@ impl<B: Backend> Engine<B> {
         self.stop.clone()
     }
 
-    /// The stop as the overlay helper and a host's reader thread share it.
+    /// The stop as the overlay helper and a host's reader thread share it;
+    /// what changes is told to the host, if there is one ([`Self::live`]).
     pub fn stop_flag(&self) -> crate::overlay::StopFlag {
+        let live = self.live.clone();
         crate::overlay::StopFlag {
             on: self.stop.clone(),
             alone: self.stop_alone.clone(),
+            events: Some(Arc::new(move |event| live.emit(event))),
         }
     }
 

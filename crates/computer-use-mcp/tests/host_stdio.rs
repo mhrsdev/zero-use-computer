@@ -13,6 +13,8 @@ struct Session {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next: u64,
+    /// The notifications seen while waiting for answers.
+    notes: Vec<Value>,
 }
 
 impl Session {
@@ -38,6 +40,7 @@ impl Session {
             input,
             output,
             next: 1,
+            notes: Vec::new(),
         };
         let hello = session.call(
             "initialize",
@@ -73,6 +76,9 @@ impl Session {
             let message: Value = serde_json::from_str(&text).unwrap();
             if message["id"] == json!(id) {
                 return message;
+            }
+            if message.get("id").is_none() {
+                self.notes.push(message);
             }
         }
     }
@@ -199,7 +205,7 @@ fn the_state_and_resume_answer_the_shapes_a_host_waits_for() {
     let mut s = Session::start(&dir);
     let state = s.call("computer_use/state", json!({}));
     let state = &state["result"];
-    assert_eq!(state["protocol"], 1);
+    assert_eq!(state["protocol"], 2);
     assert_eq!(state["stopped"], false);
     // The scripted desktop has no helper that listens for keys: the key is not
     // registered, and the answer says so instead of leaving it out.
@@ -422,4 +428,37 @@ fn the_settings_are_read_from_the_settings_home() {
     wait_until("the other follows the change", || {
         count(&two.call("tools/list", json!({}))) != before
     });
+}
+
+/// A host is told when the stop is held and let go, once per change, in
+/// the contract's words; the state says the protocol that has it.
+#[test]
+fn a_host_is_told_when_the_stop_is_held_and_let_go() {
+    let dir = home("events", "");
+    let mut s = Session::start(&dir);
+    let state = s.call("computer_use/state", json!({}));
+    assert_eq!(state["result"]["protocol"], 2);
+    assert!(state["result"]["agent"].is_null());
+    let events = |s: &mut Session| -> Vec<Value> {
+        std::mem::take(&mut s.notes)
+            .into_iter()
+            .filter(|m| m["method"] == "notifications/computer_use/event")
+            .map(|m| m["params"].clone())
+            .collect()
+    };
+    assert!(events(&mut s).is_empty());
+    s.call("computer_use/stop", json!({}));
+    assert_eq!(
+        events(&mut s),
+        [json!({"type": "stopped", "source": "host", "all": false})]
+    );
+    s.call("computer_use/stop", json!({}));
+    assert!(events(&mut s).is_empty(), "a stop already held is no news");
+    s.call("computer_use/resume", json!({}));
+    assert_eq!(
+        events(&mut s),
+        [json!({"type": "resumed", "source": "host", "all": false})]
+    );
+    s.call("computer_use/resume", json!({}));
+    assert!(events(&mut s).is_empty());
 }

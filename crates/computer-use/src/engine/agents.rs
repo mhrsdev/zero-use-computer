@@ -388,7 +388,13 @@ impl<B: Backend> Engine<B> {
                     .take(crate::overlay::hub::MAX_MESSAGE)
                     .collect();
                 if let Some(o) = self.overlay.as_ref() {
-                    o.send(&HubCmd::Send { to: args.to, text });
+                    o.send(&HubCmd::Send {
+                        to: args.to,
+                        text: text.clone(),
+                    });
+                    // What a host shows of the agents' talk is what was sent.
+                    self.live
+                        .emit(crate::live::HostEvent::Message { to: args.to, text });
                 }
                 Ok(ToolOutput::text(match args.to {
                     Some(n) => format!("Sent to agent {n}."),
